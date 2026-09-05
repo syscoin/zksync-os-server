@@ -134,7 +134,11 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
     ) -> anyhow::Result<Option<PreparedBlockCommand<'_>>> {
         match block_command {
             BlockCommand::Produce(_) => self.produce().await,
-            BlockCommand::Replay(record) => self.replay(record).await,
+            // SYSCOIN: Canonized rebuilds consume the leader's exact context/transactions and
+            // retain the expected output hash. Local rebuild transformations are not authorized.
+            BlockCommand::Replay(record) | BlockCommand::CanonizedRebuild(record) => {
+                self.replay(record).await
+            }
             BlockCommand::Rebuild(rebuild) => self.rebuild(rebuild).await,
         }
     }
@@ -403,35 +407,10 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             return Ok(None);
         }
 
-        let expect_sl_chain_id_tx_after_upgrade = record
-            .transactions
-            .windows(2)
-            .find(|window| {
-                matches!(window[0].envelope(), ZkEnvelope::Upgrade(_))
-                    && matches!(
-                        window[1].as_system_tx_type(),
-                        Some(SystemTxType::SetSLChainId(_, _))
-                    )
-            })
-            .is_some();
-
-        Ok(Some(PreparedBlockCommand {
-            block_context: record.block_context,
-            seal_policy: SealPolicy::UntilExhausted {
-                allowed_to_finish_early: false,
-            },
-            invalid_tx_policy: InvalidTxPolicy::Abort,
-            tx_source: MarkingTxStream::unmarkable(futures::stream::iter(record.transactions)),
-            metrics_label: "replay",
-            protocol_version: record.protocol_version,
-            expected_block_output_hash: Some(record.block_output_hash),
-            previous_block_timestamp: record.previous_block_timestamp,
-            force_preimages: record.force_preimages,
-            expect_sl_chain_id_tx_after_upgrade,
-            starting_cursors: record.starting_cursors,
-            interop_roots_per_block: self.config.interop_roots_per_block,
-            strict_subpool_cleanup: false,
-        }))
+        Ok(Some(prepare_replayed_block(
+            *record,
+            self.config.interop_roots_per_block,
+        )))
     }
 
     async fn rebuild(
@@ -630,6 +609,39 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             next_cursors,
         });
         Ok(())
+    }
+}
+
+// SYSCOIN: Share the exact, non-transforming replay preparation between ordinary replay and
+// canonized rebuilds. The separate command type only changes canonization/persistence policy.
+fn prepare_replayed_block(
+    record: ReplayRecord,
+    interop_roots_per_block: u64,
+) -> PreparedBlockCommand<'static> {
+    let expect_sl_chain_id_tx_after_upgrade = record.transactions.windows(2).any(|window| {
+        matches!(window[0].envelope(), ZkEnvelope::Upgrade(_))
+            && matches!(
+                window[1].as_system_tx_type(),
+                Some(SystemTxType::SetSLChainId(_, _))
+            )
+    });
+
+    PreparedBlockCommand {
+        block_context: record.block_context,
+        seal_policy: SealPolicy::UntilExhausted {
+            allowed_to_finish_early: false,
+        },
+        invalid_tx_policy: InvalidTxPolicy::Abort,
+        tx_source: MarkingTxStream::unmarkable(futures::stream::iter(record.transactions)),
+        metrics_label: "replay",
+        protocol_version: record.protocol_version,
+        expected_block_output_hash: Some(record.block_output_hash),
+        previous_block_timestamp: record.previous_block_timestamp,
+        force_preimages: record.force_preimages,
+        expect_sl_chain_id_tx_after_upgrade,
+        starting_cursors: record.starting_cursors,
+        interop_roots_per_block,
+        strict_subpool_cleanup: false,
     }
 }
 
@@ -846,6 +858,45 @@ mod tests {
             protocol_version,
             force_preimages: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn syscoin_canonized_rebuild_preparation_preserves_strict_replay() {
+        use futures::StreamExt;
+
+        // SYSCOIN: Follower timestamps, transactions, cursors and output-hash validation must
+        // stay canonical, even when a local Rebuild would rewrite/filter the original inputs.
+        let mut record = replay_record(11, 101, 100, BlockHashes::default());
+        record.transactions = vec![SystemTxEnvelope::set_sl_chain_id(270, 7).into()];
+        record.block_output_hash = B256::repeat_byte(0x42);
+        record.starting_cursors.l1_priority_id = 17;
+        record.force_preimages = vec![(B256::repeat_byte(0x55), vec![1, 2, 3])];
+        let mut prepared = prepare_replayed_block(record.clone(), 10);
+
+        assert_eq!(prepared.block_context, record.block_context);
+        assert_eq!(
+            prepared.previous_block_timestamp,
+            record.previous_block_timestamp
+        );
+        assert_eq!(prepared.starting_cursors, record.starting_cursors);
+        assert_eq!(prepared.force_preimages, record.force_preimages);
+        assert_eq!(
+            prepared.expected_block_output_hash,
+            Some(record.block_output_hash)
+        );
+        assert!(matches!(prepared.invalid_tx_policy, InvalidTxPolicy::Abort));
+        assert!(matches!(
+            prepared.seal_policy,
+            SealPolicy::UntilExhausted {
+                allowed_to_finish_early: false
+            }
+        ));
+        assert!(!prepared.strict_subpool_cleanup);
+        assert_eq!(
+            prepared.tx_source.stream.next().await,
+            Some(record.transactions[0].clone())
+        );
+        assert!(prepared.tx_source.stream.next().await.is_none());
     }
 
     #[test]

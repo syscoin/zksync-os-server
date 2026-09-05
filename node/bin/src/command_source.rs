@@ -10,6 +10,10 @@ use zksync_os_sequencer::execution::block_context_provider::millis_since_epoch;
 use zksync_os_sequencer::model::blocks::{BlockCommand, ProduceCommand, RebuildCommand};
 use zksync_os_storage_api::{ReadReplay, ReplayRecord};
 
+// SYSCOIN: Cover follower replacement permission separately from ordinary startup replay.
+#[cfg(test)]
+mod syscoin_rebuild_tests;
+
 /// Command source for consensus-enabled main node.
 /// Replays local WAL starting from `starting_block` and then produces new blocks when leader.
 #[derive(Debug)]
@@ -23,6 +27,8 @@ pub struct ConsensusNodeCommandSource<Replay> {
     pub rebuild_options: Option<RebuildOptions>,
     /// Inbound channel of canonized blocks. Populated by `BlockCanonizer` with blocks that are canonized
     pub replays_to_execute: mpsc::UnboundedReceiver<ReplayRecord>,
+    /// SYSCOIN: Mandatory startup backlog already reapplied by Raft before pipeline creation.
+    pub pending_canonized_records: usize,
     /// Internal pipeline admission gate driven by backpressure monitoring.
     pub pipeline_gate: PipelineAdmissionReceiver,
     /// Current leadership status from consensus.
@@ -34,6 +40,8 @@ pub struct ConsensusNodeCommandSource<Replay> {
 #[derive(Debug, Clone)]
 pub struct RebuildOptions {
     pub from_block_number: u64,
+    // SYSCOIN: Retain the operation's existing idempotency anchor for partial Raft resume.
+    pub from_block_hash: alloy::primitives::BlockHash,
     pub blocks_to_empty: HashSet<u64>,
     pub reset_timestamps: bool,
 }
@@ -104,6 +112,18 @@ impl<Replay: ReadReplay> PipelineComponent for ConsensusNodeCommandSource<Replay
             .await?;
         }
 
+        // SYSCOIN: A leader must not race the asynchronous canonizer bridge and propose a
+        // block while startup-committed records are still in transit.
+        while self.pending_canonized_records > 0 {
+            let record = self
+                .replays_to_execute
+                .recv()
+                .await
+                .context("canonized channel closed during mandatory startup replay")?;
+            self.pending_canonized_records -= 1;
+            Self::forward_replay(record, &output, &state_reporter).await?;
+        }
+
         tracing::info!("All WAL blocks replayed. Starting main loop.");
 
         // Seed watermark so block_diff_to_head starts at 0; leader mode never fires maybe_record.
@@ -130,6 +150,36 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
         let mut leadership = self.leadership.clone();
         let mut role = leadership.current_role();
         let mut next_rebuild_block = rebuild_options.from_block_number;
+
+        // SYSCOIN: The durable Raft prefix may already include part of this rebuild. Replay
+        // that authenticated WAL prefix locally, then consume the mandatory committed suffix.
+        // Waiting here (not try_recv) prevents a leader from reproposing in the bridge's gap.
+        while self.pending_canonized_records > 0 {
+            let record = self
+                .replays_to_execute
+                .recv()
+                .await
+                .context("canonized channel closed during mandatory rebuild replay")?;
+            if next_rebuild_block == rebuild_options.from_block_number
+                && record.block_context.block_number > next_rebuild_block
+            {
+                self.forward_durable_rebuild_prefix(rebuild_options, &record, output)
+                    .await?;
+                next_rebuild_block = record.block_context.block_number;
+            }
+            self.pending_canonized_records -= 1;
+            if Self::forward_canonized_rebuild(
+                record,
+                &mut next_rebuild_block,
+                last_block_in_wal,
+                output,
+                state_reporter,
+            )
+            .await?
+            {
+                return Ok(());
+            }
+        }
 
         loop {
             loop {
@@ -212,6 +262,10 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
         state_reporter: &ComponentStateReporter,
     ) -> anyhow::Result<bool> {
         let block_number = record.block_context.block_number;
+        anyhow::ensure!(
+            block_number <= last_block_in_wal,
+            "canonized rebuild exceeds configured historical range"
+        );
         let timestamp = record.block_context.timestamp;
         anyhow::ensure!(
             block_number == *next_rebuild_block,
@@ -223,8 +277,10 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
             block_number,
             "Received canonized rebuild block from consensus",
         );
+        // SYSCOIN: A main-node follower must overwrite its historical WAL/state, while executing
+        // the leader's exact replay with output-hash validation and without reproposing it.
         if output
-            .send(BlockCommand::Replay(Box::new(record)))
+            .send(BlockCommand::CanonizedRebuild(Box::new(record)))
             .await
             .is_err()
         {
@@ -238,6 +294,77 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
         }
         *next_rebuild_block = block_number + 1;
         Ok(false)
+    }
+
+    // SYSCOIN: Do not infer operation progress from a height gap alone. The existing hash
+    // anchor must show this operation changed its boundary, or every skipped transformation
+    // must already be an identity operation. Ambiguous changed configuration fails closed.
+    async fn forward_durable_rebuild_prefix(
+        &mut self,
+        options: &RebuildOptions,
+        pending: &ReplayRecord,
+        output: &mpsc::Sender<BlockCommand>,
+    ) -> anyhow::Result<()> {
+        let end = pending.block_context.block_number;
+        anyhow::ensure!(
+            end <= self.block_replay_storage.latest_record(),
+            "pending append conflicts with configured historical rebuild"
+        );
+        let boundary = self
+            .block_replay_storage
+            .get_canonical_block_hash(options.from_block_number)
+            .context("missing durable rebuild boundary")?;
+        let boundary_changed = boundary != options.from_block_hash;
+        let mut previous_hash = None;
+        for number in options.from_block_number..end {
+            let record = self
+                .block_replay_storage
+                .get_replay_record(number)
+                .context("missing durable rebuild prefix record")?;
+            anyhow::ensure!(
+                self.block_replay_storage.get_replay_record_identity(number)
+                    == Some(record.consensus_identity()),
+                "durable rebuild prefix identity mismatch"
+            );
+            if let Some(parent) = previous_hash {
+                anyhow::ensure!(
+                    record
+                        .block_context
+                        .block_hashes
+                        .0
+                        .last()
+                        .copied()
+                        .map(alloy::primitives::BlockHash::from)
+                        == Some(parent),
+                    "durable rebuild prefix ancestry mismatch"
+                );
+            }
+            anyhow::ensure!(
+                boundary_changed
+                    || (!options.reset_timestamps
+                        && (!options.blocks_to_empty.contains(&number)
+                            || record.transactions.is_empty())),
+                "ambiguous rebuild resume: unchanged boundary does not authenticate skipped transformations"
+            );
+            previous_hash = Some(
+                self.block_replay_storage
+                    .get_canonical_block_hash(number)
+                    .context("missing durable rebuild prefix hash")?,
+            );
+        }
+        anyhow::ensure!(
+            pending
+                .block_context
+                .block_hashes
+                .0
+                .last()
+                .copied()
+                .map(alloy::primitives::BlockHash::from)
+                == previous_hash,
+            "pending rebuild does not extend durable prefix"
+        );
+        self.forward_wal_replays(options.from_block_number, end - 1, output)
+            .await
     }
 
     /// This method kicks in after all local canonized Replayed Records (WAL) are replayed.

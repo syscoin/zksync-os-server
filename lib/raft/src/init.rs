@@ -22,10 +22,9 @@ use zksync_os_storage_api::ReadReplay;
 
 /// Initialises the OpenRaft consensus engine and returns the runtime parts needed by the node.
 ///
-/// `wal` is a read-only handle to the block replay WAL. The state machine uses it to derive
-/// the last applied `LogId` directly from `wal.latest_record()`, keeping it atomically
-/// consistent with what `BlockApplier` has durably persisted: a block is only considered
-/// applied once it is in the WAL.
+/// SYSCOIN: `wal` is a read-only handle to the block replay WAL. The state machine derives
+/// the last applied `LogId` from an identity-authenticated journal prefix,
+/// including historical replacements. Forwarding and WAL height are not durability proofs.
 pub async fn init_consensus(
     runtime: &Runtime,
     config: RaftConsensusConfig,
@@ -49,7 +48,7 @@ pub async fn init_consensus(
     // This lets us compare pre-init vs post-init to see whether any entries were replayed.
     let wal_last_block = block_replay_storage.latest_record();
     let storage_state: RaftStorageStartupState = log_store
-        .startup_state(wal_last_block)
+        .startup_state(block_replay_storage.as_ref())
         .context("failed to read raft storage startup state")?;
 
     let (canonized_sender, canonized_rx) = mpsc::unbounded_channel();
@@ -77,7 +76,7 @@ pub async fn init_consensus(
     let initial_metrics = raft.metrics().borrow().clone();
     let peers = config.peer_ids.len();
     let bootstrap = config.bootstrap;
-    let raft_applied_for_wal_block = &storage_state.raft_applied_for_wal_block;
+    let durable_applied = &storage_state.durable_applied;
     let stored_vote = &storage_state.vote;
     let stored_committed = &storage_state.committed;
     let stored_last_log = &storage_state.last_log;
@@ -89,7 +88,7 @@ pub async fn init_consensus(
     let purged = &initial_metrics.purged;
     tracing::info!(
         "openraft consensus initialized: node_id={node_id}, peers={peers}, bootstrap={bootstrap}, \
-         wal_last_block={wal_last_block}, raft_applied_for_wal_block={raft_applied_for_wal_block:?}, \
+         wal_last_block={wal_last_block}, durable_applied={durable_applied:?}, \
          stored_vote={stored_vote:?}, stored_committed={stored_committed:?}, \
          stored_last_log={stored_last_log:?}, state={state:?}, current_term={current_term}, \
          vote={vote:?}, last_log_index={last_log_index:?}, last_applied={last_applied:?}, \

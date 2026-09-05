@@ -4,6 +4,7 @@
 //! It also owns low-level state-machine metadata persistence primitives that are
 //! consumed by `state_machine.rs`.
 
+use alloy::primitives::B256;
 use openraft::storage::{LogFlushed, LogState, RaftLogReader, RaftLogStorage};
 use openraft::{
     AnyError, Entry, ErrorSubject, ErrorVerb, LogId, StorageError, StorageIOError,
@@ -11,12 +12,14 @@ use openraft::{
 };
 use reth_network_peers::PeerId;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
 use std::path::Path;
 use zksync_os_consensus_types::{RaftNode, RaftTypeConfig};
 use zksync_os_rocksdb::RocksDB;
 use zksync_os_rocksdb::db::NamedColumnFamily;
+use zksync_os_storage_api::{ReadReplay, ReplayRecord};
 
 #[derive(Clone, Debug)]
 pub struct RaftLogStore {
@@ -38,13 +41,12 @@ pub enum RaftColumnFamily {
     LogMeta,
     /// State-machine metadata (last membership).
     StateMachineMeta,
-    /// Maps WAL block number (u64 BE) → serialized `LogId<PeerId>`.
-    ///
-    /// Written by `apply()` **before** forwarding a block to the execution pipeline.
-    /// This makes `applied_state()` safe to derive from the WAL: if the process crashes
-    /// between the channel send and the WAL write, the WAL's latest block is still N-1,
-    /// so `applied_state()` returns N-1's `LogId` and OpenRaft correctly re-applies entry N.
+    /// Legacy height-only applied map. SYSCOIN: rejected, never silently migrated.
     RaftApplied,
+    /// SYSCOIN: append-only, log-index-keyed replay identities, including superseded rebuilds.
+    AppliedJournal,
+    /// SYSCOIN: WAL identity before the journal first touches each block number.
+    AppliedBaseline,
 }
 
 impl NamedColumnFamily for RaftColumnFamily {
@@ -55,6 +57,8 @@ impl NamedColumnFamily for RaftColumnFamily {
         RaftColumnFamily::LogMeta,
         RaftColumnFamily::StateMachineMeta,
         RaftColumnFamily::RaftApplied,
+        RaftColumnFamily::AppliedJournal,
+        RaftColumnFamily::AppliedBaseline,
     ];
 
     fn name(&self) -> &'static str {
@@ -64,6 +68,8 @@ impl NamedColumnFamily for RaftColumnFamily {
             RaftColumnFamily::LogMeta => "log_meta",
             RaftColumnFamily::StateMachineMeta => "state_machine_meta",
             RaftColumnFamily::RaftApplied => "raft_applied",
+            RaftColumnFamily::AppliedJournal => "syscoin_applied_journal_v1",
+            RaftColumnFamily::AppliedBaseline => "syscoin_applied_baseline_v1",
         }
     }
 }
@@ -91,11 +97,25 @@ fn db_get<T: for<'de> serde::Deserialize<'de>>(
     else {
         return Ok(None);
     };
-    Ok(Some(
-        bincode::serde::decode_from_slice::<T, _>(&bytes, bincode::config::standard())
-            .map_err(|e| io_err(subject, ErrorVerb::Read, &e))?
-            .0,
-    ))
+    Ok(Some(decode_exact(&bytes, subject)?))
+}
+
+// SYSCOIN: versioned metadata must not accept a valid prefix of another/corrupt schema.
+#[allow(clippy::result_large_err)]
+fn decode_exact<T: for<'de> serde::Deserialize<'de>>(
+    bytes: &[u8],
+    subject: &ErrorSubject<PeerId>,
+) -> Result<T, StorageError<PeerId>> {
+    let (decoded, consumed) = bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+        .map_err(|error| io_err(subject, ErrorVerb::Read, &error))?;
+    if consumed != bytes.len() {
+        return Err(io_err_msg(
+            subject,
+            ErrorVerb::Read,
+            "trailing bytes in Raft storage metadata",
+        ));
+    }
+    Ok(decoded)
 }
 
 #[allow(clippy::result_large_err)]
@@ -135,10 +155,10 @@ pub struct RaftStorageStartupState {
     /// `LogId` of the last entry in the Logs CF (may be ahead of `committed` if a leader
     /// wrote entries that were never committed before crashing).
     pub last_log: Option<LogId<PeerId>>,
-    /// The `LogId` stored in `RaftApplied` for `wal_last_block`. This is what
-    /// `applied_state()` returns as `last_applied` on this startup — i.e. the WAL anchor.
+    /// SYSCOIN: the last journal prefix authenticated by the durable WAL identities.
+    /// This is exactly what `applied_state()` returns on this startup.
     /// Any committed entries with index > this value will be reapplied by `Raft::new()`.
-    pub raft_applied_for_wal_block: Option<LogId<PeerId>>,
+    pub durable_applied: Option<LogId<PeerId>>,
 }
 
 impl RaftLogStore {
@@ -147,6 +167,8 @@ impl RaftLogStore {
         let db = RocksDB::<RaftColumnFamily>::new(path)
             .map_err(|e| anyhow::anyhow!("opening raft db at {}: {e}", path.display()))?
             .with_sync_writes();
+        let meta_store = RaftStateMachineMetaStore::new(db.clone());
+        meta_store.ensure_applied_journal_schema()?;
         Ok(Self { db })
     }
 
@@ -159,7 +181,7 @@ impl RaftLogStore {
     #[allow(clippy::result_large_err)]
     pub fn startup_state(
         &self,
-        wal_last_block: u64,
+        wal: &dyn ReadReplay,
     ) -> Result<RaftStorageStartupState, StorageError<PeerId>> {
         let vote = db_get(
             &self.db,
@@ -174,17 +196,14 @@ impl RaftLogStore {
             &ErrorSubject::Store,
         )?;
         let last_log = self.last_log_id_from_db()?;
-        let raft_applied_for_wal_block = db_get(
-            &self.db,
-            RaftColumnFamily::RaftApplied,
-            &wal_last_block.to_be_bytes(),
-            &ErrorSubject::StateMachine,
-        )?;
+        let durable_applied = RaftStateMachineMetaStore::new(self.db.clone())
+            .durable_applied_state(wal)?
+            .last_applied;
         Ok(RaftStorageStartupState {
             vote,
             committed,
             last_log,
-            raft_applied_for_wal_block,
+            durable_applied,
         })
     }
 }
@@ -194,8 +213,26 @@ pub(crate) struct RaftStateMachineMeta {
     pub(crate) last_membership: Option<StoredMembership<PeerId, RaftNode>>,
 }
 
+// SYSCOIN: The WAL's block height is not an application generation. Preserve every
+// forwarded identity so a same-height rebuild cannot overwrite its predecessor's LogId.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct AppliedJournalEntry {
+    log_id: LogId<PeerId>,
+    block_number: u64,
+    identity: B256,
+}
+
+#[derive(Debug)]
+pub(crate) struct DurableAppliedState {
+    pub(crate) last_applied: Option<LogId<PeerId>>,
+    pub(crate) last_forwarded: Option<LogId<PeerId>>,
+    pub(crate) pending_records: usize,
+}
+
 impl RaftStateMachineMetaStore {
     const STATE_MACHINE_META_KEY: &'static [u8] = b"state_machine_meta";
+    const APPLIED_JOURNAL_VERSION_KEY: &'static [u8] = b"syscoin_applied_journal_version";
+    const APPLIED_JOURNAL_VERSION: u32 = 1;
 
     pub(crate) fn new(db: RocksDB<RaftColumnFamily>) -> Self {
         Self { db }
@@ -215,40 +252,238 @@ impl RaftStateMachineMetaStore {
         .unwrap_or_default())
     }
 
-    /// Persists the `LogId` for a block that has been applied to the state machine.
-    ///
-    /// Must be called **before** forwarding the block to the execution pipeline channel.
-    /// This ordering guarantees crash safety: if the process dies before the WAL write,
-    /// `applied_state()` reads the WAL's previous block number and finds its (already
-    /// persisted) `LogId`, causing OpenRaft to re-apply the lost entry on the next startup.
+    // SYSCOIN: This unreleased storage format has no implicit migration: legacy applied
+    // maps have already discarded the old LogIds needed to authenticate rebuilt heights.
+    // Guessing from those rows or from the current WAL would recreate the crash bug.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn save_block_log_id(
-        &self,
-        block_number: u64,
-        log_id: LogId<PeerId>,
-    ) -> Result<(), StorageError<PeerId>> {
+    fn ensure_applied_journal_schema(&self) -> Result<(), StorageError<PeerId>> {
+        if self
+            .db
+            .from_iterator_cf(RaftColumnFamily::RaftApplied, &[]..)
+            .next()
+            .is_some()
+        {
+            return Err(io_err_msg(
+                &ErrorSubject::StateMachine,
+                ErrorVerb::Read,
+                "SYSCOIN: legacy height-only Raft applied metadata is unsupported; use an explicitly coordinated fresh Raft history, not an automatic migration",
+            ));
+        }
+        let version: Option<u32> = db_get(
+            &self.db,
+            RaftColumnFamily::StateMachineMeta,
+            Self::APPLIED_JOURNAL_VERSION_KEY,
+            &ErrorSubject::StateMachine,
+        )?;
+        if let Some(version) = version {
+            return if version == Self::APPLIED_JOURNAL_VERSION {
+                Ok(())
+            } else {
+                Err(io_err_msg(
+                    &ErrorSubject::StateMachine,
+                    ErrorVerb::Read,
+                    format!("unsupported SYSCOIN Raft applied journal version {version}"),
+                ))
+            };
+        }
+        for cf in [
+            RaftColumnFamily::AppliedJournal,
+            RaftColumnFamily::AppliedBaseline,
+        ] {
+            if self.db.from_iterator_cf(cf, &[]..).next().is_some() {
+                return Err(io_err_msg(
+                    &ErrorSubject::StateMachine,
+                    ErrorVerb::Read,
+                    "SYSCOIN Raft applied journal has no format version",
+                ));
+            }
+        }
         db_put(
             &self.db,
-            RaftColumnFamily::RaftApplied,
-            &block_number.to_be_bytes(),
-            &log_id,
+            RaftColumnFamily::StateMachineMeta,
+            Self::APPLIED_JOURNAL_VERSION_KEY,
+            &Self::APPLIED_JOURNAL_VERSION,
             &ErrorSubject::StateMachine,
         )
     }
 
-    /// Reads back the `LogId` that was saved for a given WAL block number,
-    /// returning `None` if no entry exists (e.g. genesis).
+    /// SYSCOIN: persist the immutable replay identity before forwarding to the pipeline.
+    /// The baseline and first journal entry for a height are one synced RocksDB write.
+    /// Reapplication is idempotent and must not replace either an identity or its baseline.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn load_block_log_id(
+    pub(crate) fn save_record_log_id(
         &self,
-        block_number: u64,
-    ) -> Result<Option<LogId<PeerId>>, StorageError<PeerId>> {
-        db_get(
+        record: &ReplayRecord,
+        log_id: LogId<PeerId>,
+        wal: &dyn ReadReplay,
+    ) -> Result<(), StorageError<PeerId>> {
+        // Also validate direct state-machine construction, which can bypass LogStore::open.
+        self.ensure_applied_journal_schema()?;
+        let entry = AppliedJournalEntry {
+            log_id,
+            block_number: record.block_context.block_number,
+            identity: record.consensus_identity(),
+        };
+        let journal_key = log_id.index.to_be_bytes();
+        let existing: Option<AppliedJournalEntry> = db_get(
             &self.db,
-            RaftColumnFamily::RaftApplied,
-            &block_number.to_be_bytes(),
+            RaftColumnFamily::AppliedJournal,
+            &journal_key,
             &ErrorSubject::StateMachine,
-        )
+        )?;
+        if let Some(existing) = existing {
+            return if existing == entry {
+                Ok(())
+            } else {
+                Err(io_err_msg(
+                    &ErrorSubject::StateMachine,
+                    ErrorVerb::Write,
+                    "SYSCOIN: attempted to change an existing Raft applied journal entry",
+                ))
+            };
+        }
+        if let Some((last_key, _)) = self
+            .db
+            .to_iterator_cf(
+                RaftColumnFamily::AppliedJournal,
+                ..=&u64::MAX.to_be_bytes()[..],
+            )
+            .next()
+            && last_key.as_ref() >= journal_key.as_slice()
+        {
+            return Err(io_err_msg(
+                &ErrorSubject::StateMachine,
+                ErrorVerb::Write,
+                "SYSCOIN: out-of-order Raft applied journal entry",
+            ));
+        }
+        let block_key = entry.block_number.to_be_bytes();
+        let baseline: Option<Option<B256>> = db_get(
+            &self.db,
+            RaftColumnFamily::AppliedBaseline,
+            &block_key,
+            &ErrorSubject::StateMachine,
+        )?;
+        let mut batch = self.db.new_write_batch();
+        if baseline.is_none() {
+            let identity = Self::wal_identity(wal, entry.block_number)?;
+            let encoded = bincode::serde::encode_to_vec(identity, bincode::config::standard())
+                .expect("bincode encode WAL baseline");
+            batch.put_cf(RaftColumnFamily::AppliedBaseline, &block_key, &encoded);
+        }
+        let encoded = bincode::serde::encode_to_vec(entry, bincode::config::standard())
+            .expect("bincode encode applied journal entry");
+        batch.put_cf(RaftColumnFamily::AppliedJournal, &journal_key, &encoded);
+        self.db
+            .write(batch)
+            .map_err(|error| io_err(&ErrorSubject::StateMachine, ErrorVerb::Write, &error))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn wal_identity(
+        wal: &dyn ReadReplay,
+        block_number: u64,
+    ) -> Result<Option<B256>, StorageError<PeerId>> {
+        let identity = wal.get_replay_record_identity(block_number);
+        if identity.is_none() && block_number <= wal.latest_record() {
+            return Err(io_err_msg(
+                &ErrorSubject::StateMachine,
+                ErrorVerb::Read,
+                format!(
+                    "SYSCOIN: WAL block {block_number} has no immutable replay identity; legacy or incomplete WAL is unsupported"
+                ),
+            ));
+        }
+        Ok(identity)
+    }
+
+    /// SYSCOIN: authenticate a *prefix*, not merely the highest matching record.
+    /// During a multi-block rebuild the WAL tip can still contain an old tail. A later
+    /// pending entry can even equal that old tail while an earlier replacement is not
+    /// persisted. Only a prefix whose final identity at EVERY touched height matches the
+    /// WAL is durable. Superseded entries remain in the journal for repeated rebuilds.
+    ///
+    /// Equivalent complete final states (including an A -> B -> A cycle) are idempotent;
+    /// this authenticates canonical replay state, not the occurrence of each transient write.
+    /// The scan takes O(journal entries + touched heights) time and O(touched heights) memory.
+    /// It runs at startup, not per block; snapshots/purging/checkpoint compaction are disabled.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn durable_applied_state(
+        &self,
+        wal: &dyn ReadReplay,
+    ) -> Result<DurableAppliedState, StorageError<PeerId>> {
+        self.ensure_applied_journal_schema()?;
+        let mut identities = HashMap::new();
+        let mut mismatches = 0usize;
+        for (key, value) in self
+            .db
+            .from_iterator_cf(RaftColumnFamily::AppliedBaseline, &[]..)
+        {
+            let number = u64::from_be_bytes(key.as_ref().try_into().map_err(|_| {
+                io_err_msg(
+                    &ErrorSubject::StateMachine,
+                    ErrorVerb::Read,
+                    "invalid Raft applied baseline key",
+                )
+            })?);
+            let baseline: Option<B256> = decode_exact(&value, &ErrorSubject::StateMachine)?;
+            let actual = Self::wal_identity(wal, number)?;
+            mismatches += usize::from(baseline != actual);
+            identities.insert(number, (baseline, actual, false));
+        }
+        let mut matched_prefix = mismatches == 0;
+        let mut state = DurableAppliedState {
+            last_applied: None,
+            last_forwarded: None,
+            pending_records: 0,
+        };
+        for (key, value) in self
+            .db
+            .from_iterator_cf(RaftColumnFamily::AppliedJournal, &[]..)
+        {
+            let entry: AppliedJournalEntry = decode_exact(&value, &ErrorSubject::StateMachine)?;
+            if key.as_ref() != entry.log_id.index.to_be_bytes() {
+                return Err(io_err_msg(
+                    &ErrorSubject::StateMachine,
+                    ErrorVerb::Read,
+                    "Raft applied journal key does not match LogId",
+                ));
+            }
+            let (expected, actual, touched) =
+                identities.get_mut(&entry.block_number).ok_or_else(|| {
+                    io_err_msg(
+                        &ErrorSubject::StateMachine,
+                        ErrorVerb::Read,
+                        "Raft applied journal entry has no baseline",
+                    )
+                })?;
+            mismatches -= usize::from(*expected != *actual);
+            *expected = Some(entry.identity);
+            *touched = true;
+            mismatches += usize::from(*expected != *actual);
+            state.last_forwarded = Some(entry.log_id);
+            state.pending_records += 1;
+            if mismatches == 0 {
+                matched_prefix = true;
+                state.last_applied = Some(entry.log_id);
+                state.pending_records = 0;
+            }
+        }
+        if identities.values().any(|(_, _, touched)| !touched) {
+            return Err(io_err_msg(
+                &ErrorSubject::StateMachine,
+                ErrorVerb::Read,
+                "Raft applied baseline has no journal entry",
+            ));
+        }
+        if !matched_prefix {
+            return Err(io_err_msg(
+                &ErrorSubject::StateMachine,
+                ErrorVerb::Read,
+                "SYSCOIN: WAL identities do not match any Raft applied journal prefix; refusing to guess durable application",
+            ));
+        }
+        Ok(state)
     }
 
     #[allow(clippy::result_large_err)]

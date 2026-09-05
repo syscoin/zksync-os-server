@@ -3,6 +3,7 @@ use crate::execution::metrics::BlockApplierState;
 use crate::model::blocks::{AppliedBlock, BlockCommandType, BlockPayload};
 use alloy::consensus::Sealed;
 use alloy::primitives::BlockNumber;
+use anyhow::Context as _;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 use zksync_os_observability::ComponentStateReporter;
@@ -61,25 +62,32 @@ where
             let block_number = executed_replay.block_context.block_number;
             let block_hash = block_output.header.hash();
             let override_allowed = match cmd_type {
-                BlockCommandType::Rebuild => true,
+                // SYSCOIN: Main-node followers need the same historical replacement permission
+                // as the leader, but ordinary startup/consensus Replay stays non-overwriting.
+                BlockCommandType::Rebuild | BlockCommandType::CanonizedRebuild => true,
                 _ if self.config.node_role.is_external() => true,
                 _ => false,
             };
 
             state_reporter.enter_state(BlockApplierState::AddingToStorage);
             tracing::info!(block_number, "Persisting block {block_number}");
-            if let Err(err) = self
+            // SYSCOIN: WAL validation failure is a critical pipeline error, not a clean EOF.
+            // Do not publish state, repositories or applied progress for a rejected record.
+            let replay_written = self
                 .replay
                 .write(
                     Sealed::new_unchecked(executed_replay.clone(), block_hash),
                     override_allowed,
                 )
                 .await
-            {
-                tracing::info!("Failed to write replay record: {err}, shutting down");
-                return Ok(());
-            }
+                .with_context(|| {
+                    format!("failed to persist replay record for block {block_number}")
+                })?;
 
+            // SYSCOIN: A crash may leave a rebuilt WAL row durable before its derived state.
+            // `Ok(false)` authenticates the exact existing canonical header and replay input;
+            // repair state from that output without granting permission to rewrite the WAL.
+            let state_override_allowed = override_allowed || !replay_written;
             self.state.add_block_result(
                 block_number,
                 block_output.storage_writes.clone(),
@@ -87,7 +95,7 @@ where
                     .published_preimages
                     .iter()
                     .map(|(k, v)| (*k, v)),
-                override_allowed,
+                state_override_allowed,
             )?;
 
             state_reporter.enter_state(BlockApplierState::PopulatingRepos);

@@ -45,6 +45,21 @@ Write-ahead log containing recent block data.
 | node_version | block number | Node version that produced the block |
 | latest | 'latest_block' | Latest block number |
 
+<!-- SYSCOIN: Preserve the independent inputs needed to authenticate recovery. -->
+`syscoin_replay_identity_v1` additionally stores a domain-separated Keccak-256 identity of
+each original replay input, excluding diagnostic `node_version`. It is written atomically with
+the record and canonical header hash. The original full `context` remains the ancestry witness;
+the compact context reconstructed from current canonical hashes is not a completion proof.
+An ordinary duplicate write succeeds idempotently only if both the executed header and immutable
+input identity match. It may repair derived state after a WAL-before-state crash, but cannot
+replace the WAL. Only explicit rebuilds and external-node replacement retain overwrite permission.
+
+Pre-identity experimental WALs cannot be authenticated by reconstructing an identity from mutable
+indexes. They fail closed on duplicate replay / Raft recovery. There is no automatic migration:
+retain the complete old recovery set and archives, and recover into a fresh, deployment-bound
+directory through the supported archive workflow. Do not delete individual column families or
+copy identity markers to make an old directory appear compatible.
+
 ---
 
 ## 2. preimages_full_diffs
@@ -121,6 +136,24 @@ When consensus is enabled, this database persists Raft logs, votes, committed
 log metadata, membership/state-machine metadata, and the applied-WAL anchor.
 Retain it with the replay WAL. Clearing it is a coordinated consensus operation,
 not a general database reset.
+
+<!-- SYSCOIN: Height reuse requires an immutable log-order acknowledgement journal. -->
+The versioned applied journal retains `(LogId, block number, replay identity)` for every forwarded
+normal entry, plus the WAL identity preceding the first journal entry at each height. Startup
+finds the greatest log prefix whose complete set of touched heights matches the durable WAL;
+matching one high block, or the current WAL height, is insufficient. Pending committed records
+are replayed before leader proposals, including across the asynchronous canonizer bridge.
+Startup scans the retained journal (linear in journal length); it is not pruned automatically.
+
+Legacy height-only `RaftApplied` metadata and missing/malformed journal version metadata are
+explicitly unsupported. There is no silent migration or standalone Raft reset. Preserve the
+complete database set and use a coordinated recovery procedure before changing formats.
+
+For an interrupted configured rebuild, the command source can replay an authenticated durable
+prefix before the committed suffix. It requires the existing `from_block_hash` anchor to have
+changed, or skipped transformations to be no-ops. An unchanged boundary with timestamp reset is
+ambiguous and stops instead of guessing. Preserve the original rebuild configuration across
+restarts; changing its transformation parameters mid-operation is not supported.
 
 ---
 

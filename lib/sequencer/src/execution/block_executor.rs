@@ -85,7 +85,10 @@ where
             tracing::info!("Command {cmd} received by BlockExecutor");
             let cmd_type = cmd.command_type();
             let replayed_block_number = match &cmd {
-                BlockCommand::Replay(record) => Some(record.block_context.block_number),
+                // SYSCOIN: Both already-canonized commands retain replay semantics in execution.
+                BlockCommand::Replay(record) | BlockCommand::CanonizedRebuild(record) => {
+                    Some(record.block_context.block_number)
+                }
                 _ => None,
             };
             state_reporter.enter_state(SequencerState::WaitingForApplier);

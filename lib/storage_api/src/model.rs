@@ -76,6 +76,45 @@ impl PartialEq for ReplayRecord {
 }
 
 impl ReplayRecord {
+    /// SYSCOIN: Identity of the exact consensus replay input, excluding only the diagnostic
+    /// binary version as in `PartialEq`. Persist this at write time: reconstructing historical
+    /// ancestry or timestamps from a partially rebuilt WAL cannot authenticate the original row.
+    pub fn consensus_identity(&self) -> B256 {
+        // Exhaustive destructuring makes new replay fields require an identity-format decision.
+        let Self {
+            block_context,
+            transactions,
+            previous_block_timestamp,
+            node_version: _,
+            protocol_version,
+            block_output_hash,
+            force_preimages,
+            starting_cursors,
+        } = self;
+        // SYSCOIN: Borrow the equality fields and preserve the replay wire's EIP-2718
+        // transaction encoding. Buffer the hash writer rather than cloning/allocating an
+        // entire block's transactions, preimages and JSON at every apply/persistence step.
+        let identity_fields = (
+            block_context,
+            serde_with::ser::SerializeAsWrap::<_, Vec<Eip2718>>::new(transactions),
+            previous_block_timestamp,
+            protocol_version,
+            block_output_hash,
+            force_preimages,
+            starting_cursors,
+        );
+        let mut hasher = alloy::primitives::Keccak256::new();
+        hasher.update(b"syscoin/replay-consensus-identity/v1\0");
+        let mut writer = std::io::BufWriter::new(ReplayIdentityWriter(hasher));
+        serde_json::to_writer(&mut writer, &identity_fields)
+            .expect("consensus replay identity must serialize");
+        writer
+            .into_inner()
+            .unwrap_or_else(|_| unreachable!("hash writes cannot fail"))
+            .0
+            .finalize()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         block_context: BlockContext,
@@ -108,6 +147,20 @@ impl ReplayRecord {
             force_preimages,
             starting_cursors,
         }
+    }
+}
+
+// SYSCOIN: Infallible streaming sink for the versioned local replay identity.
+struct ReplayIdentityWriter(alloy::primitives::Keccak256);
+
+impl std::io::Write for ReplayIdentityWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

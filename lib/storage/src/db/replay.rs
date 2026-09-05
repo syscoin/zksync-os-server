@@ -61,6 +61,8 @@ pub enum BlockReplayColumnFamily {
     ProtocolVersion,
     ForcePreimages,
     BlockOutputHash,
+    /// SYSCOIN: Versioned identity of the original replay input, written atomically with the row.
+    ReplayIdentity,
     StartingInteropRootId,
     StartingMigrationNumber,
     StartingInteropFeeNumber,
@@ -80,6 +82,7 @@ impl NamedColumnFamily for BlockReplayColumnFamily {
         BlockReplayColumnFamily::NodeVersion,
         BlockReplayColumnFamily::ProtocolVersion,
         BlockReplayColumnFamily::BlockOutputHash,
+        BlockReplayColumnFamily::ReplayIdentity,
         BlockReplayColumnFamily::ForcePreimages,
         BlockReplayColumnFamily::StartingInteropRootId,
         BlockReplayColumnFamily::StartingMigrationNumber,
@@ -97,6 +100,7 @@ impl NamedColumnFamily for BlockReplayColumnFamily {
             BlockReplayColumnFamily::NodeVersion => "node_version",
             BlockReplayColumnFamily::ProtocolVersion => "protocol_version",
             BlockReplayColumnFamily::BlockOutputHash => "block_output_hash",
+            BlockReplayColumnFamily::ReplayIdentity => "syscoin_replay_identity_v1",
             BlockReplayColumnFamily::ForcePreimages => "force_preimages",
             BlockReplayColumnFamily::StartingInteropRootId => "starting_interop_root_id",
             BlockReplayColumnFamily::StartingMigrationNumber => "starting_migration_number",
@@ -160,6 +164,10 @@ impl BlockReplayStorage {
     fn write_replay_unchecked(&self, sealed_record: Sealed<ReplayRecord>, is_canonical: bool) {
         // Prepare record
         let (record, block_hash) = sealed_record.split();
+        // SYSCOIN: Capture the exact input before any future reads reconstruct ancestry or
+        // previous timestamps from neighboring rows. Raft durability and idempotent replay
+        // validation use this identity, not the mutable height or a reconstructed record.
+        let replay_identity = record.consensus_identity();
         // TODO: We want to change the key to be block_hash for all blocks
         let db_key = if is_canonical {
             record.block_context.block_number.to_be_bytes().to_vec()
@@ -216,6 +224,11 @@ impl BlockReplayStorage {
             &starting_l1_tx_id_value,
         );
         batch.put_cf(BlockReplayColumnFamily::Txs, &db_key, &txs_value);
+        batch.put_cf(
+            BlockReplayColumnFamily::ReplayIdentity,
+            &db_key,
+            replay_identity.as_slice(),
+        );
         batch.put_cf(
             BlockReplayColumnFamily::NodeVersion,
             &db_key,
@@ -430,6 +443,24 @@ impl BlockReplayStorage {
 impl ReadReplay for BlockReplayStorage {
     fn get_context(&self, block_number: BlockNumber) -> Option<BlockContext> {
         self.get_context_by_key(block_number, &block_number.to_be_bytes())
+    }
+
+    // SYSCOIN: The full rollback copy is the only independent ancestor evidence during rebuild.
+    fn get_original_context(&self, block_number: BlockNumber) -> Option<BlockContext> {
+        self.get_legacy_context(&block_number.to_be_bytes())
+            .filter(|context| context.block_number == block_number)
+    }
+
+    // SYSCOIN: Deliberately no fallback for a pre-identity WAL; deriving the digest after a
+    // partial rebuild would authenticate different bytes from those originally persisted.
+    fn get_replay_record_identity(&self, block_number: BlockNumber) -> Option<BlockHash> {
+        self.db
+            .get_cf(
+                BlockReplayColumnFamily::ReplayIdentity,
+                &block_number.to_be_bytes(),
+            )
+            .expect("Failed to read persisted replay identity")
+            .map(|bytes| B256::from_slice(&bytes))
     }
 
     fn get_canonical_block_hash(&self, block_number: BlockNumber) -> Option<BlockHash> {
@@ -665,7 +696,29 @@ impl WriteReplay for BlockReplayStorage {
         };
 
         if block_context.block_number <= current_latest_record && !override_allowed {
-            // todo: consider asserting that the passed `ReplayRecord` matches the one currently stored
+            // SYSCOIN: An idempotent replay must match both the trusted canonical header and
+            // the exact persisted input. In particular, an archive path/anchor is not proof
+            // that its payload executes to that header. Reject before applying state/repository
+            // changes; only an explicitly authorized rebuild may replace an existing row.
+            let block_number = block_context.block_number;
+            let expected_hash = self
+                .read_canonical_block_hash(block_number)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("canonical hash missing for replay block {block_number}")
+                })?;
+            anyhow::ensure!(
+                sealed_record.hash() == expected_hash,
+                "canonical replay header mismatch at block {block_number}: expected {expected_hash}, got {}",
+                sealed_record.hash(),
+            );
+            let expected_identity = self.get_replay_record_identity(block_number)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "persisted replay identity missing for block {block_number}; pre-identity replay databases are unsupported; recover to a fresh WAL from the retained archive"
+                ))?;
+            anyhow::ensure!(
+                block_record.consensus_identity() == expected_identity,
+                "canonical replay input mismatch at block {block_number}",
+            );
             tracing::debug!(
                 block_number = block_context.block_number,
                 "not appending block: already exists in block replay storage",
@@ -918,6 +971,138 @@ mod tests {
                 "record mismatch for block {number}"
             );
         }
+    }
+
+    // SYSCOIN: Original input evidence must survive an ancestor rewrite and database reopen.
+    #[tokio::test]
+    async fn syscoin_replay_identity_and_original_context_survive_partial_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let chain = make_chain(4);
+        let old_identity = chain[2].consensus_identity();
+        {
+            let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+            for record in &chain {
+                storage.write(record.clone(), false).await.unwrap();
+            }
+            let mut replacement = chain[1].as_ref().clone();
+            replacement.block_context.timestamp += 100;
+            replacement.block_output_hash = B256::repeat_byte(0x99);
+            storage
+                .write(Sealed::new_unchecked(replacement, fake_hash(101)), true)
+                .await
+                .unwrap();
+            assert_ne!(
+                storage.get_replay_record(2).unwrap().consensus_identity(),
+                old_identity
+            );
+            assert_eq!(storage.get_replay_record_identity(2), Some(old_identity));
+        }
+        let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+        assert_eq!(storage.get_replay_record_identity(2), Some(old_identity));
+        assert_eq!(
+            storage.get_original_context(2),
+            Some(chain[2].block_context)
+        );
+        let mut batch = storage.db.new_write_batch();
+        batch.delete_cf(BlockReplayColumnFamily::Context, &2u64.to_be_bytes());
+        storage.db.write(batch).unwrap();
+        assert!(storage.get_context(2).is_some());
+        assert!(
+            storage.get_original_context(2).is_none(),
+            "missing original ancestry must not be reconstructed"
+        );
+    }
+
+    // SYSCOIN: Ordinary replay is idempotent only for the exact canonical header and input.
+    #[tokio::test]
+    async fn syscoin_existing_replay_rejects_header_and_input_substitution() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+        let chain = make_chain(2);
+        for record in &chain {
+            storage.write(record.clone(), false).await.unwrap();
+        }
+        assert!(!storage.write(chain[1].clone(), false).await.unwrap());
+        let mut diagnostic_only = chain[1].as_ref().clone();
+        diagnostic_only.node_version = "9.9.9".parse().unwrap();
+        assert!(
+            !storage
+                .write(
+                    Sealed::new_unchecked(diagnostic_only, chain[1].hash()),
+                    false
+                )
+                .await
+                .unwrap()
+        );
+        let wrong_header = Sealed::new_unchecked(chain[1].as_ref().clone(), fake_hash(999));
+        assert!(
+            storage
+                .write(wrong_header, false)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("header mismatch")
+        );
+        let mut changed_input = chain[1].as_ref().clone();
+        changed_input
+            .force_preimages
+            .push((B256::repeat_byte(1), vec![2]));
+        assert!(
+            storage
+                .write(
+                    Sealed::new_unchecked(changed_input.clone(), chain[1].hash()),
+                    false
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("input mismatch")
+        );
+        assert_eq!(
+            storage.get_replay_record(1).as_ref(),
+            Some(chain[1].as_ref())
+        );
+        assert_eq!(
+            storage.get_replay_record_identity(1),
+            Some(chain[1].consensus_identity())
+        );
+        // Explicit rebuild permission remains sufficient to replace the canonical input.
+        assert!(
+            storage
+                .write(
+                    Sealed::new_unchecked(changed_input.clone(), fake_hash(101)),
+                    true
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage.get_replay_record_identity(1),
+            Some(changed_input.consensus_identity())
+        );
+        assert_eq!(storage.get_canonical_block_hash(1), Some(fake_hash(101)));
+    }
+
+    // SYSCOIN: Do not infer an original identity from a pre-identity/partially rebuilt database.
+    #[tokio::test]
+    async fn syscoin_existing_replay_without_identity_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+        let chain = make_chain(2);
+        for record in &chain {
+            storage.write(record.clone(), false).await.unwrap();
+        }
+        let mut batch = storage.db.new_write_batch();
+        batch.delete_cf(BlockReplayColumnFamily::ReplayIdentity, &1u64.to_be_bytes());
+        storage.db.write(batch).unwrap();
+        assert!(storage.get_replay_record_identity(1).is_none());
+        let error = storage.write(chain[1].clone(), false).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pre-identity replay databases are unsupported")
+        );
+        assert_eq!(storage.get_canonical_block_hash(1), Some(chain[1].hash()));
     }
 
     #[tokio::test]

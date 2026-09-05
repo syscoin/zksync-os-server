@@ -53,6 +53,17 @@ pub enum BlockCanonizationEngine {
     OpenRaft(OpenRaftCanonizationEngine),
 }
 
+impl BlockCanonizationEngine {
+    /// SYSCOIN: Raft startup reapplication completes before the pipeline is built. Preserve
+    /// this mandatory backlog across the asynchronous canonizer bridge before proposing work.
+    pub fn pending_canonized_records(&self) -> usize {
+        match self {
+            Self::Noop(_) => 0,
+            Self::OpenRaft(engine) => engine.canonized_blocks_rx.len(),
+        }
+    }
+}
+
 #[async_trait]
 impl BlockCanonization for BlockCanonizationEngine {
     async fn propose(&self, record: ReplayRecord) -> anyhow::Result<()> {

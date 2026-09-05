@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+alloy = { workspace = true, default-features = false }
 openraft.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
@@ -34,3 +35,4 @@ reth-tasks.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+zksync_os_storage.workspace = true

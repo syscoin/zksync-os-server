@@ -38,6 +38,18 @@ pub trait ReadReplay: Debug + Send + Sync + Unpin + 'static {
     ///   for the same block number; see its documentation for the full list of requirements
     fn get_context(&self, block_number: BlockNumber) -> Option<BlockContext>;
 
+    /// SYSCOIN: The context as originally persisted, including its original ancestor hashes.
+    /// Never reconstruct these hashes from the current canonical index: rebuild completion
+    /// checks must compare independent evidence, not the index with a view derived from itself.
+    /// Missing original data must return `None`, not silently fall back to reconstructed data.
+    fn get_original_context(&self, block_number: BlockNumber) -> Option<BlockContext>;
+
+    /// SYSCOIN: Exact replay identity atomically persisted with this canonical WAL row.
+    /// Missing identity on an existing row denotes an unsupported pre-identity database;
+    /// callers requiring authenticated durability must fail closed rather than derive it from
+    /// mutable neighboring rows. See `ReplayRecord::consensus_identity`.
+    fn get_replay_record_identity(&self, block_number: BlockNumber) -> Option<BlockHash>;
+
     fn get_replay_record(&self, block_number: BlockNumber) -> Option<ReplayRecord> {
         self.get_replay_record_by_key(block_number, None)
     }
@@ -180,8 +192,10 @@ pub trait WriteReplay: ReadReplay {
     ///
     /// This method:
     /// * MAY be thread-safe
-    /// * MUST return `false` when inserting a record with an existing block number with `override_allowed` set to `false`,
-    ///   storage must remain unchanged
+    /// * SYSCOIN: With `override_allowed=false`, MUST reject a different canonical seal or
+    ///   consensus replay identity at an existing height. MUST return `false` only for an exact
+    ///   idempotent match, without mutating the WAL. The caller may rebuild derived state from
+    ///   that authenticated canonical input after a crash between WAL and state persistence.
     /// * MUST panic if the record is not next after the latest record (as returned by [`latest_record`](Self::latest_record))
     /// * MUST return `true` when the record was successfully added to storage, at which point
     ///   all [`ReadReplay`] methods should reflect its existence appropriately

@@ -4,10 +4,9 @@
 //! - `Blank` entries are acknowledged immediately.
 //! - `Membership` entries are saved to the meta store synchronously (eagerly, mid-batch)
 //!   so they are not lost if the process crashes before the batch is fully applied.
-//! - `Normal(ReplayRecord)` entries record their `LogId` in the `RaftApplied` column family
-//!   **before** forwarding to the pipeline. This makes `applied_state()` crash-safe: if the
-//!   process dies before `BlockApplier` writes to the WAL, the WAL's latest block is still N-1,
-//!   so `applied_state()` returns N-1's `LogId` and OpenRaft re-applies entry N on restart.
+//! - SYSCOIN: `Normal(ReplayRecord)` entries journal their log index and immutable replay
+//!   identity **before** forwarding to the pipeline. Startup authenticates the resulting
+//!   state of a journal prefix against the durable WAL, including same-height rebuilds.
 //!
 
 use crate::storage::{RaftStateMachineMetaStore, io_err, io_err_msg};
@@ -28,8 +27,7 @@ pub struct RaftStateMachineStore {
     /// Unbounded to avoid deadlock during `reapply_committed()` at startup,
     /// which runs inside `Raft::new()` before the pipeline is consuming from the other end.
     pub(crate) applied_sender: mpsc::UnboundedSender<ReplayRecord>,
-    /// Read-only handle to the WAL. Used by `applied_state()` to derive the last
-    /// applied `LogId` from the WAL's latest committed block number.
+    /// SYSCOIN: read-only WAL identities authenticate the durable journal prefix.
     pub(crate) wal: Box<dyn ReadReplay>,
 }
 
@@ -61,21 +59,18 @@ impl RaftStateMachineTrait<RaftTypeConfig> for RaftStateMachineStore {
             .last_membership
             .unwrap_or_else(|| StoredMembership::new(None, Default::default()));
 
-        // Derive `last_applied_log_id` from the WAL rather than from persisted meta.
-        // `RaftApplied` records the `LogId` for each block before forwarding it to the
-        // pipeline; the WAL write follows later in `BlockApplier`. By keying the lookup
-        // on `wal.latest_record()`, we only advance `last_applied_log_id` once the block
-        // is durably in the WAL, so a crash before the WAL write causes OpenRaft to
-        // re-apply the missing entry on restart.
-        let latest_wal_block = self.wal.latest_record();
-        let last_applied_log_id = self.meta_store.load_block_log_id(latest_wal_block)?;
-
-        // If `RaftApplied` has entries beyond the latest WAL block, the process exited
-        // after `save_block_log_id` but before `BlockApplier` wrote those blocks to the WAL.
-        // OpenRaft will re-apply them — no data is lost, but worth logging.
-        self.log_pending_applied_blocks(latest_wal_block)?;
-
-        Ok((last_applied_log_id, membership))
+        // SYSCOIN: height alone is not an acknowledgement: a rebuilt block reuses it,
+        // and an in-progress rebuild can leave the WAL tip above the applied replacement.
+        let durable = self.meta_store.durable_applied_state(self.wal.as_ref())?;
+        if durable.pending_records != 0 {
+            tracing::info!(
+                last_applied = ?durable.last_applied,
+                last_forwarded = ?durable.last_forwarded,
+                pending_records = durable.pending_records,
+                "Raft replay journal is ahead of durable WAL identities; OpenRaft will reapply pending records",
+            );
+        }
+        Ok((durable.last_applied, membership))
     }
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<()>, StorageError<PeerId>>
@@ -99,13 +94,10 @@ impl RaftStateMachineTrait<RaftTypeConfig> for RaftStateMachineStore {
             match &entry.payload {
                 EntryPayload::Blank => responses.push(()),
                 EntryPayload::Normal(data) => {
-                    // Persist the log_id for this block BEFORE forwarding it to the pipeline.
-                    // `applied_state()` uses WAL's latest block number to look up this entry;
-                    // by writing first we guarantee that a crash between here and the WAL
-                    // write results in re-application of this entry on restart (see
-                    // `RaftStateMachineMetaStore::save_block_log_id` for the full rationale).
+                    // SYSCOIN: preserve the exact identity and superseded LogIds before
+                    // forwarding. A channel send is not a durable application acknowledgement.
                     self.meta_store
-                        .save_block_log_id(data.block_context.block_number, entry.log_id)?;
+                        .save_record_log_id(data, entry.log_id, self.wal.as_ref())?;
 
                     if let Err(error) = self.applied_sender.send(data.clone()) {
                         tracing::warn!("raft applied channel closed: {error}");
@@ -121,7 +113,7 @@ impl RaftStateMachineTrait<RaftTypeConfig> for RaftStateMachineStore {
                     // Save membership eagerly rather than batching with other entries.
                     // If we saved it only at the end of the batch and crashed mid-batch,
                     // the membership change would be lost on restart (OpenRaft would not
-                    // re-apply it because `applied_state()` returns the WAL's latest log_id
+                    // re-apply it because `applied_state()` returns a durable prefix's LogId
                     // which may already be past this entry).
                     let mut meta = self.meta_store.load(ErrorSubject::StateMachine)?;
                     meta.last_membership = Some(StoredMembership::new(
@@ -176,31 +168,6 @@ impl RaftStateMachineTrait<RaftTypeConfig> for RaftStateMachineStore {
     }
 }
 
-impl RaftStateMachineStore {
-    /// Scans `RaftApplied` for blocks beyond `latest_wal_block` and logs them if any.
-    /// OpenRaft will re-apply them on restart.
-    #[allow(clippy::result_large_err)]
-    fn log_pending_applied_blocks(
-        &self,
-        latest_wal_block: u64,
-    ) -> Result<(), StorageError<PeerId>> {
-        let mut pending = vec![];
-        let mut next = latest_wal_block + 1;
-        while let Some(log_id) = self.meta_store.load_block_log_id(next)? {
-            pending.push((next, log_id));
-            next += 1;
-        }
-        if !pending.is_empty() {
-            tracing::info!(
-                "{} block(s) in RaftApplied ahead of WAL; likely crashed before WAL write \
-                — OpenRaft will re-apply the missing entries (latest_wal_block={latest_wal_block}, pending={pending:?})",
-                pending.len(),
-            );
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone)]
 /// Snapshot builder placeholder; snapshots are intentionally disabled.
 pub struct NoopSnapshotBuilder;
@@ -214,3 +181,6 @@ impl RaftSnapshotBuilder<RaftTypeConfig> for NoopSnapshotBuilder {
         ))
     }
 }
+
+#[cfg(test)]
+mod syscoin_rebuild_tests;

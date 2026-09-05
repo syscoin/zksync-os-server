@@ -21,6 +21,9 @@ mod ports;
 mod priority_tree_pipeline_step;
 pub mod prover_api;
 mod provider;
+// SYSCOIN: Real WAL/VM regressions for rebuild completion and trusted-anchor recovery.
+#[cfg(test)]
+mod syscoin_recovery_tests;
 pub mod tree_manager;
 pub mod util;
 
@@ -2251,8 +2254,12 @@ fn replay_wal_is_linked_from(
         return false;
     };
 
-    for block_number in (from_block_number + 1)..=replay_storage.latest_record() {
-        let Some(context) = replay_storage.get_context(block_number) else {
+    // SYSCOIN: `get_context` reconstructs ancestry from CanonicalHash after upstream's ContextV2
+    // compaction. It would compare that index to itself and falsely bless a partially rebuilt
+    // tail. Require the original persisted ancestry instead, including across a restart.
+    for previous_number in from_block_number..replay_storage.latest_record() {
+        let block_number = previous_number + 1;
+        let Some(context) = replay_storage.get_original_context(block_number) else {
             return false;
         };
         let Some(parent_hash) = context.block_hashes.0.last() else {
@@ -2629,6 +2636,9 @@ async fn run_main_node_pipeline(
             starting_block,
             rebuild_options,
             replays_to_execute,
+            // SYSCOIN: Consume startup Raft reapplication before leader proposals, even if
+            // the asynchronous canonizer has not forwarded the backlog yet.
+            pending_canonized_records: canonization_engine.pending_canonized_records(),
             pipeline_gate,
             leadership,
             produce_enabled: block_production_enabled(config),
