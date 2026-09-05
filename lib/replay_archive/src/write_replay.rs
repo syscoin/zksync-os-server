@@ -140,6 +140,15 @@ where
         self.replay.get_context(block_number)
     }
 
+    // SYSCOIN: Preserve independent persisted evidence through the archive decorator.
+    fn get_original_context(&self, block_number: BlockNumber) -> Option<BlockContext> {
+        self.replay.get_original_context(block_number)
+    }
+
+    fn get_replay_record_identity(&self, block_number: BlockNumber) -> Option<BlockHash> {
+        self.replay.get_replay_record_identity(block_number)
+    }
+
     fn get_replay_record_by_key(
         &self,
         block_number: BlockNumber,
@@ -234,6 +243,15 @@ mod tests {
     }
 
     impl ReadReplay for ExistingReplay {
+        fn get_original_context(&self, block_number: BlockNumber) -> Option<BlockContext> {
+            self.get_context(block_number)
+        }
+
+        fn get_replay_record_identity(&self, block_number: BlockNumber) -> Option<BlockHash> {
+            self.get_replay_record(block_number)
+                .map(|record| record.consensus_identity())
+        }
+
         fn get_context(&self, block_number: BlockNumber) -> Option<BlockContext> {
             (block_number == self.record.block_context.block_number)
                 .then_some(self.record.block_context)

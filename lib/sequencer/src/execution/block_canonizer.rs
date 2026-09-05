@@ -13,6 +13,8 @@ use zksync_os_storage_api::ReplayRecord;
 /// they are either:
 ///         from local storage (replayed on startup)
 ///         or are produced by some other node - thus already canonized by the consensus protocol
+/// SYSCOIN: `CanonizedRebuild` has the same canonization status as `Replay`; its distinct type
+/// carries authorized local replacement permission through this fence to the applier.
 /// **Produce** (proposed) commands are first waiting the canonization
 ///  (This component sends them to Consensus and wait for them to return as Replays).
 ///
@@ -171,7 +173,9 @@ where
                         None,
                     );
                     match cmd_type {
-                        BlockCommandType::Replay => {
+                        // SYSCOIN: A follower's authorized replacement is already canonized;
+                        // preserve replacement permission downstream without reproposing it.
+                        BlockCommandType::Replay | BlockCommandType::CanonizedRebuild => {
                         tracing::info!(
                             "Received a Replay block {} (block output hash: {}) from BlockExecutor. \
                             Sending downstream.",

@@ -179,6 +179,15 @@ mod tests {
     struct EmptyReplay;
 
     impl ReadReplay for EmptyReplay {
+        // SYSCOIN: Empty test storage has no persisted rebuild/durability evidence.
+        fn get_original_context(&self, _block_number: BlockNumber) -> Option<BlockContext> {
+            None
+        }
+
+        fn get_replay_record_identity(&self, _block_number: BlockNumber) -> Option<B256> {
+            None
+        }
+
         fn get_context(&self, _block_number: BlockNumber) -> Option<BlockContext> {
             None
         }

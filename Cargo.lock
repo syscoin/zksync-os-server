@@ -15697,6 +15697,7 @@ dependencies = [
 name = "zksync_os_raft"
 version = "0.23.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "async-trait",
  "bincode 2.0.1",
@@ -15715,6 +15716,7 @@ dependencies = [
  "zksync_os_network",
  "zksync_os_rocksdb",
  "zksync_os_sequencer",
+ "zksync_os_storage",
  "zksync_os_storage_api",
  "zksync_os_types",
 ]
@@ -16103,6 +16105,7 @@ dependencies = [
  "roaring",
  "semver 1.0.26",
  "serde",
+ "serde_json",
  "serde_with",
  "thiserror 2.0.17",
  "tokio",

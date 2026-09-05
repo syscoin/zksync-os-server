@@ -58,6 +58,10 @@ impl AsRef<BlockOutput> for BlockOutputWithReads {
 pub enum BlockCommand {
     /// Replay a block from block replay storage.
     Replay(Box<ReplayRecord>),
+    /// SYSCOIN: Replay an already-canonized replacement during an explicitly configured rebuild.
+    /// Keep strict replay validation, but permit persistence to replace the old local block.
+    /// Unlike `Rebuild`, this must not transform the record or propose it to consensus again.
+    CanonizedRebuild(Box<ReplayRecord>),
     /// Produce a new block from the mempool.
     Produce(ProduceCommand),
     /// Rebuild an existing block.
@@ -68,6 +72,8 @@ pub enum BlockCommand {
 #[derive(Debug, Clone, Copy)]
 pub enum BlockCommandType {
     Replay,
+    /// SYSCOIN: Already-canonized replay with explicit historical replacement permission.
+    CanonizedRebuild,
     Produce,
     Rebuild,
 }
@@ -124,6 +130,7 @@ impl BlockCommand {
     pub fn command_type(&self) -> BlockCommandType {
         match self {
             BlockCommand::Replay(_) => BlockCommandType::Replay,
+            BlockCommand::CanonizedRebuild(_) => BlockCommandType::CanonizedRebuild,
             BlockCommand::Produce(_) => BlockCommandType::Produce,
             BlockCommand::Rebuild(_) => BlockCommandType::Rebuild,
         }
@@ -136,6 +143,13 @@ impl Display for BlockCommand {
             BlockCommand::Replay(record) => write!(
                 f,
                 "Replay block {} ({} txs); starting l1 priority id: {}",
+                record.block_context.block_number,
+                record.transactions.len(),
+                record.starting_cursors.l1_priority_id,
+            ),
+            BlockCommand::CanonizedRebuild(record) => write!(
+                f,
+                "Replay canonized rebuild block {} ({} txs); starting l1 priority id: {}",
                 record.block_context.block_number,
                 record.transactions.len(),
                 record.starting_cursors.l1_priority_id,

@@ -7,6 +7,13 @@ written outside the node RocksDB path and can later be used to rebuild the node 
 The archive stores replay records only. It does not store batch metadata. Batch information can be
 recovered from L1 committed batch range events once block replay records are available.
 
+> **SYSCOIN:** Archive import binds the trusted terminal header to the replay WAL, but execution
+> must still authenticate it. Ordinary replay now compares the computed header and immutable
+> replay-input identity with that WAL entry before publishing state, repository data, or applied
+> progress. A self-consistent replay payload under a substituted terminal header is rejected.
+> Experimental WALs predating immutable replay identities must be recovered into a fresh
+> deployment-bound directory; identities are never inferred from reconstructed mutable indexes.
+
 ## Storage Layout
 
 > **SYSCOIN:** Upstream currently uses a shared flat first-writer namespace. Syscoin keeps writer

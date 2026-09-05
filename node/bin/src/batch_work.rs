@@ -348,7 +348,10 @@ impl BatchWorkPersistenceGate {
         // SYSCOIN: Rebuild commands are startup-only and must refer to the durable startup
         // frontier handled above. Reject the impossible post-frontier form even after target
         // authentication so a future caller cannot silently turn it into a production command.
-        if matches!(command_type, BlockCommandType::Rebuild) {
+        if matches!(
+            command_type,
+            BlockCommandType::Rebuild | BlockCommandType::CanonizedRebuild
+        ) {
             anyhow::bail!(
                 "post-frontier rebuild block {block_number} cannot bypass compact Edge-DA target authentication"
             );
@@ -367,7 +370,9 @@ impl BatchWorkPersistenceGate {
                     .min(self.max_unauthenticated_live_batch_work);
                 return Ok(());
             }
-            BlockCommandType::Rebuild => unreachable!("post-frontier rebuild rejected above"),
+            BlockCommandType::Rebuild | BlockCommandType::CanonizedRebuild => {
+                unreachable!("post-frontier rebuild rejected above")
+            }
             BlockCommandType::Produce => {}
         }
         if self.unauthenticated_live_batch_work < self.max_unauthenticated_live_batch_work {

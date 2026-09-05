@@ -971,6 +971,7 @@ impl RebuildConfig {
             Self::BlockRebuild { bounds } | Self::DangerBlockRebuildWithL1Revert { bounds, .. } => {
                 Some(RebuildOptions {
                     from_block_number: bounds.from_block_number,
+                    from_block_hash: bounds.from_block_hash,
                     blocks_to_empty: bounds.blocks_to_empty.iter().copied().collect(),
                     reset_timestamps: bounds.reset_timestamps,
                 })

@@ -53,6 +53,17 @@ impl InMemReplay {
 }
 
 impl ReadReplay for InMemReplay {
+    // SYSCOIN: This immutable fixture stores original records, without ancestor reconstruction.
+    fn get_original_context(&self, block_number: BlockNumber) -> Option<BlockContext> {
+        self.get_context(block_number)
+    }
+
+    fn get_replay_record_identity(&self, block_number: BlockNumber) -> Option<B256> {
+        self.canonical
+            .get(&block_number)
+            .map(|record| record.consensus_identity())
+    }
+
     fn get_context(&self, block_number: BlockNumber) -> Option<BlockContext> {
         self.canonical.get(&block_number).map(|r| r.block_context)
     }

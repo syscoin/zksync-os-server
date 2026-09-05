@@ -26,6 +26,8 @@ alloy = { workspace = true, default-features = false, features = ["eips", "rlp",
 alloy-rlp.workspace = true
 futures.workspace = true
 serde.workspace = true
+# SYSCOIN: versioned replay identities use the existing replay JSON representation.
+serde_json.workspace = true
 serde_with.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
