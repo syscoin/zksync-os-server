@@ -145,6 +145,14 @@ matching one high block, or the current WAL height, is insufficient. Pending com
 are replayed before leader proposals, including across the asynchronous canonizer bridge.
 Startup scans the retained journal (linear in journal length); it is not pruned automatically.
 
+<!-- SYSCOIN: Proposal readiness covers all retained Raft records, including same-term restarts. -->
+The leadership signal carries a cumulative in-memory replay watermark, not a channel-length
+snapshot. After confirming quorum, the node waits for Raft to apply its retained log tail and
+rechecks leadership before publishing the watermark. This also covers same-leader restarts that
+reuse an older no-op log entry. The command source must forward every consensus record through
+that watermark before emitting Produce or Rebuild commands. A leadership term change invalidates
+the permission; already-active leaders retain the existing shutdown-on-leadership-loss policy.
+
 Legacy height-only `RaftApplied` metadata and missing/malformed journal version metadata are
 explicitly unsupported. There is no silent migration or standalone Raft reset. Preserve the
 complete database set and use a coordinated recovery procedure before changing formats.

@@ -28,6 +28,15 @@ pub enum ConsensusRole {
     Replica,
 }
 
+/// SYSCOIN: A confirmed leader carries the cumulative replay frontier that the command
+/// source must consume before proposing. It is frozen for this process's one promotion;
+/// locally proposed records are subsequently consumed directly by the canonizer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfirmedLeadership {
+    pub role: ConsensusRole,
+    pub replay_watermark: u64,
+}
+
 pub struct OpenRaftCanonizationEngine {
     pub(crate) raft: Raft<RaftTypeConfig>,
     pub(crate) canonized_blocks_rx: mpsc::UnboundedReceiver<ReplayRecord>,
@@ -53,17 +62,6 @@ pub enum BlockCanonizationEngine {
     OpenRaft(OpenRaftCanonizationEngine),
 }
 
-impl BlockCanonizationEngine {
-    /// SYSCOIN: Raft startup reapplication completes before the pipeline is built. Preserve
-    /// this mandatory backlog across the asynchronous canonizer bridge before proposing work.
-    pub fn pending_canonized_records(&self) -> usize {
-        match self {
-            Self::Noop(_) => 0,
-            Self::OpenRaft(engine) => engine.canonized_blocks_rx.len(),
-        }
-    }
-}
-
 #[async_trait]
 impl BlockCanonization for BlockCanonizationEngine {
     async fn propose(&self, record: ReplayRecord) -> anyhow::Result<()> {
@@ -84,14 +82,23 @@ impl BlockCanonization for BlockCanonizationEngine {
 #[derive(Debug, Clone)]
 pub enum LeadershipSignal {
     AlwaysLeader,
-    Watch(watch::Receiver<ConsensusRole>),
+    Watch(watch::Receiver<ConfirmedLeadership>),
 }
 
 impl LeadershipSignal {
     pub fn current_role(&self) -> ConsensusRole {
         match self {
             Self::AlwaysLeader => ConsensusRole::Leader,
-            Self::Watch(rx) => *rx.borrow(),
+            Self::Watch(rx) => rx.borrow().role,
+        }
+    }
+
+    /// SYSCOIN: Unlike a receiver's queue length, this includes records already in transit
+    /// through the canonizer bridge and cannot shrink as another task drains that channel.
+    pub fn required_replay_watermark(&self) -> u64 {
+        match self {
+            Self::AlwaysLeader => 0,
+            Self::Watch(rx) => rx.borrow().replay_watermark,
         }
     }
 

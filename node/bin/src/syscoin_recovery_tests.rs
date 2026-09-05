@@ -53,7 +53,7 @@ async fn partial_raft_resume(leader: bool, changed_boundary: bool, reset_timesta
     use tokio::sync::{mpsc, watch};
     use zksync_os_observability::ComponentStateReporter;
     use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
-    use zksync_os_raft::{ConsensusRole, LeadershipSignal};
+    use zksync_os_raft::{ConfirmedLeadership, ConsensusRole, LeadershipSignal};
     use zksync_os_sequencer::model::blocks::BlockCommand;
 
     let dir = tempfile::tempdir().unwrap();
@@ -80,10 +80,9 @@ async fn partial_raft_resume(leader: bool, changed_boundary: bool, reset_timesta
     }
     let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
     let gate = zksync_os_backpressure::PipelineAdmissionGate::new();
-    let (_role_tx, role_rx) = watch::channel(if leader {
-        ConsensusRole::Leader
-    } else {
-        ConsensusRole::Replica
+    let (role_tx, role_rx) = watch::channel(ConfirmedLeadership {
+        role: ConsensusRole::Replica,
+        replay_watermark: 0,
     });
     let (pending_tx, pending_rx) = mpsc::unbounded_channel();
     let source = ConsensusNodeCommandSource {
@@ -96,7 +95,6 @@ async fn partial_raft_resume(leader: bool, changed_boundary: bool, reset_timesta
             reset_timestamps,
         }),
         replays_to_execute: pending_rx,
-        pending_canonized_records: 2,
         pipeline_gate: gate.subscribe(),
         leadership: LeadershipSignal::Watch(role_rx),
         produce_enabled: false,
@@ -104,18 +102,28 @@ async fn partial_raft_resume(leader: bool, changed_boundary: bool, reset_timesta
     let (_input_tx, input_rx) = mpsc::channel(1);
     let (output_tx, mut output_rx) = mpsc::channel(4);
     let (reporter, _) = ComponentStateReporter::new("syscoin_partial_raft_resume");
-    let task = tokio::spawn(source.run(PeekableReceiver::new(input_rx), output_tx, reporter));
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(25), output_rx.recv())
-            .await
-            .is_err(),
-        "leader must wait for mandatory committed records still in the canonizer bridge"
-    );
+    let mut task = Box::pin(source.run(PeekableReceiver::new(input_rx), output_tx, reporter));
+    assert!(futures::poll!(task.as_mut()).is_pending());
+    assert!(output_rx.try_recv().is_err());
+    // SYSCOIN: Simulate Raft applying after pipeline construction and confirming leadership
+    // while both suffix records are still held behind the asynchronous canonizer bridge.
+    if leader {
+        role_tx
+            .send(ConfirmedLeadership {
+                role: ConsensusRole::Leader,
+                replay_watermark: 2,
+            })
+            .unwrap();
+        assert!(futures::poll!(task.as_mut()).is_pending());
+        assert!(
+            output_rx.try_recv().is_err(),
+            "leader proposed ahead of its replay watermark"
+        );
+    }
     pending_tx.send(replacement[2].as_ref().clone()).unwrap();
     if !changed_boundary && reset_timestamps {
         let error = tokio::time::timeout(std::time::Duration::from_secs(5), task)
             .await
-            .unwrap()
             .unwrap()
             .unwrap_err();
         assert!(error.to_string().contains("ambiguous rebuild resume"));
@@ -123,19 +131,19 @@ async fn partial_raft_resume(leader: bool, changed_boundary: bool, reset_timesta
         return;
     }
     pending_tx.send(replacement[3].as_ref().clone()).unwrap();
+    assert!(futures::poll!(task.as_mut()).is_pending());
     assert!(
         matches!(output_rx.recv().await, Some(BlockCommand::Replay(record)) if *record == *replacement[1])
     );
-    for number in 2..4 {
+    for expected in &replacement[2..4] {
         assert!(
-            matches!(output_rx.recv().await, Some(BlockCommand::CanonizedRebuild(record)) if *record == *replacement[number])
+            matches!(output_rx.recv().await, Some(BlockCommand::CanonizedRebuild(record)) if *record == **expected)
         );
     }
     assert!(output_rx.try_recv().is_err());
     drop(pending_tx);
     tokio::time::timeout(std::time::Duration::from_secs(5), task)
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
 }
@@ -158,6 +166,98 @@ async fn syscoin_noop_raft_prefix_resumes_without_changed_hash() {
 #[tokio::test]
 async fn syscoin_ambiguous_raft_prefix_fails_closed() {
     partial_raft_resume(true, false, true).await;
+}
+
+// SYSCOIN: Poll the actual source deterministically, with two distinct channels representing
+// the Raft-to-canonizer and canonizer-to-source bridge. No timing sleeps mask the empty-queue race.
+async fn leader_watermark_orders_production(promote_after_start: bool) {
+    use super::command_source::ConsensusNodeCommandSource;
+    use tokio::sync::{mpsc, watch};
+    use zksync_os_observability::ComponentStateReporter;
+    use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
+    use zksync_os_raft::{ConfirmedLeadership, ConsensusRole, LeadershipSignal};
+    use zksync_os_sequencer::model::blocks::BlockCommand;
+
+    let dir = tempfile::tempdir().unwrap();
+    let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+    let records = chain(3);
+    storage.write(records[0].clone(), false).await.unwrap();
+    let gate = zksync_os_backpressure::PipelineAdmissionGate::new();
+    let (role_tx, role_rx) = watch::channel(ConfirmedLeadership {
+        role: if promote_after_start {
+            ConsensusRole::Replica
+        } else {
+            ConsensusRole::Leader
+        },
+        replay_watermark: if promote_after_start { 0 } else { 2 },
+    });
+    let (raft_tx, mut raft_rx) = mpsc::unbounded_channel();
+    let (bridge_tx, bridge_rx) = mpsc::unbounded_channel();
+    let source = ConsensusNodeCommandSource {
+        block_replay_storage: storage,
+        starting_block: 1,
+        rebuild_options: None,
+        replays_to_execute: bridge_rx,
+        pipeline_gate: gate.subscribe(),
+        leadership: LeadershipSignal::Watch(role_rx),
+        produce_enabled: true,
+    };
+    let (_input_tx, input_rx) = mpsc::channel(1);
+    let (output_tx, mut output_rx) = mpsc::channel(4);
+    let (reporter, _) = ComponentStateReporter::new("syscoin_leader_replay_watermark");
+    let mut task = Box::pin(source.run(PeekableReceiver::new(input_rx), output_tx, reporter));
+    assert!(futures::poll!(task.as_mut()).is_pending());
+    assert!(output_rx.try_recv().is_err());
+
+    // Commits arrive after the source is created. Confirmation publishes the total number
+    // forwarded by Raft, not the current length of either individual channel.
+    for record in &records[1..] {
+        raft_tx.send(record.as_ref().clone()).unwrap();
+    }
+    role_tx
+        .send(ConfirmedLeadership {
+            role: ConsensusRole::Leader,
+            replay_watermark: 2,
+        })
+        .unwrap();
+    assert!(futures::poll!(task.as_mut()).is_pending());
+    assert!(
+        output_rx.try_recv().is_err(),
+        "in-transit records must block Produce"
+    );
+
+    bridge_tx.send(raft_rx.try_recv().unwrap()).unwrap();
+    assert!(futures::poll!(task.as_mut()).is_pending());
+    assert!(
+        matches!(output_rx.try_recv(), Ok(BlockCommand::Replay(record)) if *record == *records[1])
+    );
+    assert!(
+        output_rx.try_recv().is_err(),
+        "partial watermark must still block Produce"
+    );
+
+    bridge_tx.send(raft_rx.try_recv().unwrap()).unwrap();
+    assert!(futures::poll!(task.as_mut()).is_pending());
+    assert!(
+        matches!(output_rx.try_recv(), Ok(BlockCommand::Replay(record)) if *record == *records[2])
+    );
+    assert!(
+        matches!(output_rx.try_recv(), Ok(BlockCommand::Produce(_))),
+        "completed watermark must release production"
+    );
+    drop(output_rx);
+    drop(bridge_tx);
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn syscoin_initial_leader_waits_for_complete_bridge_watermark() {
+    leader_watermark_orders_production(false).await;
+}
+
+#[tokio::test]
+async fn syscoin_follower_promotion_waits_for_late_bridge_records() {
+    leader_watermark_orders_production(true).await;
 }
 
 #[tokio::test]

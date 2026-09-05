@@ -16,6 +16,8 @@ use openraft::{
     StoredMembership,
 };
 use reth_network_peers::PeerId;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use zksync_os_consensus_types::{RaftNode, RaftTypeConfig, debug_display_raft_entry};
 use zksync_os_rocksdb::RocksDB;
@@ -29,6 +31,9 @@ pub struct RaftStateMachineStore {
     pub(crate) applied_sender: mpsc::UnboundedSender<ReplayRecord>,
     /// SYSCOIN: read-only WAL identities authenticate the durable journal prefix.
     pub(crate) wal: Box<dyn ReadReplay>,
+    /// SYSCOIN: Process-local successful Normal-entry forwards, independent of channel drains.
+    /// This is an ordering watermark, not a durability acknowledgement or persisted schema.
+    forwarded_records: Arc<AtomicU64>,
 }
 
 impl RaftStateMachineStore {
@@ -43,7 +48,14 @@ impl RaftStateMachineStore {
             meta_store: RaftStateMachineMetaStore::new(db),
             applied_sender,
             wal,
+            forwarded_records: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// SYSCOIN: Take the handle before moving the state machine into OpenRaft, including
+    /// startup reapplication and every subsequent follower commit in the same count.
+    pub(crate) fn forwarded_records(&self) -> Arc<AtomicU64> {
+        self.forwarded_records.clone()
     }
 }
 
@@ -107,6 +119,19 @@ impl RaftStateMachineTrait<RaftTypeConfig> for RaftStateMachineStore {
                             &error,
                         ));
                     }
+                    // SYSCOIN: Publish before apply returns, so waiting for OpenRaft's applied
+                    // frontier also waits for this count. The state machine is the only writer.
+                    self.forwarded_records
+                        .fetch_update(Ordering::Release, Ordering::Relaxed, |count| {
+                            count.checked_add(1)
+                        })
+                        .map_err(|_| {
+                            io_err_msg(
+                                &ErrorSubject::StateMachine,
+                                ErrorVerb::Write,
+                                "canonized replay watermark overflow",
+                            )
+                        })?;
                     responses.push(());
                 }
                 EntryPayload::Membership(membership) => {

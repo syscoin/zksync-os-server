@@ -27,8 +27,6 @@ pub struct ConsensusNodeCommandSource<Replay> {
     pub rebuild_options: Option<RebuildOptions>,
     /// Inbound channel of canonized blocks. Populated by `BlockCanonizer` with blocks that are canonized
     pub replays_to_execute: mpsc::UnboundedReceiver<ReplayRecord>,
-    /// SYSCOIN: Mandatory startup backlog already reapplied by Raft before pipeline creation.
-    pub pending_canonized_records: usize,
     /// Internal pipeline admission gate driven by backpressure monitoring.
     pub pipeline_gate: PipelineAdmissionReceiver,
     /// Current leadership status from consensus.
@@ -102,26 +100,18 @@ impl<Replay: ReadReplay> PipelineComponent for ConsensusNodeCommandSource<Replay
         self.forward_wal_replays(self.starting_block, replay_until, &output)
             .await?;
 
+        // SYSCOIN: Count consensus deliveries, not local WAL replays. The confirmed leader's
+        // cumulative watermark includes records still in either side of the canonizer bridge.
+        let mut canonized_records_received = 0;
         if let Some(rebuild_options) = self.rebuild_options.take() {
             self.run_block_rebuilds(
                 &rebuild_options,
                 last_block_in_wal,
                 &output,
                 &state_reporter,
+                &mut canonized_records_received,
             )
             .await?;
-        }
-
-        // SYSCOIN: A leader must not race the asynchronous canonizer bridge and propose a
-        // block while startup-committed records are still in transit.
-        while self.pending_canonized_records > 0 {
-            let record = self
-                .replays_to_execute
-                .recv()
-                .await
-                .context("canonized channel closed during mandatory startup replay")?;
-            self.pending_canonized_records -= 1;
-            Self::forward_replay(record, &output, &state_reporter).await?;
         }
 
         tracing::info!("All WAL blocks replayed. Starting main loop.");
@@ -131,7 +121,8 @@ impl<Replay: ReadReplay> PipelineComponent for ConsensusNodeCommandSource<Replay
             state_reporter.record_processed(last_block_in_wal, Some(ctx.timestamp), None);
         }
 
-        self.run_loop(output, state_reporter).await
+        self.run_loop(output, state_reporter, canonized_records_received)
+            .await
     }
 }
 
@@ -146,45 +137,23 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
         last_block_in_wal: u64,
         output: &mpsc::Sender<BlockCommand>,
         state_reporter: &ComponentStateReporter,
+        canonized_records_received: &mut u64,
     ) -> anyhow::Result<()> {
         let mut leadership = self.leadership.clone();
-        let mut role = leadership.current_role();
         let mut next_rebuild_block = rebuild_options.from_block_number;
-
-        // SYSCOIN: The durable Raft prefix may already include part of this rebuild. Replay
-        // that authenticated WAL prefix locally, then consume the mandatory committed suffix.
-        // Waiting here (not try_recv) prevents a leader from reproposing in the bridge's gap.
-        while self.pending_canonized_records > 0 {
-            let record = self
-                .replays_to_execute
-                .recv()
-                .await
-                .context("canonized channel closed during mandatory rebuild replay")?;
-            if next_rebuild_block == rebuild_options.from_block_number
-                && record.block_context.block_number > next_rebuild_block
-            {
-                self.forward_durable_rebuild_prefix(rebuild_options, &record, output)
-                    .await?;
-                next_rebuild_block = record.block_context.block_number;
-            }
-            self.pending_canonized_records -= 1;
-            if Self::forward_canonized_rebuild(
-                record,
-                &mut next_rebuild_block,
-                last_block_in_wal,
-                output,
-                state_reporter,
-            )
-            .await?
-            {
-                return Ok(());
-            }
-        }
 
         loop {
             loop {
                 match self.replays_to_execute.try_recv() {
                     Ok(record) => {
+                        Self::count_canonized_delivery(canonized_records_received)?;
+                        self.prepare_rebuild_resume(
+                            rebuild_options,
+                            &record,
+                            &mut next_rebuild_block,
+                            output,
+                        )
+                        .await?;
                         if Self::forward_canonized_rebuild(
                             record,
                             &mut next_rebuild_block,
@@ -205,7 +174,13 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                 }
             }
 
-            if role == ConsensusRole::Leader {
+            // SYSCOIN: Leadership is only proposal-ready after Raft has applied its retained
+            // tail AND this source has forwarded every record through the published watermark.
+            // Empty downstream queues do not prove that the asynchronous bridge is drained.
+            let role = leadership.current_role();
+            if role == ConsensusRole::Leader
+                && *canonized_records_received >= leadership.required_replay_watermark()
+            {
                 // SYSCOIN: Rebuilds can reset timestamps using the local wall clock. In a real
                 // consensus runtime, only the current leader may construct and propose them; all
                 // other nodes must replay the canonized records to avoid divergent block contexts.
@@ -230,7 +205,6 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                     let new_role = leadership.current_role();
                     if new_role != role {
                         tracing::info!(?role, ?new_role, "Consensus role changed during block rebuild");
-                        role = new_role;
                     }
                 }
                 maybe_record = self.replays_to_execute.recv() => {
@@ -238,6 +212,10 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                         tracing::info!("inbound channel closed");
                         return Ok(());
                     };
+                    Self::count_canonized_delivery(canonized_records_received)?;
+                    self.prepare_rebuild_resume(
+                        rebuild_options, &record, &mut next_rebuild_block, output,
+                    ).await?;
                     if Self::forward_canonized_rebuild(
                         record,
                         &mut next_rebuild_block,
@@ -252,6 +230,30 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                 }
             }
         }
+    }
+
+    // SYSCOIN: A committed suffix can arrive after pipeline construction or during follower
+    // promotion. Authenticate its durable prefix for every first delivery, not a startup len().
+    async fn prepare_rebuild_resume(
+        &mut self,
+        options: &RebuildOptions,
+        record: &ReplayRecord,
+        next: &mut u64,
+        output: &mpsc::Sender<BlockCommand>,
+    ) -> anyhow::Result<()> {
+        if *next == options.from_block_number && record.block_context.block_number > *next {
+            self.forward_durable_rebuild_prefix(options, record, output)
+                .await?;
+            *next = record.block_context.block_number;
+        }
+        Ok(())
+    }
+
+    fn count_canonized_delivery(received: &mut u64) -> anyhow::Result<()> {
+        *received = received
+            .checked_add(1)
+            .context("consensus delivery watermark overflow")?;
+        Ok(())
     }
 
     async fn forward_canonized_rebuild(
@@ -373,9 +375,10 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
         mut self,
         output: mpsc::Sender<BlockCommand>,
         state_reporter: ComponentStateReporter,
+        mut canonized_records_received: u64,
     ) -> anyhow::Result<()> {
         let mut leadership = self.leadership.clone();
-        let mut role = leadership.current_role();
+        let role = leadership.current_role();
         tracing::info!(?role, "Consensus role initialized");
 
         loop {
@@ -386,6 +389,7 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                 }
                 match self.replays_to_execute.try_recv() {
                     Ok(record) => {
+                        Self::count_canonized_delivery(&mut canonized_records_received)?;
                         if !Self::forward_replay(record, &output, &state_reporter).await? {
                             return Ok(());
                         }
@@ -404,7 +408,11 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
             // overshoot is acceptable for soft backpressure.
             let gate_open = self.pipeline_gate.is_open();
             // SYSCOIN: disabled-batcher nodes are replay-only and must not emit Produce commands.
-            let can_produce = role == ConsensusRole::Leader && gate_open && self.produce_enabled;
+            let role = leadership.current_role();
+            let can_produce = role == ConsensusRole::Leader
+                && canonized_records_received >= leadership.required_replay_watermark()
+                && gate_open
+                && self.produce_enabled;
 
             tokio::select! {
                 biased;
@@ -416,7 +424,6 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                     let new_role = leadership.current_role();
                     if new_role != role {
                         tracing::info!(?role, ?new_role, "Consensus role changed");
-                        role = new_role;
                     }
                 }
                 maybe_record = self.replays_to_execute.recv(), if gate_open => {
@@ -424,6 +431,7 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                         tracing::info!("inbound channel closed");
                         return Ok(());
                     };
+                    Self::count_canonized_delivery(&mut canonized_records_received)?;
                     if !Self::forward_replay(record, &output, &state_reporter).await? {
                         return Ok(());
                     }

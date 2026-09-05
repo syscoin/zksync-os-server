@@ -94,6 +94,79 @@ async fn assert_reopened_applied(path: &Path, expected: LogId<PeerId>) {
     assert_eq!(machine.applied_state().await.unwrap().0, Some(expected));
 }
 
+// SYSCOIN: The cumulative watermark survives the bridge's receiver draining and counts
+// only Normal entries. It is published by the time OpenRaft sees apply return successfully.
+#[tokio::test]
+async fn syscoin_forward_watermark_survives_raw_channel_draining() {
+    let dir = tempfile::tempdir().unwrap();
+    let (wal, _, mut machine, mut receiver) = open(dir.path());
+    persist(&wal, record(0, 0), false).await;
+    let forwarded = machine.forwarded_records();
+    assert_eq!(forwarded.load(Ordering::Acquire), 0);
+    for number in 1..=2 {
+        let replay = record(number, number as u8);
+        machine
+            .apply([Entry {
+                log_id: log_id(number, 1),
+                payload: EntryPayload::Normal(replay.clone()),
+            }])
+            .await
+            .unwrap();
+        assert_eq!(forwarded.load(Ordering::Acquire), number);
+        assert_eq!(receiver.recv().await.unwrap(), replay);
+        assert_eq!(receiver.len(), 0);
+        assert_eq!(forwarded.load(Ordering::Acquire), number);
+    }
+    machine
+        .apply([Entry {
+            log_id: log_id(3, 1),
+            payload: EntryPayload::Blank,
+        }])
+        .await
+        .unwrap();
+    assert_eq!(forwarded.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
+async fn syscoin_failed_forward_does_not_advance_watermark() {
+    let dir = tempfile::tempdir().unwrap();
+    let (wal, _, mut machine, receiver) = open(dir.path());
+    persist(&wal, record(0, 0), false).await;
+    let forwarded = machine.forwarded_records();
+    drop(receiver);
+    assert!(
+        machine
+            .apply([Entry {
+                log_id: log_id(1, 1),
+                payload: EntryPayload::Normal(record(1, 1)),
+            }])
+            .await
+            .is_err()
+    );
+    assert_eq!(forwarded.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn syscoin_forward_watermark_overflow_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (wal, _, mut machine, _receiver) = open(dir.path());
+    persist(&wal, record(0, 0), false).await;
+    machine.forwarded_records.store(u64::MAX, Ordering::Release);
+    let error = machine
+        .apply([Entry {
+            log_id: log_id(1, 1),
+            payload: EntryPayload::Normal(record(1, 1)),
+        }])
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("canonized replay watermark overflow")
+    );
+    assert_eq!(machine.forwarded_records.load(Ordering::Acquire), u64::MAX);
+}
+
 #[tokio::test]
 async fn append_crash_before_and_after_wal_write() {
     let dir = tempfile::tempdir().unwrap();

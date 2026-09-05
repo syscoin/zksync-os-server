@@ -12,8 +12,8 @@ pub use bootstrap::RaftBootstrapper;
 pub use config::RaftConsensusConfig;
 pub use init::{init_consensus, loopback_consensus};
 pub use model::{
-    BlockCanonizationEngine, ConsensusRole, ConsensusRuntimeParts, LeadershipSignal,
-    OpenRaftCanonizationEngine, RaftRuntimeExtras,
+    BlockCanonizationEngine, ConfirmedLeadership, ConsensusRole, ConsensusRuntimeParts,
+    LeadershipSignal, OpenRaftCanonizationEngine, RaftRuntimeExtras,
 };
 pub use network::{RaftNetworkFactory, RaftRpcHandler};
 pub use state_machine::RaftStateMachineStore;

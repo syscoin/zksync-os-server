@@ -1,8 +1,8 @@
 use crate::config::RaftConsensusConfig;
 use crate::leadership_monitor::spawn_leadership_monitor;
 use crate::model::{
-    BlockCanonizationEngine, ConsensusRole, ConsensusRuntimeParts, LeadershipSignal,
-    OpenRaftCanonizationEngine, RaftRuntimeExtras,
+    BlockCanonizationEngine, ConfirmedLeadership, ConsensusRole, ConsensusRuntimeParts,
+    LeadershipSignal, OpenRaftCanonizationEngine, RaftRuntimeExtras,
 };
 use crate::network::{RaftNetworkFactory, RaftRpcHandler};
 use crate::state_machine::RaftStateMachineStore;
@@ -54,6 +54,8 @@ pub async fn init_consensus(
     let (canonized_sender, canonized_rx) = mpsc::unbounded_channel();
     let state_machine =
         RaftStateMachineStore::new(log_store.db(), block_replay_storage, canonized_sender);
+    // SYSCOIN: Count from before Raft startup, across both asynchronous replay channels.
+    let forwarded_records = state_machine.forwarded_records();
 
     let nodes = peer_list_to_nodes(&config.peer_ids);
     let peer_ids: Vec<_> = nodes.keys().copied().collect();
@@ -95,12 +97,16 @@ pub async fn init_consensus(
          purged={purged:?}",
     );
 
-    let (leader_tx, leader_rx) = watch::channel(ConsensusRole::Replica);
+    let (leader_tx, leader_rx) = watch::channel(ConfirmedLeadership {
+        role: ConsensusRole::Replica,
+        replay_watermark: 0,
+    });
     let (status_tx, status_rx) = watch::channel::<Option<RaftConsensusStatus>>(None);
     spawn_leadership_monitor(
         runtime,
         raft.clone(),
         node_id.to_string(),
+        forwarded_records,
         leader_tx,
         status_tx,
     );

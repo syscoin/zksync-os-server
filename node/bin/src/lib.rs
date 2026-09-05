@@ -2636,9 +2636,6 @@ async fn run_main_node_pipeline(
             starting_block,
             rebuild_options,
             replays_to_execute,
-            // SYSCOIN: Consume startup Raft reapplication before leader proposals, even if
-            // the asynchronous canonizer has not forwarded the backlog yet.
-            pending_canonized_records: canonization_engine.pending_canonized_records(),
             pipeline_gate,
             leadership,
             produce_enabled: block_production_enabled(config),
