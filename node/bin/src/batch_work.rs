@@ -1270,6 +1270,53 @@ mod tests {
         }
     }
 
+    // SYSCOIN: Native validation must use the preserved replay hash, not re-hash
+    // a staged output whose gas and storage writes were deliberately omitted.
+    #[tokio::test]
+    async fn batch_work_disk_roundtrip_preserves_full_replay_hash_not_full_output() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = BatchWorkStorage::new(temp_dir.path()).unwrap();
+        let TreeBlock {
+            mut output,
+            mut record,
+            tree,
+        } = tree_block(1);
+        let mut tx = BatchWorkTxOutput {
+            success: true,
+            l2_to_l1_logs: vec![],
+        }
+        .into_tx_output();
+        tx.gas_used = 21_000;
+        output.tx_results.push(Ok(tx));
+        output.storage_writes.push(StorageWrite {
+            key: B256::repeat_byte(0x11),
+            value: B256::repeat_byte(0x22),
+            account: Address::ZERO,
+            account_key: B256::ZERO,
+        });
+        record.block_output_hash = zksync_os_types::block_output_hash(
+            output.header.hash(),
+            &output.tx_results,
+            &output.storage_writes,
+        );
+        let replay_hash = record.block_output_hash;
+        let header_hash = output.header.hash();
+        let handle = storage.store(output, record, Some(tree)).await.unwrap();
+        let (compact, replay, _) = storage.load(&handle).await.unwrap().into_parts();
+        assert_eq!(replay.block_output_hash, replay_hash);
+        assert_eq!(compact.header.hash(), header_hash);
+        assert_eq!(compact.tx_results[0].as_ref().unwrap().gas_used, 0);
+        assert!(compact.storage_writes.is_empty());
+        assert_ne!(
+            zksync_os_types::block_output_hash(
+                compact.header.hash(),
+                &compact.tx_results,
+                &compact.storage_writes,
+            ),
+            replay_hash
+        );
+    }
+
     // SYSCOIN: Even an arbitrary canonical rebuild must fail before its compact sidecar can grow
     // past the explicit disk budget; a rejected item leaves neither accounting nor a partial file.
     #[tokio::test]

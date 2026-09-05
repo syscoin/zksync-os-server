@@ -166,3 +166,49 @@ or settlement inclusion.
 Fake SNARK proving retains its immediate behavior. Jobs held for aggregation remain visible
 through `/status`; a real pick returns no job until both the two-proof minimum and the target,
 age, or interop condition are met.
+
+### Ordinary idle tails
+
+<!-- SYSCOIN: Use ordinary paid traffic instead of a new singleton circuit or unconditionally
+creating empty direct-L1 batches that can conflict with priority mode. -->
+
+The automatic companion above is specific to authenticated interop bundles. An ordinary final
+batch, including Gateway's own L1-settled tail, still needs a second canonical batch. The SNARK
+aggregation age limit cannot waive the two-FRI minimum.
+
+`scripts/prover-heartbeat.py` supplies a bounded operational fallback for **normal-mode** chains.
+It acts only when the real SNARK queue contains one aged, unleased job, the FRI queue is empty,
+and block production has also been idle. A dedicated funded EOA submits an ordinary zero-value
+self-transaction, producing a real successor block/batch and FRI through the unchanged pipeline.
+Run one worker for each chain that needs idle settlement, including Gateway; use a dedicated
+wallet, not a deployment/governance or settlement-operator account.
+Use this only with the real-proving configuration: queue status and a nonzero VK identify the
+intended lane, but do not independently attest whether a queued FRI was genuinely proved.
+
+Start with a dry run (the prover URL includes `/prover-jobs/v1`):
+
+```sh
+python3 scripts/prover-heartbeat.py \
+  --rpc-url http://127.0.0.1:3050 --chain-id CHAIN_ID \
+  --prover-url http://127.0.0.1:3320/prover-jobs/v1 --watch
+```
+
+To authorize fees, add `--send --address ADDRESS --keystore KEYSTORE_PATH
+--password-file PASSWORD_FILE --max-fee-per-gas MAX_WEI`. The default gas limit is 100,000,
+the idle threshold is 300 seconds, and polling is every 60 seconds; both the gas limit and fee
+cap are explicit transaction bounds, not a guarantee that a particular chain will accept them.
+Keep the password file private. For an authenticated prover endpoint, supply `user:password`
+through `PROVER_HEARTBEAT_BASIC_AUTH`, not the URL or command line. Remote endpoints require
+HTTPS; use a local tunnel for private HTTP services.
+
+The worker checks chain identity, signer address, empty EOA code, native fee collateral and
+pending nonce, and rechecks queues immediately before sending. It attempts at most one
+transaction per singleton during a run. Errors terminate the worker for operator attention;
+an ambiguous broadcast must be reconciled against the account nonce/transaction before restart.
+Do not configure blind restart loops or share its account with another sender.
+
+This does not bypass priority mode: when priority mode is activated on a direct-L1 chain,
+stop the normal heartbeat and use the separate priority-operation recovery workflow. Monitor
+progress through **batch execution**, not merely heartbeat broadcast. The idle threshold bounds
+when extra traffic is attempted, not proof time, DA finality, or settlement inclusion. No live
+wallet is created/funded and no heartbeat is enabled by deployment scripts automatically.
