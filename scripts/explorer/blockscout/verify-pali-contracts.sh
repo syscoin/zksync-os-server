@@ -48,7 +48,7 @@ lower() {
 forge_inspect_bytecode() {
   (
     cd "${CONTRACTS_DIR}"
-    forge inspect --use "${PALI_SOLC_VERSION}" --no-auto-detect --no-metadata "$1" bytecode
+    forge inspect --use "${PALI_SOLC_VERSION}" --no-auto-detect --no-metadata --evm-version cancun "$1" bytecode
   )
 }
 
@@ -105,6 +105,7 @@ verify_contract() {
       --verifier-url "${EXPLORER_BASE%/}/api/"
       --compiler-version "${PALI_SOLC}"
       --num-of-optimizations 200
+      --evm-version cancun
       --via-ir
       --watch
     )
@@ -126,6 +127,9 @@ factory_bytecode="$(forge_inspect_bytecode "src/pali/PaliSmartAccountFactory.sol
 factory_ctor="$(abi_encode "constructor(address,address)" "${account_implementation_address}" "${ENTRYPOINT_ADDRESS}")"
 factory_init_code="${factory_bytecode}${factory_ctor#0x}"
 factory_address="$(create2_address "$(salt "factory")" "${factory_init_code}")"
+
+guardian_recovery_bytecode="$(forge_inspect_bytecode "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule")"
+guardian_recovery_address="$(create2_address "$(salt "guardian-recovery-module")" "${guardian_recovery_bytecode}")"
 
 # The canonical EntryPoint v0.9 is built with the official account-abstraction
 # release settings (optimizer runs 1,000,000, via-ir, default metadata), not
@@ -167,6 +171,7 @@ echo "  chain:          ${CHAIN_ID}"
 echo "  entrypoint:     ${ENTRYPOINT_ADDRESS}"
 echo "  account impl:   ${account_implementation_address}"
 echo "  factory:        ${factory_address}"
+echo "  recovery:       ${guardian_recovery_address}"
 echo
 
 verify_entrypoint
@@ -176,7 +181,7 @@ verify_contract "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24" "P-256 passkey vali
 verify_contract "0x588d8afa40c08983a114957310c04d05a9dcb56d" "SLH-DSA verifier" "src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
 verify_contract "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" "SLH-DSA validator module" "src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule" "${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
 verify_contract "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9" "Composite validator module" "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
-verify_contract "0x23f0801ab25feee643253cd1ee5f8962bf3c63db" "Guardian recovery module" "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
+verify_contract "${guardian_recovery_address}" "Guardian recovery module" "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
 verify_contract "${factory_address}" "Pali smart account factory" "src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory" "${factory_ctor}"
 
 echo "Waiting for verification results..."
@@ -190,7 +195,7 @@ for _ in $(seq 1 30); do
     "0x588d8afa40c08983a114957310c04d05a9dcb56d" \
     "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" \
     "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9" \
-    "0x23f0801ab25feee643253cd1ee5f8962bf3c63db" \
+    "${guardian_recovery_address}" \
     "${factory_address}"; do
     if [[ "$(runtime_code "${addr}")" == "0x" ]]; then
       continue
@@ -216,7 +221,7 @@ CONTRACTS=(
   "0x588d8afa40c08983a114957310c04d05a9dcb56d|SLH-DSA verifier"
   "0x3b35e207243164753af0b6d2d99c7ad61f4c4034|SLH-DSA validator module"
   "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9|Composite validator module"
-  "0x23f0801ab25feee643253cd1ee5f8962bf3c63db|Guardian recovery module"
+  "${guardian_recovery_address}|Guardian recovery module"
   "${factory_address}|Pali smart account factory"
 )
 for entry in "${CONTRACTS[@]}"; do

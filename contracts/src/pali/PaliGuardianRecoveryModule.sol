@@ -11,7 +11,7 @@ import {
 
 contract PaliGuardianRecoveryModule is IERC7579Module {
     bytes32 public constant RECOVERY_SCHEDULE_TYPEHASH = keccak256(
-        "PaliGuardianRecoverySchedule(uint256 chainId,address account,address module,bytes32 salt,bytes32 mode,bytes32 executionCalldataHash)"
+        "PaliGuardianRecoverySchedule(uint256 chainId,address account,address module,uint256 policyEpoch,bytes32 salt,bytes32 mode,bytes32 executionCalldataHash)"
     );
 
     struct RecoveryConfig {
@@ -54,6 +54,8 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
     mapping(address account => RecoveryConfig) private _configs;
     mapping(address account => bytes32 operationId) private _activeRecovery;
     mapping(bytes32 operationId => RecoverySchedule) private _schedules;
+    // Policy generations survive uninstall so previously collected approvals cannot become valid again.
+    mapping(address account => uint256) public policyEpoch;
 
     function isModuleType(uint256 moduleTypeId) external pure override returns (bool) {
         return moduleTypeId == MODULE_TYPE_EXECUTOR;
@@ -66,6 +68,8 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
     function onInstall(bytes calldata initData) external override {
         (uint32 delay, uint32 expiration, address[] memory guardians_, uint64 threshold_) =
             abi.decode(initData, (uint32, uint32, address[], uint64));
+        _clearPolicy(msg.sender);
+        ++policyEpoch[msg.sender];
         _setGuardians(msg.sender, guardians_, threshold_);
         _configs[msg.sender] = RecoveryConfig({
             delay: delay,
@@ -76,17 +80,22 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
     }
 
     function onUninstall(bytes calldata) external override {
-        address[] storage guardians_ = _guardians[msg.sender];
+        _clearPolicy(msg.sender);
+        ++policyEpoch[msg.sender];
+    }
+
+    function _clearPolicy(address account) private {
+        address[] storage guardians_ = _guardians[account];
         for (uint256 i = 0; i < guardians_.length; ++i) {
-            delete _isGuardian[msg.sender][guardians_[i]];
+            delete _isGuardian[account][guardians_[i]];
         }
-        bytes32 activeOperationId = _activeRecovery[msg.sender];
+        bytes32 activeOperationId = _activeRecovery[account];
         if (activeOperationId != bytes32(0)) {
             _schedules[activeOperationId].canceled = true;
-            delete _activeRecovery[msg.sender];
+            delete _activeRecovery[account];
         }
-        delete _guardians[msg.sender];
-        delete _configs[msg.sender];
+        delete _guardians[account];
+        delete _configs[account];
     }
 
     function guardians(address account) external view returns (address[] memory) {
@@ -205,10 +214,10 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
 
     function getOperationId(address account, bytes32 salt, bytes32 mode, bytes calldata executionCalldata)
         public
-        pure
+        view
         returns (bytes32)
     {
-        return keccak256(abi.encode(account, salt, mode, executionCalldata));
+        return keccak256(abi.encode(account, policyEpoch[account], salt, mode, executionCalldata));
     }
 
     function getRecoveryScheduleHash(address account, bytes32 salt, bytes32 mode, bytes calldata executionCalldata)
@@ -222,6 +231,7 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
                 block.chainid,
                 account,
                 address(this),
+                policyEpoch[account],
                 salt,
                 mode,
                 keccak256(executionCalldata)

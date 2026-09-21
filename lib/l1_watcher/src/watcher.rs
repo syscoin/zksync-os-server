@@ -1,9 +1,10 @@
 use crate::metrics::METRICS;
 use crate::{L1WatcherConfig, ProcessRawEvents};
-use alloy::primitives::{Address, BlockNumber};
+use alloy::primitives::{Address, B256, BlockNumber};
 use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log, ValueOrArray};
 use futures::future::BoxFuture;
+use std::collections::HashMap;
 use std::time::Duration;
 use zksync_os_provider::NodeProvider;
 
@@ -133,6 +134,7 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
             block_boundary,
             poll_interval,
             processor,
+            observed_range: None,
         })
     }
 
@@ -165,6 +167,9 @@ pub struct L1Watcher<P> {
     max_blocks_to_process: u64,
     block_boundary: BlockBoundary,
     poll_interval: Duration,
+    // This pins a range before its first side effect, including partially processed retries.
+    // It is deliberately in-memory; restart safety still depends on finalized/trusted inputs.
+    observed_range: Option<(BlockNumber, B256)>,
     pub(crate) processor: P,
 }
 
@@ -189,6 +194,7 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
             block_boundary: BlockBoundary::Finalized,
             poll_interval: config.poll_interval,
             processor,
+            observed_range: None,
         }
     }
 
@@ -214,6 +220,7 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
             block_boundary: BlockBoundary::Confirmed { confirmations },
             poll_interval: config.poll_interval,
             processor,
+            observed_range: None,
         })
     }
 
@@ -290,24 +297,50 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
             let headers = headers
                 .as_mut()
                 .expect("unbounded watcher must have a header subscription");
-            if let Err(e) = headers.changed().await {
-                tracing::error!("l1 watcher header watcher closed unexpectedly: {e}");
-                panic!("l1 watcher header watcher closed unexpectedly: {e}");
+            // A provider can replace consumed history without advancing its reported head.
+            tokio::select! {
+                result = headers.changed() => {
+                    if let Err(e) = result {
+                        panic!("l1 watcher header watcher closed unexpectedly: {e}");
+                    }
+                }
+                _ = tokio::time::sleep(self.poll_interval) => {}
             }
         }
     }
 
     async fn poll(&mut self, cap: BlockNumber) -> Result<(), L1WatcherError> {
+        self.check_observed_range().await?;
+        if self.observed_range.is_some_and(|(number, _)| cap < number) {
+            // A partial attempt may have published events above the temporarily regressed
+            // boundary. Keep that full anchor until the boundary catches up again.
+            return Ok(());
+        }
         while self.next_block <= cap {
             let from_block = self.next_block;
             // Inspect up to `self.max_blocks_to_process` blocks at a time
             let to_block = cap.min(from_block + self.max_blocks_to_process - 1);
+            let range_hash = self.canonical_hash(to_block).await?;
 
             let events = self
                 .extract_logs_from_l1_blocks(from_block, to_block)
                 .await?;
 
+            self.validate_log_blocks(&events, from_block, to_block, range_hash)
+                .await?;
+            self.check_hash(to_block, range_hash).await?;
+            self.check_observed_range().await?;
+
             let events = self.processor.filter_events(events);
+
+            // Processors may publish some events before returning a retryable error. Retain
+            // the authenticated anchor even on that path, without advancing the scan cursor.
+            if self
+                .observed_range
+                .is_none_or(|(number, _)| to_block >= number)
+            {
+                self.observed_range = Some((to_block, range_hash));
+            }
 
             METRICS.events_loaded[&self.processor.name()].inc_by(events.len() as u64);
             METRICS.most_recently_scanned_l1_block[&self.processor.name()].set(to_block);
@@ -318,9 +351,80 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
                     .await?;
             }
 
+            // All effects completed successfully. A transport failure in the final anchor
+            // check must retry that check without delivering the completed range again.
             self.next_block = to_block + 1;
+            self.check_observed_range().await?;
         }
 
+        Ok(())
+    }
+
+    async fn canonical_hash(&self, number: BlockNumber) -> Result<B256, L1WatcherError> {
+        let block = self
+            .provider
+            .get_block_by_number(number.into())
+            .await?
+            .ok_or(L1WatcherError::CanonicalBlockUnavailable(number))?;
+        let header = block.header;
+        if header.number != number {
+            return Err(L1WatcherError::InvalidLogRange(
+                "provider returned the wrong header number",
+            ));
+        }
+        Ok(header.hash)
+    }
+
+    async fn check_hash(&self, number: BlockNumber, expected: B256) -> Result<(), L1WatcherError> {
+        let actual = self.canonical_hash(number).await?;
+        if actual != expected {
+            return Err(L1WatcherError::CanonicalChainChanged {
+                number,
+                expected,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    async fn check_observed_range(&self) -> Result<(), L1WatcherError> {
+        if let Some((number, hash)) = self.observed_range {
+            self.check_hash(number, hash).await?;
+        }
+        Ok(())
+    }
+
+    async fn validate_log_blocks(
+        &self,
+        events: &[Log],
+        from: BlockNumber,
+        to: BlockNumber,
+        range_hash: B256,
+    ) -> Result<(), L1WatcherError> {
+        let mut hashes = HashMap::from([(to, range_hash)]);
+        for event in events {
+            let number = event.block_number.ok_or(L1WatcherError::InvalidLogRange(
+                "log is missing its block number",
+            ))?;
+            if event.removed || number < from || number > to {
+                return Err(L1WatcherError::InvalidLogRange(
+                    "removed or out-of-range log in canonical response",
+                ));
+            }
+            let expected = match hashes.get(&number) {
+                Some(hash) => *hash,
+                None => {
+                    let hash = self.canonical_hash(number).await?;
+                    hashes.insert(number, hash);
+                    hash
+                }
+            };
+            if event.block_hash != Some(expected) {
+                return Err(L1WatcherError::InvalidLogRange(
+                    "log block hash does not match canonical header",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -340,7 +444,9 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
         if let Some(topic1) = self.processor.topic1_filter() {
             filter = filter.topic1(topic1);
         }
-        let new_logs = self.provider.get_logs(&filter).await?;
+        // The shared numeric-range log cache can lag a reorg while its head poller catches
+        // up. Security-sensitive ingestion must authenticate a fresh provider response.
+        let new_logs = self.provider.root().get_logs(&filter).await?;
 
         if new_logs.is_empty() {
             tracing::trace!(
@@ -365,6 +471,16 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum L1WatcherError {
+    #[error("canonical block {0} is unavailable while authenticating an L1 watcher range")]
+    CanonicalBlockUnavailable(BlockNumber),
+    #[error("canonical history changed at block {number}: expected {expected}, got {actual}")]
+    CanonicalChainChanged {
+        number: BlockNumber,
+        expected: B256,
+        actual: B256,
+    },
+    #[error("invalid L1 watcher response: {0}")]
+    InvalidLogRange(&'static str),
     #[error("L1 does not have any blocks")]
     NoL1Blocks,
     #[error(transparent)]
@@ -389,4 +505,362 @@ pub enum L1WatcherError {
     L1Reverted(u64),
     #[error("output has been closed")]
     OutputClosed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::network::EthereumWallet;
+    use alloy::providers::ProviderBuilder;
+    use alloy::rpc::json_rpc::ErrorPayload;
+    use alloy::rpc::types::{Block, Topic};
+    use alloy::transports::mock::Asserter;
+    use std::borrow::Cow;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingProcessor {
+        events: Arc<Mutex<Vec<Log>>>,
+        fail_at: Option<usize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProcessRawEvents for RecordingProcessor {
+        fn name(&self) -> &'static str {
+            "authenticated_test"
+        }
+
+        fn event_signatures(&self) -> Topic {
+            B256::ZERO.into()
+        }
+
+        fn filter_events(&self, logs: Vec<Log>) -> Vec<Log> {
+            logs
+        }
+
+        async fn process_raw_event(
+            &mut self,
+            _: &NodeProvider,
+            event: Log,
+        ) -> Result<(), L1WatcherError> {
+            let mut events = self.events.lock().unwrap();
+            if self.fail_at == Some(events.len()) {
+                self.fail_at = None;
+                return Err(alloy::transports::TransportErrorKind::custom_str(
+                    "temporary processor RPC failure",
+                )
+                .into());
+            }
+            events.push(event);
+            Ok(())
+        }
+    }
+
+    fn header(number: u64, hash: B256) -> Block {
+        let mut block: Block = Block::default();
+        block.header.inner.number = number;
+        block.header.hash = hash;
+        block
+    }
+
+    fn log(number: u64, hash: B256) -> Log {
+        Log {
+            block_number: Some(number),
+            block_hash: Some(hash),
+            ..Log::default()
+        }
+    }
+
+    async fn watcher(asserter: &Asserter) -> L1Watcher<RecordingProcessor> {
+        watcher_with_header_support(asserter, true).await
+    }
+
+    async fn watcher_with_header_support(
+        asserter: &Asserter,
+        supports_header: bool,
+    ) -> L1Watcher<RecordingProcessor> {
+        if supports_header {
+            asserter.push_success(&header(1, B256::repeat_byte(1)).header);
+            asserter.push_success(&header(1, B256::repeat_byte(1)).header);
+        } else {
+            asserter.push_failure(ErrorPayload {
+                code: -32601,
+                message: Cow::Borrowed("method not found"),
+                data: None,
+            });
+            asserter.push_success(&header(1, B256::repeat_byte(1)));
+        }
+        asserter.push_failure(ErrorPayload {
+            code: -32601,
+            message: Cow::Borrowed("method not found"),
+            data: None,
+        });
+        asserter.push_success(&"anvil/test");
+        let provider = NodeProvider::new(
+            ProviderBuilder::new()
+                .disable_recommended_fillers()
+                .wallet(EthereumWallet::default())
+                .connect_mocked_client(asserter.clone()),
+        )
+        .await
+        .unwrap();
+        L1Watcher::new_finalized(
+            L1WatcherConfig {
+                max_blocks_to_process: 100,
+                confirmations: 2,
+                poll_interval: Duration::from_millis(10),
+                finalized_poll_interval: Duration::from_millis(10),
+                logs_cache_capacity: 0,
+            },
+            provider,
+            Address::ZERO.into(),
+            10,
+            None,
+            RecordingProcessor {
+                events: Arc::default(),
+                fail_at: None,
+            },
+        )
+    }
+
+    fn successful_range(asserter: &Asserter, number: u64, hash: B256, events: Vec<Log>) {
+        asserter.push_success(&header(number, hash));
+        asserter.push_success(&events);
+        asserter.push_success(&header(number, hash));
+        asserter.push_success(&header(number, hash));
+    }
+
+    #[tokio::test]
+    async fn authenticates_ranges_without_the_optional_header_rpc() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher_with_header_support(&asserter, false).await;
+        successful_range(&asserter, 10, B256::repeat_byte(10), vec![]);
+        watcher.poll(10).await.unwrap();
+        assert_eq!(watcher.next_block, 11);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pins_successfully_processed_and_empty_ranges() {
+        for events in [vec![], vec![log(10, B256::repeat_byte(10))]] {
+            let asserter = Asserter::new();
+            let mut watcher = watcher(&asserter).await;
+            successful_range(&asserter, 10, B256::repeat_byte(10), events.clone());
+            watcher.poll(10).await.unwrap();
+            assert_eq!(watcher.next_block, 11);
+            assert_eq!(watcher.observed_range, Some((10, B256::repeat_byte(10))));
+            assert_eq!(*watcher.processor.events.lock().unwrap(), events);
+            assert!(asserter.read_q().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn detects_replaced_consumed_history_even_without_a_new_scan() {
+        for cap in [9, 10, 11] {
+            let asserter = Asserter::new();
+            let mut watcher = watcher(&asserter).await;
+            successful_range(&asserter, 10, B256::repeat_byte(10), vec![]);
+            watcher.poll(10).await.unwrap();
+            asserter.push_success(&header(10, B256::repeat_byte(99)));
+            assert!(matches!(
+                watcher.poll(cap).await,
+                Err(L1WatcherError::CanonicalChainChanged { number: 10, .. })
+            ));
+            assert_eq!(watcher.next_block, 11);
+            assert!(asserter.read_q().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_a_range_reorg_before_publishing_any_event() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher(&asserter).await;
+        let hash = B256::repeat_byte(10);
+        asserter.push_success(&header(10, hash));
+        asserter.push_success(&vec![log(10, hash)]);
+        asserter.push_success(&header(10, B256::repeat_byte(99)));
+        assert!(matches!(
+            watcher.poll(10).await,
+            Err(L1WatcherError::CanonicalChainChanged { .. })
+        ));
+        assert!(watcher.processor.events.lock().unwrap().is_empty());
+        assert_eq!(watcher.next_block, 10);
+        assert_eq!(watcher.observed_range, None);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_unanchored_log_metadata_before_any_side_effect() {
+        let hash = B256::repeat_byte(10);
+        let mut removed = log(10, hash);
+        removed.removed = true;
+        let mut missing_hash = log(10, hash);
+        missing_hash.block_hash = None;
+        let mut missing_number = log(10, hash);
+        missing_number.block_number = None;
+        for event in [
+            removed,
+            missing_hash,
+            missing_number,
+            log(10, B256::repeat_byte(99)),
+            log(9, hash),
+            log(11, hash),
+        ] {
+            let asserter = Asserter::new();
+            let mut watcher = watcher(&asserter).await;
+            asserter.push_success(&header(10, hash));
+            asserter.push_success(&vec![event]);
+            assert!(matches!(
+                watcher.poll(10).await,
+                Err(L1WatcherError::InvalidLogRange(_))
+            ));
+            assert!(watcher.processor.events.lock().unwrap().is_empty());
+            assert_eq!(watcher.next_block, 10);
+            assert!(asserter.read_q().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn verifies_event_blocks_within_a_multiblock_range() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher(&asserter).await;
+        asserter.push_success(&header(11, B256::repeat_byte(11)));
+        asserter.push_success(&vec![log(10, B256::repeat_byte(99))]);
+        asserter.push_success(&header(10, B256::repeat_byte(10)));
+        assert!(matches!(
+            watcher.poll(11).await,
+            Err(L1WatcherError::InvalidLogRange(_))
+        ));
+        assert!(watcher.processor.events.lock().unwrap().is_empty());
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn partial_processing_pins_the_range_across_a_retry() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher(&asserter).await;
+        watcher.processor.fail_at = Some(1);
+        let hash = B256::repeat_byte(10);
+        asserter.push_success(&header(10, hash));
+        asserter.push_success(&vec![log(10, hash), log(10, hash)]);
+        asserter.push_success(&header(10, hash));
+        assert!(matches!(
+            watcher.poll(10).await,
+            Err(L1WatcherError::Transport(_))
+        ));
+        assert_eq!(watcher.processor.events.lock().unwrap().len(), 1);
+        assert_eq!(watcher.next_block, 10);
+        assert_eq!(watcher.observed_range, Some((10, hash)));
+
+        asserter.push_success(&header(10, B256::repeat_byte(99)));
+        assert!(matches!(
+            watcher.poll(10).await,
+            Err(L1WatcherError::CanonicalChainChanged { .. })
+        ));
+        assert_eq!(watcher.processor.events.lock().unwrap().len(), 1);
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn regressed_boundary_cannot_lower_a_partially_consumed_anchor() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher(&asserter).await;
+        watcher.processor.fail_at = Some(1);
+        let hash = B256::repeat_byte(20);
+        asserter.push_success(&header(20, hash));
+        asserter.push_success(&vec![log(20, hash), log(20, hash)]);
+        asserter.push_success(&header(20, hash));
+        assert!(matches!(
+            watcher.poll(20).await,
+            Err(L1WatcherError::Transport(_))
+        ));
+        asserter.push_success(&header(20, hash));
+        watcher.poll(15).await.unwrap();
+        assert_eq!(watcher.observed_range, Some((20, hash)));
+        assert_eq!(watcher.next_block, 10);
+        assert_eq!(watcher.processor.events.lock().unwrap().len(), 1);
+
+        asserter.push_success(&header(20, B256::repeat_byte(99)));
+        assert!(matches!(
+            watcher.poll(15).await,
+            Err(L1WatcherError::CanonicalChainChanged { .. })
+        ));
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reorg_during_processing_stops_before_further_scan() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher(&asserter).await;
+        let hash = B256::repeat_byte(10);
+        asserter.push_success(&header(10, hash));
+        asserter.push_success(&vec![log(10, hash)]);
+        asserter.push_success(&header(10, hash));
+        asserter.push_success(&header(10, B256::repeat_byte(99)));
+        assert!(matches!(
+            watcher.poll(10).await,
+            Err(L1WatcherError::CanonicalChainChanged { .. })
+        ));
+        assert_eq!(watcher.processor.events.lock().unwrap().len(), 1);
+        assert_eq!(watcher.next_block, 11);
+        assert_eq!(watcher.observed_range, Some((10, hash)));
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_processing_transport_retry_does_not_redeliver_events() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher(&asserter).await;
+        let hash = B256::repeat_byte(10);
+        let events = vec![log(10, hash)];
+        asserter.push_success(&header(10, hash));
+        asserter.push_success(&events);
+        asserter.push_success(&header(10, hash));
+        asserter.push_failure(ErrorPayload {
+            code: -32000,
+            message: Cow::Borrowed("temporary upstream failure"),
+            data: None,
+        });
+        assert!(matches!(
+            watcher.poll(10).await,
+            Err(L1WatcherError::Transport(_))
+        ));
+        assert_eq!(*watcher.processor.events.lock().unwrap(), events);
+        assert_eq!(watcher.next_block, 11);
+        assert_eq!(watcher.observed_range, Some((10, hash)));
+
+        asserter.push_success(&header(10, hash));
+        watcher.poll(10).await.unwrap();
+        assert_eq!(*watcher.processor.events.lock().unwrap(), events);
+        assert_eq!(watcher.next_block, 11);
+        assert_eq!(watcher.observed_range, Some((10, hash)));
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unavailable_checkpoint_stops_and_transport_failure_preserves_it() {
+        let asserter = Asserter::new();
+        let mut watcher = watcher(&asserter).await;
+        let hash = B256::repeat_byte(10);
+        successful_range(&asserter, 10, hash, vec![]);
+        watcher.poll(10).await.unwrap();
+        asserter.push_failure(ErrorPayload {
+            code: -32000,
+            message: Cow::Borrowed("temporary upstream failure"),
+            data: None,
+        });
+        assert!(matches!(
+            watcher.poll(11).await,
+            Err(L1WatcherError::Transport(_))
+        ));
+        assert_eq!(watcher.next_block, 11);
+        assert_eq!(watcher.observed_range, Some((10, hash)));
+
+        asserter.push_success(&Option::<Block>::None);
+        assert!(matches!(
+            watcher.poll(11).await,
+            Err(L1WatcherError::CanonicalBlockUnavailable(10))
+        ));
+        assert_eq!(watcher.next_block, 11);
+        assert!(asserter.read_q().is_empty());
+    }
 }
