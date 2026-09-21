@@ -19,6 +19,30 @@ test fixtures.
 forge build
 ```
 
+Pali's deterministic deployment artifacts use Solc 0.8.28, optimizer 200,
+viaIR, Cancun and no bytecode/CBOR metadata. From this directory, build that
+profile with `forge build --use 0.8.28 --evm-version cancun --no-metadata`.
+Regenerate the companion wallet artifacts with its
+`scripts/generate-pali-deployment.cjs --contracts-root <this-directory> --write`,
+then rerun without `--write` to verify parity. Metadata or EVM-profile changes
+can change CREATE2 addresses even when the Solidity source is unchanged.
+
+### Guardian recovery policy generations
+
+`PaliGuardianRecoveryModule.policyEpoch(account)` persists across uninstall.
+Each installation, replacement or uninstall advances it. Guardian approvals
+and recovery operation IDs bind that epoch, so changing a policy invalidates
+both unscheduled approvals and pending operations from its previous generation.
+Wallets must read the current epoch when preparing/signing recovery and retain
+it with pending recovery state. The fixed module does not accept the previous
+approval format; deploy it together with the matching wallet for the v32 reset.
+
+The new canonical guardian address is
+`0x8f919fc9a92da490d305054bfd862379d2760f84`; account, factory, other modules,
+global infrastructure version and CREATE2 salt labels remain unchanged.
+Approvals have no separate signed deadline within an unchanged policy epoch.
+The delay and expiration window still begin when recovery is scheduled.
+
 ### SLH-DSA-SHA2-128-24 Verifier Status
 
 <!-- SYSCOIN: Consensus/release qualification for the limited-signature verifier. -->
