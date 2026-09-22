@@ -452,14 +452,16 @@ index ce3917f0bfd5a619414a0f0f6c1fbf71283d4e55..d79d4ec60bf7f24c4daacf6ec6567d24
 +    }
 +
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs b/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
-index 096ad0281d25cbad392aae70429c61286160da42..47b5b77094b528478499a84c2de19211c61bd1e8 100644
+index 096ad0281d25cbad392aae70429c61286160da42..4714d53ff23c7f855e9da0b6a522661c4240eef6 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
-@@ -6,0 +7,3 @@ use crate::bootloader::{
+@@ -6,0 +7,5 @@ use crate::bootloader::{
 +// SYSCOIN: authorized Gateway commits bind exactly one message from the baked relay emitter.
-+use crate::bootloader::transaction_flow::zk::syscoin_edge_da::syscoin_compact_edge_da_relay_emitter;
++use crate::bootloader::transaction_flow::zk::syscoin_edge_da::{
++    syscoin_compact_edge_da_enabled_on_chain, syscoin_compact_edge_da_relay_emitter,
++};
 +use zk_ee::common_structs::SyscoinEdgeDaRelayMessage;
-@@ -8,0 +12,55 @@ use zk_ee::system::{IOTeardown, Resource};
+@@ -8,0 +14,58 @@ use zk_ee::system::{IOTeardown, Resource};
 +use zk_ee::utils::Bytes32;
 +
 +// SYSCOIN: Keep the cross-block arithmetic in one testable, overflow-safe helper; the caller
@@ -479,13 +481,16 @@ index 096ad0281d25cbad392aae70429c61286160da42..47b5b77094b528478499a84c2de19211
 +}
 +
 +// SYSCOIN: turn strict raw-message analysis into the one optional hash/count that may survive
-+// transaction rollback. Zero, malformed, or duplicate baked-relay messages are structural errors.
++// transaction rollback. Unsupported call shapes must not silently discard authentic relay messages.
 +fn validated_syscoin_edge_da_ref(
 +    is_authorized_success: bool,
 +    relay_message: Option<SyscoinEdgeDaRelayMessage>,
 +) -> Result<Option<(u32, Bytes32)>, InvalidTransaction> {
 +    if !is_authorized_success {
-+        return Ok(None);
++        return match relay_message {
++            None | Some(SyscoinEdgeDaRelayMessage::Missing) => Ok(None),
++            Some(_) => Err(InvalidTransaction::InvalidStructure),
++        };
 +    }
 +    match relay_message {
 +        Some(SyscoinEdgeDaRelayMessage::Valid {
@@ -515,22 +520,23 @@ index 096ad0281d25cbad392aae70429c61286160da42..47b5b77094b528478499a84c2de19211
 +        None
 +    }
 +}
-@@ -172,0 +231,35 @@ where
+@@ -172,0 +236,36 @@ where
 +                            // SYSCOIN: Analyze the baked relay's raw message set while the current
 +                            // transaction frame can still be rolled back.
 +                            let is_authorized_syscoin_edge_da_commit =
 +                                tx_status && tx_processing_result.collects_syscoin_edge_da_refs;
-+                            let syscoin_edge_da_relay_message =
-+                                if is_authorized_syscoin_edge_da_commit {
-+                                    let canonical_relay_emitter =
-+                                        syscoin_compact_edge_da_relay_emitter();
-+                                    Some(system.io.syscoin_edge_da_relay_message_for_tx_number(
-+                                        block_data.current_transaction_number,
-+                                        &canonical_relay_emitter,
-+                                    ))
-+                                } else {
-+                                    None
-+                                };
++                            let syscoin_edge_da_relay_message = if tx_status
++                                && syscoin_compact_edge_da_enabled_on_chain(system.get_chain_id())
++                            {
++                                let canonical_relay_emitter =
++                                    syscoin_compact_edge_da_relay_emitter();
++                                Some(system.io.syscoin_edge_da_relay_message_for_tx_number(
++                                    block_data.current_transaction_number,
++                                    &canonical_relay_emitter,
++                                ))
++                            } else {
++                                None
++                            };
 +                            let (syscoin_edge_da_ref, syscoin_edge_da_structure_error) =
 +                                match validated_syscoin_edge_da_ref(
 +                                    is_authorized_syscoin_edge_da_commit,
@@ -551,11 +557,11 @@ index 096ad0281d25cbad392aae70429c61286160da42..47b5b77094b528478499a84c2de19211
 +                                block_data.syscoin_compact_edge_da_ref_count,
 +                                syscoin_edge_da_refs_in_tx,
 +                            )?;
-@@ -187 +280,14 @@ where
+@@ -187 +286,14 @@ where
 -                            if let Err(err) = check_for_block_limits(
 +                            if let Some(err) = syscoin_edge_da_structure_error {
-+                                // SYSCOIN: zero/malformed/duplicate baked-relay messages make an
-+                                // authorized commit invalid; no count/hash survives this rollback.
++                                // SYSCOIN: Invalid or unsupported relay emissions must roll back
++                                // the child commit as well as its DA count/hash.
 +                                system.finish_global_frame(Some(&pre_tx_rollback_handle))?;
 +                                result_keeper.tx_processed(Err(err));
 +                            } else if let Some(limit_error) = syscoin_edge_da_ref_limit_error(
@@ -567,12 +573,12 @@ index 096ad0281d25cbad392aae70429c61286160da42..47b5b77094b528478499a84c2de19211
 +                                system.finish_global_frame(Some(&pre_tx_rollback_handle))?;
 +                                result_keeper.tx_processed(Err(limit_error));
 +                            } else if let Err(err) = check_for_block_limits(
-@@ -204,0 +311,4 @@ where
+@@ -204,0 +317,4 @@ where
 +                                // SYSCOIN: Persist only the count from a commit transaction that
 +                                // survived all rollback-capable structure and capacity checks.
 +                                block_data.syscoin_compact_edge_da_ref_count =
 +                                    next_syscoin_edge_da_refs_in_block;
-@@ -250,0 +361,13 @@ where
+@@ -250,0 +367,13 @@ where
 +                                if is_authorized_syscoin_edge_da_commit {
 +                                    // SYSCOIN: retain the already validated hash, never a tx number
 +                                    // that would require permissive post-op log reparsing.
@@ -586,7 +592,7 @@ index 096ad0281d25cbad392aae70429c61286160da42..47b5b77094b528478499a84c2de19211
 +                                            internal_error!("too many Syscoin edge DA ref hashes")
 +                                        })?;
 +                                }
-@@ -285,0 +409,70 @@ where
+@@ -285,0 +415,91 @@ where
 +
 +#[cfg(test)]
 +// SYSCOIN: Regression coverage for compact-ref admission and cross-block cap classification.
@@ -653,8 +659,29 @@ index 096ad0281d25cbad392aae70429c61286160da42..47b5b77094b528478499a84c2de19211
 +    }
 +
 +    #[test]
++    fn unsupported_gateway_call_cannot_discard_canonical_relay_messages() {
++        for relay_message in [
++            SyscoinEdgeDaRelayMessage::Valid {
++                ref_count: 1,
++                ref_hash: Bytes32::from_array([0x81; 32]),
++            },
++            SyscoinEdgeDaRelayMessage::Malformed,
++            SyscoinEdgeDaRelayMessage::Duplicate,
++        ] {
++            assert!(matches!(
++                validated_syscoin_edge_da_ref(false, Some(relay_message)),
++                Err(InvalidTransaction::InvalidStructure)
++            ));
++        }
++    }
++
++    #[test]
 +    fn unrelated_successful_transaction_does_not_require_a_relay_message() {
 +        assert_eq!(validated_syscoin_edge_da_ref(false, None).unwrap(), None);
++        assert_eq!(
++            validated_syscoin_edge_da_ref(false, Some(SyscoinEdgeDaRelayMessage::Missing)).unwrap(),
++            None
++        );
 +    }
 +}
 diff --git a/basic_bootloader/src/bootloader/constants.rs b/basic_bootloader/src/bootloader/constants.rs
@@ -5118,8 +5145,18 @@ index 1e0ad5dd58cadbf1fbbd75d381b32a0f1450deeb..47f3c3bf70089cfb9f6352a273418d5d
 -    /// Keccak of blob versioned hashes filled with pubdata.
 +    /// SYSCOIN: Keccak of ordered compact Bitcoin-DA Blake2s data IDs. The enum ID is retained
 +    /// on the wire for compatibility with the settlement contracts.
+diff --git a/zk_ee/src/common_structs/history_list.rs b/zk_ee/src/common_structs/history_list.rs
+index 101e6eaf603f686374a2ec2ad3529b853cf34c17..a46d7ac4af3302a6e8ef202300190ead2b7f0beb 100644
+--- a/zk_ee/src/common_structs/history_list.rs
++++ b/zk_ee/src/common_structs/history_list.rs
+@@ -50,0 +51,5 @@ impl<V, M: Clone, SF: StackFactory<N>, const N: usize, A: Allocator + Clone>
++    // SYSCOIN: Relay checks need only the current transaction's retained log suffix.
++    pub fn iter_rev(&self) -> impl Iterator<Item = &V> + Clone {
++        self.list.iter_rev().map(|(v, _)| v)
++    }
++
 diff --git a/zk_ee/src/common_structs/logs_storage.rs b/zk_ee/src/common_structs/logs_storage.rs
-index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..740f271f2e7632f68334c8f8b199478b55abed0d 100644
+index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..a766a703f8172b7b214df16f90389b8123d5403c 100644
 --- a/zk_ee/src/common_structs/logs_storage.rs
 +++ b/zk_ee/src/common_structs/logs_storage.rs
 @@ -26,0 +27,40 @@ pub const MAX_NUMBER_OF_LOGS: u64 = 16_384;
@@ -5163,7 +5200,7 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..740f271f2e7632f68334c8f8b199478b
 +    apply_syscoin_edge_da_ref_hashes(&mut root, ref_hashes);
 +    root
 +}
-@@ -356,0 +397,47 @@ impl<SF: StackFactory<M>, const M: usize, A: Allocator + Clone + Default> LogsSt
+@@ -356,0 +397,52 @@ impl<SF: StackFactory<M>, const M: usize, A: Allocator + Clone + Default> LogsSt
 +    pub fn syscoin_edge_da_relay_message_for_tx_number(
 +        &self,
 +        authorized_tx_number: u32,
@@ -5173,9 +5210,14 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..740f271f2e7632f68334c8f8b199478b
 +        // transaction frame can still be rolled back. Canonical-looking messages from any other
 +        // emitter are deliberately ignored; malformed relay messages are never silently skipped.
 +        let mut canonical_message = None;
-+        for message in self.list.iter() {
-+            if message.tx_number != authorized_tx_number {
++        // SYSCOIN: Retained logs are ordered by transaction number. Start at the current tail
++        // so checking every Gateway transaction cannot repeatedly scan earlier transactions.
++        for message in self.list.iter_rev() {
++            if message.tx_number > authorized_tx_number {
 +                continue;
++            }
++            if message.tx_number < authorized_tx_number {
++                break;
 +            }
 +            let GenericLogContentData::UserMsg(UserMsgData { address, data, .. }) = &message.data
 +            else {
@@ -5211,7 +5253,7 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..740f271f2e7632f68334c8f8b199478b
 +        }
 +    }
 +
-@@ -504,0 +592,433 @@ impl<A: Allocator> From<&LogContent<A>> for L2ToL1Log {
+@@ -504,0 +597,520 @@ impl<A: Allocator> From<&LogContent<A>> for L2ToL1Log {
 +
 +// SYSCOIN: authenticate the canonical shape and commitment relation of
 +// abi.encode(uint8 version, uint256 chainId, uint256 batchNumber,
@@ -5286,7 +5328,18 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..740f271f2e7632f68334c8f8b199478b
 +// SYSCOIN: Canonical Edge-DA envelope parsing, bounds, ordering, and authorization coverage.
 +mod tests {
 +    use super::*;
++    use crate::common_structs::skip_list_quasi_vec::ListVec;
 +    use crate::memory::stack_implementations::vec_stack::VecStackFactory;
++
++    struct ListVecStackFactory;
++
++    impl StackFactory<2> for ListVecStackFactory {
++        type Stack<T: Sized, const N: usize, A: Allocator + Clone> = ListVec<T, N, A>;
++
++        fn new_in<T, A: Allocator + Clone>(allocator: A) -> Self::Stack<T, 2, A> {
++            ListVec::new_in(allocator)
++        }
++    }
 +
 +    fn edge_da_message(
 +        chain_id: U256,
@@ -5622,6 +5675,82 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..740f271f2e7632f68334c8f8b199478b
 +        );
 +    }
 +
++    fn check_syscoin_edge_da_reverse_analysis<SF: StackFactory<2>>() {
++        let relay = B160::from_be_bytes([0x55; 20]);
++        let unrelated = B160::from_be_bytes([0x77; 20]);
++        let blob_hashes = [[0x66; 32]];
++        let message = edge_da_message(
++            U256::from(57u64),
++            U256::from(1u64),
++            edge_da_commitment(&blob_hashes),
++            &blob_hashes,
++        );
++        let mut logs = LogsStorage::<SF, 2>::new_from_parts(Global);
++        assert!(logs.list.iter_rev().next().is_none());
++        for (tx_number, emitter) in [(1, relay), (2, unrelated), (2, unrelated), (3, relay)] {
++            logs.push_message(
++                tx_number,
++                &emitter,
++                UsizeAlignedByteBox::from_slice_in(&message, Global),
++                Bytes32::ZERO,
++            )
++            .unwrap();
++        }
++        let mut reversed = logs.list.iter_rev().map(|log| log.tx_number);
++        assert_eq!(reversed.next(), Some(3));
++        let cloned = reversed.clone();
++        assert_eq!(reversed.collect::<alloc::vec::Vec<_>>(), [2, 2, 1]);
++        assert_eq!(cloned.collect::<alloc::vec::Vec<_>>(), [2, 2, 1]);
++
++        for tx_number in [1, 3] {
++            assert!(matches!(
++                logs.syscoin_edge_da_relay_message_for_tx_number(tx_number, &relay),
++                SyscoinEdgeDaRelayMessage::Valid { ref_count: 1, .. }
++            ));
++        }
++        for tx_number in [0, 2, 4] {
++            assert_eq!(
++                logs.syscoin_edge_da_relay_message_for_tx_number(tx_number, &relay),
++                SyscoinEdgeDaRelayMessage::Missing
++            );
++        }
++
++        let rollback_handle = logs.start_frame();
++        logs.push_message(
++            3,
++            &relay,
++            UsizeAlignedByteBox::from_slice_in(&message, Global),
++            Bytes32::ZERO,
++        )
++        .unwrap();
++        assert_eq!(
++            logs.syscoin_edge_da_relay_message_for_tx_number(3, &relay),
++            SyscoinEdgeDaRelayMessage::Duplicate
++        );
++        logs.finish_frame(Some(rollback_handle));
++        assert_eq!(
++            logs.list
++                .iter_rev()
++                .map(|log| log.tx_number)
++                .collect::<alloc::vec::Vec<_>>(),
++            [3, 2, 2, 1]
++        );
++        assert!(matches!(
++            logs.syscoin_edge_da_relay_message_for_tx_number(3, &relay),
++            SyscoinEdgeDaRelayMessage::Valid { ref_count: 1, .. }
++        ));
++    }
++
++    #[test]
++    fn syscoin_edge_da_reverse_analysis_vec_observes_tx_boundaries_and_rollback() {
++        check_syscoin_edge_da_reverse_analysis::<VecStackFactory>();
++    }
++
++    #[test]
++    fn syscoin_edge_da_reverse_analysis_list_vec_observes_tx_boundaries_and_rollback() {
++        check_syscoin_edge_da_reverse_analysis::<ListVecStackFactory>();
++    }
++
 +    #[test]
 +    fn syscoin_edge_da_root_folds_prevalidated_hashes_in_order() {
 +        let first = Bytes32::from_array([0x71; 32]);
@@ -5645,6 +5774,42 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..740f271f2e7632f68334c8f8b199478b
 +        assert_ne!(reversed_root, expected);
 +    }
 +}
+diff --git a/zk_ee/src/memory/stack_implementations/skip_list_stack.rs b/zk_ee/src/memory/stack_implementations/skip_list_stack.rs
+index 30e77e21edecd4f01e2f5c0719ac9fda278c706b..5037a82741bccf1849cbfc2e41322f482e3a30bd 100644
+--- a/zk_ee/src/memory/stack_implementations/skip_list_stack.rs
++++ b/zk_ee/src/memory/stack_implementations/skip_list_stack.rs
+@@ -109,0 +110,8 @@ impl<T: Sized, const N: usize, A: Allocator + Clone> Stack<T, A> for ListVec<T,
++    // SYSCOIN: Walk from the tail without visiting older proving-memory chunks.
++    fn iter_rev<'a>(&'a self) -> impl Iterator<Item = &'a T> + Clone
++    where
++        T: 'a,
++    {
++        self.0.iter().rev().flat_map(|node| node.iter().rev())
++    }
++
+diff --git a/zk_ee/src/memory/stack_implementations/vec_stack.rs b/zk_ee/src/memory/stack_implementations/vec_stack.rs
+index 0b704f5aeac1b20a6df7442583ccfbb30cb119ab..59a9421ce093585161a1a2a17fe0a358e01efb69 100644
+--- a/zk_ee/src/memory/stack_implementations/vec_stack.rs
++++ b/zk_ee/src/memory/stack_implementations/vec_stack.rs
+@@ -56,0 +57,8 @@ impl<T: Sized, A: Allocator> Stack<T, A> for Vec<T, A> {
++
++    // SYSCOIN: Native relay checks use the same tail-first traversal as proving.
++    fn iter_rev<'a>(&'a self) -> impl Iterator<Item = &'a T> + Clone
++    where
++        T: 'a,
++    {
++        self[..].iter().rev()
++    }
+diff --git a/zk_ee/src/memory/stack_trait.rs b/zk_ee/src/memory/stack_trait.rs
+index a28ea6906391046f96181ee9526b0ec74e0b330c..c870674b3268904131c8db2b1636d55d9548cb80 100644
+--- a/zk_ee/src/memory/stack_trait.rs
++++ b/zk_ee/src/memory/stack_trait.rs
+@@ -67,0 +68,5 @@ pub trait Stack<T: Sized, A: Allocator> {
++    /// SYSCOIN: Reverse traversal lets transaction-local consumers stop before prior history.
++    fn iter_rev<'a>(&'a self) -> impl Iterator<Item = &'a T> + Clone
++    where
++        T: 'a;
++
 diff --git a/zk_ee/src/system/base_system_functions.rs b/zk_ee/src/system/base_system_functions.rs
 index 28e95d164bf10b1411eb9d07c38185b5d4b2b578..6b82f448661c0040726707d110801d8dbff1659b 100644
 --- a/zk_ee/src/system/base_system_functions.rs

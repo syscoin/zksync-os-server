@@ -4,7 +4,7 @@
 # GATEWAY_DIR, WORKSPACE_NAME, and ZKSYNC_OS_GIT_URL.
 
 # SYSCOIN: Exact source tree produced by the reviewed final-v0.4.0 downstream patch.
-SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="9e677f536230cc87c1bce8011f3a8074eb39e37a"
+SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752"
 
 extract_zksync_os_dependency_field() {
   local dependency_alias="$1"

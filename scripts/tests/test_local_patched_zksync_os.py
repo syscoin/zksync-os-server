@@ -48,7 +48,7 @@ PUBLISHED_EDGE_SOURCE_SHA256 = (
 PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
-PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9e677f536230cc87c1bce8011f3a8074eb39e37a"
+PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752"
 PUBLISHED_ERA_PATCHED_TREE = "2a28a08e439d35ff25643d3d108c05e846cdf0fe"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
@@ -6470,18 +6470,18 @@ gl_checkpoint_assert_fingerprint_matches
         for expected in (
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
-            'EXPECTED_PATCHED_TREE="9e677f536230cc87c1bce8011f3a8074eb39e37a"',
-            'EXPECTED_PATCH_SIZE="275841"',
-            'EXPECTED_PATCH_SHA256="d95e595ddc4d1fa45c291b12cbaa77308c67ff23221c249b0eb5f7907a8f7287"',
-            'EXPECTED_PATCH_PATH_COUNT="64"',
-            'EXPECTED_PATCH_PATHS_SHA256="33a2714fec3c4c61e754ed699f94c1529fbddc549bd033ced143162deb4bcf7a"',
+            'EXPECTED_PATCHED_TREE="ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752"',
+            'EXPECTED_PATCH_SIZE="282818"',
+            'EXPECTED_PATCH_SHA256="8c2eec0d9c1332bb0a1d301f4ea33bada6b56d46c7bb3944619b6849aeecf20d"',
+            'EXPECTED_PATCH_PATH_COUNT="68"',
+            'EXPECTED_PATCH_PATHS_SHA256="7bf4667f179a5fc3b769b8ed51e193812d3f29b7dad4971552ac8ecbac9d4de5"',
         ):
             self.assertIn(expected, applicator)
         workspace_helper = (
             REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="9e677f536230cc87c1bce8011f3a8074eb39e37a"',
+            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752"',
             workspace_helper,
         )
         self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
