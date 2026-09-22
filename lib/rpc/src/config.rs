@@ -84,7 +84,8 @@ pub struct RpcConfig {
     /// JSON-RPC address to listen on. Only http is currently supported.
     pub address: String,
 
-    /// Gas limit of transactions executed via eth_call
+    /// SYSCOIN: Maximum and default gas allowance for eth_call and debug_traceCall.
+    /// Estimates and transaction filling retain their separate execution limits.
     pub eth_call_gas: usize,
 
     /// Offset applied to wall-clock timestamps for synthesized pending blocks.
@@ -103,6 +104,10 @@ pub struct RpcConfig {
     /// when the caller explicitly overrides `blockOverrides.gasLimit`; unset overrides fall
     /// back to the executing block's own gas limit.
     pub eth_simulate_block_gas_limit: u64,
+
+    /// SYSCOIN: Total gas budget for one eth_simulateV1 request, charging at least 21,000
+    /// per call for fixed work without increasing its execution gas. Smaller budgets admit no calls.
+    pub eth_simulate_gas_limit: NonZeroU64,
 
     /// Number of concurrent API connections (passed to jsonrpsee, default value there is 128)
     pub max_connections: u32,

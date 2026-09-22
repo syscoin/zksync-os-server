@@ -317,7 +317,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
 
     fn prepare_execution_env(
         &self,
-        request: TransactionRequest,
+        mut request: TransactionRequest,
         block: Option<BlockId>,
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> Result<ExecutionEnv, EthCallError> {
@@ -325,6 +325,9 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             return Err(EthCallError::BlockOverridesNotSupported);
         }
 
+        // SYSCOIN: Call simulation skips normal transaction gas admission. Bound the request
+        // before either L1 or L2 construction, without restricting estimate/fill/simulateV1.
+        apply_call_gas_budget(&mut request, self.config.eth_call_gas as u64)?;
         let block_context = self.resolve_block_context(block)?;
         let transaction = self.create_tx_from_request(request, &block_context, false)?;
 
@@ -792,6 +795,17 @@ enum Probe {
 
 const ESTIMATE_GAS_ERROR_RATIO: f64 = 0.015;
 
+// SYSCOIN: Reject an excessive explicit allowance instead of silently changing GAS-dependent
+// execution. Zero remains a zero allowance, never an escape from the configured limit.
+fn apply_call_gas_budget(request: &mut TransactionRequest, limit: u64) -> Result<(), EthCallError> {
+    let gas = request.gas.unwrap_or(limit);
+    if gas > limit {
+        return Err(EthCallError::CallGasLimitExceeded { limit });
+    }
+    request.gas = Some(gas);
+    Ok(())
+}
+
 fn is_out_of_gas(err: &InvalidTransaction) -> bool {
     matches!(
         err,
@@ -947,6 +961,11 @@ pub enum EthCallError {
     // todo: temporary, needs to be supported eventually
     #[error("block overrides are not supported in `eth_call`")]
     BlockOverridesNotSupported,
+    // SYSCOIN: Operator resource limits are client errors, not VM or storage failures.
+    #[error("call gas exceeds the configured limit of {limit}")]
+    CallGasLimitExceeded { limit: u64 },
+    #[error("simulation gas exceeds the configured request limit of {limit}")]
+    SimulateGasLimitExceeded { limit: u64 },
     #[error("invalid `eth_simulateV1` params: {0}")]
     SimulateInvalidParams(String),
     #[error("invalid block override in `eth_simulateV1`: {0}")]
@@ -1008,6 +1027,42 @@ pub enum EthCallError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SYSCOIN: Both ordinary and service calls pass this admission boundary before construction.
+    #[test]
+    fn call_gas_budget_preserves_defaults_and_rejects_excess() {
+        let limit = 10_000_000;
+        for transaction_type in [None, Some(0), Some(2), Some(L1PriorityTxType::TX_TYPE)] {
+            for gas in [None, Some(0), Some(21_000), Some(limit)] {
+                let mut request = TransactionRequest {
+                    transaction_type,
+                    gas,
+                    nonce: Some(7),
+                    ..Default::default()
+                };
+                let mut expected = request.clone();
+                expected.gas = Some(gas.unwrap_or(limit));
+                apply_call_gas_budget(&mut request, limit).unwrap();
+                assert_eq!(request, expected);
+            }
+            for gas in [limit + 1, u64::MAX] {
+                let mut request = TransactionRequest {
+                    transaction_type,
+                    gas: Some(gas),
+                    ..Default::default()
+                };
+                assert!(matches!(
+                    apply_call_gas_budget(&mut request, limit),
+                    Err(EthCallError::CallGasLimitExceeded { limit: 10_000_000 })
+                ));
+            }
+        }
+        let mut request = TransactionRequest::default();
+        apply_call_gas_budget(&mut request, 0).unwrap();
+        assert_eq!(request.gas, Some(0));
+        request.gas = Some(1);
+        assert!(apply_call_gas_budget(&mut request, 0).is_err());
+    }
 
     #[test]
     fn tx_type_runs_policy_only_for_l2_variants() {

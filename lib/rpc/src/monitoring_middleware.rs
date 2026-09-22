@@ -35,6 +35,27 @@ pub(crate) const MAX_CONCURRENT_L2_TO_L1_LOG_PROOF_RPCS: usize = 8;
 
 const L2_TO_L1_LOG_PROOF_METHOD: &str = "zks_getL2ToL1LogProof";
 
+// SYSCOIN: jsonrpsee clones request extensions into its blocking worker. Shared ownership keeps
+// admission charged until that worker finishes, even when cancellation drops the awaiting RPC.
+struct RpcAdmissionPermits {
+    _blocking: Option<OwnedSemaphorePermit>,
+    _log_proof: Option<OwnedSemaphorePermit>,
+}
+
+impl RpcAdmissionPermits {
+    fn new(
+        blocking: Option<OwnedSemaphorePermit>,
+        log_proof: Option<OwnedSemaphorePermit>,
+    ) -> Option<Arc<Self>> {
+        (blocking.is_some() || log_proof.is_some()).then(|| {
+            Arc::new(Self {
+                _blocking: blocking,
+                _log_proof: log_proof,
+            })
+        })
+    }
+}
+
 /// Records RPC metrics and owns the custom batch-dispatch behavior.
 ///
 /// Calls always pass through the inner service. When parallel batches are enabled, calls within a
@@ -253,7 +274,7 @@ where
 
     fn call<'a>(
         &self,
-        request: Request<'a>,
+        mut request: Request<'a>,
     ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
         let method = method_label(&self.known_methods, request.method_name());
         let request_size = request.params.as_ref().map_or(0, |p| p.get().len());
@@ -266,8 +287,8 @@ where
             let handler_error_id = id.clone();
             let handler = RPC_TASK_MONITOR.instrument(async move {
                 // SYSCOIN: Acquire the narrow route gate before the general heavy-work gate so
-                // queued log-proof calls cannot consume all general permits. Owned permits are
-                // returned on success, handler error/panic, timeout, or request cancellation.
+                // queued log-proof calls cannot consume all general permits. Cancellation releases
+                // admission only after any already-dispatched blocking worker also finishes.
                 let _l2_to_l1_log_proof_permit: Option<OwnedSemaphorePermit> =
                     if method == L2_TO_L1_LOG_PROOF_METHOD {
                         match l2_to_l1_log_proof_semaphore.acquire_owned().await {
@@ -295,7 +316,19 @@ where
                 } else {
                     None
                 };
-                inner.call(request).await
+                // SYSCOIN: Retain a local owner for async handlers and transfer a shared owner
+                // through extensions into jsonrpsee's non-cancellable blocking worker.
+                let permits = RpcAdmissionPermits::new(_permit, _l2_to_l1_log_proof_permit);
+                if let Some(permits) = &permits {
+                    request.extensions_mut().insert(Arc::clone(permits));
+                }
+                let mut response = inner.call(request).await;
+                // SYSCOIN: Completed responses can be retained while a batch awaits more entries.
+                // They must not retain admission permits and deadlock those remaining entries.
+                response
+                    .extensions_mut()
+                    .remove::<Arc<RpcAdmissionPermits>>();
+                response
             });
             let on_panic = || MethodResponse::error(id, internal_rpc_err("Internal error"));
             CallGuard::new(CallKind::Call, method, request_size)
@@ -388,7 +421,7 @@ where
 
     fn notification<'a>(
         &self,
-        n: Notification<'a>,
+        mut n: Notification<'a>,
     ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
         let request_size = n.params.as_ref().map_or(0, |p| p.get().len());
         let method = method_label(&self.known_methods, n.method_name());
@@ -422,7 +455,17 @@ where
                 } else {
                     None
                 };
-                inner.notification(n).await
+                // SYSCOIN: Keep notification admission tied to the same worker ownership as calls,
+                // including inner services that execute notifications on the blocking pool.
+                let permits = RpcAdmissionPermits::new(_permit, _l2_to_l1_log_proof_permit);
+                if let Some(permits) = &permits {
+                    n.extensions_mut().insert(Arc::clone(permits));
+                }
+                let mut response = inner.notification(n).await;
+                response
+                    .extensions_mut()
+                    .remove::<Arc<RpcAdmissionPermits>>();
+                response
             };
             CallGuard::new(CallKind::Notification, method, request_size)
                 .handle_result(handler, MethodResponse::notification)
@@ -496,8 +539,8 @@ where
         // buffer keeps the window full when an early call is slow; sorting below restores
         // request order before the response is built.
         //
-        // Abort-on-drop prevents calls from running detached after the batch is cancelled.
-        // Cancellation takes effect when a handler next yields.
+        // SYSCOIN: Abort-on-drop cancels async dispatch when it next yields. Already-started
+        // blocking workers continue while retaining their shared admission permits.
         let response_capacity = prepared.len();
         let mut response_stream = futures::stream::iter(prepared.into_iter().enumerate().map(
             move |(index, entry)| async move {
@@ -549,15 +592,245 @@ where
 #[cfg(test)]
 mod tests {
     use super::{Monitoring, UNKNOWN_METHOD, is_heavy_rpc_method, method_label};
+    // SYSCOIN: Exercise jsonrpsee's actual blocking callback and extension ownership offline.
+    use futures::FutureExt as _;
     use jsonrpsee::core::middleware::{Batch, BatchEntry, Notification};
+    use jsonrpsee::core::server::{MethodCallback, Methods};
     use jsonrpsee::server::middleware::rpc::RpcServiceT;
-    use jsonrpsee::types::{Id, Request};
-    use jsonrpsee::{MethodResponse, ResponsePayload};
+    use jsonrpsee::types::{ErrorObjectOwned, Id, Params, Request};
+    use jsonrpsee::{MethodResponse, ResponsePayload, RpcModule};
     use std::borrow::Cow;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::{Notify, Semaphore};
+    use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
+
+    // SYSCOIN: RpcService's constructor is private; dispatch its real registered callback so these
+    // tests cover jsonrpsee's spawn_blocking boundary rather than a cancellable async stand-in.
+    #[derive(Clone)]
+    struct BlockingTestService {
+        methods: Methods,
+    }
+
+    impl RpcServiceT for BlockingTestService {
+        type MethodResponse = MethodResponse;
+        type NotificationResponse = MethodResponse;
+        type BatchResponse = MethodResponse;
+
+        fn call<'a>(
+            &self,
+            mut request: Request<'a>,
+        ) -> impl Future<Output = MethodResponse> + Send + 'a {
+            let MethodCallback::Async(callback) =
+                self.methods.method(request.method_name()).unwrap().clone()
+            else {
+                panic!("expected jsonrpsee's registered blocking callback");
+            };
+            let params =
+                Params::new(request.params.as_ref().map(|params| params.get())).into_owned();
+            let extensions = std::mem::take(request.extensions_mut());
+            callback(
+                request.id.into_owned(),
+                params,
+                0usize.into(),
+                1_000_000,
+                extensions,
+            )
+        }
+
+        #[allow(clippy::manual_async_fn)]
+        fn batch<'a>(&self, _batch: Batch<'a>) -> impl Future<Output = MethodResponse> + Send + 'a {
+            async { panic!("monitoring dispatches each batch entry") }
+        }
+
+        fn notification<'a>(
+            &self,
+            mut notification: Notification<'a>,
+        ) -> impl Future<Output = MethodResponse> + Send + 'a {
+            // SYSCOIN: Monitoring is generic over inner services, including notification handlers
+            // that dispatch work; exercise that sibling ownership path with the same real worker.
+            let mut request = Request::owned(
+                notification.method_name().to_owned(),
+                notification.params.take().map(|params| params.into_owned()),
+                Id::Null,
+            );
+            *request.extensions_mut() = std::mem::take(notification.extensions_mut());
+            self.call(request)
+        }
+    }
+
+    // SYSCOIN: A dropped release sender also unblocks its worker, so failed assertions cannot hang
+    // runtime shutdown. No test needs VM work or wall-clock sleeps to keep a worker running.
+    enum BlockingOutcome {
+        Success(String),
+        Error,
+        Panic,
+    }
+
+    fn blocking_test_monitoring(
+        permits: usize,
+        response_limit: u32,
+        parallel: bool,
+    ) -> (
+        Monitoring<BlockingTestService>,
+        Arc<Semaphore>,
+        mpsc::UnboundedReceiver<oneshot::Sender<BlockingOutcome>>,
+    ) {
+        let (started_tx, started_rx) = mpsc::unbounded_channel();
+        let mut module = RpcModule::new(());
+        module
+            .register_blocking_method("eth_call", move |_, _, _| {
+                let (release_tx, release_rx) = oneshot::channel();
+                let _ = started_tx.send(release_tx);
+                match release_rx.blocking_recv() {
+                    Ok(BlockingOutcome::Success(value)) => Ok(value),
+                    Ok(BlockingOutcome::Error) | Err(_) => {
+                        Err(ErrorObjectOwned::owned(-32000, "test error", None::<()>))
+                    }
+                    Ok(BlockingOutcome::Panic) => panic!("test blocking worker panic"),
+                }
+            })
+            .unwrap();
+        let semaphore = Arc::new(Semaphore::new(permits));
+        let monitoring = Monitoring::new(
+            BlockingTestService {
+                methods: module.into(),
+            },
+            response_limit,
+            semaphore.clone(),
+            Arc::new(Semaphore::new(1)),
+            Arc::new(["eth_call"].into_iter().collect()),
+            parallel,
+        );
+        (monitoring, semaphore, started_rx)
+    }
+
+    fn blocking_request(id: u64) -> Request<'static> {
+        Request::owned("eth_call".to_owned(), None, Id::Number(id))
+    }
+
+    async fn bounded<T>(future: impl Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(5), future)
+            .await
+            .expect("blocking RPC test did not make progress")
+    }
+
+    // SYSCOIN: Cancellation must not readmit work while the previous blocking worker still runs;
+    // cancelling a queued request must also prevent it from dispatching later.
+    #[tokio::test]
+    async fn cancelled_call_keeps_blocking_worker_permit() {
+        let (monitoring, semaphore, mut started) = blocking_test_monitoring(1, 1_000_000, false);
+        let task = tokio::spawn(monitoring.call(blocking_request(1)));
+        let release = bounded(started.recv()).await.unwrap();
+        task.abort();
+        assert!(bounded(task).await.unwrap_err().is_cancelled());
+        assert_eq!(semaphore.available_permits(), 0);
+
+        let mut waiter = Box::pin(monitoring.call(blocking_request(2)));
+        assert!(waiter.as_mut().now_or_never().is_none());
+        assert!(started.try_recv().is_err());
+        drop(waiter);
+        assert!(
+            release
+                .send(BlockingOutcome::Success("done".into()))
+                .is_ok()
+        );
+        let _permit = bounded(semaphore.acquire()).await.unwrap();
+        assert!(started.try_recv().is_err());
+    }
+
+    // SYSCOIN: Notification dispatch shares the same cancellation boundary as ordinary calls.
+    #[tokio::test]
+    async fn cancelled_notification_keeps_blocking_worker_permit() {
+        let (monitoring, semaphore, mut started) = blocking_test_monitoring(1, 1_000_000, false);
+        let notification = Notification::new(Cow::Borrowed("eth_call"), None);
+        let task = tokio::spawn(monitoring.notification(notification));
+        let release = bounded(started.recv()).await.unwrap();
+        task.abort();
+        assert!(bounded(task).await.unwrap_err().is_cancelled());
+        assert_eq!(semaphore.available_permits(), 0);
+        assert!(
+            release
+                .send(BlockingOutcome::Success("done".into()))
+                .is_ok()
+        );
+        let _permit = bounded(semaphore.acquire()).await.unwrap();
+    }
+
+    // SYSCOIN: Both batch dispatch modes must retain running-worker admission when the client
+    // drops the whole batch, while entries still waiting for admission must never execute.
+    #[tokio::test]
+    async fn cancelled_batches_keep_blocking_worker_permits() {
+        for parallel in [false, true] {
+            let (monitoring, semaphore, mut started) =
+                blocking_test_monitoring(1, 1_000_000, parallel);
+            let batch = Batch::from(vec![
+                Ok(BatchEntry::Call(blocking_request(1))),
+                Ok(BatchEntry::Call(blocking_request(2))),
+            ]);
+            let task = tokio::spawn(monitoring.batch(batch));
+            let release = bounded(started.recv()).await.unwrap();
+            task.abort();
+            assert!(bounded(task).await.unwrap_err().is_cancelled());
+            assert_eq!(semaphore.available_permits(), 0);
+            assert!(
+                release
+                    .send(BlockingOutcome::Success("done".into()))
+                    .is_ok()
+            );
+            let _permit = bounded(semaphore.acquire()).await.unwrap();
+            assert!(started.try_recv().is_err());
+        }
+    }
+
+    // SYSCOIN: A response overflow aborts sibling async wrappers without cancelling their workers.
+    #[tokio::test]
+    async fn parallel_batch_overflow_keeps_sibling_worker_permit() {
+        let (monitoring, semaphore, mut started) = blocking_test_monitoring(2, 100, true);
+        let batch = Batch::from(vec![
+            Ok(BatchEntry::Call(blocking_request(1))),
+            Ok(BatchEntry::Call(blocking_request(2))),
+        ]);
+        let task = tokio::spawn(monitoring.batch(batch));
+        let first = bounded(started.recv()).await.unwrap();
+        let second = bounded(started.recv()).await.unwrap();
+        assert!(
+            first
+                .send(BlockingOutcome::Success("x".repeat(200)))
+                .is_ok()
+        );
+        let response = bounded(task).await.unwrap();
+        assert!(response.is_error());
+        assert_eq!(semaphore.available_permits(), 1);
+        assert!(second.send(BlockingOutcome::Success("done".into())).is_ok());
+        let _permits = bounded(semaphore.acquire_many(2)).await.unwrap();
+    }
+
+    // SYSCOIN: Completed responses stay in the batch accumulator. Success, error, and panic must
+    // release their admission before the batch finishes so later entries cannot deadlock.
+    #[tokio::test]
+    async fn completed_blocking_responses_release_batch_permits() {
+        let (monitoring, semaphore, mut started) = blocking_test_monitoring(1, 1_000_000, true);
+        let batch = Batch::from(
+            (1..=3)
+                .map(|id| Ok(BatchEntry::Call(blocking_request(id))))
+                .collect::<Vec<_>>(),
+        );
+        let task = tokio::spawn(monitoring.batch(batch));
+        for outcome in [
+            BlockingOutcome::Success("done".into()),
+            BlockingOutcome::Error,
+            BlockingOutcome::Panic,
+        ] {
+            let release = bounded(started.recv()).await.unwrap();
+            assert!(release.send(outcome).is_ok());
+        }
+        let response = bounded(task).await.unwrap();
+        let responses: Vec<serde_json::Value> =
+            serde_json::from_str(response.as_json().get()).unwrap();
+        assert_eq!(responses.len(), 3);
+        assert_eq!(semaphore.available_permits(), 1);
+    }
 
     // SYSCOIN: Observe inner dispatch so a classification assertion alone cannot hide a bypass.
     #[derive(Clone)]
