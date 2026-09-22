@@ -2,8 +2,12 @@
 pragma solidity ^0.8.26;
 
 import {MODULE_TYPE_EXECUTOR} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
+import {PaliECDSAValidatorModule} from "contracts/src/pali/PaliECDSAValidatorModule.sol";
 import {PaliGuardianRecoveryModule} from "contracts/src/pali/PaliGuardianRecoveryModule.sol";
+import {PaliSmartAccount} from "contracts/src/pali/PaliSmartAccount.sol";
 
 contract MockRecoveryAccount {
     address public recoveryModule;
@@ -440,6 +444,106 @@ contract PaliGuardianRecoveryModuleTest is Test {
             recovery.scheduleRecovery(address(contractGuardianAccount), SALT, MODE, executionCalldata, approvals);
 
         assertEq(operationId, recovery.getOperationId(address(contractGuardianAccount), SALT, MODE, executionCalldata));
+    }
+
+    function testPaliSmartAccountGuardianRequiresERC7739WrappedRecoveryApproval() public {
+        (PaliSmartAccount smartGuardian, PaliECDSAValidatorModule validator) = _deploySmartAccountGuardian();
+        _installSingleGuardian(account, address(smartGuardian), 1 days);
+        bytes32 recoveryHash = recovery.getRecoveryScheduleHash(address(account), SALT, MODE, executionCalldata);
+        PaliGuardianRecoveryModule.GuardianApproval[] memory approvals =
+            _smartAccountGuardianApprovals(smartGuardian, validator, recoveryHash);
+
+        assertEq(smartGuardian.isValidSignature(recoveryHash, approvals[0].signature), bytes4(0xffffffff));
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliGuardianRecoveryModule.UnauthorizedRecoverySchedule.selector, address(this))
+        );
+        recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
+
+        approvals = _smartAccountGuardianApprovals(
+            smartGuardian, validator, _personalSignHash(smartGuardian.domainSeparator(), recoveryHash)
+        );
+        assertEq(smartGuardian.isValidSignature(recoveryHash, approvals[0].signature), bytes4(0x1626ba7e));
+        bytes32 operationId = recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
+        assertEq(operationId, recovery.getOperationId(address(account), SALT, MODE, executionCalldata));
+
+        vm.warp(block.timestamp + 1 days);
+        recovery.executeRecovery(address(account), SALT, MODE, executionCalldata);
+        assertEq(account.executionCount(), 1);
+    }
+
+    function testPaliSmartAccountGuardianRejectsApprovalForAnotherGuardianAccount() public {
+        (PaliSmartAccount smartGuardian, PaliECDSAValidatorModule validator) = _deploySmartAccountGuardian();
+        (PaliSmartAccount otherGuardian,) = _deploySmartAccountGuardian();
+        _installSingleGuardian(account, address(smartGuardian), 1 days);
+        bytes32 recoveryHash = recovery.getRecoveryScheduleHash(address(account), SALT, MODE, executionCalldata);
+        PaliGuardianRecoveryModule.GuardianApproval[] memory approvals = _smartAccountGuardianApprovals(
+            smartGuardian, validator, _personalSignHash(otherGuardian.domainSeparator(), recoveryHash)
+        );
+
+        assertEq(smartGuardian.isValidSignature(recoveryHash, approvals[0].signature), bytes4(0xffffffff));
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliGuardianRecoveryModule.UnauthorizedRecoverySchedule.selector, address(this))
+        );
+        recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
+    }
+
+    function testPaliSmartAccountGuardianRejectsApprovalForAnotherChain() public {
+        (PaliSmartAccount smartGuardian, PaliECDSAValidatorModule validator) = _deploySmartAccountGuardian();
+        _installSingleGuardian(account, address(smartGuardian), 1 days);
+        bytes32 recoveryHash = recovery.getRecoveryScheduleHash(address(account), SALT, MODE, executionCalldata);
+        bytes32 otherChainDomain = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("pali.smart-account.erc1271"),
+                keccak256("1"),
+                block.chainid + 1,
+                address(smartGuardian)
+            )
+        );
+        assertNotEq(otherChainDomain, smartGuardian.domainSeparator());
+        PaliGuardianRecoveryModule.GuardianApproval[] memory approvals =
+            _smartAccountGuardianApprovals(smartGuardian, validator, _personalSignHash(otherChainDomain, recoveryHash));
+
+        assertEq(smartGuardian.isValidSignature(recoveryHash, approvals[0].signature), bytes4(0xffffffff));
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliGuardianRecoveryModule.UnauthorizedRecoverySchedule.selector, address(this))
+        );
+        recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
+    }
+
+    function _deploySmartAccountGuardian()
+        private
+        returns (PaliSmartAccount smartGuardian, PaliECDSAValidatorModule validator)
+    {
+        validator = new PaliECDSAValidatorModule();
+        PaliSmartAccount implementation = new PaliSmartAccount(IEntryPoint(address(0x4337)));
+        address[] memory owners = new address[](1);
+        owners[0] = guardian;
+        PaliSmartAccount.ModuleInit[] memory validators = new PaliSmartAccount.ModuleInit[](1);
+        validators[0] = PaliSmartAccount.ModuleInit({module: address(validator), data: abi.encode(owners, uint64(1))});
+        PaliSmartAccount.ModuleInit[] memory empty = new PaliSmartAccount.ModuleInit[](0);
+        PaliSmartAccount.ModuleInit memory fallbackHandler;
+        bytes memory initCode = abi.encode(validators, empty, fallbackHandler, empty);
+        ERC1967Proxy proxy =
+            new ERC1967Proxy(address(implementation), abi.encodeCall(PaliSmartAccount.initializeAccount, (initCode)));
+        smartGuardian = PaliSmartAccount(payable(address(proxy)));
+    }
+
+    function _smartAccountGuardianApprovals(
+        PaliSmartAccount smartGuardian,
+        PaliECDSAValidatorModule validator,
+        bytes32 signingHash
+    ) private view returns (PaliGuardianRecoveryModule.GuardianApproval[] memory approvals) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(guardianPrivateKey, signingHash);
+        approvals = new PaliGuardianRecoveryModule.GuardianApproval[](1);
+        approvals[0] = PaliGuardianRecoveryModule.GuardianApproval({
+            guardian: address(smartGuardian), signature: abi.encodePacked(address(validator), r, s, bytes1(v))
+        });
+    }
+
+    function _personalSignHash(bytes32 domainSeparator, bytes32 hash) private pure returns (bytes32) {
+        bytes32 structHash = keccak256(abi.encode(keccak256("PersonalSign(bytes prefixed)"), hash));
+        return keccak256(abi.encodePacked(hex"1901", domainSeparator, structHash));
     }
 
     function _guardianApprovals()

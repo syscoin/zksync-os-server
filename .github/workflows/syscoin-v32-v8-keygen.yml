@@ -26,11 +26,11 @@ env:
   ZKSYNC_OS_REPOSITORY: https://github.com/matter-labs/zksync-os.git
   ZKSYNC_OS_BASE_COMMIT: 69bc430549e88f9264066d14f2001707572c5d33
   ZKSYNC_OS_BASE_TREE: 233b36e77843e460ee9da3e344ee227fa8cce04a
-  ZKSYNC_OS_PATCHED_TREE: 9e677f536230cc87c1bce8011f3a8074eb39e37a
-  ZKSYNC_OS_PATCH_SIZE: "275841"
-  ZKSYNC_OS_PATCH_SHA256: d95e595ddc4d1fa45c291b12cbaa77308c67ff23221c249b0eb5f7907a8f7287
+  ZKSYNC_OS_PATCHED_TREE: ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752
+  ZKSYNC_OS_PATCH_SIZE: "282818"
+  ZKSYNC_OS_PATCH_SHA256: 8c2eec0d9c1332bb0a1d301f4ea33bada6b56d46c7bb3944619b6849aeecf20d
   ZKSYNC_OS_HELPER_SIZE: "7323"
-  ZKSYNC_OS_HELPER_SHA256: 10b725e22695168c1d1aaf6d11b5458df2607c55f1eb77ef66bf5b67e1369b42
+  ZKSYNC_OS_HELPER_SHA256: c44b673a4c6a00bd0fc42dbaebfc33ca5264a96be6b03cf7ee10648c6d170f2b
 
   # SYSCOIN: The Gateway-local ValidatorTimelock address is an application input. The current
   # value is the integration candidate produced by the unmodified V32 conversion; keygen remains
@@ -64,7 +64,7 @@ env:
   # but old app identities must never look canonical. Replace every zero below from two clean
   # builds of this exact tree, install the same values in the server FRI verifier, and only then
   # change APP_IDENTITY_STATUS to `attested`.
-  APP_IDENTITY_SOURCE_TREE: 9e677f536230cc87c1bce8011f3a8074eb39e37a
+  APP_IDENTITY_SOURCE_TREE: ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752
   APP_IDENTITY_STATUS: regeneration-required
   APP_BIN_SIZE: "0"
   APP_BIN_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"

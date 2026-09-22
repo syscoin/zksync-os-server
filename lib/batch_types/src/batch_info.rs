@@ -8,7 +8,7 @@ use std::ops::{Deref, DerefMut};
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::{CommitBatchInfo, DACommitmentScheme, StoredBatchInfo};
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
-use zksync_os_interface::types::TxOutput;
+use zksync_os_interface::types::{L2ToL1LogWithPreimage, TxOutput};
 use zksync_os_types::{
     BlockOutput, ProtocolSemanticVersion, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
     SYSCOIN_GATEWAY_CHAIN_ID, ZkTransaction,
@@ -223,16 +223,10 @@ fn authenticate_syscoin_edge_da_relay_log(
     tx_output: &TxOutput,
     expected_message: &[u8],
 ) -> anyhow::Result<()> {
-    let expected_key = B256::left_padding_from(SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER.as_slice());
     let canonical_logs = tx_output
         .l2_to_l1_logs
         .iter()
-        .filter(|log| {
-            log.log.l2_shard_id == 0
-                && log.log.is_service
-                && log.log.sender == SYSCOIN_L2_TO_L1_MESSENGER_ADDRESS
-                && log.log.key == expected_key
-        })
+        .filter(|log| is_canonical_syscoin_edge_da_relay_log(log))
         .collect::<Vec<_>>();
     ensure!(
         canonical_logs.len() == 1,
@@ -252,6 +246,13 @@ fn authenticate_syscoin_edge_da_relay_log(
         );
     }
     Ok(())
+}
+
+fn is_canonical_syscoin_edge_da_relay_log(log: &L2ToL1LogWithPreimage) -> bool {
+    log.log.l2_shard_id == 0
+        && log.log.is_service
+        && log.log.sender == SYSCOIN_L2_TO_L1_MESSENGER_ADDRESS
+        && log.log.key == B256::left_padding_from(SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER.as_slice())
 }
 
 /// SYSCOIN: Reconstructs compact edge-DA messages and their ordered, context-bound root from
@@ -293,6 +294,15 @@ pub fn syscoin_edge_da_refs_for_blocks<'a>(
                 tx.input().as_ref(),
                 compact_edge_da_commit_target,
             ) {
+                // SYSCOIN: A nested commit must not disappear from the proven DA obligations.
+                // Replay can omit preimages, so identify relay emissions from log metadata alone.
+                ensure!(
+                    !tx_output
+                        .l2_to_l1_logs
+                        .iter()
+                        .any(is_canonical_syscoin_edge_da_relay_log),
+                    "canonical edge DA relay message emitted by unsupported Gateway commit"
+                );
                 continue;
             }
 
@@ -600,11 +610,11 @@ mod canonical_output_tests {
     use alloy::consensus::{Header, Sealable, SignableTransaction, TxLegacy};
     use alloy::primitives::{Address, B256, Bytes, U256, address, keccak256};
     use alloy::sol_types::SolCall;
-    use zksync_os_contract_interface::IExecutor;
     use zksync_os_contract_interface::calldata::encode_commit_batch_data;
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
     };
+    use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
     use zksync_os_interface::types::{
         ExecutionOutput, ExecutionResult, L2ToL1Log, L2ToL1LogWithPreimage, TxOutput,
     };
@@ -788,6 +798,159 @@ mod canonical_output_tests {
         .unwrap();
         assert!(edge_input.is_empty());
         assert_eq!(edge_root, B256::ZERO);
+
+        let ordinary_tx = TxLegacy {
+            to: Address::ZERO.into(),
+            ..Default::default()
+        }
+        .into_signed(signature);
+        let ordinary_transactions = [ZkTransaction::from(Recovered::new_unchecked(
+            L2Envelope::from(ordinary_tx),
+            Address::ZERO,
+        ))];
+        let mut ordinary_block = block_output.clone();
+        ordinary_block.tx_results[0]
+            .as_mut()
+            .unwrap()
+            .l2_to_l1_logs
+            .clear();
+        let (mixed_input, mixed_root) = syscoin_edge_da_refs_for_blocks(
+            [
+                (&ordinary_block, ordinary_transactions.as_slice()),
+                (&block_output, transactions.as_slice()),
+                (&ordinary_block, ordinary_transactions.as_slice()),
+            ],
+            commit_target,
+            SYSCOIN_GATEWAY_CHAIN_ID,
+        )
+        .unwrap();
+        assert_eq!(mixed_input, gateway_input);
+        assert_eq!(mixed_root, gateway_root);
+    }
+
+    #[test]
+    fn supported_multisig_commit_preserves_the_canonical_relay_message() {
+        let input = compact_edge_commit_call_data(
+            57_057,
+            7,
+            DACommitmentScheme::BlobsZKsyncOS,
+            vec![0x11; 32],
+            32,
+        );
+        let call = IExecutor::commitBatchesSharedBridgeCall::abi_decode(&input).unwrap();
+        let multisig_input = IMultisigCommitter::commitBatchesMultisigCall {
+            chainAddress: call._chainAddress,
+            _processBatchFrom: call._processFrom,
+            _processBatchTo: call._processTo,
+            _batchData: call._commitData,
+            signers: Vec::new(),
+            signatures: Vec::new(),
+        }
+        .abi_encode();
+        let target = address!("0000000000000000000000000000000000001234");
+        assert!(is_compact_edge_da_commit_tx(
+            Some(target),
+            &multisig_input,
+            target
+        ));
+        assert_eq!(
+            compact_edge_da_ref_message_from_commit_calldata(&multisig_input).unwrap(),
+            compact_edge_da_ref_message_from_commit_calldata(&input).unwrap(),
+        );
+    }
+
+    #[test]
+    fn unsupported_gateway_calls_cannot_hide_canonical_relay_logs() {
+        let commit_target = address!("0000000000000000000000000000000000001234");
+        let wrapper = address!("0000000000000000000000000000000000005678");
+        let commit_input = compact_edge_commit_call_data(
+            57_057,
+            7,
+            DACommitmentScheme::BlobsZKsyncOS,
+            vec![0x11; 32],
+            32,
+        );
+        let valid_message =
+            compact_edge_da_ref_message(57_057, 7, keccak256([0x11; 32]), &[0x11; 32]);
+        for (target, input) in [(wrapper, commit_input), (commit_target, vec![0; 4])] {
+            let signature =
+                alloy::primitives::Signature::new(Default::default(), Default::default(), false);
+            let signed = TxLegacy {
+                chain_id: Some(SYSCOIN_GATEWAY_CHAIN_ID),
+                to: target.into(),
+                input: Bytes::from(input),
+                ..Default::default()
+            }
+            .into_signed(signature);
+            let transactions = [ZkTransaction::from(Recovered::new_unchecked(
+                L2Envelope::from(signed),
+                Address::ZERO,
+            ))];
+            for retain_preimage in [true, false] {
+                for message in [&valid_message[..], &[][..]] {
+                    let mut output = output_with_result(ExecutionResult::Success(
+                        ExecutionOutput::Call(Vec::new()),
+                    ));
+                    output
+                        .l2_to_l1_logs
+                        .push(canonical_relay_log(message, retain_preimage));
+                    let mut block = BlockOutput {
+                        header: Header::default().seal_slow(),
+                        tx_results: vec![Ok(output)],
+                        storage_writes: Vec::new(),
+                        account_diffs: Vec::new(),
+                        published_preimages: Vec::new(),
+                        pubdata: BlockPubdata::new(0),
+                        computational_native_used: 0,
+                    };
+                    let reconstruct = |block: &BlockOutput, chain_id| {
+                        syscoin_edge_da_refs_for_blocks(
+                            [(block, transactions.as_slice())],
+                            commit_target,
+                            chain_id,
+                        )
+                    };
+                    assert!(
+                        reconstruct(&block, SYSCOIN_GATEWAY_CHAIN_ID)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("unsupported Gateway commit")
+                    );
+                    assert_eq!(
+                        reconstruct(&block, 57_057).unwrap(),
+                        (Vec::new(), B256::ZERO)
+                    );
+
+                    block.tx_results[0]
+                        .as_mut()
+                        .unwrap()
+                        .l2_to_l1_logs
+                        .push(canonical_relay_log(message, retain_preimage));
+                    assert!(reconstruct(&block, SYSCOIN_GATEWAY_CHAIN_ID).is_err());
+                    block.tx_results[0].as_mut().unwrap().execution_result =
+                        ExecutionResult::Revert(Vec::new());
+                    assert_eq!(
+                        reconstruct(&block, SYSCOIN_GATEWAY_CHAIN_ID).unwrap(),
+                        (Vec::new(), B256::ZERO)
+                    );
+
+                    let output = block.tx_results[0].as_mut().unwrap();
+                    output.execution_result =
+                        ExecutionResult::Success(ExecutionOutput::Call(Vec::new()));
+                    output.l2_to_l1_logs.truncate(1);
+                    output.l2_to_l1_logs[0].log.key = B256::ZERO;
+                    assert_eq!(
+                        reconstruct(&block, SYSCOIN_GATEWAY_CHAIN_ID).unwrap(),
+                        (Vec::new(), B256::ZERO)
+                    );
+                    block.tx_results[0].as_mut().unwrap().l2_to_l1_logs.clear();
+                    assert_eq!(
+                        reconstruct(&block, SYSCOIN_GATEWAY_CHAIN_ID).unwrap(),
+                        (Vec::new(), B256::ZERO)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
