@@ -82,7 +82,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             parent_timestamp,
         } = self.resolve_simulation_start_context(block)?;
         // SYSCOIN: Reserve the complete request before any VM work, in both validation modes.
-        // Fill omitted gas here so execution uses the exact allowances charged to the budget.
+        // Bind omitted gas before charging its allowance and the minimum per-call work cost.
         apply_simulation_gas_budget(
             &mut block_state_calls,
             block_context.gas_limit,
@@ -592,8 +592,12 @@ fn apply_simulate_block_overrides(
     Ok(())
 }
 
-// SYSCOIN: Charge declared transaction allowances, not block-header gas or post-execution
-// consumption. This bounds work before execution while preserving accepted call semantics.
+// SYSCOIN: Even zero-gas calls incur construction and encoding work. A basic transaction's
+// gas allowance serves as an admission floor; it must not increase the call's actual gas.
+const MIN_SIMULATION_CALL_CHARGE: u64 = 21_000;
+
+// SYSCOIN: Charge effective allowances with a per-call floor before execution, across all
+// blocks. Block-header limits and post-execution consumption cannot bound preprocessing work.
 fn apply_simulation_gas_budget(
     blocks: &mut [SimBlock],
     mut block_gas_limit: u64,
@@ -617,12 +621,11 @@ fn apply_simulation_gas_budget(
             simulation_default_gas_limit(&block.calls, block_gas_limit, per_call_gas_cap)?;
         for call in &mut block.calls {
             let gas = call.gas.get_or_insert(default_gas);
-            remaining =
-                remaining
-                    .checked_sub(*gas)
-                    .ok_or(EthCallError::SimulateGasLimitExceeded {
-                        limit: request_gas_limit.get(),
-                    })?;
+            remaining = remaining
+                .checked_sub((*gas).max(MIN_SIMULATION_CALL_CHARGE))
+                .ok_or(EthCallError::SimulateGasLimitExceeded {
+                    limit: request_gas_limit.get(),
+                })?;
         }
     }
     Ok(())
@@ -916,18 +919,90 @@ mod tests {
         );
     }
 
+    // SYSCOIN: Tiny allowances still incur per-call construction and encoding work. The
+    // admission floor must cover explicit and defaulted gas without changing VM allowances.
+    #[test]
+    fn simulation_request_budget_bounds_zero_and_tiny_gas_calls() {
+        let limit = NonZeroU64::new(100_000_000).unwrap();
+        for gas in [None, Some(0), Some(1), Some(20_999)] {
+            let call = TransactionRequest {
+                gas,
+                ..Default::default()
+            };
+            let mut blocks = vec![SimBlock {
+                calls: vec![call.clone(); 4_761],
+                ..Default::default()
+            }];
+            apply_simulation_gas_budget(&mut blocks, 100_000_000, 0, 0, limit).unwrap();
+            assert!(
+                blocks[0]
+                    .calls
+                    .iter()
+                    .all(|c| c.gas == Some(gas.unwrap_or(0)))
+            );
+            blocks[0].calls.push(call);
+            assert!(matches!(
+                apply_simulation_gas_budget(&mut blocks, 100_000_000, 0, 0, limit),
+                Err(EthCallError::SimulateGasLimitExceeded { limit: 100_000_000 })
+            ));
+        }
+    }
+
+    #[test]
+    fn simulation_request_budget_charges_floor_across_blocks_and_tx_types() {
+        use zksync_os_types::{L1PriorityTxType, L1TxType};
+
+        for transaction_type in [None, Some(0), Some(2), Some(L1PriorityTxType::TX_TYPE)] {
+            let call = TransactionRequest {
+                transaction_type,
+                gas: Some(0),
+                nonce: Some(7),
+                ..Default::default()
+            };
+            let mut blocks = vec![SimBlock::default().call(call.clone()); 2];
+            apply_simulation_gas_budget(&mut blocks, 0, 0, 0, NonZeroU64::new(42_000).unwrap())
+                .unwrap();
+            assert!(blocks.iter().all(|block| block.calls == [call.clone()]));
+            assert!(matches!(
+                apply_simulation_gas_budget(&mut blocks, 0, 0, 0, NonZeroU64::new(41_999).unwrap(),),
+                Err(EthCallError::SimulateGasLimitExceeded { limit: 41_999 })
+            ));
+            blocks[1].calls[0].gas = Some(60_000);
+            apply_simulation_gas_budget(
+                &mut blocks,
+                60_000,
+                0,
+                0,
+                NonZeroU64::new(81_000).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(blocks[0].calls[0].gas, Some(0));
+            assert_eq!(blocks[1].calls[0].gas, Some(60_000));
+            assert!(matches!(
+                apply_simulation_gas_budget(
+                    &mut blocks,
+                    60_000,
+                    0,
+                    0,
+                    NonZeroU64::new(80_999).unwrap(),
+                ),
+                Err(EthCallError::SimulateGasLimitExceeded { limit: 80_999 })
+            ));
+        }
+    }
+
     #[test]
     fn simulation_request_budget_preserves_exact_boundary_and_rejects_one_more() {
-        let limit = NonZeroU64::new(100).unwrap();
+        let limit = NonZeroU64::new(100_000).unwrap();
         let mut blocks = vec![
-            SimBlock::default().call(TransactionRequest::default().gas_limit(60)),
-            SimBlock::default().call(TransactionRequest::default().gas_limit(40)),
+            SimBlock::default().call(TransactionRequest::default().gas_limit(60_000)),
+            SimBlock::default().call(TransactionRequest::default().gas_limit(40_000)),
         ];
-        apply_simulation_gas_budget(&mut blocks, 100, 10, 100, limit).unwrap();
-        blocks[1].calls[0].gas = Some(41);
+        apply_simulation_gas_budget(&mut blocks, 100_000, 10, 100_000, limit).unwrap();
+        blocks[1].calls[0].gas = Some(40_001);
         assert!(matches!(
-            apply_simulation_gas_budget(&mut blocks, 100, 10, 100, limit),
-            Err(EthCallError::SimulateGasLimitExceeded { limit: 100 })
+            apply_simulation_gas_budget(&mut blocks, 100_000, 10, 100_000, limit),
+            Err(EthCallError::SimulateGasLimitExceeded { limit: 100_000 })
         ));
     }
 
@@ -947,7 +1022,7 @@ mod tests {
                 .call(TransactionRequest::default()),
             SimBlock::default().call(TransactionRequest::default()),
         ];
-        apply_simulation_gas_budget(&mut blocks, 60, 10, 100, NonZeroU64::new(42).unwrap())
+        apply_simulation_gas_budget(&mut blocks, 60, 10, 100, NonZeroU64::new(126_000).unwrap())
             .unwrap();
         let gas: Vec<Vec<_>> = blocks
             .iter()

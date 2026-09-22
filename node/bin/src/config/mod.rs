@@ -1210,8 +1210,9 @@ pub struct RpcConfig {
     #[config(default_t = 100_000_000)]
     pub eth_simulate_block_gas_limit: u64,
 
-    /// SYSCOIN: Total transaction gas allowances admitted across all blocks in one
-    /// eth_simulateV1 request. This remains enforced when the block override cap is disabled.
+    /// SYSCOIN: Total gas budget across all blocks in one eth_simulateV1 request, charging
+    /// at least 21,000 per call for fixed work without increasing execution gas. Smaller budgets
+    /// admit no calls. This remains enforced when the block override cap is disabled.
     #[config(default_t = NonZeroU64::new(100_000_000).unwrap())]
     pub eth_simulate_gas_limit: NonZeroU64,
 
