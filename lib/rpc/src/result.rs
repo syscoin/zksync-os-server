@@ -188,8 +188,14 @@ impl<Ok> ToRpcResult<Ok, EthCallError> for Result<Ok, EthCallError> {
                 revert.output.as_ref().map(|out| out.as_ref()),
             ),
             EthCallError::SimulateInvalidParams(_)
-            | EthCallError::SimulateInvalidBlockOverride(_) => {
+            | EthCallError::SimulateInvalidBlockOverride(_)
+            // SYSCOIN: Excess caller gas is rejected before VM execution.
+            | EthCallError::CallGasLimitExceeded { .. } => {
                 invalid_params_rpc_err(err.to_string())
+            }
+            // SYSCOIN: Preserve the simulateV1 client-limit code separately from block limits.
+            EthCallError::SimulateGasLimitExceeded { .. } => {
+                rpc_error_with_code(-38026, err.to_string())
             }
             // Error codes -380xx follow the reth implementation of the eth_simulateV1 spec.
             EthCallError::SimulateBlockNumberInvalid { .. } => {
@@ -396,6 +402,27 @@ impl fmt::Display for RevertError {
 mod tests {
     use super::*;
     use zksync_os_rpc_api::types::LogProofTarget;
+
+    // SYSCOIN: A request-wide simulation ceiling must not be reported as a block or VM failure.
+    #[test]
+    fn rpc_gas_budgets_keep_distinct_client_error_codes() {
+        for (err, code) in [
+            (
+                EthCallError::CallGasLimitExceeded { limit: 10_000_000 },
+                -32602,
+            ),
+            (
+                EthCallError::SimulateGasLimitExceeded { limit: 100_000_000 },
+                -38026,
+            ),
+            (EthCallError::SimulateBlockGasLimitExceeded, -38015),
+        ] {
+            let message = err.to_string();
+            let response = Result::<(), _>::Err(err).to_rpc_result().unwrap_err();
+            assert_eq!(response.code(), code);
+            assert_eq!(response.message(), message);
+        }
+    }
 
     // SYSCOIN: Freeze the public distinction between an unsupported topology/target request and
     // an actual internal proof-provider failure so clients do not retry the former indefinitely.

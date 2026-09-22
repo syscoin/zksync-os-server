@@ -1192,7 +1192,8 @@ pub struct RpcConfig {
     #[config(default_t = "0.0.0.0:3050".into())]
     pub address: String,
 
-    /// Gas limit of transactions executed via eth_call
+    /// SYSCOIN: Maximum and default gas allowance for eth_call and debug_traceCall.
+    /// Estimates and transaction filling retain their separate execution limits.
     #[config(default_t = 10000000)]
     pub eth_call_gas: usize,
 
@@ -1208,6 +1209,11 @@ pub struct RpcConfig {
     /// Maximum block gas limit accepted for an `eth_simulateV1` block override.
     #[config(default_t = 100_000_000)]
     pub eth_simulate_block_gas_limit: u64,
+
+    /// SYSCOIN: Total transaction gas allowances admitted across all blocks in one
+    /// eth_simulateV1 request. This remains enforced when the block override cap is disabled.
+    #[config(default_t = NonZeroU64::new(100_000_000).unwrap())]
+    pub eth_simulate_gas_limit: NonZeroU64,
 
     /// Number of concurrent API connections (passed to jsonrpsee, default value there is 128)
     #[config(default_t = 1000)]
@@ -2547,6 +2553,8 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             js_tracer_timeout: c.js_tracer_timeout,
             js_tracer_max_memory_bytes: c.js_tracer_max_memory.0 as usize,
             eth_simulate_block_gas_limit: c.eth_simulate_block_gas_limit,
+            // SYSCOIN: Keep the request budget independent from the per-block compatibility cap.
+            eth_simulate_gas_limit: c.eth_simulate_gas_limit,
             max_connections: c.max_connections,
             max_concurrent_blocking_rpcs: c.max_concurrent_blocking_rpcs,
             max_imt_reconstruction_leaves: c.max_imt_reconstruction_leaves,

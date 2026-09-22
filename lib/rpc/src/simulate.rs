@@ -8,11 +8,12 @@ use alloy::eips::BlockId;
 use alloy::network::primitives::BlockTransactions;
 use alloy::primitives::{Address, B256, Bloom, Bytes, Sealable, U256};
 use alloy::rpc::types::simulate::{
-    MAX_SIMULATE_BLOCKS, SimCallResult, SimulateError, SimulatePayload, SimulatedBlock,
+    MAX_SIMULATE_BLOCKS, SimBlock, SimCallResult, SimulateError, SimulatePayload, SimulatedBlock,
 };
 use alloy::rpc::types::state::StateOverride;
 use alloy::rpc::types::{BlockOverrides, TransactionRequest};
 use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use zk_os_api::helpers::get_nonce;
 use zk_os_basic_system::system_implementation::flat_storage_model::AccountProperties;
@@ -52,7 +53,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         block: Option<BlockId>,
     ) -> Result<Vec<SimulatedBlock<ZkApiBlock>>, EthCallError> {
         let SimulatePayload {
-            block_state_calls,
+            mut block_state_calls,
             trace_transfers,
             validation,
             return_full_transactions,
@@ -80,6 +81,15 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             parent_block_number,
             parent_timestamp,
         } = self.resolve_simulation_start_context(block)?;
+        // SYSCOIN: Reserve the complete request before any VM work, in both validation modes.
+        // Fill omitted gas here so execution uses the exact allowances charged to the budget.
+        apply_simulation_gas_budget(
+            &mut block_state_calls,
+            block_context.gas_limit,
+            self.config.eth_call_gas as u64,
+            self.config.eth_simulate_block_gas_limit,
+            self.config.eth_simulate_gas_limit,
+        )?;
         let base_state = self.storage.state_view_at(parent_block_number)?;
         let mut overlays = Arc::new(BTreeMap::new());
         let mut simulated_blocks = Vec::with_capacity(block_state_calls.len());
@@ -582,6 +592,42 @@ fn apply_simulate_block_overrides(
     Ok(())
 }
 
+// SYSCOIN: Charge declared transaction allowances, not block-header gas or post-execution
+// consumption. This bounds work before execution while preserving accepted call semantics.
+fn apply_simulation_gas_budget(
+    blocks: &mut [SimBlock],
+    mut block_gas_limit: u64,
+    per_call_gas_cap: u64,
+    max_block_gas_limit: u64,
+    request_gas_limit: NonZeroU64,
+) -> Result<(), EthCallError> {
+    let mut remaining = request_gas_limit.get();
+    for block in blocks {
+        if let Some(gas_limit) = block
+            .block_overrides
+            .as_ref()
+            .and_then(|overrides| overrides.gas_limit)
+        {
+            if max_block_gas_limit != 0 && gas_limit > max_block_gas_limit {
+                return Err(EthCallError::SimulateBlockGasLimitExceeded);
+            }
+            block_gas_limit = gas_limit;
+        }
+        let default_gas =
+            simulation_default_gas_limit(&block.calls, block_gas_limit, per_call_gas_cap)?;
+        for call in &mut block.calls {
+            let gas = call.gas.get_or_insert(default_gas);
+            remaining =
+                remaining
+                    .checked_sub(*gas)
+                    .ok_or(EthCallError::SimulateGasLimitExceeded {
+                        limit: request_gas_limit.get(),
+                    })?;
+        }
+    }
+    Ok(())
+}
+
 fn simulation_default_gas_limit(
     calls: &[TransactionRequest],
     block_gas_limit: u64,
@@ -841,6 +887,118 @@ fn simulate_error_for_invalid_transaction(err: &InvalidTransaction) -> SimulateE
 mod tests {
     use super::*;
     use zksync_os_storage_api::BlockHashes;
+
+    // SYSCOIN: Exercise the admission boundary with the same effective gas fields passed to
+    // transaction construction, including overflow and inherited/default allowances.
+    #[test]
+    fn simulation_request_budget_rejects_multiblock_amplification() {
+        let limit = NonZeroU64::new(100_000_000).unwrap();
+        let mut blocks = vec![
+            SimBlock::default().call(TransactionRequest::default());
+            MAX_SIMULATE_BLOCKS as usize
+        ];
+        assert!(matches!(
+            apply_simulation_gas_budget(&mut blocks, 100_000_000, 10_000_000, 100_000_000, limit),
+            Err(EthCallError::SimulateGasLimitExceeded { .. })
+        ));
+
+        let mut blocks = vec![
+            SimBlock::default()
+                .call(TransactionRequest::default().gas_limit(21_000));
+            MAX_SIMULATE_BLOCKS as usize
+        ];
+        apply_simulation_gas_budget(&mut blocks, 100_000_000, 10_000_000, 100_000_000, limit)
+            .unwrap();
+        assert!(
+            blocks
+                .iter()
+                .all(|block| block.calls[0].gas == Some(21_000))
+        );
+    }
+
+    #[test]
+    fn simulation_request_budget_preserves_exact_boundary_and_rejects_one_more() {
+        let limit = NonZeroU64::new(100).unwrap();
+        let mut blocks = vec![
+            SimBlock::default().call(TransactionRequest::default().gas_limit(60)),
+            SimBlock::default().call(TransactionRequest::default().gas_limit(40)),
+        ];
+        apply_simulation_gas_budget(&mut blocks, 100, 10, 100, limit).unwrap();
+        blocks[1].calls[0].gas = Some(41);
+        assert!(matches!(
+            apply_simulation_gas_budget(&mut blocks, 100, 10, 100, limit),
+            Err(EthCallError::SimulateGasLimitExceeded { limit: 100 })
+        ));
+    }
+
+    #[test]
+    fn simulation_request_budget_binds_defaults_and_inherited_overrides() {
+        let mut blocks = vec![
+            SimBlock::default()
+                .call(TransactionRequest::default().gas_limit(10))
+                .call(TransactionRequest::default()),
+            SimBlock::default()
+                .with_block_overrides(BlockOverrides {
+                    gas_limit: Some(12),
+                    ..Default::default()
+                })
+                .call(TransactionRequest::default().gas_limit(2))
+                .call(TransactionRequest::default())
+                .call(TransactionRequest::default()),
+            SimBlock::default().call(TransactionRequest::default()),
+        ];
+        apply_simulation_gas_budget(&mut blocks, 60, 10, 100, NonZeroU64::new(42).unwrap())
+            .unwrap();
+        let gas: Vec<Vec<_>> = blocks
+            .iter()
+            .map(|block| block.calls.iter().map(|call| call.gas.unwrap()).collect())
+            .collect();
+        assert_eq!(gas, vec![vec![10, 10], vec![2, 5, 5], vec![10]]);
+        assert_eq!(
+            blocks[1].block_overrides.as_ref().unwrap().gas_limit,
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn simulation_request_budget_still_applies_without_block_override_cap() {
+        let mut blocks = vec![
+            SimBlock::default()
+                .with_block_overrides(BlockOverrides {
+                    gas_limit: Some(u64::MAX),
+                    ..Default::default()
+                })
+                .call(TransactionRequest::default().gas_limit(u64::MAX)),
+            SimBlock::default().call(TransactionRequest::default().gas_limit(1)),
+        ];
+        assert!(matches!(
+            apply_simulation_gas_budget(&mut blocks, 100, 10, 0, NonZeroU64::MAX),
+            Err(EthCallError::SimulateGasLimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn simulation_request_budget_preserves_block_limit_errors() {
+        let limit = NonZeroU64::MAX;
+        let mut oversized_override =
+            vec![SimBlock::default().with_block_overrides(BlockOverrides {
+                gas_limit: Some(101),
+                ..Default::default()
+            })];
+        assert!(matches!(
+            apply_simulation_gas_budget(&mut oversized_override, 100, 10, 100, limit),
+            Err(EthCallError::SimulateBlockGasLimitExceeded)
+        ));
+        let mut overflowing_calls = vec![
+            SimBlock::default()
+                .call(TransactionRequest::default().gas_limit(u64::MAX))
+                .call(TransactionRequest::default().gas_limit(1)),
+        ];
+        assert!(matches!(
+            apply_simulation_gas_budget(&mut overflowing_calls, u64::MAX, 10, 0, limit),
+            Err(EthCallError::SimulateBlockGasLimitExceeded)
+        ));
+    }
 
     #[test]
     fn simulate_block_overrides_reject_non_increasing_sequences() {
