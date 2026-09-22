@@ -89,6 +89,8 @@ fn is_heavy_rpc_method(method: &str) -> bool {
             | "debug_traceTransaction"
             | "eth_call"
             | "eth_estimateGas"
+            // SYSCOIN: Filling an omitted gas limit runs the same VM estimator.
+            | "eth_fillTransaction"
             | "eth_feeHistory"
             | "eth_getBlockReceipts"
             // SYSCOIN: eth_simulateV1 can execute many VM blocks, so gate it with other heavy RPCs.
@@ -547,33 +549,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::{Monitoring, UNKNOWN_METHOD, is_heavy_rpc_method, method_label};
-    use jsonrpsee::MethodResponse;
-    use jsonrpsee::core::middleware::{Batch, Notification};
+    use jsonrpsee::core::middleware::{Batch, BatchEntry, Notification};
     use jsonrpsee::server::middleware::rpc::RpcServiceT;
-    use jsonrpsee::types::Request;
+    use jsonrpsee::types::{Id, Request};
+    use jsonrpsee::{MethodResponse, ResponsePayload};
     use std::borrow::Cow;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::{Notify, Semaphore};
 
+    // SYSCOIN: Observe inner dispatch so a classification assertion alone cannot hide a bypass.
     #[derive(Clone)]
-    struct NotificationTestService {
+    struct AdmissionTestService {
         started: Arc<Notify>,
         release: Arc<Notify>,
     }
 
-    impl RpcServiceT for NotificationTestService {
+    impl RpcServiceT for AdmissionTestService {
         type MethodResponse = MethodResponse;
         type NotificationResponse = MethodResponse;
         type BatchResponse = MethodResponse;
 
-        #[allow(clippy::manual_async_fn)]
         fn call<'a>(
             &self,
-            _request: Request<'a>,
+            request: Request<'a>,
         ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
-            async { MethodResponse::notification() }
+            let started = self.started.clone();
+            let release = self.release.clone();
+            async move {
+                started.notify_one();
+                release.notified().await;
+                let params: serde_json::Value =
+                    serde_json::from_str(request.params.as_ref().unwrap().get()).unwrap();
+                MethodResponse::response(request.id, ResponsePayload::success(params), 1_000_000)
+            }
         }
 
         #[allow(clippy::manual_async_fn)]
@@ -603,9 +613,9 @@ mod tests {
         l2_to_l1_log_proof_semaphore: Arc<Semaphore>,
         started: Arc<Notify>,
         release: Arc<Notify>,
-    ) -> Monitoring<NotificationTestService> {
+    ) -> Monitoring<AdmissionTestService> {
         Monitoring::new(
-            NotificationTestService { started, release },
+            AdmissionTestService { started, release },
             1_000_000,
             blocking_semaphore,
             l2_to_l1_log_proof_semaphore,
@@ -641,6 +651,7 @@ mod tests {
     fn heavy_methods_are_gated() {
         assert!(is_heavy_rpc_method("eth_call"));
         assert!(is_heavy_rpc_method("eth_estimateGas"));
+        assert!(is_heavy_rpc_method("eth_fillTransaction"));
         assert!(is_heavy_rpc_method("eth_getLogs"));
         assert!(is_heavy_rpc_method("debug_traceTransaction"));
         assert!(is_heavy_rpc_method("zks_getL2ToL1LogProof"));
@@ -652,6 +663,119 @@ mod tests {
         assert!(is_heavy_rpc_method("unstable_getLocalRoot"));
         assert!(!is_heavy_rpc_method("eth_blockNumber"));
         assert!(!is_heavy_rpc_method(UNKNOWN_METHOD));
+    }
+
+    // SYSCOIN: Exercise each batch mode because all filler entry paths must share the VM budget.
+    async fn assert_fill_transaction_uses_shared_permit(parallel_batch: Option<bool>) {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let held = semaphore.clone().acquire_owned().await.unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let monitoring = Monitoring::new(
+            AdmissionTestService {
+                started: started.clone(),
+                release: release.clone(),
+            },
+            1_000_000,
+            semaphore.clone(),
+            Arc::new(Semaphore::new(1)),
+            Arc::new(["eth_fillTransaction"].into_iter().collect()),
+            parallel_batch.unwrap_or(false),
+        );
+        let params = serde_json::json!([{
+            "from": "0x0000000000000000000000000000000000000001",
+            "to": "0x0000000000000000000000000000000000000002"
+        }]);
+        let request = Request::owned(
+            "eth_fillTransaction".to_owned(),
+            Some(serde_json::value::to_raw_value(&params).unwrap()),
+            Id::Number(7),
+        );
+        let task = tokio::spawn(async move {
+            if parallel_batch.is_some() {
+                monitoring
+                    .batch(Batch::from(vec![Ok(BatchEntry::Call(request))]))
+                    .await
+            } else {
+                monitoring.call(request).await
+            }
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), started.notified())
+                .await
+                .is_err(),
+            "eth_fillTransaction ran without a heavy-work permit"
+        );
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("eth_fillTransaction did not run after a permit became available");
+        assert_eq!(semaphore.available_permits(), 0);
+
+        release.notify_one();
+        let response = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("eth_fillTransaction did not complete")
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(response.as_json().get()).unwrap();
+        let expected = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": params});
+        assert_eq!(
+            response,
+            if parallel_batch.is_some() {
+                serde_json::json!([expected])
+            } else {
+                expected
+            }
+        );
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fill_transaction_call_uses_shared_permit() {
+        assert_fill_transaction_uses_shared_permit(None).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fill_transaction_sequential_batch_uses_shared_permit() {
+        assert_fill_transaction_uses_shared_permit(Some(false)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fill_transaction_parallel_batch_uses_shared_permit() {
+        assert_fill_transaction_uses_shared_permit(Some(true)).await;
+    }
+
+    // SYSCOIN: Saturating the VM budget must leave ordinary RPC calls responsive.
+    #[tokio::test(start_paused = true)]
+    async fn ordinary_call_does_not_wait_for_heavy_permit() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let held = semaphore.clone().acquire_owned().await.unwrap();
+        let release = Arc::new(Notify::new());
+        release.notify_one();
+        let monitoring = notification_test_monitoring(
+            semaphore.clone(),
+            Arc::new(Semaphore::new(1)),
+            Arc::new(Notify::new()),
+            release,
+        );
+        let request = Request::owned(
+            "eth_blockNumber".to_owned(),
+            Some(serde_json::value::to_raw_value(&serde_json::json!([])).unwrap()),
+            Id::Number(8),
+        );
+
+        let response = tokio::time::timeout(Duration::from_secs(1), monitoring.call(request))
+            .await
+            .expect("ordinary call incorrectly waited for the heavy-work permit");
+        let response: serde_json::Value = serde_json::from_str(response.as_json().get()).unwrap();
+        assert_eq!(
+            response,
+            serde_json::json!({"jsonrpc": "2.0", "id": 8, "result": []})
+        );
+        assert_eq!(semaphore.available_permits(), 0);
+        drop(held);
+        assert_eq!(semaphore.available_permits(), 1);
     }
 
     // SYSCOIN: Omitting a JSON-RPC request ID must not bypass the shared heavy-work ceiling, and
