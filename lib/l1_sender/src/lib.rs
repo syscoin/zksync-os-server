@@ -1121,8 +1121,8 @@ where
             ..Default::default()
         };
 
-        // Top-level failures preserve provider compatibility. Unusable command results may
-        // fall back only for a single command, whose pending dependencies are checked below.
+        // SYSCOIN: Top-level failures preserve provider compatibility. Unusable command results
+        // may fall back only for a single command, whose pending dependencies are checked below.
         let blocks = match self.provider.simulate(&payload).pending().await {
             Ok(blocks)
                 if simulation_block_count_matches(
@@ -1629,6 +1629,8 @@ impl FeeParams {
     }
 }
 
+// SYSCOIN: An incomplete successful reply cannot establish gas for every dependent command;
+// fixed limits would hide the missing simulation instead of validating the wave.
 fn simulation_block_count_matches(
     returned: usize,
     expected: usize,
@@ -1642,6 +1644,8 @@ fn simulation_block_count_matches(
     Ok(returned == expected)
 }
 
+// SYSCOIN: Independent fallback can estimate a singleton, but cannot validate a wave's
+// nonce-ordered state dependencies when a command result is missing or reverted.
 fn simulation_call_gas_limit(
     call: Option<&SimCallResult>,
     command_index: usize,
