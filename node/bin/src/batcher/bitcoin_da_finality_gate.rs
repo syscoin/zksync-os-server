@@ -302,6 +302,18 @@ impl BitcoinDaFinalityGate {
             recovered_hash.eq_ignore_ascii_case(normalized_expected),
             "recovered Bitcoin DA hash mismatch: expected {normalized_expected}, got {recovered_hash}"
         );
+        let attempt = self
+            .storage
+            .reserve_republication(
+                &recovered_hash,
+                self.config.bitcoin_da_max_republish_attempts,
+            )
+            .await?;
+        tracing::warn!(
+            version_hash,
+            attempt,
+            "Reserved Bitcoin DA republication attempt"
+        );
         let republished_hash = client.force_create_blob(&blob).await.map_err(|err| {
             match context {
                 BlobFinalityWaitContext::OwnBatch { batch_number } => anyhow::anyhow!(
@@ -440,11 +452,194 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    const ABC_HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+
+    async fn recovery_rpc(
+        finality: Option<Value>,
+        wallet_error: bool,
+    ) -> (SyscoinClient, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let wallet_calls = Arc::new(AtomicUsize::new(0));
+        let calls = wallet_calls.clone();
+        let app = Router::new().fallback(
+            get(|| async { b"abc".to_vec() }).post(move |Json(request): Json<Value>| {
+                let calls = calls.clone();
+                let finality = finality.clone();
+                async move {
+                    let body = match request["method"].as_str().unwrap() {
+                        "syscoincreatenevmblob" => {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            if wallet_error {
+                                json!({"error": {"code": -1, "message": "ambiguous publication failure"}})
+                            } else {
+                                json!({"result": {"versionhash": ABC_HASH}})
+                            }
+                        }
+                        "getnevmblobdata" if request["params"][1] == true => {
+                            json!({"result": {"data": "616263"}})
+                        }
+                        "getnevmblobdata" => match finality {
+                            Some(state) => json!({"result": state}),
+                            None => json!({"error": {"code": -32602, "message": "missing blob"}}),
+                        },
+                        method => panic!("unexpected method: {method}"),
+                    };
+                    let mut body = body;
+                    body["id"] = request["id"].clone();
+                    Json(body)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SyscoinClient::new(
+            &url,
+            "user",
+            "password",
+            &url,
+            Some(std::time::Duration::from_secs(2)),
+            "test",
+        )
+        .unwrap();
+        (client, wallet_calls, server)
+    }
+
+    #[tokio::test]
+    async fn nonfinal_recovery_stops_at_the_wallet_attempt_budget() {
+        for state in [None, Some(json!({"chainlock": false}))] {
+            let (client, calls, server) = recovery_rpc(state, false).await;
+            let dir = tempfile::tempdir().unwrap();
+            let config = BatcherConfig {
+                bitcoin_da_max_republish_attempts: 2,
+                bitcoin_da_finality_timeout: std::time::Duration::ZERO,
+                bitcoin_da_finality_poll_interval: std::time::Duration::from_millis(1),
+                ..Default::default()
+            };
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            );
+            let result = gate
+                .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
+                .await;
+            assert!(result.unwrap_err().to_string().contains("limit exhausted"));
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_wallet_calls_consume_budget_across_gate_restarts_and_contexts() {
+        let (client, calls, server) = recovery_rpc(None, true).await;
+        let dir = tempfile::tempdir().unwrap();
+        for attempt in 0..3 {
+            let config = BatcherConfig {
+                bitcoin_da_max_republish_attempts: 2,
+                ..Default::default()
+            };
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            );
+            let context = if attempt == 0 {
+                BlobFinalityWaitContext::OwnBatch { batch_number: 1 }
+            } else {
+                BlobFinalityWaitContext::GatewayEdgeRef
+            };
+            let hash = if attempt == 0 {
+                ABC_HASH.to_owned()
+            } else {
+                format!("0x{}", ABC_HASH.to_uppercase())
+            };
+            let error = gate
+                .republish_blob_after_timeout(&client, &hash, context)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(if attempt < 2 {
+                "failed to republish"
+            } else {
+                "limit exhausted"
+            }));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn confirmed_wait_and_finalized_success_need_no_republication_budget() {
+        for finalized in [false, true] {
+            let (client, calls, server) =
+                recovery_rpc(Some(json!({"height": 10, "chainlock": finalized})), false).await;
+            let dir = tempfile::tempdir().unwrap();
+            let config = BatcherConfig {
+                bitcoin_da_max_republish_attempts: 0,
+                bitcoin_da_finality_timeout: std::time::Duration::ZERO,
+                bitcoin_da_finality_poll_interval: std::time::Duration::from_millis(1),
+                ..Default::default()
+            };
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            );
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                gate.wait_for_blob_finality(
+                    &client,
+                    ABC_HASH,
+                    BlobFinalityWaitContext::GatewayEdgeRef,
+                ),
+            )
+            .await;
+            if finalized {
+                result.unwrap().unwrap();
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_gateway_recovery_and_storage_failure_cannot_call_wallet() {
+        let (client, calls, server) = recovery_rpc(None, false).await;
+        let dir = tempfile::tempdir().unwrap();
+        for disabled in [true, false] {
+            let config = BatcherConfig {
+                bitcoin_da_gateway_l1_republish_enabled: !disabled,
+                ..Default::default()
+            };
+            let storage_path = dir
+                .path()
+                .join(if disabled { "disabled" } else { "broken" });
+            let storage = BitcoinDaStatusStorage::new(&storage_path).unwrap();
+            if !disabled {
+                std::fs::remove_dir(&storage_path).unwrap();
+                std::fs::write(&storage_path, b"not a directory").unwrap();
+            }
+            let gate = BitcoinDaFinalityGate::new(config, storage, false);
+            assert!(
+                gate.republish_blob_after_timeout(
+                    &client,
+                    ABC_HASH,
+                    BlobFinalityWaitContext::GatewayEdgeRef
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+
     // SYSCOIN: Exercise the wallet boundary through the real client, including its archive
     // fallback, so a check moved after publication cannot silently regress this protection.
     #[tokio::test]
     async fn recovery_authenticates_blob_before_wallet_publication() {
-        const ABC_HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
         let cases = [
             (b"abc".to_vec(), ABC_HASH.to_owned(), ABC_HASH, None, 1),
             (

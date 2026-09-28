@@ -1848,9 +1848,16 @@ pub struct BatcherConfig {
     #[config(default_t = 5)]
     pub bitcoin_da_finality_confirmations: u64,
 
-    /// Max time to wait for published Bitcoin DA blobs to become final.
+    /// Recovery window before retrying missing or unconfirmed Bitcoin DA publications.
+    /// Confirmed blobs continue waiting for finality without republication.
     #[config(default_t = 90 * TimeUnit::Minutes)]
     pub bitcoin_da_finality_timeout: Duration,
+
+    /// Maximum forced republications per blob hash, shared by own blobs and Gateway edge refs.
+    /// Reservations survive restart and receipt cleanup; failed or ambiguous RPC calls count.
+    /// Zero disables forced republication. Exhaustion stops settlement for operator recovery.
+    #[config(default_t = 3)]
+    pub bitcoin_da_max_republish_attempts: u32,
 
     /// Whether Gateway may fetch and republish edge DA blobs that are retrievable but not final
     /// before committing Gateway batches to L1.

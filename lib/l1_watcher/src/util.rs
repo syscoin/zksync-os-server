@@ -450,9 +450,8 @@ async fn find_latest_l1_revert(
 ///
 /// Returns latest L1 block is there is none.
 ///
-/// For any batch `B` that was reverted in tx `T` belonging to L1 block `b` the following MUST hold:
-/// `b` CAN contain commit event for `B` that happened either before `T` or after `T` but MUST NOT
-/// contain both. See comments inside the implementation for more details.
+/// A returned block may contain multiple commitments separated by reverts. Callers decoding
+/// batch data must select the surviving commit, as [`find_commit_log`] does.
 pub async fn find_l1_commit_block_by_batch_number(
     zk_chain: ZkChain<NodeProvider>,
     batch_number: u64,
@@ -498,12 +497,8 @@ pub async fn find_l1_commit_block_by_batch_number(
                 "looking for batch commitment after last revert"
             );
             // Run binary search one more time but start from `last_l1_block_with_revert` now.
-            // `last_l1_block_with_revert` might contain EITHER commit event for our batch that
-            // happened BEFORE revert or AFTER revert. But it cannot contain both, otherwise L1
-            // Watcher will index reverted commit first. To mitigate this, we can make L1 Watcher
-            // interactively resistant to reverts that happened in the same block (it would watch
-            // for both `BlockCommit` and `BlocksRevert`). This scenario should not happen in the
-            // current implementation, however, and hence can be safely ignored for now.
+            // The revert block may also contain the replacement commit. The end-of-block
+            // predicate includes it, and calldata discovery selects the final matching log.
             let l1_block_with_commit = find_l1_block_by_predicate(
                 Arc::new(zk_chain),
                 last_l1_block_with_revert,

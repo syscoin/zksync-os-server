@@ -26,6 +26,11 @@ pub trait ProcessRawEvents: Send + Sync + 'static {
 
     fn filter_events(&self, logs: Vec<Log>) -> Vec<Log>;
 
+    /// Checks the complete authenticated range before any event can publish side effects.
+    fn validate_events(&self, _logs: &[Log]) -> Result<(), L1WatcherError> {
+        Ok(())
+    }
+
     /// Optional filter on topic1 (the first indexed event parameter) to include in the
     /// `eth_getLogs` query. When `Some`, the RPC node filters logs server-side.
     fn topic1_filter(&self) -> Option<B256> {

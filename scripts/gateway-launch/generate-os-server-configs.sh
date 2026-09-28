@@ -1189,6 +1189,7 @@ def materialize_chain(
                 f"  bitcoin_da_address_label: {os.environ['BITCOIN_DA_ADDRESS_LABEL']}",
                 f"  bitcoin_da_finality_mode: {os.environ['BITCOIN_DA_FINALITY_MODE']}",
                 f"  bitcoin_da_finality_confirmations: {os.environ['BITCOIN_DA_FINALITY_CONFIRMATIONS']}",
+                f"  bitcoin_da_max_republish_attempts: {os.environ.get('BITCOIN_DA_MAX_REPUBLISH_ATTEMPTS', '3')}",
                 f"  bitcoin_da_gateway_l1_republish_enabled: {os.environ.get('BITCOIN_DA_GATEWAY_L1_REPUBLISH_ENABLED', 'true')}",
             ]
         )

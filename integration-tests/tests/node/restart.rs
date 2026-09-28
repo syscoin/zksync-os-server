@@ -317,17 +317,15 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     Ok(())
 }
 
-/// Verifies the `L1RevertWatcher`: an external node running against a main node must crash
-/// its critical task when it observes a `BlocksRevert` event on the settlement layer above its
-/// startup SL block, and must then recover by re-syncing from the main node after a restart.
+/// Verifies that both node roles stop on settlement-layer reverts above their startup snapshot
+/// and recover their settlement frontiers after restarting.
 ///
 /// Flow:
 ///   1. Launch a commit-only main node and commit a batch (so there is something to revert).
 ///   2. Restart the main node with the batcher disabled.
 ///   3. Launch an external node and wait for it to sync the committed batch's block.
-///   4. Revert all committed batches on L1 while the EN is running.
-///   5. The EN's revert watcher observes the (finalized) `BlocksRevert` and panics its critical
-///      task with `L1WatcherError::L1Reverted`; assert the fatal error surfaces accordingly.
+///   4. Revert all committed batches on L1 while both nodes are running.
+///   5. Both nodes stop with `L1WatcherError::L1Reverted`.
 ///   6. Restart the EN, re-enable the main-node batcher, and confirm the EN re-syncs fresh blocks.
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
@@ -362,9 +360,8 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
         "batch execution is disabled, so the executed frontier must not advance"
     );
 
-    // Restart the main node with the batcher disabled so it stops committing and stays healthy
-    // when the batch it already committed is reverted out from under it.
-    let main_node = main_node
+    // Disable batching so the rollback frontier cannot race fresh submissions.
+    let mut main_node = main_node
         .restart_with_overrides(|config| config.batcher_config.enabled = false)
         .await?;
 
@@ -385,14 +382,25 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     )
     .await?;
 
-    // The EN's revert watcher must observe the (finalized) revert event and crash its critical task.
+    // Either EN watcher may observe the revert first; both enforce the same restart boundary.
     let err = en
         .wait_for_fatal_error_with_timeout(DEFAULT_TIMEOUT)
         .await?;
     let err_text = err.to_string();
     assert!(
-        err_text.contains("l1 revert watcher") && err_text.contains("L1 batches were reverted"),
-        "expected the external node to crash via the L1 revert watcher, got: {err_text}"
+        (err_text.contains("l1 revert watcher") || err_text.contains("l1 commit watcher"))
+            && err_text.contains("L1 batches were reverted"),
+        "expected the external node to stop on the L1 revert, got: {err_text}"
+    );
+
+    let main_error = main_node
+        .wait_for_fatal_error_with_timeout(DEFAULT_TIMEOUT)
+        .await?;
+    let main_error_text = main_error.to_string();
+    assert!(
+        main_error_text.contains("l1 commit watcher")
+            && main_error_text.contains("L1 batches were reverted"),
+        "expected the main node to stop on the L1 revert, got: {main_error_text}"
     );
 
     // The watcher crashed the EN precisely so an orchestrator can restart and re-sync it. Preserve

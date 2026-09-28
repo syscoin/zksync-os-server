@@ -1,4 +1,6 @@
 use crate::config::BitcoinDaFinalityMode;
+use alloy::hex;
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -60,6 +62,49 @@ impl BitcoinDaStatusStorage {
         Ok(())
     }
 
+    pub async fn reserve_republication(
+        &self,
+        version_hash: &str,
+        max_attempts: u32,
+    ) -> anyhow::Result<u32> {
+        let hash = hex::decode(version_hash.strip_prefix("0x").unwrap_or(version_hash))
+            .context("invalid Bitcoin DA republication hash")?;
+        anyhow::ensure!(
+            hash.len() == 32,
+            "invalid Bitcoin DA republication hash length"
+        );
+        let hash = hex::encode(hash);
+        for attempt in 1..=max_attempts {
+            // Reservation names cannot match batch-receipt cleanup. A lost wallet response or
+            // restart must not release a slot that may already have paid for publication.
+            let path = self.base_dir.join(format!("republish_{hash}_{attempt}"));
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let file = match options.open(path).await {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err).context("reserve Bitcoin DA republication"),
+            };
+            file.sync_all().await?;
+            fs::File::open(&self.base_dir).await?.sync_all().await?;
+            // The status directory itself can have been created during this startup.
+            let parent = self
+                .base_dir
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty());
+            fs::File::open(parent.unwrap_or(Path::new(".")))
+                .await?
+                .sync_all()
+                .await?;
+            return Ok(attempt);
+        }
+        anyhow::bail!(
+            "Bitcoin DA republication limit exhausted for {hash}: {max_attempts} attempts; operator intervention required"
+        )
+    }
+
     pub async fn delete(&self, batch_number: u64) -> anyhow::Result<()> {
         let path = self.path_for(batch_number);
         if fs::try_exists(&path).await? {
@@ -89,4 +134,85 @@ fn parse_batch_number(name: &str) -> Option<u64> {
     name.strip_prefix("batch_")
         .and_then(|value| value.strip_suffix(".json"))
         .and_then(|value| value.parse().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+
+    #[tokio::test]
+    async fn republication_budget_survives_aliases_restart_and_receipt_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        assert_eq!(storage.reserve_republication(HASH, 2).await.unwrap(), 1);
+        storage
+            .save(1, &BitcoinDaBatchStatus::default())
+            .await
+            .unwrap();
+        storage.delete(1).await.unwrap();
+        storage
+            .save(2, &BitcoinDaBatchStatus::default())
+            .await
+            .unwrap();
+        storage.delete_through(2).await.unwrap();
+        let reopened = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        assert_eq!(
+            reopened
+                .reserve_republication(&format!("0x{}", HASH.to_uppercase()), 2)
+                .await
+                .unwrap(),
+            2
+        );
+        assert!(
+            reopened
+                .reserve_republication(HASH, 2)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("limit exhausted")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_republication_reservations_cannot_share_a_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        let (a, b, c) = tokio::join!(
+            storage.reserve_republication(HASH, 2),
+            storage.reserve_republication(HASH, 2),
+            storage.reserve_republication(HASH, 2),
+        );
+        let mut slots = [a, b, c]
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        slots.sort();
+        assert_eq!(slots, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn disabled_invalid_and_unwritable_republication_budgets_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        assert!(storage.reserve_republication(HASH, 0).await.is_err());
+        assert!(
+            storage
+                .reserve_republication("../invalid", 2)
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        let invalid_storage = BitcoinDaStatusStorage {
+            base_dir: root.path().join("not-a-directory"),
+        };
+        fs::write(&invalid_storage.base_dir, b"file").await.unwrap();
+        assert!(
+            invalid_storage
+                .reserve_republication(HASH, 2)
+                .await
+                .is_err()
+        );
+    }
 }
