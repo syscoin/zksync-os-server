@@ -497,7 +497,7 @@ pub async fn find_l1_commit_block_by_batch_number(
                 "looking for batch commitment after last revert"
             );
             // Run binary search one more time but start from `last_l1_block_with_revert` now.
-            // The revert block may also contain the replacement commit. The end-of-block
+            // SYSCOIN: The revert block may also contain the replacement commit. The end-of-block
             // predicate includes it, and calldata discovery selects the final matching log.
             let l1_block_with_commit = find_l1_block_by_predicate(
                 Arc::new(zk_chain),

@@ -26,7 +26,8 @@ pub trait ProcessRawEvents: Send + Sync + 'static {
 
     fn filter_events(&self, logs: Vec<Log>) -> Vec<Log>;
 
-    /// Checks the complete authenticated range before any event can publish side effects.
+    /// SYSCOIN: A later revert can invalidate an earlier commit, so processors must be able to
+    /// reject the complete authenticated range before any event can publish side effects.
     fn validate_events(&self, _logs: &[Log]) -> Result<(), L1WatcherError> {
         Ok(())
     }

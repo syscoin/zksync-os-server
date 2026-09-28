@@ -280,7 +280,7 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
 
             match self.poll(cap).await {
                 Ok(()) => {}
-                // Missing numbered headers are not evidence of a different canonical hash.
+                // SYSCOIN: Missing numbered headers are not evidence of a different canonical hash.
                 Err(
                     err @ (L1WatcherError::Transport(_)
                     | L1WatcherError::CanonicalBlockUnavailable(_)
@@ -337,6 +337,7 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
                 .await?;
             self.check_hash(to_block, range_hash).await?;
             self.check_observed_range().await?;
+            // SYSCOIN: Preflight before filtering so a later invalidating event cannot be hidden.
             self.processor.validate_events(&events)?;
 
             let events = self.processor.filter_events(events);
@@ -381,8 +382,8 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
             if attempt == CANONICAL_HEADER_RETRY_ATTEMPTS {
                 return Err(error);
             }
-            // A lagging RPC backend can temporarily lack a numbered header. Retry this read
-            // without changing the cursor or the hash against which it will be authenticated.
+            // SYSCOIN: A lagging RPC backend can temporarily lack a numbered header. Retry this
+            // read without changing the cursor or the hash against which it will be authenticated.
             tracing::warn!(%error, attempt, "retrying unavailable canonical header");
             tokio::time::sleep(CANONICAL_HEADER_RETRY_DELAY).await;
         }

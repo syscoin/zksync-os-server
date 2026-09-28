@@ -14,8 +14,10 @@ use zksync_os_storage_api::WriteFinality;
 ///
 /// This component reads `ReportCommittedBatchRangeZKsyncOS` events, resolves the committed batch
 /// payload from L1 calldata, updates `WriteFinality`, and inserts the discovered batch into
-/// `CommittedBatchProvider`. Live `BlocksRevert` events stop ingestion before a fetched range
-/// can publish any commits, so restart can rebuild the frontier from settlement state.
+/// `CommittedBatchProvider`.
+///
+/// SYSCOIN: Live `BlocksRevert` events stop ingestion before a fetched range can publish any
+/// commits, so restart can rebuild the frontier from settlement state.
 ///
 /// Depended on by:
 /// - `L1ExecuteWatcher`, which waits on the committed batches this watcher publishes;
@@ -86,8 +88,8 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
                 finality,
                 commit_submitted_rx,
             };
-            // Discovery can find a replacement commit after a revert during startup. Include
-            // every block after the snapshot so that such a revert cannot be skipped.
+            // SYSCOIN: Discovery can find a replacement commit after a revert during startup.
+            // Include every block after the snapshot so that such a revert cannot be skipped.
             Ok((
                 commit_scan_start(last_l1_block, sl_block_initial_finality_init_at)?,
                 processor,
@@ -172,11 +174,13 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
             finality.last_committed_block = last_committed_block;
         });
         self.committed_batch_provider.insert(committed_batch);
-        // A later processor error retries the range, including already published commits.
+        // SYSCOIN: A later processor error retries the range, including already published commits.
         self.next_batch_number = next_batch_number;
         Ok(())
     }
 
+    // SYSCOIN: Historical reverts are already reflected in the startup snapshot. Live reverts
+    // invalidate the in-memory frontier and require recovery before further publication.
     fn validate_revert(&self, log: &Log) -> Result<(), L1WatcherError> {
         let revert = BlocksRevert::decode_log(&log.inner)?.data;
         let block_number = log.block_number.ok_or(L1WatcherError::InvalidLogRange(
@@ -210,7 +214,7 @@ impl<Finality: WriteFinality> ProcessRawEvents for L1CommitWatcher<Finality> {
     }
 
     fn validate_events(&self, logs: &[Log]) -> Result<(), L1WatcherError> {
-        // A revert can invalidate an earlier commit in the same block or fetched range.
+        // SYSCOIN: A revert can invalidate an earlier commit in the same block or fetched range.
         // Reject it before publishing any commit, regardless of task scheduling or log order.
         for log in logs {
             if log.topic0() == Some(&BlocksRevert::SIGNATURE_HASH) {
