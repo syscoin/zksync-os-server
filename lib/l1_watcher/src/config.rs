@@ -16,6 +16,10 @@ pub struct L1WatcherConfig {
     /// Note: Finalization advances at epoch boundaries. Which is every ~6.4 minutes on L1.
     pub finalized_poll_interval: Duration,
 
+    /// SYSCOIN: Maximum uninterrupted recovery window for unavailable numbered headers.
+    /// Exhaustion stops the critical watcher so its supervisor can restart or replace the RPC.
+    pub canonical_header_retry_timeout: Duration,
+
     /// Number of recent blocks retained in the shared logs cache.
     pub logs_cache_capacity: usize,
 }

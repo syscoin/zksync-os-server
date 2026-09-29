@@ -34,6 +34,7 @@ pub const DEFAULT_DECRYPT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(32).unwr
 /// Objects with matching local completion receipts are skipped without re-downloading, so an
 /// interrupted download can be restarted with the same arguments. Older downloads without receipts
 /// are fetched again. Receipts verify the downloaded bytes without decrypting archive objects.
+/// SYSCOIN: These local receipts protect download resume, not archive-source authenticity.
 ///
 /// `download_concurrency` bounds how many objects are fetched from the archive at once.
 pub async fn download_all_replay_archive_objects<Reader>(
@@ -120,6 +121,11 @@ pub async fn recover_replay_records_to_rocksdb(
 ///
 /// If `identity` is provided, every downloaded object is decrypted in memory before replay record
 /// decoding. No decrypted archive objects are written to disk.
+///
+/// SYSCOIN: Import accepts legacy receiptless files and checks their linkage, not their executed
+/// block hashes. The operator must supply a trusted anchor; ordinary main-node replay validates the
+/// computed headers and immutable replay inputs before publishing state. Download receipts do
+/// not authenticate the archive writer and are not an import authorization mechanism.
 ///
 /// Records are decoded up to `decrypt_concurrency` blocks at a time. The canonical chain walk is
 /// inherently sequential (the parent hash lives inside the decrypted record), so it decodes

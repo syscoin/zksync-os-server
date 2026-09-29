@@ -222,6 +222,12 @@ impl BitcoinDaFinalityGate {
         version_hash: &str,
         context: BlobFinalityWaitContext,
     ) -> anyhow::Result<()> {
+        // SYSCOIN: Keep the wallet budget guard effective for callers that bypass startup config.
+        anyhow::ensure!(
+            self.config.bitcoin_da_max_republish_attempts == 0
+                || !self.config.bitcoin_da_finality_timeout.is_zero(),
+            "Bitcoin DA finality timeout must be positive when republication is enabled"
+        );
         let mut start = Instant::now();
         loop {
             let finality_state = self.blob_finality_state(client, version_hash).await?;
@@ -505,13 +511,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn zero_recovery_window_cannot_consume_wallet_budget() {
+        let (client, calls, server) = recovery_rpc(None, false).await;
+        let dir = tempfile::tempdir().unwrap();
+        let config = BatcherConfig {
+            bitcoin_da_max_republish_attempts: 2,
+            bitcoin_da_finality_timeout: std::time::Duration::ZERO,
+            ..Default::default()
+        };
+        let gate = BitcoinDaFinalityGate::new(
+            config,
+            BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+            false,
+        );
+        let error = gate
+            .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must be positive"), "{error}");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn nonfinal_recovery_stops_at_the_wallet_attempt_budget() {
         for state in [None, Some(json!({"chainlock": false}))] {
             let (client, calls, server) = recovery_rpc(state, false).await;
             let dir = tempfile::tempdir().unwrap();
             let config = BatcherConfig {
                 bitcoin_da_max_republish_attempts: 2,
-                bitcoin_da_finality_timeout: std::time::Duration::ZERO,
+                bitcoin_da_finality_timeout: std::time::Duration::from_millis(1),
                 bitcoin_da_finality_poll_interval: std::time::Duration::from_millis(1),
                 ..Default::default()
             };

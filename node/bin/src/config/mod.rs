@@ -1677,7 +1677,7 @@ pub struct GatewaySenderConfig {
     pub nonce_error_retry_backoff: Duration,
 }
 
-#[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 #[config(derive(Default))]
 pub struct L1WatcherConfig {
     /// Max number of L1 blocks to be processed at a time.
@@ -1713,6 +1713,16 @@ pub struct L1WatcherConfig {
     /// Note: Finalization advances at epoch boundaries. Which is every ~6.4 minutes on L1.
     #[config(default_t = 1 * TimeUnit::Minutes)]
     pub finalized_poll_interval: Duration,
+
+    /// SYSCOIN: Maximum uninterrupted wait for unavailable or misnumbered canonical headers.
+    /// Exhaustion stops the critical watcher for supervised recovery; the authenticated hash
+    /// remains pinned throughout the wait.
+    #[config(default_t = 5 * TimeUnit::Minutes)]
+    #[config_validate(custom(
+        |_root: &Config, value: &Duration| !value.is_zero(),
+        "must be greater than zero"
+    ))]
+    pub canonical_header_retry_timeout: Duration,
 
     /// Number of recent blocks retained in the shared logs cache.
     /// The value should be based on the depth at which blocks are finalized. Which could be >60 on L1.
@@ -1851,6 +1861,13 @@ pub struct BatcherConfig {
     /// Recovery window before retrying missing or unconfirmed Bitcoin DA publications.
     /// Confirmed blobs continue waiting for finality without republication.
     #[config(default_t = 90 * TimeUnit::Minutes)]
+    // SYSCOIN: Without a recovery window, a missing blob can spend every allowed attempt at once.
+    #[config_validate(custom(
+        |root: &Config, value: &Duration| {
+            root.batcher_config.bitcoin_da_max_republish_attempts == 0 || !value.is_zero()
+        },
+        "must be greater than zero when `batcher.bitcoin_da_max_republish_attempts` is positive"
+    ))]
     pub bitcoin_da_finality_timeout: Duration,
 
     /// Maximum forced republications per blob hash, shared by own blobs and Gateway edge refs.
@@ -2806,6 +2823,7 @@ impl From<L1WatcherConfig> for zksync_os_l1_watcher::L1WatcherConfig {
             confirmations: c.confirmations,
             poll_interval: c.poll_interval,
             finalized_poll_interval: c.finalized_poll_interval,
+            canonical_header_retry_timeout: c.canonical_header_retry_timeout,
             logs_cache_capacity: c.logs_cache_capacity,
         }
     }
@@ -2998,6 +3016,31 @@ mod tests {
         let schema = ConfigSchema::new(&L1SenderConfig::DESCRIPTION, "l1_sender");
         let repo = ConfigRepository::new(&schema).with(Environment::from_iter("", env_vars));
         repo.single::<L1SenderConfig>().unwrap().parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn bitcoin_da_recovery_timeout_requires_a_window_when_republication_is_enabled() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.batcher_config.bitcoin_da_finality_timeout = Duration::ZERO;
+        let error = config.validate().await.unwrap_err().to_string();
+        assert!(error.contains("bitcoin_da_finality_timeout"), "{error}");
+        config.batcher_config.bitcoin_da_max_republish_attempts = 0;
+        config.validate().await.unwrap();
+        config.batcher_config.bitcoin_da_max_republish_attempts = 3;
+        config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(1);
+        config.validate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn canonical_header_retry_timeout_requires_a_positive_window() {
+        let mut config = base_config(NodeRole::MainNode);
+        assert_eq!(
+            config.l1_watcher_config.canonical_header_retry_timeout,
+            Duration::from_secs(300)
+        );
+        config.l1_watcher_config.canonical_header_retry_timeout = Duration::ZERO;
+        let error = config.validate().await.unwrap_err().to_string();
+        assert!(error.contains("canonical_header_retry_timeout"), "{error}");
     }
 
     fn parse_l1_watcher_config<const N: usize>(env_vars: [(&str, &str); N]) -> L1WatcherConfig {

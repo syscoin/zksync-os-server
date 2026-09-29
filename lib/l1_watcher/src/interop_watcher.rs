@@ -353,6 +353,7 @@ mod tests {
             confirmations: 2,
             poll_interval: Duration::from_millis(10),
             finalized_poll_interval: Duration::from_millis(10),
+            canonical_header_retry_timeout: Duration::from_secs(300),
             logs_cache_capacity: 0,
         }
     }
