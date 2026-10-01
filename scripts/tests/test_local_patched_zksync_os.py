@@ -19,6 +19,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -67,6 +68,23 @@ FINAL_OS_TAG = "v0.4.0"
 OTHER_OS_TAG = "v0.2.10-interface-v0.1.3-2026-02-10"
 FINAL_LOCKED_REV = "3" * 40
 FINAL_PATCHED_REV = "4" * 40
+
+
+def harness_process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    proc_stat = Path(f"/proc/{pid}/stat")
+    try:
+        state = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
+        return state != "Z"
+    except ProcessLookupError:
+        # Linux can open stat successfully, then return ESRCH from read when
+        # the already-terminated test child is reaped between these checks.
+        return False
+    except (FileNotFoundError, IndexError):
+        return True
 
 
 def run_bash_harness(
@@ -9651,28 +9669,36 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
                 listener.close()
                 server.join(timeout=5)
 
-    def test_gateway_jobs_are_bounded_exact_and_signal_safe(self) -> None:
-        def process_is_running(pid: int) -> bool:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return False
-            proc_stat = Path(f"/proc/{pid}/stat")
-            try:
-                state = (
-                    proc_stat.read_text(encoding="utf-8")
-                    .rsplit(")", 1)[1]
-                    .split()[0]
-                )
-                return state != "Z"
-            except (FileNotFoundError, IndexError):
-                return True
+    def test_gateway_job_process_check_handles_reaped_proc_stat(self) -> None:
+        with patch.object(os, "kill") as kill_probe:
+            with patch.object(Path, "read_text", side_effect=ProcessLookupError(3, "No such process")):
+                self.assertFalse(harness_process_is_running(123))
+            kill_probe.assert_called_once_with(123, 0)
+            for state, expected in (("R", True), ("S", True), ("Z", False)):
+                with self.subTest(state=state), patch.object(
+                    Path, "read_text", return_value=f"123 (test child) {state} 1 2 3"
+                ):
+                    self.assertEqual(harness_process_is_running(123), expected)
+            # A host without /proc and malformed proc contents remain conservative.
+            for read_error in (FileNotFoundError(), IndexError()):
+                with self.subTest(error=type(read_error).__name__), patch.object(
+                    Path, "read_text", side_effect=read_error
+                ):
+                    self.assertTrue(harness_process_is_running(123))
+            with patch.object(Path, "read_text", side_effect=PermissionError()):
+                with self.assertRaises(PermissionError):
+                    harness_process_is_running(123)
+        with patch.object(os, "kill", side_effect=ProcessLookupError()):
+            with patch.object(Path, "read_text") as read_stat:
+                self.assertFalse(harness_process_is_running(123))
+                read_stat.assert_not_called()
 
+    def test_gateway_jobs_are_bounded_exact_and_signal_safe(self) -> None:
         def assert_process_stopped(pid: int) -> None:
             deadline = time.monotonic() + 1
-            while process_is_running(pid) and time.monotonic() < deadline:
+            while harness_process_is_running(pid) and time.monotonic() < deadline:
                 time.sleep(0.02)
-            self.assertFalse(process_is_running(pid), f"PID {pid} is still running")
+            self.assertFalse(harness_process_is_running(pid), f"PID {pid} is still running")
 
         command = r'''
 source "$COMMON"
