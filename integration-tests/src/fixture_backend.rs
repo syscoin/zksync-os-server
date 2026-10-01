@@ -117,7 +117,7 @@ pub enum BackendDescriptor {
         decompressed_state: FileIdentity,
     },
     SyscoinCoreNevm {
-        inventory: CoreNevmInventory,
+        inventory: Box<CoreNevmInventory>,
     },
 }
 
