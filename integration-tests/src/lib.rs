@@ -43,6 +43,7 @@ use zksync_os_types::{
 };
 
 pub mod assert_traits;
+mod component_fee_payer;
 pub mod component_replay;
 pub mod config;
 pub mod contracts;
@@ -1350,6 +1351,10 @@ impl GatewayTesterBuilder {
             }
             if let Some(policy_service) = policy_service {
                 tester_config.sequencer_config.tx_validator.policy_service = policy_service;
+            }
+
+            if fixture_scope == FixtureScope::AnvilComponentOnly {
+                component_fee_payer::prepare(gateway.l2_rpc_url(), &tester_config).await?;
             }
 
             let tester =
