@@ -3,6 +3,7 @@ use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use anyhow::Context as _;
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -59,6 +60,26 @@ fn restore_runtime_database_identity(path: &Path, bytes: &[u8]) -> anyhow::Resul
     Ok(())
 }
 
+fn has_published_prefix(
+    keys: impl IntoIterator<Item = (u64, B256)>,
+    tip: u64,
+    tip_hash: B256,
+) -> bool {
+    let mut published = BTreeSet::new();
+    for (number, hash) in keys {
+        if number > tip {
+            continue;
+        }
+        if number == tip && hash != tip_hash {
+            return false;
+        }
+        published.insert(number);
+    }
+    // Distinct heights bounded by `tip` must cover genesis through the tip, not merely
+    // contain a high object that happened to finish before lower concurrent writes.
+    Some(published.len() as u64) == tip.checked_add(1)
+}
+
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
 async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
@@ -93,13 +114,42 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
     };
     let chain_id = tester.l2_provider.get_chain_id().await?;
     let rocks_db_path = tester.config().general_config.rocks_db_path.clone();
+    let observed_tip = tester.l2_provider.get_block_number().await?;
+    let observed_tip_hash = tester
+        .l2_provider
+        .get_block_by_number(observed_tip.into())
+        .await?
+        .context("pre-shutdown RPC tip should exist")?
+        .header
+        .hash;
+    // Startup backfill only enqueues historical records. Let this new encrypted archive
+    // publish the entire observed frontier before shutdown can interrupt its writer.
+    let reader = FileSystemReplayArchiveReader::new(archive_root.clone());
+    let publication_deadline = Instant::now() + DEFAULT_TIMEOUT;
+    loop {
+        let page = reader.list_keys_page(None).await?;
+        if has_published_prefix(
+            page.keys
+                .iter()
+                .map(|key| (key.block_number, key.block_hash)),
+            observed_tip,
+            observed_tip_hash,
+        ) {
+            break;
+        }
+        anyhow::ensure!(
+            Instant::now() < publication_deadline,
+            "encrypted archive did not publish the complete prefix through RPC tip #{observed_tip}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let stopped = tester.stop().await?;
     tokio::task::spawn_blocking(zksync_os_rocksdb::RocksDB::<()>::await_rocksdb_termination)
         .await
         .context("failed to join RocksDB shutdown wait")?;
 
     // Stopping a node can flush a partially accumulated batch and archive blocks beyond the last
-    // RPC tip observed before shutdown. Recover from the writer-drained archive head so the
+    // RPC tip observed before shutdown. Recover from the published archive head after shutdown so the
     // restored WAL cannot lag that newly committed batch.
     let archive_page = FileSystemReplayArchiveReader::new(archive_root.clone())
         .list_keys_page(None)
@@ -298,4 +348,38 @@ fn runtime_database_identity_recovery_preserves_bytes_and_rejects_unsafe_inputs(
     )
     .unwrap();
     assert!(read_runtime_database_identity(&source).is_err());
+}
+
+#[test]
+fn published_prefix_requires_all_distinct_heights_and_the_canonical_tip() {
+    let hash = B256::repeat_byte(1);
+    let wrong_hash = B256::repeat_byte(2);
+    assert!(has_published_prefix([(0, hash)], 0, hash));
+    assert!(has_published_prefix(
+        [(2, hash), (0, hash), (1, hash)],
+        2,
+        hash
+    ));
+    assert!(has_published_prefix(
+        [(3, wrong_hash), (2, hash), (0, hash), (1, hash)],
+        2,
+        hash
+    ));
+    assert!(!has_published_prefix([(1, hash), (2, hash)], 2, hash));
+    assert!(!has_published_prefix([(0, hash), (2, hash)], 2, hash));
+    assert!(!has_published_prefix(
+        [(0, hash), (0, hash), (2, hash)],
+        2,
+        hash
+    ));
+    assert!(!has_published_prefix(
+        [(0, hash), (1, hash), (2, wrong_hash)],
+        2,
+        hash
+    ));
+    assert!(!has_published_prefix(
+        [(0, hash), (1, hash), (2, hash), (2, wrong_hash)],
+        2,
+        hash
+    ));
 }
