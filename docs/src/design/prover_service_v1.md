@@ -333,7 +333,7 @@ Selected-wrapper keys and native leases remain on trusted hosts. A provider can
 still start late or fail, and a competing state change can invalidate work after
 the last check; these checks do not guarantee paid work or a provider invoice cap.
 
-The [keeper operator guide](../../../scripts/prover-service/keeper-operator-guide.md)
+The [keeper operator guide](https://github.com/syscoin/zksync-os-server/blob/0156211b1ff3dc827a65eccff716eba9cf6c977e/scripts/prover-service/keeper-operator-guide.md)
 describes the trusted sequencer lease, independent evidence, selected wrapper,
 pool output, native SNARK submission, wallet and node handoff. The keeper produces
 reviewable unsigned calls; operators must supply actual native cross-chain proofs,
