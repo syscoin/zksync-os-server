@@ -216,69 +216,198 @@ class BundleAndLauncherTests(unittest.TestCase):
             self.assertNotIn("SOURCE", result.stdout)
             self.assertNotIn("RELEASE", result.stdout)
 
-    def standalone_bootstrap_dispatch(self, mode="gpu", mock="false", gateway=None,
-                                      edge=None, network="localhost", normalize_first=False):
-        bootstrap = (ROOT / "scripts/gateway-launch/zksys-l2-bootstrap.sh").read_text()
-        start = bootstrap.index("\ngl_resolve_required_source_pins\n") + 1
-        end = bootstrap.index("\ngl_require L1_RPC_URL\n", start)
-        entrypoint = bootstrap[start:end]
-        env = dict(os.environ, COMMON=str(ROOT / "scripts/gateway-launch/_common.sh"),
-                   ZKSYNC_ERA_PATH="/fixture-era", ZKSYNC_OS_SERVER_PATH=str(ROOT),
-                   PROTOCOL_VERSION="v32.0", PROVER_MODE=mode,
-                   GATEWAY_PROVER_MODE=mode if gateway is None else gateway,
-                   EDGE_PROVER_MODE=mode if edge is None else edge,
-                   SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER=mock, L1_NETWORK=network,
-                   L1_CHAIN_ID="57" if network == "mainnet" else "31337")
-        for name in ("USE_DUMMY_MESSAGE_ROOT", "GATEWAY_COMMIT_MODE",
-                     "GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE", "GATEWAY_L2_DA_COMMITMENT_SCHEME",
-                     "EDGE_GATEWAY_COMMITTER_WALLET_NAME", "ZKSYS_ZK_TOKEN_ASSET_ID", "ZK_TOKEN_ASSET_ID"):
-            env.pop(name, None)
-        # Execute the actual standalone ordering with only Git/source writes
-        # stubbed. Both the real normalizer and lane-selection gate stay intact.
-        probe = 'set -euo pipefail\nsource "$COMMON"\n'
-        probe += ('gl_resolve_required_source_pins() { :; }\n'
-                  'gl_assert_zksync_era_sha() { :; }\n'
-                  'gl_assert_contracts_sha() { :; }\n'
-                  'bash() { printf "SOURCE %s\\n" "$*"; }\n'
-                  'python3() { printf "RELEASE %s\\n" "$*"; }\n')
-        if normalize_first:
-            probe += 'gl_normalize_canonical_deployment_inputs\n'
-        probe += entrypoint + '\nprintf "MODES %s:%s:%s:%s\\n" "$PROVER_MODE" "$GATEWAY_PROVER_MODE" "$EDGE_PROVER_MODE" "$SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER"\n'
-        return subprocess.run(["bash", "-c", probe], env=env, capture_output=True, text=True)
+    STANDALONE_ENTRYPOINTS = (
+        "gateway-ecosystem-create.sh",
+        "gateway-chain-init.sh",
+        "gateway-convert-settlement.sh",
+        "edge-chain-create-init.sh",
+        "edge-chain-migrate-to-gateway.sh",
+        "zksys-l2-bootstrap.sh",
+    )
 
-    def test_standalone_bootstrap_accepts_case_variants_before_postimage(self):
-        for mode, mock, gateway, edge in (("GPU", "FALSE", "GPU", "GPU"),
-                                          ("GpU", "FaLsE", "gPu", "gpU"),
-                                          ("gpu", "false", "gpu", "gpu")):
-            with self.subTest(mode=mode, mock=mock):
-                result = self.standalone_bootstrap_dispatch(mode, mock, gateway, edge)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("RELEASE -B", result.stdout)
-                self.assertIn("MODES gpu:gpu:gpu:false", result.stdout)
-                self.assertNotIn("SOURCE", result.stdout)
+    def standalone_dispatch(self, script, mode="gpu", mock="false", gateway=None,
+                            edge=None, network="localhost", chain_id="auto",
+                            normalize_first=False, args=()):
+        launcher_dir = ROOT / "scripts/gateway-launch"
+        source = (launcher_dir / script).read_text()
+        common_source = 'source "${SCRIPT_DIR}/_common.sh"\n'
+        start = source.index(common_source) + len(common_source)
+        dispatch = ("gl_ensure_era_contracts_syscoin_postimage" if script == "zksys-l2-bootstrap.sh"
+                    else "gl_ensure_zkstack_cli_release_current")
+        end = source.index("\n" + dispatch + "\n", start) + len(dispatch) + 2
+        entrypoint = source[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            gateway_dir = Path(directory).resolve()
+            config = gateway_dir / "chains/zksys/ZkStack.yaml"
+            put(config, json.dumps({
+                "name": "zksys", "chain_id": 57057,
+                "prover_version": "NoProofs" if (edge or mode).lower() == "no-proofs" else "Gpu",
+                "l1_batch_commit_data_generator_mode": "Rollup", "vm_option": "ZKSyncOsVM",
+                "evm_emulator": False,
+                "base_token": {"address": "0x0000000000000000000000000000000000000001",
+                               "nominator": 1, "denominator": 1},
+                "l1_network": (network or "localhost").lower(),
+            }).encode())
+            config.chmod(0o600)
+            config.parent.chmod(0o700)
+            # The fixture uses JSON, a YAML subset; keep this test independent of PyYAML.
+            put(gateway_dir / "yaml.py", b"from json import loads as safe_load\n")
+            env = {name: os.environ[name] for name in ("HOME", "PATH", "TMPDIR") if name in os.environ}
+            env.update(COMMON=str(launcher_dir / "_common.sh"), SCRIPT_DIR=str(launcher_dir),
+                       ZKSYNC_ERA_PATH="/fixture-era", ZKSYNC_OS_SERVER_PATH=str(ROOT),
+                       PROTOCOL_VERSION="v32.0", PROVER_MODE=mode,
+                       SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER=mock, GATEWAY_DIR=str(gateway_dir),
+                       GATEWAY_CREATE2_FACTORY_SALT="normalization-test-salt",
+                       L1_RPC_URL="http://fixture.invalid", ZKSYS_L2_RPC_URL="http://edge.invalid",
+                       ZKSYS_L2_TOKEN_ADMIN_ADDRESS="0x0000000000000000000000000000000000000001",
+                       ZKSYS_ISSUER_START_TIME="10000", PYTHONDONTWRITEBYTECODE="1",
+                       PYTHONPATH=str(gateway_dir))
+            for name, value in (("GATEWAY_PROVER_MODE", gateway), ("EDGE_PROVER_MODE", edge),
+                                ("L1_NETWORK", network)):
+                if value is not None:
+                    env[name] = value
+            if chain_id == "auto":
+                chain_id = {"localhost": "31337", "tanenbaum": "5700", "mainnet": "57"}.get(
+                    (network or "localhost").lower(), "31337")
+            if chain_id is not None:
+                env["L1_CHAIN_ID"] = chain_id
+            # Retain each actual prefix, including bootstrap's earlier network and
+            # config checks. Only external Git, source/build, lock and RPC I/O are
+            # replaced; normalization, dispatch and CLI preparation remain real.
+            probe = 'set -euo pipefail\nsource "$COMMON"\n'
+            probe += r"""gl_assert_zksync_era_sha() { :; }
+gl_assert_contracts_sha() { :; }
+gl_zkstack_cli_release_stamp_matches() { return 1; }
+gl_build_zkstack_cli_release() { printf 'BUILD\n'; }
+gl_acquire_gateway_launch_lock() { printf 'LOCK\n'; }
+gl_non_l1_cast() {
+  [ "$*" = 'chain-id --rpc-url http://edge.invalid' ] || return 90
+  printf '57057\n'
+}
+bash() {
+  case "${1:-}" in
+    "$ZKSYNC_OS_SERVER_PATH/scripts/apply-era-contracts-syscoin-patch.sh")
+      printf 'SOURCE %s\n' "$*" ;;
+    "$ZKSYNC_OS_SERVER_PATH/scripts/apply-zksync-era-syscoin-patch.sh")
+      printf 'ERA %s\n' "$*" ;;
+    *) printf 'unexpected bash command\n' >&2; return 91 ;;
+  esac
+}
+python3() {
+  if [ "${1:-}" = -B ] && [ "${2:-}" = "$ZKSYNC_OS_SERVER_PATH/scripts/apply-era-contracts-syscoin-release.py" ]; then
+    printf 'RELEASE %s\n' "$*"
+  else
+    command python3 "$@"
+  fi
+}
+"""
+            if normalize_first:
+                probe += 'gl_normalize_canonical_deployment_inputs\n'
+            probe += entrypoint
+            probe += ('printf "MODES %s:%s:%s:%s\\n" "$PROVER_MODE" "$GATEWAY_PROVER_MODE" '
+                      '"$EDGE_PROVER_MODE" "$SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER"\n'
+                      'printf "NETWORK %s\\n" "$L1_NETWORK"\n')
+            return subprocess.run(["bash", "-c", probe, "standalone-dispatch", *args],
+                                  env=env, capture_output=True, text=True)
 
-    def test_standalone_bootstrap_preserves_already_normalized_launch_path(self):
-        result = self.standalone_bootstrap_dispatch("GpU", "FaLsE", "gPu", "gpU", normalize_first=True)
+    def assert_dispatch_route(self, result, script, mock=False, network="localhost"):
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("RELEASE -B", result.stdout)
-        self.assertIn("MODES gpu:gpu:gpu:false", result.stdout)
+        if mock:
+            self.assertIn("SOURCE ", result.stdout)
+            self.assertNotIn("RELEASE ", result.stdout)
+            self.assertIn("MODES no-proofs:no-proofs:no-proofs:true", result.stdout)
+        else:
+            self.assertIn("RELEASE -B", result.stdout)
+            self.assertNotIn("SOURCE ", result.stdout)
+            self.assertIn("MODES gpu:gpu:gpu:false", result.stdout)
+        self.assertIn("NETWORK " + network, result.stdout)
+        if script != "zksys-l2-bootstrap.sh":
+            self.assertIn("ERA ", result.stdout)
+            self.assertIn("BUILD", result.stdout)
 
-    def test_standalone_bootstrap_preserves_mock_lane_and_rejects_invalid_modes(self):
-        mock = self.standalone_bootstrap_dispatch("NO-PROOFS", "TRUE")
-        self.assertEqual(mock.returncode, 0, mock.stderr)
-        self.assertIn("SOURCE", mock.stdout)
-        self.assertNotIn("RELEASE", mock.stdout)
-        self.assertIn("MODES no-proofs:no-proofs:no-proofs:true", mock.stdout)
-        for args in (("CPU", "FALSE", None, None, "localhost"),
-                     ("GPU", "TRUE", None, None, "localhost"),
-                     ("NO-PROOFS", "FALSE", None, None, "localhost"),
-                     ("GPU", "FALSE", "No-Proofs", "GPU", "localhost"),
-                     ("NO-PROOFS", "TRUE", None, None, "mainnet")):
-            with self.subTest(args=args):
-                result = self.standalone_bootstrap_dispatch(*args)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertNotIn("SOURCE", result.stdout)
-                self.assertNotIn("RELEASE", result.stdout)
+    def assert_no_source_dispatch(self, result):
+        self.assertNotEqual(result.returncode, 0)
+        for event in ("SOURCE ", "RELEASE ", "ERA ", "BUILD"):
+            self.assertNotIn(event, result.stdout)
+
+    def test_standalone_entrypoints_accept_case_variants_before_postimage(self):
+        for script in self.STANDALONE_ENTRYPOINTS:
+            for mode, mock, gateway, edge in (("GPU", "FALSE", "GPU", "GPU"),
+                                              ("GpU", "FaLsE", "gPu", "gpU"),
+                                              ("gpu", "false", "gpu", "gpu"),
+                                              ("GPU", "FALSE", None, None)):
+                with self.subTest(script=script, mode=mode, mock=mock, gateway=gateway):
+                    result = self.standalone_dispatch(script, mode, mock, gateway, edge)
+                    self.assert_dispatch_route(result, script)
+
+    def test_standalone_entrypoints_preserve_already_normalized_launch_path(self):
+        for script in self.STANDALONE_ENTRYPOINTS:
+            with self.subTest(script=script):
+                result = self.standalone_dispatch(script, "GpU", "FaLsE", "gPu", "gpU",
+                                                  normalize_first=True)
+                self.assert_dispatch_route(result, script)
+
+    def test_standalone_entrypoints_preserve_mock_modes_and_network_case(self):
+        for script in self.STANDALONE_ENTRYPOINTS:
+            for network in ("localhost", "LOCALHOST", "TaNeNbAuM"):
+                with self.subTest(script=script, network=network):
+                    result = self.standalone_dispatch(script, "NO-PROOFS", "TrUe", "No-Proofs",
+                                                      network=network)
+                    self.assert_dispatch_route(result, script, mock=True, network=network.lower())
+
+    def test_ecosystem_keeps_default_network_and_optional_real_chain_id(self):
+        script = "gateway-ecosystem-create.sh"
+        real = self.standalone_dispatch(script, "GPU", "FALSE", network=None, chain_id=None)
+        self.assert_dispatch_route(real, script)
+        mock = self.standalone_dispatch(script, "NO-PROOFS", "TRUE", "NO-PROOFS", network=None)
+        self.assert_dispatch_route(mock, script, mock=True)
+
+    def test_standalone_entrypoints_reject_invalid_and_mixed_modes_before_source(self):
+        invalid = (("CPU", "FALSE", None, None),
+                   ("GPU", "FALSE", "CPU", None),
+                   ("GPU", "FALSE", None, "CPU"),
+                   ("GPU", "maybe", None, None),
+                   ("GPU", "TRUE", None, None),
+                   ("NO-PROOFS", "FALSE", "NO-PROOFS", None),
+                   ("GPU", "FALSE", "No-Proofs", "GPU"),
+                   ("NO-PROOFS", "TRUE", "NO-PROOFS", "GPU"))
+        for script in self.STANDALONE_ENTRYPOINTS:
+            for args in invalid:
+                with self.subTest(script=script, args=args):
+                    self.assert_no_source_dispatch(self.standalone_dispatch(script, *args))
+
+    def test_standalone_entrypoints_reject_invalid_mock_network_before_source(self):
+        for script in self.STANDALONE_ENTRYPOINTS:
+            for network, chain_id in (("unknown", "31337"), ("LOCALHOST", "57"), ("Tanenbaum", "31337")):
+                with self.subTest(script=script, network=network, chain_id=chain_id):
+                    result = self.standalone_dispatch(script, "NO-PROOFS", "TRUE", "NO-PROOFS",
+                                                      network=network, chain_id=chain_id)
+                    self.assert_no_source_dispatch(result)
+
+    def test_standalone_network_validation_precedes_source_refresh(self):
+        for script in self.STANDALONE_ENTRYPOINTS[1:]:
+            for network, chain_id in (("unknown", "31337"), ("localhost", "57"), (None, "31337")):
+                with self.subTest(script=script, network=network, chain_id=chain_id):
+                    result = self.standalone_dispatch(script, network=network, chain_id=chain_id)
+                    self.assert_no_source_dispatch(result)
+
+    def test_standalone_mainnet_real_route_and_mock_guards_remain_intact(self):
+        for script in self.STANDALONE_ENTRYPOINTS:
+            with self.subTest(script=script, route="real"):
+                real = self.standalone_dispatch(script, "GPU", "FALSE", network="MaInNeT")
+                self.assert_dispatch_route(real, script, network="mainnet")
+            for mock in ("TRUE", "FALSE"):
+                with self.subTest(script=script, mock=mock):
+                    result = self.standalone_dispatch(script, "NO-PROOFS", mock, "NO-PROOFS",
+                                                      network="MAINNET")
+                    self.assert_no_source_dispatch(result)
+
+    def test_migration_post_finalize_lock_precedes_source_refresh(self):
+        script = "edge-chain-migrate-to-gateway.sh"
+        result = self.standalone_dispatch(script, "GPU", "FALSE", args=("--resume-post-finalize",))
+        self.assert_dispatch_route(result, script)
+        self.assertLess(result.stdout.index("LOCK"), result.stdout.index("RELEASE -B"))
+        self.assertLess(result.stdout.index("LOCK"), result.stdout.index("ERA "))
 
     def test_fingerprint_covers_exact_new_inputs(self):
         common = (ROOT / "scripts/gateway-launch/_common.sh").read_text()

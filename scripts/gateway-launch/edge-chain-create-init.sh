@@ -21,6 +21,9 @@ gl_validate_zkstack_chain_name "${EDGE_CHAIN_NAME}" EDGE_CHAIN_NAME
 # SYSCOIN: Initialize only the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION
+gl_validate_l1_network_pair
+gl_normalize_canonical_deployment_inputs
+gl_reject_no_proofs_on_mainnet
 gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
 gl_ensure_zkstack_cli_release_current
@@ -62,9 +65,6 @@ if [ -z "${EDGE_PROVER_MODE}" ]; then
     EDGE_PROVER_MODE="gpu"
   fi
 fi
-gl_normalize_canonical_deployment_inputs
-gl_reject_no_proofs_on_mainnet
-gl_validate_l1_network_pair
 if [ "${RESUME_CREATED_ONLY}" = true ] || [ "${RESUME_POST_ADMIN}" = true ]; then
   # SYSCOIN: Repair must inherit an existing checkpoint identity; it may not
   # manufacture a new launch context from the recovery invocation's inputs.
