@@ -1,4 +1,4 @@
-# Generated Era release interface — not activated
+# Generated Era sources and separate canonical fixture certification
 
 The copied overlay, manifest and read-only checker are the exact reviewed
 domain-corrected crypto bundle. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`,
@@ -11,7 +11,7 @@ bytes and absence of the generated source copy; the unchanged manifest binds
 all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
-## Candidate validation is not release activation
+## Completed crypto sources are not a packaged fixture
 
 The server now registers the reproduced Syscoin guest tree
 `6935489bdbc7b1ed31e608677d1b2418b10691b5` and its Security100 key
@@ -24,8 +24,8 @@ gates. No fixture descriptor or successful restore is manufactured by this PR.
 Key generation used one host under the explicitly approved validation constraint.
 It is not two-independent-host reproduction. The existing production workflow's
 identity sentinels and two-runner reconciliation remain gated and are not claimed
-to have passed. Reconcile that workflow and the completed release inventory
-before activation; do not infer release approval from the registered server key.
+to have passed. Those historical workflow results must not be invented, and that
+workflow is not a prerequisite imposed by this source-materialization helper.
 
 `scripts/apply-era-contracts-syscoin-release.py --check-bundle ERA_ROOT` is
 read-only: it reconstructs both trees using private Git index/object storage and
@@ -33,15 +33,27 @@ classifies the current upstream/source/generated worktree. It does not download,
 compile, activate, initialize submodules, change the real index, or authorize a
 launch. No tool or fixture hashes can be supplied as command-line overrides.
 
-Ordinary application and `--assert-applied` both fail on the regeneration marker
-before inspecting or changing the target. They then require a source-controlled
-`CANONICAL_BINDING`, which intentionally remains `None`. Even deleting the marker
-cannot enable this candidate. The unchanged source-only helper retains its exact
-no-proofs/mock exception; it continues to reject the generated tree. Launcher
-dispatch uses those existing modes, not a new operator approval switch. The
-zkstack build fingerprint now includes the release helper and exact bundle.
+Ordinary application and `--assert-applied` authenticate the final server app/VK
+source bytes, exact bundle, complete source/generated trees, and clean initialized
+submodules. They do not require a local-chain snapshot before the deployment that
+would produce it. Both return `canonical_fixture_authorized: false`; successful
+source materialization does not certify deployment, restore or rollout.
 
-## Mechanical activation inputs, only after genuine fixture acceptance
+The fixed V32 Era/zkstack source pins are source-controlled independently of the
+absent fixture's `versions.yaml`. The real launcher still requires its existing
+GPU modes without a mock verifier, authenticates live Gateway identities, and the
+node checks the deployed production verifier against the compiled V8 VK. The
+unchanged source-only helper retains its explicit no-proofs/mock lane and rejects
+the generated tree. No operator approval switch or hash override is added. The
+zkstack build fingerprint includes the release helper and exact bundle.
+
+`scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture` is a
+distinct read-only check. It fails first on the regeneration marker, then requires
+the source-controlled `CANONICAL_BINDING`, which intentionally remains `None`.
+Even deleting the marker cannot certify the absent fixture. `run_local.sh` and the
+Rust fixture consumers remain blocked with an empty trusted-descriptor registry.
+
+## Canonical fixture binding, only after genuine fixture acceptance
 
 Fill `CANONICAL_BINDING` with exactly this structure (no nulls/placeholders):
 
@@ -62,7 +74,7 @@ test record. The same descriptor hash must appear once in the consumer's literal
 31337→57001→{6565,6566} topology, five-confirmation policy, all five snapshot and
 seven tool roles, all referenced file sizes/hashes, distinct safe paths, and
 the pinned final server VK/FRI identity source bytes. This hashes the complete
-fixture inventory on each assertion; there is deliberately no untrusted stamp
+fixture inventory on each explicit fixture check; there is no untrusted stamp
 or cached-success shortcut. Changing app identity source requires renewed review
 of `APP_SOURCES`, not an environment override.
 
@@ -82,4 +94,4 @@ not artifact attestation; normal artifact/build gates remain necessary.
 
 Focused tests use synthetic temporary repositories/fixtures only; the real
 bundle reconstruction is read-only. No build, deployment, signing, original
-checkout mutation or registry activation is part of this implementation.
+checkout mutation or fixture registry activation is part of this implementation.

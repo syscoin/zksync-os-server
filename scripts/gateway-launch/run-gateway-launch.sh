@@ -194,7 +194,7 @@ if [ "${REUSE_ECOSYSTEM}" = true ] &&
   gl_die "GATEWAY_WALLET_CREATION/GATEWAY_WALLET_PATH are ignored with --reuse-ecosystem; unset them or use a fresh GATEWAY_DIR"
 fi
 # SYSCOIN: Resolve pins unconditionally so pre-set REQUIRED_* values cannot
-# bypass the pending-fixture policy through lazy shell expansion.
+# bypass the reviewed source-pin policy through lazy shell expansion.
 gl_resolve_required_source_pins
 
 

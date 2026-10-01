@@ -36,11 +36,13 @@ unknown candidate inputs remain null sentinels and cannot authorize keygen.
 Promote the reproduced V32 guest/app/VK together with the accepted genesis state,
 L1 state, databases, contract addresses and metadata atomically. If either the final target or relay
 identity/runtime differs from the integration candidate, replace every guest/server
-pin before keygen. All canonical fixture and GPU helpers must refuse this fixture
-while this marker exists. The Gateway launcher may materialize only the exact reviewed
-source pair under the explicit no-proofs + testnet-verifier gate, and must authenticate
-the candidate target, relay, and factory before it creates an edge. A mismatch stops
-for repinning and review; this exception does not make the fixture canonical. Remove
-the marker only with the complete generated set.
+pin before keygen. All canonical fixture consumers must refuse this fixture while
+this marker exists. The completed app-bound key and exact generated Era sources may
+be materialized for a fresh real-proof deployment without this packaged fixture.
+The launcher still authenticates the target, relay and factory before creating an
+edge, and the node requires the deployed production verifier's VK to match its
+compiled V8 key. The separate no-proofs lane retains its explicit testnet-verifier
+gate. Neither source materialization nor a running deployment makes this fixture
+canonical. Remove the marker only with the complete accepted fixture set.
 
 Do not copy or rename any V30, V31, or stock V32 fixture into this directory.

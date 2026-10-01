@@ -165,13 +165,29 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(sha((ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_bytes()),
                          module.SOURCE_APPLICATOR_SHA)
 
-    def test_cli_marker_precedes_git_and_environment_cannot_override(self):
+    def test_explicit_fixture_check_marker_first_and_environment_cannot_override(self):
         env = dict(os.environ, CANONICAL_BINDING="approved", PROVER_MODE="gpu")
         result = subprocess.run(["python3", "-B", str(ROOT / "scripts/apply-era-contracts-syscoin-release.py"),
-                                 "--assert-applied", "/nonexistent-era"], env=env, capture_output=True, text=True)
+                                 "--check-canonical-fixture"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("regeneration marker", result.stderr)
         self.assertNotIn("git", result.stderr)
+
+    def test_source_assertion_does_not_consume_fixture(self):
+        result = subprocess.run(["python3", "-B", str(ROOT / "scripts/apply-era-contracts-syscoin-release.py"),
+                                 "--assert-applied", "/nonexistent-era"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("regeneration marker", result.stderr)
+
+    def test_generated_manifest_tamper_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory).resolve()
+            for name in ("check-release-overlay.py", "generated-verifier-manifest.json"):
+                put(bundle / name, (M.BUNDLE / name).read_bytes())
+            manifest = bundle / "generated-verifier-manifest.json"
+            manifest.write_text(manifest.read_text().replace(M.VK, "0x" + "0" * 64))
+            with patch.object(M, "BUNDLE", bundle), self.assertRaisesRegex(ValueError, "SHA-256"):
+                M.load_bundle()
 
     def dispatch(self, mode="gpu", mock="false", override="", assert_only=False):
         env = dict(os.environ, COMMON=str(ROOT / "scripts/gateway-launch/_common.sh"),
@@ -252,7 +268,12 @@ class TemporaryGitEngineTests(unittest.TestCase):
         patch.object(M, "BUNDLE", self.bundle).start()
         patch.object(M, "PREIMAGES", {"generated.sol": None}).start()
         patch.object(M, "load_bundle", return_value=(self.overlay, self.manifest)).start()
-        patch.object(M, "check_activation", return_value="synthetic-binding").start()
+        self.app_path = self.server / "lib/types/src/protocol/proving_version.rs"
+        put(self.app_path, b"synthetic reviewed identity\n")
+        patch.object(M, "APP_SOURCES", {
+            "lib/types/src/protocol/proving_version.rs": sha(self.app_path.read_bytes())}).start()
+        put(self.server / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED", b"blocked\n")
+        patch.object(M, "CANONICAL_BINDING", None).start()
         patch.object(M, "require_dependencies").start()
 
     def git(self, *args):
@@ -262,8 +283,20 @@ class TemporaryGitEngineTests(unittest.TestCase):
         first = M.run(self.repo)
         self.assertTrue(first["target_mutated"])
         self.assertEqual(first["tree"], self.overlay.CANDIDATE)
-        self.assertFalse(M.run(self.repo, assert_applied=True)["target_mutated"])
+        self.assertFalse(first["canonical_fixture_authorized"])
+        asserted = M.run(self.repo, assert_applied=True)
+        self.assertFalse(asserted["target_mutated"])
+        self.assertFalse(asserted["canonical_fixture_authorized"])
+        with self.assertRaisesRegex(ValueError, "regeneration marker"):
+            M.check_activation(self.server)
         self.assertEqual((self.repo / ".git/index").read_bytes(), self.index_before)
+
+    def test_changed_app_identity_rejected_before_source_mutation(self):
+        self.app_path.write_bytes(b"stock or stale VK identity\n")
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            M.run(self.repo)
+        self.assertEqual((self.repo / "source.txt").read_bytes(), b"upstream\n")
+        self.assertFalse((self.repo / "generated.sol").exists())
 
     def test_source_apply_and_check_only_no_mutation(self):
         put(self.repo / "source.txt", b"reviewed source\n")

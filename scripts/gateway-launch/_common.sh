@@ -216,10 +216,8 @@ gl_normalize_canonical_deployment_inputs() {
   export EDGE_GATEWAY_COMMITTER_WALLET_NAME=blob_operator
 }
 
-# SYSCOIN: The pending V8 key does not authorize the canonical fixture, but an
-# exact no-proofs deployment may materialize the reviewed source pair in order
-# to reproduce and authenticate the Gateway identity. Keep this gate identical
-# in strength to the Era-contract source-materialization exception.
+# SYSCOIN: Keep the source-only testnet lane distinct from generated real-proof
+# contracts. It never authorizes the canonical local fixture.
 gl_pending_v8_mock_launch_enabled() {
   local gateway_mode edge_mode
   [ "${PROTOCOL_VERSION:-}" = "v32.0" ] || return 1
@@ -235,11 +233,11 @@ gl_pending_v8_mock_launch_enabled() {
   esac
 }
 
-gl_pending_v8_mock_zkstack_cli_sha() {
+gl_v32_zkstack_cli_sha() {
   printf '%s\n' "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 }
 
-gl_pending_v8_mock_contracts_sha() {
+gl_v32_contracts_sha() {
   printf '%s\n' "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 }
 
@@ -546,17 +544,13 @@ gl_l1_broadcast_preflight() {
 gl_sha_from_versions() {
   gl_require PROTOCOL_VERSION
   local key="$1"
-  # SYSCOIN: Refuse to materialize the canonical lane from a placeholder
-  # fixture. The sole exception resolves only the exact reviewed source pair
-  # for a fake-prover launch; it does not make the absent fixture canonical.
-  local pending_marker="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/CANONICAL_V8_REGENERATION_REQUIRED"
-  if [ -f "$pending_marker" ]; then
-    gl_pending_v8_mock_launch_enabled || \
-      gl_die "local-chain fixture is blocked pending canonical v32.0/V8 regeneration: ${pending_marker}"
+  # SYSCOIN: CANONICAL_V8_REGENERATION_REQUIRED gates fixture consumers, not
+  # reviewed source pins needed to create the deployment before snapshotting it.
+  if [ "${PROTOCOL_VERSION}" = v32.0 ]; then
     case "$key" in
-    era-contracts) gl_pending_v8_mock_contracts_sha ;;
-    zkstack-cli) gl_pending_v8_mock_zkstack_cli_sha ;;
-    *) gl_die "pending-V8 mock launch has no reviewed source pin for ${key}" ;;
+    era-contracts) gl_v32_contracts_sha ;;
+    zkstack-cli) gl_v32_zkstack_cli_sha ;;
+    *) gl_die "V32 has no reviewed source pin for ${key}" ;;
     esac
     return 0
   fi
@@ -587,7 +581,7 @@ gl_zkstack_cli_sha_from_versions() {
 
 # SYSCOIN: Resolve and authenticate source pins even when callers pre-populate
 # REQUIRED_* variables. This closes the lazy parameter-expansion path that
-# otherwise bypasses the pending-fixture marker entirely.
+# otherwise bypasses the source-pin comparison entirely.
 gl_resolve_required_source_pins() {
   gl_require PROTOCOL_VERSION
   local expected_contracts expected_zkstack
@@ -2148,8 +2142,8 @@ gl_era_contracts_postimage() {
   [ "${PROVER_MODE:-gpu}:${GATEWAY_PROVER_MODE:-${PROVER_MODE:-gpu}}:${EDGE_PROVER_MODE:-${PROVER_MODE:-gpu}}" = gpu:gpu:gpu ] && \
     [ "${SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER:-false}" = false ] || \
     gl_die "generated Era release requires the existing real-proof modes without a mock verifier"
-  # SYSCOIN: The separate helper checks the canonical marker, compiled fixture
-  # trust and app identity before even an idempotent generated-postimage check.
+  # SYSCOIN: Attest the exact generated sources and app identity independently
+  # of packaged-fixture qualification; live deployment identity checks follow.
   python3 -B "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-release.py" \
     "$@" "${ZKSYNC_ERA_PATH}/contracts"
 }

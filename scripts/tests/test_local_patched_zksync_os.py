@@ -8120,7 +8120,7 @@ class CanonicalFixtureGateStaticTests(unittest.TestCase):
             (REPO_ROOT / "local-chains" / "v32.0" / "versions.yaml").exists()
         )
 
-    def test_pending_v8_mock_source_pins_require_the_full_testnet_gate(self) -> None:
+    def test_v32_source_pins_are_independent_of_fixture_and_launch_modes(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
         command = r'''
 source "$COMMON"
@@ -8171,13 +8171,19 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         self.assertEqual(localhost.returncode, 0, localhost.stderr)
         self.assertEqual(localhost.stdout.strip(), expected)
 
+        # Resolving reviewed sources is not permission to launch these modes.
+        # Mode, network and deployed-verifier checks remain at their consumers.
+        real = run_gate({**exact, "PROVER_MODE": "gpu", "GATEWAY_PROVER_MODE": "gpu",
+                         "EDGE_PROVER_MODE": "gpu", "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "false"})
+        self.assertEqual(real.returncode, 0, real.stderr)
+        self.assertEqual(real.stdout.strip(), expected)
+        mainnet = run_gate({**exact, "PROVER_MODE": "gpu", "GATEWAY_PROVER_MODE": "gpu",
+                            "EDGE_PROVER_MODE": "gpu", "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "false",
+                            "L1_NETWORK": "mainnet", "L1_CHAIN_ID": "57"})
+        self.assertEqual(mainnet.returncode, 0, mainnet.stderr)
+        self.assertEqual(mainnet.stdout.strip(), expected)
+
         rejected = (
-            {k: v for k, v in exact.items() if k != "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER"},
-            {**exact, "PROVER_MODE": "gpu"},
-            {**exact, "GATEWAY_PROVER_MODE": "gpu"},
-            {**exact, "EDGE_PROVER_MODE": "gpu"},
-            {**exact, "L1_NETWORK": "mainnet", "L1_CHAIN_ID": "57"},
-            {**exact, "L1_NETWORK": "localhost", "L1_CHAIN_ID": "5700"},
             {
                 **exact,
                 "REQUIRED_ZKSTACK_CLI_SHA": "1" * 40,
@@ -8188,12 +8194,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                 "REQUIRED_ZKSTACK_CLI_SHA": PENDING_V8_MOCK_ZKSTACK_SHA,
                 "REQUIRED_CONTRACTS_SHA": "2" * 40,
             },
-            {
-                **exact,
-                "PROVER_MODE": "gpu",
-                "REQUIRED_ZKSTACK_CLI_SHA": PENDING_V8_MOCK_ZKSTACK_SHA,
-                "REQUIRED_CONTRACTS_SHA": PENDING_V8_MOCK_CONTRACTS_SHA,
-            },
+            {**exact, "PROTOCOL_VERSION": "v32.1"},
         )
         for candidate in rejected:
             with self.subTest(candidate=candidate):

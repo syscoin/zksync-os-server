@@ -32,8 +32,8 @@ APP_SOURCES = {
         "1f270cae57bb060a9f5f4b685e48e5108267e57347deb15ace0082df4e01e417",
 }
 # SYSCOIN: This is source-controlled release data, never an operator flag or
-# writable sidecar. Fill only together with the completed real fixture and its
-# Rust registry entry. See releases/era-v32/README.md for the exact schema.
+# writable sidecar. It certifies the packaged fixture, not whether the exact
+# generated contract sources can be materialized for a fresh deployment.
 CANONICAL_BINDING = None
 IDENTITIES = {"source_identities", "proof_identities", "deployment_record",
               "clean_boundary", "snapshot_manifest"}
@@ -95,6 +95,11 @@ def file_identity(root, row):
     return rel
 
 
+def check_app_sources(server):
+    for rel, sha in APP_SOURCES.items():
+        exact(server / rel, sha)
+
+
 def check_activation(server):
     fixture = server / "local-chains/v32.0"
     marker = fixture / "CANONICAL_V8_REGENERATION_REQUIRED"
@@ -152,8 +157,7 @@ def check_activation(server):
         rel = file_identity(fixture, row)
         require(rel not in paths, "duplicate fixture file path")
         paths.add(rel)
-    for rel, sha in APP_SOURCES.items():
-        exact(server / rel, sha)
+    check_app_sources(server)
     return binding["descriptor_sha256"]
 
 
@@ -246,8 +250,9 @@ def apply_patches(repo, env, patches):
 
 
 def run(repo, assert_applied=False, check_bundle_only=False):
-    # Gates precede every possible target mutation, even on an already-applied tree.
-    descriptor = None if check_bundle_only else check_activation(SERVER)
+    # Source identity is required before mutation; deployment cannot depend on
+    # a fixture that can only be captured after that deployment has completed.
+    check_app_sources(SERVER)
     overlay, manifest = load_bundle()
     source_patch = SERVER / "scripts/patches/era-contracts-syscoin.patch"
     source_applicator = SERVER / "scripts/apply-era-contracts-syscoin-patch.sh"
@@ -256,7 +261,8 @@ def run(repo, assert_applied=False, check_bundle_only=False):
     tree, base_tree, env = inspect_worktree(repo, overlay)
     if check_bundle_only:
         return {"status": "bundle_and_worktree_checked", "tree": tree,
-                "target_mutated": False, "canonical_launch_authorized": False}
+                "target_mutated": False, "canonical_launch_authorized": False,
+                "canonical_fixture_authorized": False}
     require_dependencies(repo, env)
     require(not assert_applied or tree == overlay.CANDIDATE,
             "assert-applied refuses source or upstream tree")
@@ -276,9 +282,9 @@ def run(repo, assert_applied=False, check_bundle_only=False):
     for rel, row in manifest["paths"].items():
         file_identity(repo, dict(row, path=rel))
     require_dependencies(repo, env)
-    require(check_activation(SERVER) == descriptor, "canonical binding changed during materialization")
+    check_app_sources(SERVER)
     return {"status": "exact_generated_release_postimage", "tree": overlay.CANDIDATE,
-            "descriptor_sha256": descriptor, "target_mutated": tree != overlay.CANDIDATE,
+            "canonical_fixture_authorized": False, "target_mutated": tree != overlay.CANDIDATE,
             "deployed": False, "fixture_restore_executed": False}
 
 
@@ -287,10 +293,19 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--assert-applied", action="store_true")
     mode.add_argument("--check-bundle", action="store_true", help="read-only; never launch authorization")
-    parser.add_argument("era_root", type=Path)
+    mode.add_argument("--check-canonical-fixture", action="store_true",
+                      help="read-only certification of the separately accepted packaged fixture")
+    parser.add_argument("era_root", type=Path, nargs="?")
     args = parser.parse_args()
     try:
-        print(json.dumps(run(args.era_root, args.assert_applied, args.check_bundle), sort_keys=True))
+        if args.check_canonical_fixture:
+            require(args.era_root is None, "fixture check does not consume an Era repository")
+            result = {"status": "canonical_fixture_checked", "canonical_fixture_authorized": True,
+                      "descriptor_sha256": check_activation(SERVER), "target_mutated": False}
+        else:
+            require(args.era_root is not None, "Era repository path is required")
+            result = run(args.era_root, args.assert_applied, args.check_bundle)
+        print(json.dumps(result, sort_keys=True))
     except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         parser.exit(1, "error: " + str(error) + "\n")
 
