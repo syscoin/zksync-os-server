@@ -37,7 +37,7 @@ gl_require ZKSYNC_OS_SERVER_PATH
 # SYSCOIN: Exact consensus inputs used to build the hash-pinned canonical application.
 # A workspace-specific source rewrite would make native execution disagree
 # with the proving guest while still advertising the same VK.
-PUBLISHED_EDGE_DA_COMMIT_TARGET=0xca38dbb6ea5f740cc8252f1450def4dcede94478
+PUBLISHED_EDGE_DA_COMMIT_TARGET=0xabb69e8e899c06e51414efde62d4423de4f35004
 PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
 
 protocol_uses_dev_patch() {

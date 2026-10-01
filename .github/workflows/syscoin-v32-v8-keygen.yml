@@ -26,16 +26,16 @@ env:
   ZKSYNC_OS_REPOSITORY: https://github.com/matter-labs/zksync-os.git
   ZKSYNC_OS_BASE_COMMIT: 69bc430549e88f9264066d14f2001707572c5d33
   ZKSYNC_OS_BASE_TREE: 233b36e77843e460ee9da3e344ee227fa8cce04a
-  ZKSYNC_OS_PATCHED_TREE: ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752
+  ZKSYNC_OS_PATCHED_TREE: 6935489bdbc7b1ed31e608677d1b2418b10691b5
   ZKSYNC_OS_PATCH_SIZE: "282818"
-  ZKSYNC_OS_PATCH_SHA256: 8c2eec0d9c1332bb0a1d301f4ea33bada6b56d46c7bb3944619b6849aeecf20d
+  ZKSYNC_OS_PATCH_SHA256: 0af88710e0275ce3dc49928a264e93639f945c85ab79600e12a41306731053d7
   ZKSYNC_OS_HELPER_SIZE: "7323"
-  ZKSYNC_OS_HELPER_SHA256: c44b673a4c6a00bd0fc42dbaebfc33ca5264a96be6b03cf7ee10648c6d170f2b
+  ZKSYNC_OS_HELPER_SHA256: f42847b54c331998605e20f32a80134f7c52dd6a525405d97feb6ecf22c25d21
 
   # SYSCOIN: The Gateway-local ValidatorTimelock address is an application input. The current
-  # value is the integration candidate produced by the unmodified V32 conversion; keygen remains
-  # disabled until the final salts, governance, bytecodes, and ownership derivation are attested.
-  SYSCOIN_EDGE_DA_COMMIT_TARGET: "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
+  # value is the offline-derived critical subtree for the planned fresh Tanenbaum deployment;
+  # this production workflow remains gated on the complete deployed conversion identity.
+  SYSCOIN_EDGE_DA_COMMIT_TARGET: "0xabb69e8e899c06e51414efde62d4423de4f35004"
   SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE: "2840"
   SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH: "0xd98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4"
   SYSCOIN_EDGE_DA_RELAY_EMITTER: "0x758b06cda80bdd016f79afd0df1a984039067a21"
@@ -45,6 +45,12 @@ env:
   GATEWAY_TARGET_IDENTITY_SIZE: "8860"
   GATEWAY_TARGET_IDENTITY_SHA256: 09bfa8ae16d333c08e782a957d9c9462d8fe59ad00e15813e5ce1d83c3842c95
   GATEWAY_DERIVATION_RECORD_SCHEMA: syscoin-v32-gateway-create2-derivation-v1
+
+  # SYSCOIN: Public offline critical-subtree provenance only. This is not the
+  # production Gateway authorization record checked by the unchanged gate above.
+  OFFLINE_GATEWAY_IDENTITY_PATH: scripts/keygen/gateway-identity/offline-critical-identity.json
+  OFFLINE_GATEWAY_IDENTITY_SIZE: "10173"
+  OFFLINE_GATEWAY_IDENTITY_SHA256: 2efa802311ab4efb3827e820ba41df33867820d11e7f08c3ec62f27c7dc3bf3a
 
   AIRBENDER_REPOSITORY: https://github.com/matter-labs/zksync-airbender.git
   AIRBENDER_COMMIT: 03454c7a41053a4b88bb421e97fb9efe893a92f5
@@ -64,7 +70,7 @@ env:
   # but old app identities must never look canonical. Replace every zero below from two clean
   # builds of this exact tree, install the same values in the server FRI verifier, and only then
   # change APP_IDENTITY_STATUS to `attested`.
-  APP_IDENTITY_SOURCE_TREE: ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752
+  APP_IDENTITY_SOURCE_TREE: 6935489bdbc7b1ed31e608677d1b2418b10691b5
   APP_IDENTITY_STATUS: regeneration-required
   APP_BIN_SIZE: "0"
   APP_BIN_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
@@ -86,23 +92,25 @@ env:
   STOCK_SECURITY100_COMMITMENT: "0xad0424473747a5ecba3294e4de778e305b433c2c2794814084ccda7ac817312d"
   STOCK_APP_VK_HASH: "0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
-  CRS_URL: https://storage.googleapis.com/matterlabs-setup-keys-us/setup-keys/setup_compact.key
-  CRS_SIZE: "4831838468"
-  CRS_SHA256: 90d1dea94da665d5741dcc6e9ffc1af23a29669f950a6d599a6ccfee4cfb81bd
-  CRS_MD5: 3e0c9900e16e4872429cc6f2113f28ef
+  # SYSCOIN: Security100 needs the full Bellman 2^25 CRS, not the GPU compact
+  # serialization or the smaller Security80 2^24 setup.
+  CRS_URL: https://storage.googleapis.com/matterlabs-setup-keys-us/setup-keys/setup_2%5E25.key?generation=1682086010630627
+  CRS_SIZE: "2147483920"
+  CRS_SHA256: 021fcc36428ff74352a94ff9ccdd6ef234e99e33e670c2507612994849aa1421
+  CRS_MD5: 6f8362e49c0dce401bed2cebcf090b06
 
   # SYSCOIN: Exact reviewed Era source applicator and patched-tree identity.
   ERA_REPOSITORY: https://github.com/matter-labs/era-contracts.git
   ERA_BASE_COMMIT: 8fb7c29a4e3174335c6480b23f57822e054f9d5f
   ERA_BASE_TREE: acdd11e5bb7787d9df2306f6a1dc96bf92e67f53
   ERA_NESTED_COMMIT: e554ae64ec150c47d6f17786e7f4aacebc7bf945
-  ERA_PATCH_SIZE: "1423817"
-  ERA_PATCH_SHA256: 506c3ac9cf46c1174f7aee3fc033b8d5aef661533e77d3fc324c17ae22962668
-  ERA_PATCH_PATH_COUNT: "61"
-  ERA_PATCH_PATHS_SHA256: 18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0
-  ERA_SOURCE_PATCHED_TREE: 2a28a08e439d35ff25643d3d108c05e846cdf0fe
-  ERA_HELPER_SIZE: "52512"
-  ERA_HELPER_SHA256: 2b96e74a28d994934350170de3b9c632c9cfd8a27874ac4e0ab4273680a4b0d9
+  ERA_PATCH_SIZE: "1437333"
+  ERA_PATCH_SHA256: 9cba2e553e8604c6b64f4c4de633bec741539915ee719146c75eeadfa2a6f3e0
+  ERA_PATCH_PATH_COUNT: "67"
+  ERA_PATCH_PATHS_SHA256: 5422444f3057f29fd1dcfaa275d0d04a16e014818ae1b7e21acc572325ae2d09
+  ERA_SOURCE_PATCHED_TREE: 3eefa0f127d1deff365ebffcf489b183cde0e756
+  ERA_HELPER_SIZE: "53309"
+  ERA_HELPER_SHA256: 7a672b6192c9de0253c4b1fb2aa82fcbd22ff26b513028211ab5a31017e74b90
   ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22
   ERA_GENESIS_SIZE: "557518"
   ERA_GENESIS_SHA256: 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95
@@ -820,8 +828,8 @@ jobs:
       - name: Download and attest an independent CRS copy
         run: |
           set -euo pipefail
-          crs_part="${WORK_DIR}/setup_compact.key.part"
-          crs_file="${WORK_DIR}/setup_compact.key"
+          crs_part="${WORK_DIR}/setup_cpu.key.part"
+          crs_file="${WORK_DIR}/setup_cpu.key"
           curl \
             --fail \
             --location \
@@ -842,20 +850,16 @@ jobs:
           app_text="${WORK_DIR}/out/app/app.text"
           end_params_file="${WORK_DIR}/out/end-params.txt"
 
-          cargo "+${RUST_TOOLCHAIN}" run \
-            --locked \
-            --release \
-            --manifest-path "${WORK_DIR}/airbender/Cargo.toml" \
-            -p cli \
-            --bin end_params \
-            -- \
+          bash "${GITHUB_WORKSPACE}/scripts/keygen/build-end-params.sh" \
+            "${WORK_DIR}/airbender" "${WORK_DIR}/end-params-helper"
+          "${WORK_DIR}/end-params-helper/target/release/end_params" \
             "${app_bin}" \
             "${app_text}" > "${end_params_file}"
 
           grep -Fqx "app_end_params = ${APP_END_PARAMS}" "${end_params_file}"
-          grep -Fqx \
-            "unified_chain (expected registers[8..16]) = ${SECURITY100_WORDS}" \
-            "${end_params_file}"
+          # SYSCOIN: This pinned helper computes its diagnostic recursion chain at
+          # Security80. Only its base app end parameters are security-independent;
+          # bind Security100 to the explicitly checked wrapper output below.
 
           RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
             --locked \
@@ -917,20 +921,25 @@ jobs:
       - name: Generate the app-bound Security100 verification keys
         run: |
           set -euo pipefail
-          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
-            --locked \
-            --release \
-            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
-            -p zkos-wrapper \
-            --bin wrapper \
-            -- \
-            --threads "$(nproc)" \
-            generate-vk \
-            --check-aux-params \
-            --bin "${WORK_DIR}/out/app/app.bin" \
-            --text "${WORK_DIR}/out/app/app.text" \
-            --trusted-setup "${WORK_DIR}/setup_compact.key" \
-            --output-dir "${WORK_DIR}/out/vks"
+          (
+            # RUST_MIN_STACK covers worker threads, not the wrapper's main-thread stack.
+            ulimit -S -s 300000
+            ulimit -c 0
+            RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+              --locked \
+              --release \
+              --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+              -p zkos-wrapper \
+              --bin wrapper \
+              -- \
+              --threads "$(nproc)" \
+              generate-vk \
+              --check-aux-params \
+              --bin "${WORK_DIR}/out/app/app.bin" \
+              --text "${WORK_DIR}/out/app/app.text" \
+              --trusted-setup "${WORK_DIR}/setup_cpu.key" \
+              --output-dir "${WORK_DIR}/out/vks"
+          )
 
           for artifact in risc_wrapper_vk.json compression_vk.json snark_vk.json; do
             [[ -s "${WORK_DIR}/out/vks/${artifact}" ]]
@@ -1055,11 +1064,11 @@ jobs:
             --proto '=https' \
             --retry 5 \
             --retry-all-errors \
-            --output "${WORK_DIR}/setup_compact.key" \
+            --output "${WORK_DIR}/setup_cpu.key" \
             "${CRS_URL}"
-          [[ "$(stat -c '%s' "${WORK_DIR}/setup_compact.key")" == "${CRS_SIZE}" ]]
-          [[ "$(sha256sum "${WORK_DIR}/setup_compact.key" | awk '{print $1}')" == "${CRS_SHA256}" ]]
-          [[ "$(md5sum "${WORK_DIR}/setup_compact.key" | awk '{print $1}')" == "${CRS_MD5}" ]]
+          [[ "$(stat -c '%s' "${WORK_DIR}/setup_cpu.key")" == "${CRS_SIZE}" ]]
+          [[ "$(sha256sum "${WORK_DIR}/setup_cpu.key" | awk '{print $1}')" == "${CRS_SHA256}" ]]
+          [[ "$(md5sum "${WORK_DIR}/setup_cpu.key" | awk '{print $1}')" == "${CRS_MD5}" ]]
 
       - name: Reproduce and identify the upstream app-bound key
         run: |
@@ -1085,20 +1094,25 @@ jobs:
           [[ "${stock_commitment}" == "${STOCK_SECURITY100_COMMITMENT}" ]]
           printf '%s\n' "${stock_commitment}" > "${WORK_DIR}/out/program-commitment.txt"
 
-          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
-            --locked \
-            --release \
-            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
-            -p zkos-wrapper \
-            --bin wrapper \
-            -- \
-            --threads "$(nproc)" \
-            generate-vk \
-            --check-aux-params \
-            --bin "${WORK_DIR}/out/app/app.bin" \
-            --text "${WORK_DIR}/out/app/app.text" \
-            --trusted-setup "${WORK_DIR}/setup_compact.key" \
-            --output-dir "${WORK_DIR}/out/vks"
+          (
+            # RUST_MIN_STACK covers worker threads, not the wrapper's main-thread stack.
+            ulimit -S -s 300000
+            ulimit -c 0
+            RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+              --locked \
+              --release \
+              --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+              -p zkos-wrapper \
+              --bin wrapper \
+              -- \
+              --threads "$(nproc)" \
+              generate-vk \
+              --check-aux-params \
+              --bin "${WORK_DIR}/out/app/app.bin" \
+              --text "${WORK_DIR}/out/app/app.text" \
+              --trusted-setup "${WORK_DIR}/setup_cpu.key" \
+              --output-dir "${WORK_DIR}/out/vks"
+          )
 
           RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
             --locked \
@@ -1364,6 +1378,49 @@ jobs:
           )"
           [[ "$(jq 'length' "${era_dir}/AllContractsHashes.json")" == \
             "${ERA_CONTRACT_HASH_ENTRY_COUNT}" ]]
+          # SYSCOIN: The Gateway deployer embeds PLONK creation code, so its artifact
+          # hashes can change too (including import metadata in deployed bytecode).
+          # Everything outside this exact closure, and each row's identity/paths, stays pinned.
+          plonk_inventory_closure_snapshot() {
+            jq -e -S -c --argjson expected_count "${ERA_CONTRACT_HASH_ENTRY_COUNT}" '
+              def in_plonk_closure:
+                .contractName == "l1-contracts/ZKsyncOSVerifierPlonk" or
+                .contractName == "l1-contracts/GatewayCTMDeployerVerifiersZKsyncOS";
+              def valid_hash:
+                type == "string" and test("^0x[0-9a-f]{64}$") and
+                . != ("0x" + ("0" * 64));
+              if type == "array" and length == $expected_count and
+                all(.[]; (.contractName | type == "string" and length > 0)) and
+                (map([.contractName, .zkBytecodePath, .evmBytecodePath]) |
+                  length == (unique | length)) and
+                ([.[] | select(in_plonk_closure) | .contractName] |
+                  length == 2 and (unique | length) == 2) and
+                all(.[] | select(in_plonk_closure);
+                  all([.zkBytecodeHash, .evmBytecodeHash,
+                    .evmDeployedBytecodeHash, .evmDeployedBytecodeBlakeHash][]; valid_hash) and
+                  (.evmDeployedBytecodeLength | type == "number" and . > 0 and . == floor))
+              then map(if in_plonk_closure then
+                del(.zkBytecodeHash, .evmBytecodeHash, .evmDeployedBytecodeHash,
+                  .evmDeployedBytecodeBlakeHash, .evmDeployedBytecodeLength)
+                else . end)
+              else error("invalid PLONK closure inventory") end
+            ' "$1"
+          }
+          normalize_reviewed_hashes_index() {
+            reviewed_hashes_blob="$(
+              git -C "${era_dir}" rev-parse "${ERA_SOURCE_PATCHED_TREE}:AllContractsHashes.json"
+            )" || return 1
+            reviewed_hashes_mode="$(
+              git -C "${era_dir}" ls-tree "${ERA_SOURCE_PATCHED_TREE}" -- AllContractsHashes.json | \
+                awk '{print $1}'
+            )" || return 1
+            [[ "${reviewed_hashes_mode}" == "100644" ]] || return 1
+            [[ "$(git -C "${era_dir}" ls-files --stage -- AllContractsHashes.json | \
+              awk '{print $1 ":" $3}')" == "100644:0" ]] || return 1
+            git -C "${era_dir}" update-index \
+              --cacheinfo \
+              "${reviewed_hashes_mode},${reviewed_hashes_blob},AllContractsHashes.json"
+          }
           reviewed_plonk_zk_hash="$(
             jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .zkBytecodeHash' \
               "${era_dir}/AllContractsHashes.json"
@@ -1380,17 +1437,8 @@ jobs:
             jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmDeployedBytecodeBlakeHash' \
               "${era_dir}/AllContractsHashes.json"
           )"
-          reviewed_inventory_without_plonk_sha256="$(
-            jq -S -c \
-              'map(select(.contractName != "l1-contracts/ZKsyncOSVerifierPlonk"))' \
-              "${era_dir}/AllContractsHashes.json" | \
-              sha256sum | \
-              awk '{print $1}'
-          )"
-          reviewed_plonk_shape_sha256="$(
-            jq -S -c \
-              '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | del(.zkBytecodeHash, .evmBytecodeHash, .evmDeployedBytecodeHash, .evmDeployedBytecodeBlakeHash)' \
-              "${era_dir}/AllContractsHashes.json" | \
+          reviewed_inventory_closure_sha256="$(
+            plonk_inventory_closure_snapshot "${era_dir}/AllContractsHashes.json" | \
               sha256sum | \
               awk '{print $1}'
           )"
@@ -1412,8 +1460,11 @@ jobs:
           rustup toolchain install "${ERA_VERIFIER_TOOLCHAIN}" --profile minimal
           (
             cd "${era_dir}/tools/verifier-gen"
-            # SYSCOIN: use the exact pinned-upstream dual-output generator. Only its
-            # PLONK input is replaced; the generated FFLONK must reproduce checked-in source.
+            # SYSCOIN: the reviewed generator derives the PLONK domain from VK.n;
+            # exercise its domain regressions before emitting either verifier.
+            cargo "+${ERA_VERIFIER_TOOLCHAIN}" test \
+              --locked --release --bin zksync_verifier_contract_generator plonk::tests
+            # Only the PLONK input is replaced; FFLONK must reproduce retained source.
             cargo "+${ERA_VERIFIER_TOOLCHAIN}" run \
               --locked \
               --release \
@@ -1544,6 +1595,9 @@ jobs:
           # and compilation. Build tooling may not mutate any reviewed source path or either
           # copy of the app-bound verifier, and the scheduler key must remain the exact lane-A VK.
           git -C "${era_dir}" add -A -- "${era_source_paths[@]}"
+          # The regenerated inventory is checked below; normalize only its index entry,
+          # retaining the candidate worktree bytes and attesting every other source path now.
+          normalize_reviewed_hashes_index
           [[ "$(git -C "${era_dir}" write-tree)" == "${ERA_SOURCE_PATCHED_TREE}" ]]
           git -C "${era_dir}" reset --quiet
           cmp --silent \
@@ -1557,9 +1611,9 @@ jobs:
             "Contract was generated from a verification key with a hash of ${syscoin_vk_hash}" \
             "${contract_plonk}"
 
-          # SYSCOIN: The app-bound verifier changes creation/deployed bytecode hashes even
-          # though its ABI selectors do not change. Prove that the regenerated inventory
-          # is the only overlay on the reviewed source tree.
+          # SYSCOIN: The app-bound verifier and its embedding deployer may change
+          # artifact-derived hashes/lengths, but no selectors or inventory identities.
+          # calculate-hashes:check above binds these values to the full clean build.
           post_build_selectors_sha256="$(
             sha256sum "${era_dir}/l1-contracts/selectors" | awk '{print $1}'
           )"
@@ -1584,17 +1638,8 @@ jobs:
             jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmDeployedBytecodeBlakeHash' \
               "${era_dir}/AllContractsHashes.json"
           )"
-          candidate_inventory_without_plonk_sha256="$(
-            jq -S -c \
-              'map(select(.contractName != "l1-contracts/ZKsyncOSVerifierPlonk"))' \
-              "${era_dir}/AllContractsHashes.json" | \
-              sha256sum | \
-              awk '{print $1}'
-          )"
-          candidate_plonk_shape_sha256="$(
-            jq -S -c \
-              '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | del(.zkBytecodeHash, .evmBytecodeHash, .evmDeployedBytecodeHash, .evmDeployedBytecodeBlakeHash)' \
-              "${era_dir}/AllContractsHashes.json" | \
+          candidate_inventory_closure_sha256="$(
+            plonk_inventory_closure_snapshot "${era_dir}/AllContractsHashes.json" | \
               sha256sum | \
               awk '{print $1}'
           )"
@@ -1612,24 +1657,13 @@ jobs:
           [[ "${candidate_plonk_deployed_hash}" != "${reviewed_plonk_deployed_hash}" ]]
           [[ "${candidate_plonk_deployed_blake_hash}" != \
             "${reviewed_plonk_deployed_blake_hash}" ]]
-          [[ "${candidate_inventory_without_plonk_sha256}" == \
-            "${reviewed_inventory_without_plonk_sha256}" ]]
-          [[ "${candidate_plonk_shape_sha256}" == "${reviewed_plonk_shape_sha256}" ]]
+          [[ "${candidate_inventory_closure_sha256}" == \
+            "${reviewed_inventory_closure_sha256}" ]]
 
           git -C "${era_dir}" add -A -- "${era_source_paths[@]}"
           candidate_hashes_blob="$(git -C "${era_dir}" rev-parse ':AllContractsHashes.json')"
-          reviewed_hashes_blob="$(
-            git -C "${era_dir}" rev-parse "${ERA_SOURCE_PATCHED_TREE}:AllContractsHashes.json"
-          )"
-          reviewed_hashes_mode="$(
-            git -C "${era_dir}" ls-tree "${ERA_SOURCE_PATCHED_TREE}" -- AllContractsHashes.json | \
-              awk '{print $1}'
-          )"
+          normalize_reviewed_hashes_index
           [[ "${candidate_hashes_blob}" != "${reviewed_hashes_blob}" ]]
-          [[ "${reviewed_hashes_mode}" == "100644" ]]
-          git -C "${era_dir}" update-index \
-            --cacheinfo \
-            "${reviewed_hashes_mode},${reviewed_hashes_blob},AllContractsHashes.json"
           [[ "$(git -C "${era_dir}" write-tree)" == "${ERA_SOURCE_PATCHED_TREE}" ]]
           git -C "${era_dir}" reset --quiet
 
@@ -1643,6 +1677,9 @@ jobs:
           # SYSCOIN: Fail if compilation polluted the candidate. The atomic Era
           # patch consists of the exact source postimage, its regenerated hash inventory,
           # and exactly three app-bound PLONK artifacts.
+          # Upstream ignores generated Solidity in this directory. Include only the
+          # verified PLONK output explicitly; no other ignored build output is a candidate.
+          git -C "${era_dir}" add --force -- "${generated_plonk_rel}"
           mapfile -t expected_candidate_paths < <(
             printf '%s\n' \
               "${era_source_paths[@]}" \

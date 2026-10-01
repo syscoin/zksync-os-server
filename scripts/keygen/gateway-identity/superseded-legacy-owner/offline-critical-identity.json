@@ -1,0 +1,153 @@
+{
+  "checker_sha256": "a4d2551a0967766445adfb39e075ad05d745699892eb0a2e805319d58a6e9878",
+  "deployed": false,
+  "derivations": {
+    "l1_governance": {
+      "address": "0xf3a6149e6ceaea24fc1756b8f56eda5d246e464b",
+      "compiler": "0.8.28+commit.7893614a",
+      "constructor_args": "0x0000000000000000000000005b612a8914c3a891d235d0744a7d77685c6998da0000000000000000000000005b612a8914c3a891d235d0744a7d77685c6998da0000000000000000000000000000000000000000000000000000000000000000",
+      "constructor_args_keccak256": "0x45e2c78fc8b451a7e1687ec9dc419fad7a7bd74fee33e2f02dd1cc28f49a5bfe",
+      "creation_keccak256": "0xb2eba295ad620fc7434fc594d952c9380125b6498c791a09337ae12d2034db13",
+      "evm_version": "cancun",
+      "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+      "init_code_keccak256": "0xdc5e726277790e2c61ea19de35997f3464b8057ca8783a59d9d701705cc1178d",
+      "path": "/private/tmp/syscoin-v32-prover-20260928/identity/cancun-out/Governance.sol/Governance.json",
+      "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+      "sha256": "f045aa9ed6bab8989c64790310c505e4a870e7ef686e05be1830bfa15bf086ef",
+      "source_hashes_checked": true
+    },
+    "proxy_admin": {
+      "address": "0xc99d0ae38501dca8887a9402ef62053b41396d8b",
+      "compiler": "0.8.28+commit.7893614a",
+      "constructor_args": "0x",
+      "constructor_args_keccak256": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+      "creation_keccak256": "0x6f4a14bbe05d04d338dcbe2990ae2463b940cde66b9b6a81138b272a84ad7959",
+      "evm_version": "cancun",
+      "factory": "0xf7d2baf6f86e9438246082990cfc862821b6b4e4",
+      "init_code_keccak256": "0x6f4a14bbe05d04d338dcbe2990ae2463b940cde66b9b6a81138b272a84ad7959",
+      "path": "/private/tmp/syscoin-v32-prover-20260928/identity/cancun-out/ProxyAdmin.sol/ProxyAdmin.json",
+      "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+      "sha256": "4cdfb756c4c7971e4356615335f730594b8573a3fb741927f32673fdd73e9c90",
+      "source_hashes_checked": true
+    },
+    "proxy_admin_deployer": {
+      "address": "0xf7d2baf6f86e9438246082990cfc862821b6b4e4",
+      "compiler": "0.8.28+commit.7893614a",
+      "constructor_args": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb000000000000000000000000004b7149e6ceaea24fc1756b8f56eda5d246e575c",
+      "constructor_args_keccak256": "0x2fabff598b33543ede070ed6269105dc18aeb4570fc6588acac77f743e5bf3d8",
+      "creation_keccak256": "0x93fa5843f1241edcf02d9b8d9aafeba69ec1727a1830a6a30e8ddd89a404cba1",
+      "evm_version": "cancun",
+      "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+      "init_code_keccak256": "0xbe26a9d81bf0b2aaa8282a19dbbc5f67034be55574aa727c02ebe8e02d85c47f",
+      "path": "/private/tmp/syscoin-v32-prover-20260928/identity/cancun-out/GatewayCTMDeployerProxyAdmin.sol/GatewayCTMDeployerProxyAdmin.json",
+      "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+      "sha256": "f41b6dfe3a9d9c862fa39a017f2d1d57a92b24a0f7c9c16b558d5444b80a75f5",
+      "source_hashes_checked": true
+    },
+    "relay": {
+      "address": "0x758b06cda80bdd016f79afd0df1a984039067a21",
+      "compiler": "0.8.28+commit.7893614a",
+      "constructor_args": "0x",
+      "constructor_args_keccak256": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+      "creation_keccak256": "0x3b2e17477401a6d3df4356c346fdc18278330bbefca56154a81da87cbfd44bf2",
+      "evm_version": "prague",
+      "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+      "init_code_keccak256": "0x3b2e17477401a6d3df4356c346fdc18278330bbefca56154a81da87cbfd44bf2",
+      "path": "/private/tmp/syscoin-v32-prover-20260928/identity/prague-out/SyscoinRelayedSLDAValidator.sol/SyscoinRelayedSLDAValidator.json",
+      "runtime_keccak256": "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0",
+      "runtime_size": 1590,
+      "salt": "0xa49b7b84324cb11e91bd37e7466900ac4d4deb3209f0c467928d4f5f7cce7183",
+      "sha256": "51734ca3830fcd90b6391951b2e11b7d1b7ed9284f169bafe56064f6b115629a",
+      "source_hashes_checked": true
+    },
+    "validator_timelock": {
+      "address": "0xd3f0b1e7793d784668f8169f8b8927dddd8bbd6a",
+      "compiler": "0.8.28+commit.7893614a",
+      "constructor_args": "0x000000000000000000000000d05f2f79a00e7c6f4b09b6d945c3a9bf2afab244000000000000000000000000c99d0ae38501dca8887a9402ef62053b41396d8b00000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000044c5e4c9f900000000000000000000000004b7149e6ceaea24fc1756b8f56eda5d246e575c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "constructor_args_keccak256": "0xe0bf8904d4dc7081f697c3bea1fac469da171dd2efb368be4552dc1378003e1b",
+      "creation_keccak256": "0x3f12425780c22d4c2649de3d71b9827be018d6b263988c205a967344db1a86b1",
+      "evm_version": "cancun",
+      "factory": "0xfaaa1c4fe545c444c3c2c4c3dfcede306d301e58",
+      "init_code_keccak256": "0x665d97be5d9e601472abca3eac43327b12be12ba305d12e21c7a681680759041",
+      "path": "/private/tmp/syscoin-v32-prover-20260928/identity/cancun-out/TransparentUpgradeableProxy.sol/TransparentUpgradeableProxy.json",
+      "runtime_keccak256": "0xd98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4",
+      "runtime_size": 2840,
+      "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+      "sha256": "70eb2aad2ac07e2b95f34e4a53590c0d61edd6570a7ff6b4ae943a5d2bfc86b2",
+      "source_hashes_checked": true
+    },
+    "validator_timelock_deployer": {
+      "address": "0xfaaa1c4fe545c444c3c2c4c3dfcede306d301e58",
+      "compiler": "0.8.28+commit.7893614a",
+      "constructor_args": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb000000000000000000000000004b7149e6ceaea24fc1756b8f56eda5d246e575c000000000000000000000000c99d0ae38501dca8887a9402ef62053b41396d8b",
+      "constructor_args_keccak256": "0x0369746992e6fc4dbafc35dc37d7646f27823041e2b767df57ed23f3ebe24aaf",
+      "creation_keccak256": "0xf91d6e93458e162a04ec8e98f117f9a4e7f2b6abaf38364d407f18489b4aac0b",
+      "evm_version": "cancun",
+      "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+      "init_code_keccak256": "0xda758b6e08640fbdd0f215a2d2b2df9178b2f6625bcb36c938de58b079650960",
+      "path": "/private/tmp/syscoin-v32-prover-20260928/identity/cancun-out/GatewayCTMDeployerValidatorTimelock.sol/GatewayCTMDeployerValidatorTimelock.json",
+      "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+      "sha256": "2ac03afddf7ba4940f9a95786848e85f32cd1e235370f7a5fce462e92ea6903a",
+      "source_hashes_checked": true
+    },
+    "validator_timelock_implementation": {
+      "address": "0xd05f2f79a00e7c6f4b09b6d945c3a9bf2afab244",
+      "compiler": "0.8.28+commit.7893614a",
+      "constructor_args": "0x0000000000000000000000000000000000000000000000000000000000010002",
+      "constructor_args_keccak256": "0xf5c668b4ea188c1e9d98e333ff6692ad14ea1ae756f75d73ac2d67acb86fff8d",
+      "creation_keccak256": "0x32091e5f6bd397fe49e44674c28b9f8319137eddd273b521479d2f4676a2fdfe",
+      "evm_version": "cancun",
+      "factory": "0xfaaa1c4fe545c444c3c2c4c3dfcede306d301e58",
+      "init_code_keccak256": "0xaf1bef4891a19cc129bed4f319d11efaddcc2da00cf12967ee7533d8a7c6e7c1",
+      "path": "/private/tmp/syscoin-v32-prover-20260928/identity/cancun-out/ValidatorTimelock.sol/ValidatorTimelock.json",
+      "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+      "sha256": "2c0d08a25a5340ebfdbf00ad88978c32fd60fc52bde71cbf640f7592918d09b6",
+      "source_hashes_checked": true
+    }
+  },
+  "downstream_values_are_provisional": true,
+  "full_ctm_calculate_addresses_executed": false,
+  "helper_output_sha256": "d70afd56db5663a3030a4a8a5d0290abc6b8437fa2e11321ff147bd56cbe924a",
+  "independent_create2_calculation_matches_helper": true,
+  "independent_host_reproduction": false,
+  "input_sha256": "ce5abfd70c3b60db670111fad2ab886fe416bad157daa2ff0cf6991b79d44963",
+  "inputs": {
+    "config": {
+      "aliasedGovernanceAddress": "0x04b7149e6ceaea24fc1756b8f56eda5d246e575c",
+      "isZKsyncOS": true,
+      "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+      "testnetVerifier": false
+    },
+    "deployed": false,
+    "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+    "l1_governance": "0xf3a6149e6ceaea24fc1756b8f56eda5d246e464b",
+    "namespace": "syscoin-v32-real-proofs-tanenbaum-5700-20260928",
+    "outer_salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+    "plan_sha256": "1590b3e1a3ecd03d480b63246772c2318637479f24e0573d0393abf5cfa64b56",
+    "relay_salt": "0xa49b7b84324cb11e91bd37e7466900ac4d4deb3209f0c467928d4f5f7cce7183",
+    "root_governance_constructor": {
+      "admin": "0x5b612a8914c3a891d235d0744a7d77685c6998da",
+      "min_delay_seconds": 0,
+      "security_council": "0x5b612a8914c3a891d235d0744a7d77685c6998da"
+    },
+    "schema": "syscoin-v32-offline-identity-input-v1",
+    "scope": "critical-subtree",
+    "source_bindings": {
+      "era_base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
+      "era_source_patched_tree": "2a28a08e439d35ff25643d3d108c05e846cdf0fe",
+      "zksync_os_patched_tree": "84b1d7dd2ae1cb359894ce7a5709870930ef48f6"
+    }
+  },
+  "production_attested": false,
+  "provisional_downstream": {},
+  "required_post_vk_check": "Recompile and rerun; compare guest-bound constructor/init-code/runtime hashes and addresses, while separately updating verifier/CTM/bundle identities.",
+  "schema": "syscoin-v32-offline-guest-bound-identity-v1",
+  "scope": "critical-subtree",
+  "source_binding_scope": "operator-supplied tree identities; artifact metadata source hashes independently checked",
+  "source_bindings": {
+    "era_base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
+    "era_source_patched_tree": "2a28a08e439d35ff25643d3d108c05e846cdf0fe",
+    "zksync_os_patched_tree": "84b1d7dd2ae1cb359894ce7a5709870930ef48f6"
+  },
+  "status": "offline-derived-not-deployed"
+}

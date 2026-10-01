@@ -1,0 +1,50 @@
+{
+  "schema": "syscoin-era-generated-verifier-overlay-v1",
+  "status": "task_local_not_activated",
+  "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
+  "reviewed_source_tree": "3eefa0f127d1deff365ebffcf489b183cde0e756",
+  "candidate_tree": "9b4ff94d1ff647cc00aeb0c3b81dbb922646b946",
+  "source_patch_sha256": "9cba2e553e8604c6b64f4c4de633bec741539915ee719146c75eeadfa2a6f3e0",
+  "source_applicator_sha256": "7a672b6192c9de0253c4b1fb2aa82fcbd22ff26b513028211ab5a31017e74b90",
+  "overlay_sha256": "a94d385acdb885c45e47039188242738e810f0dea0fde0a2a7e6e9f66cac35d1",
+  "overlay_size": 120412,
+  "verification_key_hash": "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe",
+  "inventory_rows": 278,
+  "permitted_inventory_rows": [
+    "l1-contracts/ZKsyncOSVerifierPlonk",
+    "l1-contracts/GatewayCTMDeployerVerifiersZKsyncOS"
+  ],
+  "paths": {
+    "AllContractsHashes.json": {
+      "size": 160049,
+      "sha256": "496fde1040de26db06a5dd236f695ebfd1a2edc495d00e87be2b4f89cc609cc3"
+    },
+    "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
+      "size": 95216,
+      "sha256": "0eed330651721848435712751173b5d8b82d3b90fb8a84aec2c17af5b967a7de"
+    },
+    "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol": {
+      "size": 95216,
+      "sha256": "0eed330651721848435712751173b5d8b82d3b90fb8a84aec2c17af5b967a7de"
+    },
+    "tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json": {
+      "size": 8071,
+      "sha256": "7d147c3a0e8b85b9a3a05bc517c251ccab9f571c0bf3d665e9a55e4b3dca9d5a"
+    }
+  },
+  "retained_fflonk_source_sha256": "9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48",
+  "retained_fflonk_key_sha256": "a1d093cf2bb0f5331c4a6bbf0e40d5f4888cc850324e8b9e406bde6686f07f77",
+  "launcher_wired": false,
+  "canonical_fixture_activated": false,
+  "deployed": false,
+  "cancun_artifact_sha256": "e460fffcbac0e4aba61ff19e19d3c7c970b6996b08bc708eba0368082ce60e1f",
+  "cancun_creation_keccak256": "0x71bce5bbc0e436538cc293b76bf39d8dffceb47c5acbf43a32940d86c575cca3",
+  "cancun_runtime_keccak256": "0x489376a19005518c7e60943cc58060afb684d16831eed41558ec876fc2705473",
+  "cancun_archive_sha256": "ec039222c0ffd5e7dcd6906e2708e648cae355ffbe8c0ed68d0a689e30d48610",
+  "native_build_evidence_archive_sha256": "bf1bb141a0c6c54e512319de3291535dd8aaccf15f41eb402b3ed48bda0cf66a",
+  "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
+  "real_serialized_proof_sha256": "ee9c95301ae9f6de0756308e318b37ea8280dcc911e097d4a3fe8abc7a24c8f7",
+  "real_evm_tests": 10,
+  "real_evm_verified_record_sha256": "7b9e216483593fbb28c6675ca4f5c6a171e38f539c9d6d772fafa0a904611d6a",
+  "independent_host_reproduction": false
+}

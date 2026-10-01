@@ -6,26 +6,35 @@ contracts based on 8fb7c29a. The old upstream or Syscoin snapshots do not bind
 the regenerated application, compact Bitcoin-DA commitments, contract
 addresses, or Security100 verification key.
 
-The guest currently binds the integration-candidate ValidatorTimelock
-0xca38dbb6ea5f740cc8252f1450def4dcede94478, produced by the exact unmodified
-output of the Syscoin-patched V32 conversion on an Anvil fork of Tanenbaum. The matching
-candidate relay and evidence are recorded in gateway-identity.v1.json. Neither identity
-is production-attested; the previous localhost-only candidate is retired.
+The guest currently binds the planned fresh-deployment ValidatorTimelock
+0xabb69e8e899c06e51414efde62d4423de4f35004. Its critical CREATE2 subtree was
+computed offline by the pinned Solidity helper and independently recomputed from
+the compiled artifacts, using the new Tanenbaum deployment namespace and the
+authenticated preprovisioned V32 administrator as owner/security council. The
+earlier offline legacy-owner plan is superseded; its evidence is retained under
+scripts/keygen/gateway-identity/superseded-legacy-owner. This derivation is not
+production deployment attestation; the complete canonical conversion and fixture
+release remain pending. The relay address and runtime remain unchanged.
+The historical Anvil-fork integration candidate and its unknown input sentinels
+remain unchanged in gateway-identity.v1.json; that file is not the new deployment record.
 The former 0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19 deployment-specific V7 pin
 was materialized only through Anvil state overrides in the V32 fixture and is retired here.
 
 The reviewed guest source target is tree
-ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752. Its app binary, end parameters,
-Security100 chain, verification key, and fixture have not been regenerated yet.
-The zero values in the server and keygen workflow are deliberate identity sentinels.
+6935489bdbc7b1ed31e608677d1b2418b10691b5. The reproduced app, end parameters,
+Security100 chain and app-bound verification key are now registered in the server.
+The zero values retained in the production keygen workflow and its production
+identity gate are deliberate release sentinels, not the current server identity.
+Private real-proof validation does not populate or qualify this canonical fixture.
+Earlier guest artifacts bound to the superseded owner/target remain invalid.
 
 Freeze and attest the final Gateway target and relay derivation inputs (Era tree and
 compiler output, CREATE2 factory/mode and each ecosystem, Gateway, target, and relay
 salt, governance and ownership). A SHA-bound machine derivation record must carry the
 complete typed input postimage and independently recompute both CREATE2 addresses;
 unknown candidate inputs remain null sentinels and cannot authorize keygen.
-Then regenerate the V32 guest tree, app/VK, genesis state, L1 state, databases,
-contract addresses, and metadata atomically. If either the final target or relay
+Promote the reproduced V32 guest/app/VK together with the accepted genesis state,
+L1 state, databases, contract addresses and metadata atomically. If either the final target or relay
 identity/runtime differs from the integration candidate, replace every guest/server
 pin before keygen. All canonical fixture and GPU helpers must refuse this fixture
 while this marker exists. The Gateway launcher may materialize only the exact reviewed

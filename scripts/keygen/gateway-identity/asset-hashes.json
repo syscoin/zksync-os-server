@@ -1,0 +1,25 @@
+{
+  "schema": "syscoin-v32-offline-identity-assets-v1",
+  "scope": "public-offline-reproduction-only",
+  "sha256": {
+    "README.md": "67b7122768f8d58c4e4e64788889c52d1e9dc68f5844cb199125b97c876e213f",
+    "REPRODUCTION.md": "d93e264d46a62a9686bfb52dd0db3d60e8e32bdd7aef40c985a39adf86706fd3",
+    "DeriveGuestBoundIdentity.s.sol": "1301647791cdeb92c1faed004183e494cd7343e4df6a6552c4d954866598a462",
+    "check_identity.py": "a4d2551a0967766445adfb39e075ad05d745699892eb0a2e805319d58a6e9878",
+    "prepare_input.py": "761f27beaf0432e92c7e1a0ab7e681414a3a3fddf0679667d5aa864cf03805a4",
+    "run_offline.sh": "87a904bf926f68e2e65f7d5320933f7bd7bcccd43a7c48593a3f0dd52b8f1e83",
+    "foundry.toml": "d145448d16bfaa292aeb7c064cc2c419cab9ad69cf7262c1bd26c5cc038f54ad",
+    "test_check_identity.py": "b154acad318f82785204cbb93e6424987f2ebcf20919a7ab10f5ff47324d286e",
+    "planned-v32-namespace.json": "015bd934cb0527bbff29fd77b2f1d986967644e9aab43f453d249c2073f5838c",
+    "planned-root-config.json": "a4bebd001a3c0381bdf7bd8158cff7d89f46e46f377d0695b0ef201db097313e",
+    "critical-input.json": "ceef6a44054165c2c457a6815205efe3d3d82b97612799c3a5ed759d0cea5a16",
+    "helper-critical.json": "7d5affadc4063428176158c2b5795e6b4c20aafea823bfe8672aef9fcdd4f2b5",
+    "offline-critical-identity.json": "2efa802311ab4efb3827e820ba41df33867820d11e7f08c3ec62f27c7dc3bf3a",
+    "superseded-legacy-owner/README.md": "6f8b8107b57984f184e90a2c3e83a14037bc4016d89bf804b3ab4434b65fd98f",
+    "superseded-legacy-owner/asset-hashes.json": "3325e1413509229d1c57e585220b6b5ccab7434c824abe258be1c9ade064f26d",
+    "superseded-legacy-owner/planned-v32-namespace.json": "1590b3e1a3ecd03d480b63246772c2318637479f24e0573d0393abf5cfa64b56",
+    "superseded-legacy-owner/critical-input.json": "ce5abfd70c3b60db670111fad2ab886fe416bad157daa2ff0cf6991b79d44963",
+    "superseded-legacy-owner/helper-critical.json": "d70afd56db5663a3030a4a8a5d0290abc6b8437fa2e11321ff147bd56cbe924a",
+    "superseded-legacy-owner/offline-critical-identity.json": "7f88c23559adb9c1c986fdff5cbd43da904b7adb2ee8d29b752dbc291ea91e8a"
+  }
+}

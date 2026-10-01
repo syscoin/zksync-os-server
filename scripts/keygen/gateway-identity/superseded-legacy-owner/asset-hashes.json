@@ -1,0 +1,18 @@
+{
+  "schema": "syscoin-v32-offline-identity-assets-v1",
+  "scope": "public-offline-reproduction-only",
+  "sha256": {
+    "README.md": "1b85a5c789603cc43e08a021bc2da2abf9413c5b1ff15e95cd698c19e4164189",
+    "REPRODUCTION.md": "2bf709ca4c18c505a7270c1ff7093d0aa8c8cd1556654de23bf5233672a7b6a1",
+    "DeriveGuestBoundIdentity.s.sol": "1301647791cdeb92c1faed004183e494cd7343e4df6a6552c4d954866598a462",
+    "check_identity.py": "a4d2551a0967766445adfb39e075ad05d745699892eb0a2e805319d58a6e9878",
+    "prepare_input.py": "761f27beaf0432e92c7e1a0ab7e681414a3a3fddf0679667d5aa864cf03805a4",
+    "run_offline.sh": "87a904bf926f68e2e65f7d5320933f7bd7bcccd43a7c48593a3f0dd52b8f1e83",
+    "foundry.toml": "d145448d16bfaa292aeb7c064cc2c419cab9ad69cf7262c1bd26c5cc038f54ad",
+    "test_check_identity.py": "1e362de72d65529ce461b78562ef5fa2c487ba7ea981e750cde44863b4811927",
+    "planned-v32-namespace.json": "1590b3e1a3ecd03d480b63246772c2318637479f24e0573d0393abf5cfa64b56",
+    "critical-input.json": "ce5abfd70c3b60db670111fad2ab886fe416bad157daa2ff0cf6991b79d44963",
+    "helper-critical.json": "d70afd56db5663a3030a4a8a5d0290abc6b8437fa2e11321ff147bd56cbe924a",
+    "offline-critical-identity.json": "7f88c23559adb9c1c986fdff5cbd43da904b7adb2ee8d29b752dbc291ea91e8a"
+  }
+}

@@ -5,6 +5,10 @@ use std::path::Path;
 use std::process::Command;
 use std::str::from_utf8;
 
+#[allow(dead_code)]
+#[path = "src/fixture_backend.rs"]
+mod fixture_backend;
+
 /// Decompress `l1-state.json.gz` files at build time so every test process can
 /// read the plain JSON without paying the ~70 MB decompression cost at runtime.
 ///
@@ -27,25 +31,39 @@ fn decompress_l1_states() {
             continue;
         }
 
-        if !entry.path().join("versions.yaml").is_file() {
-            // SYSCOIN: Ignore local materializations left behind after a tracked fixture was removed.
-            continue;
-        }
-
-        if entry
-            .path()
-            .join("CANONICAL_V8_REGENERATION_REQUIRED")
-            .is_file()
+        // SYSCOIN: The marker takes precedence over versions, descriptors and inventories.
+        if fixture_backend::regeneration_marker_present(&entry.path())
+            .unwrap_or_else(|error| panic!("cannot inspect fixture marker: {error}"))
         {
             println!(
                 "cargo::warning=skipping blocked local-chain fixture at {}",
-                entry.path().display()
+                entry.path().display(),
             );
             continue;
         }
 
-        let gz_path = entry.path().join("l1-state.json.gz");
-        assert!(gz_path.is_file(), "expected {} to exist", gz_path.display());
+        if !entry.path().join("versions.yaml").is_file() {
+            // Ignore materializations without a declared protocol fixture.
+            continue;
+        }
+        let version = entry.file_name();
+        let version = version.to_str().expect("fixture version must be UTF-8");
+        let inventory = fixture_backend::load_fixture_inventory(
+            &entry.path(),
+            version,
+            fixture_backend::trusted_descriptor_hash(version),
+        )
+        .unwrap_or_else(|e| panic!("invalid fixture {}: {e}", entry.path().display()));
+        if inventory.core_nevm_inventory().is_ok() {
+            // Validation is not extraction: real snapshots are never passed to GzDecoder.
+            println!(
+                "cargo::warning=Core/NEVM inventory validated; runtime restore is unsupported"
+            );
+            continue;
+        }
+        let (gz_path, decoded_identity) = inventory
+            .anvil_state(&entry.path())
+            .unwrap_or_else(|e| panic!("invalid Anvil component fixture: {e}"));
 
         let compressed = std::fs::read(&gz_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", gz_path.display()));
@@ -62,6 +80,12 @@ fn decompress_l1_states() {
             && let Ok(existing_hash) = std::fs::read_to_string(&hash_path)
             && existing_hash.trim() == hex_hash
         {
+            // A cached output is not authenticated by the compressed-input sidecar.
+            if let Some(identity) = decoded_identity {
+                identity
+                    .verify(&entry.path())
+                    .expect("cached Anvil state identity mismatch");
+            }
             continue;
         }
 
@@ -70,6 +94,11 @@ fn decompress_l1_states() {
         decoder
             .read_to_end(&mut decoded)
             .unwrap_or_else(|e| panic!("failed to decompress {}: {e}", gz_path.display()));
+        if let Some(identity) = decoded_identity {
+            identity
+                .verify_bytes(&decoded)
+                .expect("decoded Anvil state identity mismatch");
+        }
 
         std::fs::write(&json_path, &decoded)
             .unwrap_or_else(|e| panic!("failed to write {}: {e}", json_path.display()));

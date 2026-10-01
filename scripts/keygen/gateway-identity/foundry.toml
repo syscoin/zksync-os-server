@@ -1,0 +1,32 @@
+# Only the task-local calculation harness uses this config. Identity artifacts
+# are compiled separately with the unmodified checked-in foundry.toml, Cancun
+# for ordinary L1 contracts and Prague for the relay. Harness bytecodes are NOT
+# deployment bytecodes and MUST NOT replace the separately compiled artifacts.
+[profile.default]
+src = "contracts"
+test = "test/foundry"
+libs = ["./lib"]
+allow_paths = ["../l2-contracts/contracts", "../lib", "../system-contracts/contracts", "/work/identity"]
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 9999999
+out = "/work/identity/harness-out"
+cache_path = "/work/identity/harness-cache"
+fs_permissions = [
+  { access = "read", path = "/work/identity" },
+  { access = "read", path = "./out" },
+  { access = "read-write", path = "/work/identity/results" },
+]
+remappings = [
+  "forge-std/=lib/forge-std/src/",
+  "murky/=lib/murky/src/",
+  "foundry-test/=test/foundry/",
+  "l2-contracts/=../l2-contracts/contracts/",
+  "system-contracts/=../system-contracts/",
+  "@openzeppelin/contracts-v4/=lib/openzeppelin-contracts-v4/contracts/",
+  "@openzeppelin/contracts-upgradeable-v4/=lib/openzeppelin-contracts-upgradeable-v4/contracts/",
+  "test-utils/=test/foundry/l1/integration/utils/",
+  "contracts/=contracts/",
+  "deploy-scripts/=deploy-scripts/",
+]

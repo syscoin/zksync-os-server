@@ -1,0 +1,21 @@
+[package]
+name = "syscoin-end-params-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "end_params"
+path = "src/end_params.rs"
+
+[dependencies]
+execution_utils = { git = "https://github.com/matter-labs/zksync-airbender", rev = "03454c7a41053a4b88bb421e97fb9efe893a92f5", default-features = false, features = ["prover", "verifier_binaries"] }
+riscv_transpiler = { git = "https://github.com/matter-labs/zksync-airbender", rev = "03454c7a41053a4b88bb421e97fb9efe893a92f5", default-features = false }
+verifier_common = { git = "https://github.com/matter-labs/zksync-airbender", rev = "03454c7a41053a4b88bb421e97fb9efe893a92f5", default-features = false }
+
+# Match the pinned upstream release profile, not the companion prover's build profile.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false

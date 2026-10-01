@@ -3,12 +3,15 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use zksync_os_server::config::{Config, build_external_config, load_config_file_sources};
 
+#[path = "fixture_backend.rs"]
+pub mod fixture_backend;
+
 /// Layout of local chain directories.
 #[derive(Debug, Clone, Copy)]
 pub enum ChainLayout<'a> {
     /// local-chains/<version>/default/...
     Default { protocol_version: &'a str },
-    /// local-chains/<version>/multi_chain/chain_506.yaml
+    /// Version-specific Gateway config: historical506, real V32 Syscoin57001.
     Gateway { protocol_version: &'a str },
     /// local-chains/<version>/multi_chain/chain_<id>.yaml for chains settling to the gateway.
     GatewayChain {
@@ -21,7 +24,10 @@ impl<'a> ChainLayout<'a> {
     fn chain_id(self) -> Option<u64> {
         match self {
             ChainLayout::Default { .. } => None,
-            ChainLayout::Gateway { .. } => Some(506),
+            ChainLayout::Gateway { protocol_version } => Some(
+                fixture_backend::gateway_chain_id(protocol_version)
+                    .expect("unknown Gateway fixture version"),
+            ),
             ChainLayout::GatewayChain { chain_index, .. } => Some(6565u64 + chain_index as u64),
         }
     }
@@ -44,6 +50,11 @@ impl<'a> ChainLayout<'a> {
     }
 
     fn protocol_dir(self) -> PathBuf {
+        assert!(
+            !self.protocol_version().contains(['/', '\\'])
+                && !self.protocol_version().contains(".."),
+            "invalid fixture protocol path"
+        );
         workspace_dir()
             .join("local-chains")
             .join(self.protocol_version())
@@ -51,14 +62,28 @@ impl<'a> ChainLayout<'a> {
 
     // SYSCOIN: A removed pre-mainnet fixture must never be mistaken for the blocked V32 rebuild.
     fn assert_fixture_ready(self) {
-        let marker = self
-            .protocol_dir()
-            .join("CANONICAL_V8_REGENERATION_REQUIRED");
-        assert!(
-            !marker.is_file(),
-            "local-chain fixture is blocked pending canonical v32.0/V8 regeneration: {}",
-            marker.display()
-        );
+        fixture_backend::check_regeneration_marker(&self.protocol_dir())
+            .unwrap_or_else(|error| panic!("local-chain fixture is blocked: {error}"));
+    }
+
+    /// Inventory validation does not imply that a real backend can be restored or launched.
+    pub fn backend_inventory(
+        self,
+    ) -> fixture_backend::FixtureResult<fixture_backend::ValidatedFixtureInventory> {
+        self.assert_fixture_ready();
+        fixture_backend::load_fixture_inventory(
+            &self.protocol_dir(),
+            self.protocol_version(),
+            fixture_backend::trusted_descriptor_hash(self.protocol_version()),
+        )
+    }
+
+    fn assert_component_backend(self) {
+        self.backend_inventory()
+            .and_then(|inventory| inventory.anvil_state(&self.protocol_dir()).map(|_| ()))
+            .unwrap_or_else(|error| {
+                panic!("component-only fixture consumer rejected backend: {error}")
+            });
     }
 
     fn base_dir(self) -> PathBuf {
@@ -78,16 +103,30 @@ impl<'a> ChainLayout<'a> {
     /// Read the pre-decompressed L1 state JSON.
     /// Produced by `build.rs` locally, or by a CI step on remote runners.
     pub(crate) fn l1_state(self) -> Vec<u8> {
-        self.assert_fixture_ready();
+        let inventory = self
+            .backend_inventory()
+            .unwrap_or_else(|error| panic!("invalid L1 fixture inventory: {error}"));
+        let (_, decoded_identity) = inventory
+            .anvil_state(&self.protocol_dir())
+            .unwrap_or_else(|error| panic!("Anvil state consumer rejected backend: {error}"));
         let json_path = self.protocol_dir().join("l1-state.json");
-        std::fs::read(&json_path).unwrap_or_else(|e| {
+        let bytes = std::fs::read(&json_path).unwrap_or_else(|e| {
             panic!(
                 "failed to read decompressed L1 state at {}: {e}\n\
                  hint: build.rs should produce this from l1-state.json.gz; \
                  on CI runners run `gunzip -k` first",
                 json_path.display()
             )
-        })
+        });
+        if let Some(identity) = decoded_identity {
+            identity
+                .verify(&self.protocol_dir())
+                .expect("Anvil state identity mismatch");
+            identity
+                .verify_bytes(&bytes)
+                .expect("Anvil state bytes changed while reading");
+        }
+        bytes
     }
 
     /// Genesis input is always taken from `<version>/default/genesis.json`
@@ -104,6 +143,8 @@ impl<'a> ChainLayout<'a> {
 /// Also loads `local-chains/local_dev.yaml` as a base layer when present.
 pub async fn load_chain_config(layout: ChainLayout<'_>) -> Config {
     layout.assert_fixture_ready();
+    // Until typed real runtime wiring exists, reject before fake-prover/DA config helpers.
+    layout.assert_component_backend();
     let local_dev_path = workspace_dir().join("local-chains").join("local_dev.yaml");
     let chain_config_path = layout.config_path();
     let mut config = load_config_from_paths(&[local_dev_path, chain_config_path]).await;

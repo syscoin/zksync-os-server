@@ -1,6 +1,10 @@
 //! Prometheus-related functionality, such as [`PrometheusExporterConfig`].
 
-use std::{env, net::Ipv4Addr, time::Duration};
+use std::{
+    env,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
 use anyhow::Context as _;
 use reth_tasks::shutdown::GracefulShutdown;
@@ -14,7 +18,7 @@ use crate::tokio_runtime;
 #[derive(Debug, Clone)]
 enum PrometheusTransport {
     Pull {
-        port: u16,
+        address: SocketAddr,
     },
     Push {
         gateway_uri: String,
@@ -31,8 +35,16 @@ pub struct PrometheusExporterConfig {
 impl PrometheusExporterConfig {
     /// Creates an exporter that will run an HTTP server on the specified `port`.
     pub const fn pull(port: u16) -> Self {
+        Self::pull_at(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
+    }
+
+    /// SYSCOIN: Private validation nodes can expose metrics only on loopback
+    /// without changing the existing deployment default or firewall policy.
+    pub const fn pull_at(bind_address: IpAddr, port: u16) -> Self {
         Self {
-            transport: PrometheusTransport::Pull { port },
+            transport: PrometheusTransport::Pull {
+                address: SocketAddr::new(bind_address, port),
+            },
         }
     }
 
@@ -76,10 +88,9 @@ impl PrometheusExporterConfig {
             .with_graceful_shutdown(shutdown.clone().ignore_guard());
 
         match self.transport {
-            PrometheusTransport::Pull { port } => {
-                let prom_bind_address = (Ipv4Addr::UNSPECIFIED, port).into();
+            PrometheusTransport::Pull { address } => {
                 metrics_exporter
-                    .start(prom_bind_address)
+                    .start(address)
                     .await
                     .context("Failed starting metrics server")?;
             }
@@ -96,5 +107,30 @@ impl PrometheusExporterConfig {
         // We can drop it now because shutdown is complete.
         drop(shutdown);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pull_preserves_default_and_supports_explicit_loopback() {
+        for (config, expected) in [
+            (PrometheusExporterConfig::pull(3312), "0.0.0.0:3312"),
+            (
+                PrometheusExporterConfig::pull_at("127.0.0.1".parse().unwrap(), 3312),
+                "127.0.0.1:3312",
+            ),
+            (
+                PrometheusExporterConfig::pull_at("::1".parse().unwrap(), 3312),
+                "[::1]:3312",
+            ),
+        ] {
+            let PrometheusTransport::Pull { address } = config.transport else {
+                panic!("expected pull transport");
+            };
+            assert_eq!(address.to_string(), expected);
+        }
     }
 }

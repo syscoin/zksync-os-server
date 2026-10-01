@@ -5,6 +5,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -26,7 +27,7 @@ GATEWAY_LIFECYCLE = (
     REPO_ROOT / "scripts" / "gateway-launch" / "_gateway_node_lifecycle.sh"
 )
 OTHER_TARGET = "0x1111111111111111111111111111111111111111"
-PUBLISHED_PATCH_TARGET = "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
+PUBLISHED_PATCH_TARGET = "0xabb69e8e899c06e51414efde62d4423de4f35004"
 PUBLISHED_PATCH_TARGET_RUNTIME_SIZE = 2840
 PUBLISHED_PATCH_TARGET_RUNTIME_HASH = (
     "0xd98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4"
@@ -43,13 +44,13 @@ PUBLISHED_GAS_TANK_RUNTIME_HASH = (
     "0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269"
 )
 PUBLISHED_EDGE_SOURCE_SHA256 = (
-    "b2c21b485a3460598f3c26bcdc6f6dcd9fb7e7b7ffb6419b56a968b529aa0c3c"
+    "7db04e9a5cbc0edc4e61dcdb851e88ba1cb16ce974eb76f4bf8e5c108f7ebe56"
 )
 PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
-PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752"
-PUBLISHED_ERA_PATCHED_TREE = "2a28a08e439d35ff25643d3d108c05e846cdf0fe"
+PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
+PUBLISHED_ERA_PATCHED_TREE = "3eefa0f127d1deff365ebffcf489b183cde0e756"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -6290,7 +6291,7 @@ gl_checkpoint_assert_fingerprint_matches
         )
         self.assertNotIn("?tag=v0.6.0-rc.1", lock)
 
-    def test_pre_keygen_app_identity_is_explicitly_fail_closed(self) -> None:
+    def test_registered_app_identity_and_pending_release_workflow_are_distinct(self) -> None:
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
         ).read_text(encoding="utf-8")
@@ -6332,16 +6333,51 @@ gl_checkpoint_assert_fingerprint_matches
         )
 
         self.assertIn(
-            "const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = true;", verifier
+            "const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = false;", verifier
         )
-        self.assertIn("const V8_APP_END_PARAMS: [u32; 8] = [0; 8];", verifier)
         self.assertIn(
-            "const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [0; 8];", verifier
+            'const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";',
+            verifier,
         )
+        for name, expected in (
+            ("V8_APP_END_PARAMS", [
+                3009942935, 2266051515, 747570558, 2762947172,
+                1354863053, 3205993576, 4096623771, 3765215681,
+            ]),
+            ("V8_SECURITY100_EXPECTED_CHAIN", [
+                467704222, 2976569635, 1593588786, 175442682,
+                1232043748, 3415504018, 1844231507, 2666440308,
+            ]),
+        ):
+            values = re.search(
+                rf"const {name}: \[u32; 8\] = \[(.*?)\];", verifier, re.S
+            )
+            self.assertIsNotNone(values)
+            self.assertEqual([int(x) for x in re.findall(r"\d+", values[1])], expected)
         self.assertLess(
             verifier.index("if v8_verifier::V8_APP_IDENTITY_REGENERATION_REQUIRED"),
             verifier.index("validate_v8_proof_shape(proof)?;"),
         )
+
+    def test_keygen_security100_identity_uses_wrapper_aux_params(self) -> None:
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'grep -Fqx "app_end_params = ${APP_END_PARAMS}" "${end_params_file}"',
+            workflow,
+        )
+        self.assertNotIn(
+            'unified_chain (expected registers[8..16]) = ${SECURITY100_WORDS}',
+            workflow,
+        )
+        self.assertIn("grep -Fqx 'default = [\"security_100\"]'", workflow)
+        self.assertIn("compute-aux-params", workflow)
+        self.assertIn(
+            '''[[ "$(jq -c . "${WORK_DIR}/out/aux-params.json")" == "$(tr -d ' ' <<< "${SECURITY100_WORDS}")" ]]''',
+            workflow,
+        )
+        self.assertIn('[[ "${commitment}" == "${SECURITY100_COMMITMENT}" ]]', workflow)
 
     def test_gateway_launcher_sources_shared_workspace_helper(self) -> None:
         launcher = (
@@ -6470,9 +6506,9 @@ gl_checkpoint_assert_fingerprint_matches
         for expected in (
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
-            'EXPECTED_PATCHED_TREE="ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752"',
+            'EXPECTED_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"',
             'EXPECTED_PATCH_SIZE="282818"',
-            'EXPECTED_PATCH_SHA256="8c2eec0d9c1332bb0a1d301f4ea33bada6b56d46c7bb3944619b6849aeecf20d"',
+            'EXPECTED_PATCH_SHA256="0af88710e0275ce3dc49928a264e93639f945c85ab79600e12a41306731053d7"',
             'EXPECTED_PATCH_PATH_COUNT="68"',
             'EXPECTED_PATCH_PATHS_SHA256="7bf4667f179a5fc3b769b8ed51e193812d3f29b7dad4971552ac8ecbac9d4de5"',
         ):
@@ -6481,7 +6517,7 @@ gl_checkpoint_assert_fingerprint_matches
             REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752"',
+            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"',
             workspace_helper,
         )
         self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
@@ -6532,6 +6568,11 @@ gl_checkpoint_assert_fingerprint_matches
         )
         gateway_identity = gateway_identity_path.read_bytes()
         gateway_identity_data = json.loads(gateway_identity)
+        offline_identity_path = (
+            REPO_ROOT / "scripts" / "keygen" / "gateway-identity" / "offline-critical-identity.json"
+        )
+        offline_identity = offline_identity_path.read_bytes()
+        offline_identity_data = json.loads(offline_identity)
 
         for expected in (
             f'ZKSYNC_OS_PATCHED_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
@@ -6549,6 +6590,9 @@ gl_checkpoint_assert_fingerprint_matches
             "GATEWAY_TARGET_IDENTITY_PATH: local-chains/v32.0/gateway-identity.v1.json",
             f'GATEWAY_TARGET_IDENTITY_SIZE: "{len(gateway_identity)}"',
             f"GATEWAY_TARGET_IDENTITY_SHA256: {hashlib.sha256(gateway_identity).hexdigest()}",
+            "OFFLINE_GATEWAY_IDENTITY_PATH: scripts/keygen/gateway-identity/offline-critical-identity.json",
+            f'OFFLINE_GATEWAY_IDENTITY_SIZE: "{len(offline_identity)}"',
+            f"OFFLINE_GATEWAY_IDENTITY_SHA256: {hashlib.sha256(offline_identity).hexdigest()}",
             "Gateway target derivation must be frozen before app/VK generation",
             "Gateway identity artifact has incomplete production derivation inputs",
             "native server does not contain the approved Gateway target identity",
@@ -6562,8 +6606,12 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertEqual(gateway_identity_data["status"], "integration-candidate")
         self.assertFalse(gateway_identity_data["production_attested"])
         self.assertEqual(
+            hashlib.sha256(gateway_identity).hexdigest(),
+            "09bfa8ae16d333c08e782a957d9c9462d8fe59ad00e15813e5ce1d83c3842c95",
+        )
+        self.assertEqual(
             gateway_identity_data["outputs"]["validator_timelock"],
-            PUBLISHED_PATCH_TARGET,
+            "0xca38dbb6ea5f740cc8252f1450def4dcede94478",
         )
         self.assertEqual(
             gateway_identity_data["outputs"]["validator_timelock_runtime_size"],
@@ -6581,6 +6629,27 @@ gl_checkpoint_assert_fingerprint_matches
             gateway_identity_data["outputs"]["relay_runtime_keccak256"],
             PUBLISHED_EDGE_RELAY_RUNTIME_HASH,
         )
+        self.assertEqual(offline_identity_data["status"], "offline-derived-not-deployed")
+        self.assertEqual(offline_identity_data["scope"], "critical-subtree")
+        for key in ("deployed", "production_attested", "independent_host_reproduction",
+                    "full_ctm_calculate_addresses_executed"):
+            self.assertIs(offline_identity_data[key], False)
+        self.assertIs(offline_identity_data["independent_create2_calculation_matches_helper"], True)
+        self.assertEqual(
+            offline_identity_data["source_bindings"]["zksync_os_patched_tree"],
+            PUBLISHED_ZKSYNC_OS_PATCHED_TREE,
+        )
+        self.assertEqual(
+            offline_identity_data["source_bindings"]["era_source_patched_tree"],
+            PUBLISHED_ERA_PATCHED_TREE,
+        )
+        target = offline_identity_data["derivations"]["validator_timelock"]
+        self.assertEqual(target["address"], PUBLISHED_PATCH_TARGET)
+        self.assertEqual(target["runtime_size"], PUBLISHED_PATCH_TARGET_RUNTIME_SIZE)
+        self.assertEqual(target["runtime_keccak256"], PUBLISHED_PATCH_TARGET_RUNTIME_HASH)
+        relay = offline_identity_data["derivations"]["relay"]
+        self.assertEqual(relay["address"], PUBLISHED_EDGE_RELAY)
+        self.assertEqual(relay["runtime_keccak256"], PUBLISHED_EDGE_RELAY_RUNTIME_HASH)
 
     def test_published_consensus_constants_are_consistent(self) -> None:
         deploy_en = (
@@ -7427,6 +7496,54 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
 
 
 class EraAttestationStaticTests(unittest.TestCase):
+    def test_plonk_generator_derives_domain_and_ci_runs_native_regressions(self) -> None:
+        patch = (REPO_ROOT / "scripts/patches/era-contracts-syscoin.patch").read_text()
+        workflow = (REPO_ROOT / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
+        for expected in (
+            "tools/verifier-gen/src/plonk.rs",
+            "tools/verifier-gen/data/plonk_verifier_contract_template.txt",
+            "n.checked_add(1)",
+            "!domain_size.is_power_of_two()",
+            "domain_size_log > Fr::S",
+            "let mut omega = Fr::root_of_unity();",
+            "for _ in domain_size_log..Fr::S",
+            "omega.square();",
+            "+    uint256 internal constant OMEGA = {{omega}};",
+            "+    uint256 internal constant DOMAIN_SIZE = {{domain_size}}; // 2^{{domain_size_log}}",
+            "fn legacy_2p24_domain_is_unchanged()",
+            "fn security100_2p25_domain_matches_native_field()",
+            "fn invalid_domain_sizes_are_rejected()",
+            "fn scalar_field_boundary_domain_is_valid()",
+        ):
+            self.assertIn(expected, patch)
+        test_command = 'cargo "+${ERA_VERIFIER_TOOLCHAIN}" test'
+        self.assertIn(test_command, workflow)
+        self.assertIn("--locked --release --bin zksync_verifier_contract_generator plonk::tests", workflow)
+        self.assertLess(workflow.index(test_command), workflow.index('cargo "+${ERA_VERIFIER_TOOLCHAIN}" run'))
+
+    def test_fresh_ctm_capacity_uses_root_getter_and_real_deployment_regression(self) -> None:
+        patch = (
+            REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "+        config.contracts.maxNumberOfChains = L1Bridgehub(bridgehub).MAX_NUMBER_OF_ZK_CHAINS();",
+            patch,
+        )
+        regression = patch.split(
+            "diff --git a/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol ", 1
+        )[1].split("\ndiff --git ", 1)[0]
+        for expected in (
+            "_deployL1Contracts();",
+            "addresses.bridgehub.MAX_NUMBER_OF_ZK_CHAINS();",
+            "assertGt(rootCapacity, 0,",
+            "ecosystemConfig.contracts.maxNumberOfChains,",
+            "ctmScript.getForceDeploymentsData(),",
+            "forceDeploymentsData.maxNumberOfZKChains,",
+        ):
+            self.assertIn(expected, regression)
+        for forbidden in ("mockCall", "vm.store", "checked_write", "maxNumberOfChains ="):
+            self.assertNotIn(forbidden, regression)
+
     def test_era_helper_attests_canonical_source_patch_and_excludes_verifier_artifacts(
         self,
     ) -> None:
@@ -7443,10 +7560,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1423817"',
-            'EXPECTED_PATCH_SHA256="506c3ac9cf46c1174f7aee3fc033b8d5aef661533e77d3fc324c17ae22962668"',
-            'EXPECTED_PATCH_PATH_COUNT="61"',
-            'EXPECTED_PATCH_PATHS_SHA256="18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0"',
+            'EXPECTED_PATCH_SIZE="1437333"',
+            'EXPECTED_PATCH_SHA256="9cba2e553e8604c6b64f4c4de633bec741539915ee719146c75eeadfa2a6f3e0"',
+            'EXPECTED_PATCH_PATH_COUNT="67"',
+            'EXPECTED_PATCH_PATHS_SHA256="5422444f3057f29fd1dcfaa275d0d04a16e014818ae1b7e21acc572325ae2d09"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -7497,18 +7614,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 61)
+        self.assertEqual(len(patch_paths), 67)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0",
+            "5422444f3057f29fd1dcfaa275d0d04a16e014818ae1b7e21acc572325ae2d09",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 61)
+        self.assertEqual(len(manifest_entries), 67)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
@@ -7931,9 +8048,9 @@ class EraAttestationStaticTests(unittest.TestCase):
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "61"',
+            'ERA_PATCH_PATH_COUNT: "67"',
             "ERA_PATCH_PATHS_SHA256: "
-            "18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0",
+            "5422444f3057f29fd1dcfaa275d0d04a16e014818ae1b7e21acc572325ae2d09",
             f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
             "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
             'ERA_GENESIS_SIZE: "557518"',
@@ -7967,12 +8084,13 @@ class CanonicalFixtureGateStaticTests(unittest.TestCase):
         self.assertIn("DO NOT LAUNCH THIS FIXTURE", marker_text)
         self.assertIn("Execution V7, Proving V8", marker_text)
         self.assertIn(PUBLISHED_ZKSYNC_OS_PATCHED_TREE, marker_text)
-        self.assertIn("zero values in the server and keygen workflow", marker_text)
+        self.assertIn("zero values retained in the production keygen workflow", marker_text)
+        self.assertIn("not the current server identity", marker_text)
+        self.assertIn("does not populate or qualify this canonical fixture", marker_text)
 
         guarded_paths = (
             REPO_ROOT / "run_local.sh",
-            REPO_ROOT / "integration-tests" / "src" / "config.rs",
-            REPO_ROOT / "integration-tests" / "build.rs",
+            REPO_ROOT / "integration-tests" / "src" / "fixture_backend.rs",
             REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh",
             REPO_ROOT / ".github" / "scripts" / "test-configs.sh",
             REPO_ROOT / ".github" / "workflows" / "spec-tests.yaml",
@@ -7985,7 +8103,15 @@ class CanonicalFixtureGateStaticTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('join("versions.yaml").is_file()', build_script)
-        self.assertIn("Ignore local materializations left behind", build_script)
+        self.assertLess(
+            build_script.index("fixture_backend::regeneration_marker_present"),
+            build_script.index("fixture_backend::load_fixture_inventory"),
+        )
+        config = (REPO_ROOT / "integration-tests/src/config.rs").read_text()
+        self.assertIn("fixture_backend::check_regeneration_marker(&self.protocol_dir())", config)
+        inventory = config.split("pub fn backend_inventory(", 1)[1]
+        self.assertLess(inventory.index("self.assert_fixture_ready();"),
+                        inventory.index("fixture_backend::load_fixture_inventory"))
 
         self.assertFalse(
             (REPO_ROOT / "local-chains" / "v31.0" / "versions.yaml").exists()

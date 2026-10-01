@@ -1,0 +1,54 @@
+{
+  "schema": "syscoin-v32-offline-root-plan-v1",
+  "status": "offline-plan-not-deployed",
+  "deployed": false,
+  "production_attested": false,
+  "namespace_plan_sha256": "015bd934cb0527bbff29fd77b2f1d986967644e9aab43f453d249c2073f5838c",
+  "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+  "create2_salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+  "l1_chain_id": 5700,
+  "era_chain_id": 270,
+  "owner_address": "0x622a54ea3a123127ca5fe8b98de90e957471093a",
+  "deployer_address": "0x622a54ea3a123127ca5fe8b98de90e957471093a",
+  "governance_security_council_address": "0x622a54ea3a123127ca5fe8b98de90e957471093a",
+  "governance_min_delay_seconds": 0,
+  "max_number_of_chains": 100,
+  "token_weth_address": "0xa66b2e50c2b805f31712bea422d0d9e7d0fd0f35",
+  "support_l2_legacy_shared_bridge_test": false,
+  "use_dummy_message_root": false,
+  "legacy_era_diamond_proxy": "0x0000000000000000000000000000000000000000",
+  "legacy_gateway_chain_id": 0,
+  "zk_sys_token_plan": {
+    "status": "selected-parameters-address-not-yet-derived",
+    "administrator": "0x622a54ea3a123127ca5fe8b98de90e957471093a",
+    "name": "ZKSYS",
+    "symbol": "ZKSYS",
+    "decimals": 18,
+    "origin_chain_id": 57057,
+    "native_token_vault": "0x0000000000000000000000000000000000010004",
+    "selection_basis": "Consciously selected fresh-token administration using the recovered V32 admin and launcher defaults. The origin is the edge, not Gateway. No old token address or token state is reused.",
+    "asset_id_derivation": "keccak256(abi.encode(uint256(origin_chain_id), address(native_token_vault), address(fresh_deterministic_token_proxy)))",
+    "bytecode_derivation": "Use exact gateway-deploy-l1.sh forge_inspect_zksys_bytecode settings and named salts. Token proxy and asset ID are intentionally absent until the reviewed server contract artifacts are built and independently checked."
+  },
+  "selection_basis": "Explicit fresh-root selections for the delegated clean V32 replacement. Era chain ID 270, capacity 100 and the existing WETH contract are selected configuration values, not imported genesis/state. The recovered V32 administrator is both actual deployer and governance administrator/security council. Optional historical Era proxy and historical Gateway chain are absent on this fresh root; their zeros are the canonical initializer defaults, not unknown-value placeholders.",
+  "weth_read_observation": {
+    "scope": "Read-only observation of the existing chain; not deployment or signer evidence",
+    "l1_chain_id": 5700,
+    "latest_block_observed": 980631,
+    "name": "Wrapped SYS",
+    "symbol": "WSYS",
+    "decimals": 18,
+    "runtime_keccak256": "0x8132c858bb9315659bcba2be14d42bdf02311dc59b70e69672af97d7b14189e7"
+  },
+  "source_binding": {
+    "era_base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
+    "initial_reviewed_source_tree": "2a28a08e439d35ff25643d3d108c05e846cdf0fe",
+    "qualification": "Final artifact metadata and the final deployment-script source identity must be checked separately after any reviewed source updates. This configuration plan does not claim that the final full CTM has been calculated."
+  },
+  "not_established": [
+    "Final root and full CTM derived-address inventory",
+    "Final generated PLONK verifier artifacts",
+    "Final selector arrays, regenerated genesis and force-deployment calldata",
+    "Live collision checks, production authorization and deployment"
+  ]
+}

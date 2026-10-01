@@ -27,13 +27,11 @@ impl TryFrom<ProtocolSemanticVersion> for ProvingVersion {
 }
 
 impl ProvingVersion {
-    /// SYSCOIN: Fail-closed sentinel until external security-100 keygen binds the canonical
-    /// Syscoin app. The stock upstream V8 hash is deliberately not accepted: it binds a
-    /// different program. Replace this value atomically with the generated Era verifier
-    /// artifacts before enabling real proving.
+    /// SYSCOIN: Security100 key generated from the reproduced Syscoin V8 guest.
+    /// The stock upstream key binds a different program and is not accepted.
     const V8_VK_HASH: &'static str =
-        "0x0000000000000000000000000000000000000000000000000000000000000000";
-    const V8_VK_REGENERATION_REQUIRED: bool = true;
+        "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe";
+    const V8_VK_REGENERATION_REQUIRED: bool = false;
 
     pub const fn requires_vk_regeneration(&self) -> bool {
         match self {
@@ -129,7 +127,17 @@ mod tests {
     }
 
     #[test]
-    fn canonical_v8_vk_is_explicitly_blocked_until_keygen() {
-        assert!(ProvingVersion::V8.requires_vk_regeneration());
+    fn canonical_v8_vk_binds_regenerated_syscoin_guest() {
+        assert!(!ProvingVersion::V8.requires_vk_regeneration());
+        assert_eq!(
+            ProvingVersion::V8.vk_hash(),
+            "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe"
+        );
+        for other in [
+            "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a",
+        ] {
+            assert!(ProvingVersion::try_from_vk_hash(other).is_err());
+        }
     }
 }

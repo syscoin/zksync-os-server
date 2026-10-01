@@ -1,0 +1,27 @@
+{
+  "schema": "syscoin-v32-planned-namespace-v1",
+  "status": "offline-plan-not-deployed",
+  "deployed": false,
+  "signer_control_verified": false,
+  "independent_host_reproduction": false,
+  "l1_chain_id": 5700,
+  "gateway_chain_id": 57001,
+  "edge_chain_id": 57057,
+  "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+  "salt_derivation": "SHA256 of UTF-8 namespace label without a trailing newline",
+  "namespace_label": "syscoin-v32-real-proofs-tanenbaum-5700-20260928",
+  "create2_salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+  "root_governance_constructor": {
+    "admin": "0x5b612a8914c3a891d235d0744a7d77685c6998da",
+    "security_council": "0x5b612a8914c3a891d235d0744a7d77685c6998da",
+    "min_delay_seconds": 0
+  },
+  "policy_basis": "Fresh V32 replacement with existing funded roles retained; root owner/securityCouncil/minDelay preserve the public policy observed on the old root Governance at L1 block 980612. These are selected future constructor inputs, not an assertion about historical creation inputs.",
+  "legacy_state_policy": "Preserve the old deployment and its escrow. No vault funds are classified as free gas and no old state is removed by this plan.",
+  "broadcast_preconditions": [
+    "Verify signer control through the supported local signing mechanism without exporting keys",
+    "Verify all planned CREATE2 addresses against final compiled artifacts and live collision checks",
+    "Complete guest, Security100 VK, verifier and source-identity validation and push the coordinated code",
+    "Preserve existing deployment configurations and recovery material before any cutover"
+  ]
+}

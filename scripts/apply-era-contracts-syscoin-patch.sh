@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1423817"
-EXPECTED_PATCH_SHA256="506c3ac9cf46c1174f7aee3fc033b8d5aef661533e77d3fc324c17ae22962668"
-EXPECTED_PATCH_PATH_COUNT="61"
-EXPECTED_PATCH_PATHS_SHA256="18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0"
+EXPECTED_PATCH_SIZE="1437333"
+EXPECTED_PATCH_SHA256="9cba2e553e8604c6b64f4c4de633bec741539915ee719146c75eeadfa2a6f3e0"
+EXPECTED_PATCH_PATH_COUNT="67"
+EXPECTED_PATCH_PATHS_SHA256="5422444f3057f29fd1dcfaa275d0d04a16e014818ae1b7e21acc572325ae2d09"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="2a28a08e439d35ff25643d3d108c05e846cdf0fe"
+EXPECTED_PATCHED_TREE="3eefa0f127d1deff365ebffcf489b183cde0e756"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -166,7 +166,7 @@ verify_postimage_manifest() {
     manifest_paths+="${relative_path}"$'\n'
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
-160049 c1ad0208e77c01d3c2e91a7fe7e12624575dab9f231964e8a77223e787196725 AllContractsHashes.json
+160049 ad1fff778e64d8b81338ada6365a526f7c28223dd9dc89ae9b8b01d12b90ca99 AllContractsHashes.json
 557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
@@ -193,7 +193,7 @@ verify_postimage_manifest() {
 6707 2428a3ae1112ab7014cc332f0f087027d474055790e80d2c6d8957d8ce13ec05 l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
 60893 225721828b3d6b66598253093e4139612accbfadbbbd8d3e3f6d662fa342bbc0 l1-contracts/deploy-scripts/AdminFunctions.s.sol
 10730 73b5cd2659d89e12ecdbefe2ed0e9753b1967eadaa4bf7ddfe5877ffe56c72dd l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
-31861 6af6435436f478f5723d0fe138771938b0f503ce9fdb7148cc98ae2742c8afc0 l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
+32049 1d9f2945a858c26cbab9dbe005af579bf40f53ed9382ebb7cec72ec8ab826c84 l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 14452 db6f5326495f0e9926a15632ae8001d64887d9cb83fb64a1a8ffc3a0dbe35588 l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 21890 285f15bd41c33ac64f19e20fb3853e867bd8491625b4d6968666166bb3a02260 l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 26354 9fdb904b1613e219fa29f9e4dbaea017ba2311bec6e2ca358c41beb341bb2f36 l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
@@ -205,11 +205,13 @@ verify_postimage_manifest() {
 11325 50276f9a9c4f059305b67471943159f0c195cc6c901968d6c2c1f9382db02754 l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 858 9a6796cad5a4b8955ed797df04c19cdfc3d95494693f64bb818b1dc991635387 l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 2307892 38835a67728d55ef2f15abd46cbf0fd4f050486a59d6e859427f236d905100cb l1-contracts/selectors
+1276 8a4ff3fb4014d7c4d2d3fa6213b755ae554a9546776984281580a3baf09a9a02 l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
 18811 881846d3c06c9c660c8ee451ae5eb95d1fe324b65126a1a848ebe298cb93bf84 l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 17959 27e8c3a9f751b94e17a9c47b2303240cb5b375d0c09c1dbafda9b3039a1757a8 l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
 19299 1934c2776adb7c9c6b49fe5425cd0c19d4d27910d2fd3dbcadff3cd2240e4bab l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
 8296 b18605c0bc27bdb37e37ed58bc5c3484b92dfb2b2e2f56e3a9d5b0804e9fe752 l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
 10900 6b9598f13155fc24026d0976332842a7ed6c10739a6fdb2c1cff567d4712ff49 l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
+3186 788ede9e9d6ea55e56ddb50df96f2fd6653180e05fbfaece984a9bfd6ade8583 l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
 9378 0381dc84f5bb96727bfb06de2f9351d34ba5eae5b5423964f3a39e4aa731bf00 l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 17139 7555ab6bee81f7c7133343d56e555a566b12d3ceabe6f61146d4bee53ccdad07 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 6691 88562d3c06e6339b4059966c0e3173eceb98a458205cb011bbb861ee7d5b7955 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
@@ -224,7 +226,11 @@ verify_postimage_manifest() {
 18331 8600ed5a07fa68e2cb180674320406523a98660c0b6f78a538568ef935ec140e l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 17824 85171d93961f63606c4449f9cfbae0e8341daa942d659513d42ed0018850a758 l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 5070 2bbab9425954d54c8dc0e0f963e4f9befb35eae6a34bcdb8ccb854409526487f l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
+24286 0cc30a0c43f9799d1f48b6f2223bbbee65e8837f7692bbc32621532b14266f04 l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
+22622 d52468a4643ac916c7eca02572ef620d8516f81e703d88bd574e95acc6e096f7 l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json
 14102 8db8cf9b188baf96c2634fcab0c4e54512254c0b8737a066ad540ae7e5102a4e l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
+88852 d9fc00e537b0f77d4b3e807c17d1dac921c74234a2e76fa717c42b611cfa4e3d tools/verifier-gen/data/plonk_verifier_contract_template.txt
+12816 a892fd07b40f9c16dc6c4eccad790e919a8a604301b7b72d1603309605148805 tools/verifier-gen/src/plonk.rs
 11865 2d470cd020bad4178adc1cd12889693e235df86103be24bf25549ac411613b6d tools/zksync-os-genesis-gen/src/consts.rs
 SYSCOIN_POSTIMAGE_MANIFEST
 

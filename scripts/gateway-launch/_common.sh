@@ -686,7 +686,7 @@ gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
 }
 
 gl_published_gateway_commit_target() {
-  printf '%s\n' "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
+  printf '%s\n' "0xabb69e8e899c06e51414efde62d4423de4f35004"
 }
 
 gl_published_gateway_relay() {
@@ -2056,7 +2056,11 @@ gl_zkstack_cli_release_stamp_file() {
 gl_zkstack_cli_release_fingerprint() {
   gl_require ZKSYNC_ERA_PATH
   gl_require ZKSYNC_OS_SERVER_PATH
-  python3 - "${ZKSYNC_ERA_PATH}" "${ZKSYNC_OS_SERVER_PATH}" "${REQUIRED_ZKSTACK_CLI_SHA:-}" <<'PY'
+  local contracts_lane=generated-release
+  if gl_pending_v8_mock_launch_enabled; then
+    contracts_lane=pending-mock-source
+  fi
+  python3 - "${ZKSYNC_ERA_PATH}" "${ZKSYNC_OS_SERVER_PATH}" "${REQUIRED_ZKSTACK_CLI_SHA:-}" "${contracts_lane}" <<'PY'
 import hashlib
 import json
 import subprocess
@@ -2072,6 +2076,7 @@ def git(args, cwd=era):
 
 payload = {
     "required_zkstack_cli_sha": required_sha,
+    "era_contracts_postimage_lane": sys.argv[4],
     "era_head": git(["rev-parse", "HEAD"]).decode().strip(),
     # Include patched tracked changes because the Syscoin patch is applied on top
     # of the pinned zkstack revision before building the release binary.
@@ -2085,6 +2090,10 @@ for rel in (
     "scripts/apply-zksync-era-syscoin-patch.sh",
     "scripts/patches/zksync-era-syscoin.patch",
     "scripts/patches/era-contracts-syscoin.patch",
+    "scripts/apply-era-contracts-syscoin-release.py",
+    "scripts/releases/era-v32/check-release-overlay.py",
+    "scripts/releases/era-v32/generated-verifier-overlay.patch",
+    "scripts/releases/era-v32/generated-verifier-manifest.json",
 ):
     path = server / rel
     payload[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
@@ -2126,21 +2135,34 @@ gl_write_zkstack_cli_release_stamp() {
     "${fingerprint}" "${binary_sha}" >"${stamp_file}"
 }
 
-gl_ensure_era_contracts_syscoin_postimage() {
+gl_era_contracts_postimage() {
   gl_require ZKSYNC_ERA_PATH
   gl_require ZKSYNC_OS_SERVER_PATH
+  if gl_pending_v8_mock_launch_enabled; then
+    # SYSCOIN: Preserve the sole reviewed pre-regeneration source-only lane.
+    bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" \
+      "$@" "${ZKSYNC_ERA_PATH}/contracts"
+    return $?
+  fi
+  [ "${PROTOCOL_VERSION:-}" = v32.0 ] || gl_die "generated Era release requires protocol v32.0"
+  [ "${PROVER_MODE:-gpu}:${GATEWAY_PROVER_MODE:-${PROVER_MODE:-gpu}}:${EDGE_PROVER_MODE:-${PROVER_MODE:-gpu}}" = gpu:gpu:gpu ] && \
+    [ "${SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER:-false}" = false ] || \
+    gl_die "generated Era release requires the existing real-proof modes without a mock verifier"
+  # SYSCOIN: The separate helper checks the canonical marker, compiled fixture
+  # trust and app identity before even an idempotent generated-postimage check.
+  python3 -B "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-release.py" \
+    "$@" "${ZKSYNC_ERA_PATH}/contracts"
+}
+
+gl_ensure_era_contracts_syscoin_postimage() {
   # SYSCOIN: zkstack invokes Forge from this mutable contracts checkout. Attest
   # the complete reviewed postimage on every standalone deployment entrypoint,
   # including resumed runs whose L1-deployment checkpoint was already passed.
-  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" \
-    "${ZKSYNC_ERA_PATH}/contracts"
+  gl_era_contracts_postimage
 }
 
 gl_assert_era_contracts_syscoin_postimage() {
-  gl_require ZKSYNC_ERA_PATH
-  gl_require ZKSYNC_OS_SERVER_PATH
-  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" \
-    --assert-applied "${ZKSYNC_ERA_PATH}/contracts"
+  gl_era_contracts_postimage --assert-applied
 }
 
 gl_prepare_gateway_chain_init_contract_artifacts() {
