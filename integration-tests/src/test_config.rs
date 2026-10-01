@@ -77,6 +77,9 @@ pub(crate) async fn build_node_config(
     config.network_config.interface = None;
     config.network_config.boot_nodes.clear();
     if chain_layout.fixture_scope() == crate::config::FixtureScope::AnvilComponentOnly {
+        // Fixture generation serializes deployment traffic, but ordinary tests must
+        // start with the normal sender window. Tests can override it after setup.
+        config.l1_sender_config.command_limit = 16;
         // bind_runtime_config replaces this default with this test's tempdir.
         // Tests may still override the encryption before launch.
         config.replay_archive_config = zksync_os_server::config::ReplayArchiveConfig::FileSystem {
