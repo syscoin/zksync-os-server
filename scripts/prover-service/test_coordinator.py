@@ -2,6 +2,8 @@ import copy
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+import urllib.parse
 
 import audit
 import coordinator as c
@@ -227,6 +229,94 @@ class CoordinatorTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "native_pick_uncertain"):
             self.controller_reload().step(True)
         self.assertEqual(len(self.native.calls), 1)
+
+    def test_pre_authority_restart_refreshes_lease_and_preserves_exact_renewal_range(self):
+        for renewal in (False, True):
+            for window in ("empty", "partial", "complete"):
+                with self.subTest(renewal=renewal, window=window):
+                    self.control_store = c.initialize(self.base / f"restart-{renewal}-{window}", self.config)
+                    self.native, self.now = td.Network(), self.rpc.now
+                    self.controller_reload()
+                    identifier = self.acquired() if renewal else self.controller.reserve()
+                    op = self.controller.state["operations"][identifier]
+                    if renewal:
+                        op["lease"], op["status"] = None, "picking"
+                        self.controller.save()
+                    prior_leases = copy.deepcopy(op["leases"])
+                    def interrupted_authority(path, value):
+                        self.assertEqual(path.name, "authority.json")
+                        if window != "empty":
+                            raw = c.job.encode(value)
+                            if window == "partial":
+                                raw = raw[:len(raw) // 2]
+                            c.job.write_new(path.with_name(".authority.json." + "a" * 32 + ".tmp"), raw)
+                        raise KeyboardInterrupt()
+                    with patch.object(c.sentry, "atomic_json", side_effect=interrupted_authority), \
+                            self.assertRaises(KeyboardInterrupt):
+                        self.controller.acquire(identifier, True)
+                    original = copy.deepcopy(op)
+                    count = len(self.native.calls)
+                    self.rpc.advance(self.config["native_lease_seconds"] + 7)
+                    self.now = self.rpc.now
+                    self.controller_reload()
+                    self.native.responses.append((200, {}, {**self.f["fri_payload"], "lease_token": h(181)}))
+                    if not renewal:
+                        self.native.responses.append((200, {}, self.f["evidence"]))
+                    request = self.native.request
+                    def checked_request(url, *args, **kwargs):
+                        if "/pick?" in url:
+                            retained = c.read_private_json(self.control_store.root / "coordinator.json")["operations"][identifier]
+                            self.assertEqual(retained["lease"], original["lease"])
+                            self.assertEqual(retained["leases"][:-1], prior_leases)
+                            self.assertEqual(retained["leases"][-1], {"name": original["lease"], "started_at": self.now,
+                                "deadline": self.now + self.config["native_lease_seconds"]})
+                            authority = c.read_private_json(self.controller.directory(identifier) / original["lease"] / "authority.json")
+                            self.assertEqual(authority["status"], "pick_uncertain")
+                            self.assertEqual(authority["job_id"], identifier + ":" + original["lease"])
+                            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                            if renewal:
+                                expected = {key: self.f["fri_payload"][key] for key in ("from_batch_number", "to_batch_number")}
+                                self.assertEqual(authority["expected_bounds"], expected)
+                                self.assertEqual(query["snark_batch_from"], [str(expected["from_batch_number"])])
+                                self.assertEqual(query["snark_batch_to"], [str(expected["to_batch_number"])])
+                            else:
+                                self.assertNotIn("expected_bounds", authority)
+                                self.assertNotIn("snark_batch_from", query)
+                                self.assertNotIn("snark_batch_to", query)
+                        return request(url, *args, **kwargs)
+                    with patch.object(self.native, "request", side_effect=checked_request):
+                        self.assertIsNone(self.controller.acquire(identifier, True))
+                    self.assertEqual(len(self.native.calls), count + (1 if renewal else 2))
+                    self.assertEqual(self.controller.state["operations"][identifier]["status"], "working")
+                    lease = self.controller.directory(identifier) / original["lease"]
+                    self.assertFalse(any(lease.glob("*.tmp")))
+                    self.assertEqual(io.private_json(self.controller.directory(identifier) / "payload.json"), self.f["fri_payload"])
+
+    def test_existing_authority_or_unknown_evidence_blocks_pick_restart_and_deadline_refresh(self):
+        for leftover in ("authority", "picked-wire.json", "unknown.json"):
+            with self.subTest(leftover=leftover):
+                self.control_store = c.initialize(self.base / ("blocked-" + leftover), self.config)
+                self.native, self.now = td.Network(), 1000
+                self.controller_reload()
+                identifier = self.controller.reserve()
+                target = "write_new" if leftover == "authority" else "atomic_json"
+                module = c.sentry.job if leftover == "authority" else c.sentry
+                with patch.object(module, target, side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
+                    self.controller.acquire(identifier, True)
+                original = copy.deepcopy(self.controller.state)
+                lease = self.controller.directory(identifier) / original["operations"][identifier]["lease"]
+                if leftover != "authority":
+                    c.job.write_new(lease / leftover, b"retained-evidence")
+                files = {path.name: path.read_bytes() for path in lease.iterdir()}
+                self.now += self.config["native_lease_seconds"] + 7
+                expected_error = s.Error if leftover == "authority" else c.sentry.Error
+                message = "native_pick_uncertain" if leftover == "authority" else "pick_initialization_contains_unknown_artifacts"
+                with self.assertRaisesRegex(expected_error, message):
+                    self.controller_reload().acquire(identifier, True)
+                self.assertEqual(self.controller.state, original)
+                self.assertEqual(c.read_private_json(self.control_store.root / "coordinator.json"), original)
+                self.assertEqual({path.name: path.read_bytes() for path in lease.iterdir()}, files)
+                self.assertEqual(self.native.calls, [])
 
     def test_expired_known_lease_renews_without_changing_frozen_payload(self):
         identifier, bundle = self.frozen()

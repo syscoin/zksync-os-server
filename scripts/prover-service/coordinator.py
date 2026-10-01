@@ -136,14 +136,18 @@ class Coordinator:
             op["lease"] = name
             self.save()
         lease = directory / op["lease"]
-        if lease.exists() and not any(lease.iterdir()):
-            # Sentry records authority before making the pick request.
-            lease.rmdir()
-        if not lease.exists():
+        if not os.path.lexists(lease / "authority.json"):
             bounds = {}
             if (directory / "payload.json").exists():
                 frozen = io.private_json(directory / "payload.json", io.MAX_PAYLOAD)
                 bounds["expected_range"] = (frozen["from_batch_number"], frozen["to_batch_number"])
+            sentry.reset_unstarted_pick(lease, self.config["endpoint"], self.release,
+                                        identifier + ":" + op["lease"], **bounds)
+            # Only a proven pre-request restart may move the lease window forward.
+            lease_info = next(item for item in op["leases"] if item["name"] == op["lease"])
+            now = int(self.clock())
+            lease_info.update(started_at=now, deadline=now + self.config["native_lease_seconds"])
+            self.save()
             sentry.pick(lease, self.config["endpoint"], self.release, identifier + ":" + op["lease"],
                         sentry.authorization(self.config["native_auth_file"]), self.native, **bounds)
         authority = read_private_json(lease / "authority.json")
