@@ -53,7 +53,7 @@ runs:
       run: echo "/usr/local/nvidia/bin:/usr/local/cuda/bin" >> "${GITHUB_PATH}"
 
     - name: Install cmake
-      if: ${{ contains(runner.name, 'matterlabs') && runner.arch == 'X64' }}
+      if: ${{ runner.os == 'Linux' && runner.arch == 'X64' }}
       shell: 'bash -ex {0}'
       env:
         CMAKE_VERSION: '4.1.1'

@@ -33,7 +33,9 @@ jobs:
   #       Build server       #
   ############################
   build:
-    runs-on: matterlabs-ci-runner-high-performance
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: '2'
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -59,8 +61,9 @@ jobs:
   #     Format and lint      #
   ############################
   format-and-lint:
-    runs-on: matterlabs-ci-runner-high-performance
+    runs-on: ubuntu-24.04
     env:
+      CARGO_BUILD_JOBS: '2'
       ZKSYNC_USE_CUDA_STUBS: true
     steps:
       - name: Checkout code
@@ -97,7 +100,9 @@ jobs:
   #      Run unit and core integration tests      #
   #################################################
   test:
-    runs-on: matterlabs-ci-runner-high-performance
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: '2'
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
