@@ -352,8 +352,10 @@ identities, native endpoints and credentials separate. Equal batch numbers on th
 two chains are distinct work. A quota slot consumed in one lane cannot be allocated
 again in the other. Both lane bindings are checked against `supportedLane` at the
 same finalized child-registry snapshot. The single-sequencer launch uses the same
-account/operator subscriptions and sequencer identity on both lanes. Never run
-independent service journals for the two chains in the same period.
+account/operator subscriptions and sequencer identity on both lanes. Registry
+deployment requires a nonzero `sharedSequencer` even in child-only mode; every
+subscription and accepted package must match it. Never run independent service
+journals for the two chains in the same period.
 
 ```sh
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \

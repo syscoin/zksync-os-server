@@ -128,7 +128,7 @@ contract ZkSysServiceLifecycleTest is Test {
                 gatewayChainId: gatewayEnabled ? GATEWAY : 0,
                 gatewayChainAddress: gatewayEnabled ? address(0x600D) : address(0),
                 gatewayVkHash: gatewayEnabled ? verifier.vkHash() : bytes32(0),
-                sharedSequencer: gatewayEnabled ? vm.addr(SEQUENCER_KEY) : address(0)
+                sharedSequencer: vm.addr(SEQUENCER_KEY)
             })
         );
         assertEq(address(service), predictedRegistry);

@@ -131,21 +131,22 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     event RosterPublished(uint64 indexed period, bytes32 root, uint32 count, bytes32 messageHash);
 
     constructor(Configuration memory config) EIP712("ZkSysProverService", "1") {
+        // Account-scoped quota and roster state must never combine distinct sequencers.
         if (
             address(config.membershipRegistry).code.length == 0 || config.issuer.code.length == 0
                 || config.acceptanceSource.code.length == 0 || config.settlementChainAddress == address(0)
                 || config.policyHash == bytes32(0) || config.dutiesPerRound == 0
                 || config.dutiesPerRound > MAX_DUTIES_PER_ROUND || config.membershipMaxAgeSeconds == 0
+                || config.sharedSequencer == address(0)
         ) revert InvalidConfiguration();
 
         if (config.gatewayChainId == 0) {
-            if (
-                config.gatewayChainAddress != address(0) || config.gatewayVkHash != bytes32(0)
-                    || config.sharedSequencer != address(0)
-            ) revert InvalidConfiguration();
+            if (config.gatewayChainAddress != address(0) || config.gatewayVkHash != bytes32(0)) {
+                revert InvalidConfiguration();
+            }
         } else if (
             config.gatewayChainId == block.chainid || config.gatewayChainAddress == address(0)
-                || config.gatewayVkHash == bytes32(0) || config.sharedSequencer == address(0)
+                || config.gatewayVkHash == bytes32(0)
         ) {
             revert InvalidConfiguration();
         }
@@ -194,8 +195,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
                 || subscription_.lastPeriod < subscription_.firstPeriod
                 || subscription_.lastPeriod - subscription_.firstPeriod >= MAX_SUBSCRIPTION_PERIODS
                 || subscription_.services == 0 || subscription_.services > 3
-                || subscription_.nonce != nonces[subscription_.account]
-                || (sharedSequencer != address(0) && subscription_.sequencer != sharedSequencer)
+                || subscription_.nonce != nonces[subscription_.account] || subscription_.sequencer != sharedSequencer
         ) revert InvalidSubscription();
         _seniorBonus(subscription_.account);
         subscriptionHash = ZkSysServiceTypesV1.hashSubscription(subscription_);
@@ -313,9 +313,8 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         if (
             accepted.domainVersion != ZkSysServiceTypesV1.DOMAIN_VERSION || accepted.policyHash != policyHash
                 || laneAddress == address(0) || accepted.chainAddress != laneAddress
-                || (laneVk != bytes32(0) && accepted.vkHash != laneVk)
-                || (sharedSequencer != address(0) && accepted.sequencer != sharedSequencer) || accepted.batchFrom == 0
-                || accepted.batchTo < accepted.batchFrom
+                || (laneVk != bytes32(0) && accepted.vkHash != laneVk) || accepted.sequencer != sharedSequencer
+                || accepted.batchFrom == 0 || accepted.batchTo < accepted.batchFrom
                 || accepted.batchTo - accepted.batchFrom >= ZkSysServiceTypesV1.MAX_BATCHES_PER_PACKAGE
                 || accepted.vkHash == bytes32(0) || accepted.proofHash == bytes32(0)
                 || accepted.manifestHash == bytes32(0) || accepted.sequencer == address(0)

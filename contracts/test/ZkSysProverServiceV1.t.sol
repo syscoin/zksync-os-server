@@ -295,8 +295,22 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             gatewayChainId: 0,
             gatewayChainAddress: address(0),
             gatewayVkHash: bytes32(0),
-            sharedSequencer: address(0)
+            sharedSequencer: vm.addr(SEQUENCER_KEY)
         });
+    }
+
+    function _configureLane(uint256 lane) internal returns (uint256 chainId, address chainAddress) {
+        vm.warp(1_000);
+        ZkSysProverServiceRegistryV1.Configuration memory config = _config(address(source));
+        if (lane != 0) {
+            config.gatewayChainId = block.chainid + 1;
+            config.gatewayChainAddress = address(0x600D);
+            config.gatewayVkHash = VK;
+        }
+        service = new ZkSysProverServiceRegistryV1(config);
+        return lane == 2
+            ? (config.gatewayChainId, config.gatewayChainAddress)
+            : (block.chainid, config.settlementChainAddress);
     }
 
     function _senior(uint256 accountKey, bool full) internal {
@@ -408,6 +422,135 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         assertEq(service.totalAdmittedBonusWeight(0), 0);
         _activate(false);
         assertEq(service.totalAdmittedBonusWeight(0), 35_000 ether);
+    }
+
+    function testChildOnlyConfigurationRejectsZeroSequencer() public {
+        ZkSysProverServiceRegistryV1.Configuration memory config = _config(address(source));
+        config.sharedSequencer = address(0);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidConfiguration.selector);
+        new ZkSysProverServiceRegistryV1(config);
+    }
+
+    function testDualLaneConfigurationRejectsZeroSequencer() public {
+        ZkSysProverServiceRegistryV1.Configuration memory config = _config(address(source));
+        config.gatewayChainId = block.chainid + 1;
+        config.gatewayChainAddress = address(0x600D);
+        config.gatewayVkHash = VK;
+        config.sharedSequencer = address(0);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidConfiguration.selector);
+        new ZkSysProverServiceRegistryV1(config);
+    }
+
+    function testAlternateSequencerSubscriptionCannotReserveNonceOperatorOrRoster() public {
+        for (uint256 lane; lane < 2; ++lane) {
+            _configureLane(lane);
+            ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+            sub.sequencer = address(0xBAD);
+            bytes32 hash = ZkSysServiceTypesV1.hashSubscription(sub);
+            bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
+            service.subscribe(sub, signature);
+            assertEq(service.nonces(sub.account), 0);
+            assertEq(service.subscription(hash).account, address(0));
+            assertEq(service.subscriptionAt(sub.account, sub.sequencer, 0), bytes32(0));
+            assertEq(service.operatorAccountAt(sub.operator, 0), address(0));
+            assertEq(service.friSubscriberCount(sub.sequencer, 0), 0);
+            assertEq(service.friSubscriberCount(vm.addr(SEQUENCER_KEY), 0), 0);
+            assertEq(service.qualifiedWrapperCount(0), 0);
+            assertEq(service.totalQualifiedBonusWeight(0), 0);
+            assertEq(service.totalAdmittedBonusWeight(0), 0);
+            _subscribe(ALICE_KEY, ALICE_OPERATOR_KEY);
+            assertEq(service.nonces(sub.account), 1);
+            assertEq(service.operatorAccountAt(sub.operator, 0), sub.account);
+        }
+    }
+
+    function testAlternateSequencerBootstrapCannotAcceptControlOrCreditDuties() public {
+        for (uint256 lane; lane < 3; ++lane) {
+            (uint256 chainId, address chainAddress) = _configureLane(lane);
+            bytes32 sub = _subscribe(ALICE_KEY, ALICE_OPERATOR_KEY);
+            DutySuccessV1[] memory duties = new DutySuccessV1[](0);
+            AcceptedPackageV1 memory accepted = _package(duties, true, 1, 2, 0);
+            accepted.chainId = chainId;
+            accepted.chainAddress = chainAddress;
+            accepted.sequencer = address(0xBAD);
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidPackage.selector);
+            source.bootstrap(service, accepted, duties);
+            assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+            assertEq(service.bootstrapVkHash(), bytes32(0));
+
+            duties = new DutySuccessV1[](2);
+            duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 1, 0, 0);
+            duties[1] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 2, 0, 1);
+            accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidPackage.selector);
+            source.bootstrap(service, accepted, duties);
+            address alice = vm.addr(ALICE_KEY);
+            assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+            assertFalse(service.creditedDuties(keccak256(abi.encode(chainId, chainAddress, uint64(1)))));
+            assertFalse(service.creditedDuties(keccak256(abi.encode(chainId, chainAddress, uint64(2)))));
+            assertEq(service.bootstrapSuccesses(alice), 0);
+            assertEq(service.bootstrapDutySlots(alice), 0);
+            assertEq(service.assessedSuccesses(alice, 0), 0);
+            assertEq(service.rewardedSuccesses(alice, 0), 0);
+            assertEq(service.dutySlots(alice, 0), 0);
+            assertFalse(service.verifiedForSequencer(alice, accepted.sequencer));
+            assertFalse(service.verifiedForSequencer(alice, vm.addr(SEQUENCER_KEY)));
+            assertEq(service.qualifiedWrapperCount(0), 0);
+            assertEq(service.totalQualifiedBonusWeight(0), 0);
+            assertEq(service.totalAdmittedBonusWeight(0), 0);
+
+            accepted.sequencer = vm.addr(SEQUENCER_KEY);
+            source.bootstrap(service, accepted, duties);
+            assertEq(service.bootstrapSuccesses(alice), 2);
+            assertEq(service.bootstrapDutySlots(alice), 3);
+            assertTrue(service.verifiedForSequencer(alice, accepted.sequencer));
+            assertEq(service.totalQualifiedBonusWeight(0), 35_000 ether);
+        }
+    }
+
+    function testAlternateSequencerPaidPackageCannotAcceptControlOrCreditDuties() public {
+        for (uint256 lane; lane < 3; ++lane) {
+            (uint256 chainId, address chainAddress) = _configureLane(lane);
+            bytes32 sub = _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+            _activate(false);
+            DutySuccessV1[] memory duties = new DutySuccessV1[](0);
+            AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 0);
+            accepted.chainId = chainId;
+            accepted.chainAddress = chainAddress;
+            accepted.sequencer = address(0xBAD);
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidPackage.selector);
+            source.accept(service, accepted, duties);
+            assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+
+            duties = new DutySuccessV1[](1);
+            duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 3, 0, 0);
+            accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidPackage.selector);
+            source.accept(service, accepted, duties);
+            address alice = vm.addr(ALICE_KEY);
+            assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+            assertFalse(service.creditedDuties(keccak256(abi.encode(chainId, chainAddress, uint64(3)))));
+            assertEq(service.assessedSuccesses(alice, 0), 0);
+            assertEq(service.rewardedSuccesses(alice, 0), 0);
+            assertEq(service.dutySlots(alice, 0), 0);
+            assertEq(service.bootstrapSuccesses(alice), 2);
+            assertEq(service.bootstrapDutySlots(alice), 3);
+            assertFalse(service.verifiedForSequencer(alice, accepted.sequencer));
+            assertTrue(service.verifiedForSequencer(alice, vm.addr(SEQUENCER_KEY)));
+            assertEq(service.totalAdmittedBonusWeight(0), 35_000 ether);
+            assertEq(service.totalAdmittedBonusWeight(1), 0);
+            assertEq(service.qualifiedWrapperCount(0), 1);
+            assertEq(service.qualifiedWrapperCount(1), 0);
+
+            accepted.sequencer = vm.addr(SEQUENCER_KEY);
+            source.accept(service, accepted, duties);
+            assertEq(service.assessedSuccesses(alice, 0), 1);
+            assertEq(service.rewardedSuccesses(alice, 0), 1);
+            assertEq(service.dutySlots(alice, 0), 1);
+            assertEq(service.bootstrapSuccesses(alice), 2);
+            assertEq(service.bootstrapDutySlots(alice), 3);
+        }
     }
 
     function testDispatcherEnumerationIncludesPendingApplicantsAndScopesEligibility() public {
@@ -594,13 +737,17 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         subscription_.sequencer = address(0xBAD);
         subscription_.nonce = 1;
         subscription_.firstPeriod = 1;
-        bytes32 sub = service.subscribe(subscription_, _sign(ALICE_KEY, service.subscriptionDigest(subscription_)));
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ZkSysProverServiceRegistryV1.ServiceNotVerified.selector, vm.addr(ALICE_KEY), address(0xBAD)
-            )
-        );
-        service.renewWrapper(sub, 1);
+        bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(subscription_));
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
+        service.subscribe(subscription_, signature);
+        assertEq(service.nonces(subscription_.account), 1);
+        assertEq(service.subscriptionAt(subscription_.account, subscription_.sequencer, 1), bytes32(0));
+        assertFalse(service.verifiedForSequencer(subscription_.account, subscription_.sequencer));
+        assertTrue(service.verifiedForSequencer(subscription_.account, vm.addr(SEQUENCER_KEY)));
+        assertEq(service.bootstrapSuccesses(subscription_.account), 2);
+        assertEq(service.totalAdmittedBonusWeight(0), 35_000 ether);
+        assertEq(service.totalAdmittedBonusWeight(1), 0);
+        assertEq(service.qualifiedWrapperCount(0), 1);
         assertEq(service.qualifiedWrapperCount(1), 0);
     }
 

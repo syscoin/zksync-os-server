@@ -75,8 +75,10 @@ sequencer is required in every subscription and package. Canonical batch dedup
 includes its execution chain and diamond, while quota slots are shared across
 chains. A child duty and a Gateway duty may complete one quota; they cannot reuse
 the same slot or create a second bonus pool. Bootstrap Gateway proofs never
-overwrite the child's production VK pin. The optional child-only configuration
-uses zero Gateway fields; a foundational Gateway deployment must enable both.
+overwrite the child's production VK pin. The shared sequencer must be nonzero in
+every configuration, including child-only deployments. The optional child-only
+configuration uses zero Gateway chain ID, address and VK fields; a foundational
+Gateway deployment must enable both lanes.
 
 Only the local immutable acceptance adapter can install accepted reports. Child
 proof acceptance comes from the child's fixed gate on Gateway through the existing
