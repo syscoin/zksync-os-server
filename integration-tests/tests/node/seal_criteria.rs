@@ -9,7 +9,7 @@ use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
 use zksync_os_integration_tests::assert_traits::{POLL_INTERVAL, ReceiptAssert, ReceiptsAssert};
-use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, Tester, test_multisetup};
+use zksync_os_integration_tests::{CURRENT_TO_GATEWAY, TestEnvironment, Tester, test_multisetup};
 use zksync_os_types::REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE;
 
 const L1_MESSENGER_ADDRESS: Address = address!("0000000000000000000000000000000000008008");
@@ -21,7 +21,8 @@ alloy::sol! {
 /// Two L1 priority txs whose combined pubdata exceeds `block_pubdata_limit_bytes` must not
 /// crash the node: the block must seal on the pubdata limit and the second tx must be
 /// retried in the next block (L1 priority txs are strict FIFO and cannot be skipped).
-#[test_multisetup([CURRENT_TO_L1])]
+/// An edge admits ordinary users' system-contract calls; Gateway restricts them to settlement actors.
+#[test_multisetup([CURRENT_TO_GATEWAY])]
 async fn l1_txs_exceeding_block_pubdata_limit(env: TestEnvironment) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     // SYSCOIN: Keep the upstream test payload below L1's per-priority-tx gas cap even though

@@ -29,6 +29,11 @@ direct-L1 test view of that same Gateway57001 fixture, not a fourth chain12345.
 Each test creates its own Anvil and node instances. The two Gateway config views
 use separate test ports but share the honestly identified Gateway deployment
 and replay archive; generation never starts duplicate producers for one chain.
+The default view retains Gateway's transaction filter and is not an unrestricted
+user-asset chain. Ordinary ERC20 deposit/transfer/withdrawal and priority
+system-contract pubdata tests select `CURRENT_TO_GATEWAY`, exercising the edge
+through the real Root-to-Gateway relay and recursive Root withdrawal proof.
+Their transaction, balance, proof, and sealing assertions remain enforced.
 
 The checked-in component package was freshly generated, restored into three
 new databases, and checked with actual RPC/transaction receipts on each chain.
