@@ -87,6 +87,14 @@ impl StartupBatchFrontier {
 }
 
 impl CommittedBatchProvider {
+    #[cfg(test)]
+    pub(crate) fn for_test(proxy: ZkChain<NodeProvider>) -> Self {
+        Self {
+            inner: Arc::default(),
+            intervals: SettlementLayerIntervals::direct_l1(proxy),
+        }
+    }
+
     /// Creates a provider, authenticates and inserts genesis, and eagerly loads the startup
     /// frontier batches used by startup bookkeeping.
     // SYSCOIN: Thread persisted batch storage through startup loading so restarts

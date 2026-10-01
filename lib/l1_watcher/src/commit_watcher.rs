@@ -1,10 +1,11 @@
 use crate::committed_batch_provider::CommittedBatchProvider;
 use crate::watcher::{L1WatcherError, StartResolver};
-use crate::{L1WatcherConfig, ProcessL1Event, util};
-use alloy::rpc::types::Log;
+use crate::{L1WatcherConfig, ProcessRawEvents, util};
+use alloy::rpc::types::{Log, Topic};
+use alloy::sol_types::SolEvent;
 use tokio::sync::watch;
 use zksync_os_batch_types::DiscoveredCommittedBatch;
-use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
+use zksync_os_contract_interface::IExecutor::{BlocksRevert, ReportCommittedBatchRangeZKsyncOS};
 use zksync_os_contract_interface::ZkChain;
 use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::WriteFinality;
@@ -14,6 +15,9 @@ use zksync_os_storage_api::WriteFinality;
 /// This component reads `ReportCommittedBatchRangeZKsyncOS` events, resolves the committed batch
 /// payload from L1 calldata, updates `WriteFinality`, and inserts the discovered batch into
 /// `CommittedBatchProvider`.
+///
+/// SYSCOIN: Live `BlocksRevert` events stop ingestion before a fetched range can publish any
+/// commits, so restart can rebuild the frontier from settlement state.
 ///
 /// Depended on by:
 /// - `L1ExecuteWatcher`, which waits on the committed batches this watcher publishes;
@@ -75,31 +79,28 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
             tracing::info!(last_committed_batch, last_l1_block, "resolved on L1");
 
             let processor = Self {
-                next_batch_number: last_committed_batch + 1,
+                next_batch_number: last_committed_batch
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("committed batch cursor overflow"))?,
                 sl_block_initial_finality_init_at,
                 startup_last_committed_batch: last_committed_batch,
                 committed_batch_provider,
                 finality,
                 commit_submitted_rx,
             };
-            // We start from the last L1 block as it may contain more committed batches apart
-            // from the last one.
-            Ok((last_l1_block, processor))
+            // SYSCOIN: Discovery can find a replacement commit after a revert during startup.
+            // Include every block after the snapshot so that such a revert cannot be skipped.
+            Ok((
+                commit_scan_start(last_l1_block, sl_block_initial_finality_init_at)?,
+                processor,
+            ))
         };
         // SYSCOIN: this watcher follows the active settlement layer, so validate against the
         // SL provider chain ID and preserve the configured confirmations.
         StartResolver::new(config, provider, address, None, sl_chain_id, resolve_start).await
     }
-}
 
-#[async_trait::async_trait]
-impl<Finality: WriteFinality> ProcessL1Event for L1CommitWatcher<Finality> {
-    const NAME: &'static str = "block_commit";
-
-    type SolEvent = ReportCommittedBatchRangeZKsyncOS;
-    type WatchedEvent = ReportCommittedBatchRangeZKsyncOS;
-
-    async fn process_event(
+    async fn process_commit(
         &mut self,
         provider: &NodeProvider,
         report: ReportCommittedBatchRangeZKsyncOS,
@@ -124,6 +125,10 @@ impl<Finality: WriteFinality> ProcessL1Event for L1CommitWatcher<Finality> {
         } else if batch_number < self.next_batch_number {
             tracing::debug!(batch_number, "skipping already processed committed batch");
         } else {
+            // SYSCOIN: Contract sequencing does not prove that the RPC returned every log.
+            // A missing commit must stop ingestion before the frontier can skip its batch.
+            self.ensure_next_batch(batch_number)?;
+
             // Fast-fail if this batch was committed by a prior crashed session's pending tx.
             if should_restart_for_unexpected_commit(batch_number, self.commit_submitted_rx.as_ref())
             {
@@ -143,23 +148,133 @@ impl<Finality: WriteFinality> ProcessL1Event for L1CommitWatcher<Finality> {
                 block_range: report.firstBlockNumber..=report.lastBlockNumber,
             };
 
-            let last_committed_block = committed_batch.last_block_number();
-            self.finality.update_finality_status(|finality| {
-                assert!(
-                    batch_number > finality.last_committed_batch,
-                    "non-monotonous committed batch"
-                );
-                assert!(
-                    last_committed_block > finality.last_committed_block,
-                    "non-monotonous committed block"
-                );
-                finality.last_committed_batch = batch_number;
-                finality.last_committed_block = last_committed_block;
-            });
-            self.committed_batch_provider.insert(committed_batch);
+            self.publish_committed_batch(committed_batch)?;
         }
         Ok(())
     }
+
+    fn ensure_next_batch(&self, batch_number: u64) -> Result<(), L1WatcherError> {
+        if batch_number != self.next_batch_number {
+            return Err(L1WatcherError::NonSequentialCommittedBatch {
+                expected: self.next_batch_number,
+                actual: batch_number,
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_committed_batch(
+        &mut self,
+        committed_batch: DiscoveredCommittedBatch,
+    ) -> Result<(), L1WatcherError> {
+        let batch_number = committed_batch.number();
+        self.ensure_next_batch(batch_number)?;
+        let next_batch_number =
+            batch_number
+                .checked_add(1)
+                .ok_or(L1WatcherError::InvalidLogRange(
+                    "committed batch cursor overflow",
+                ))?;
+        let last_committed_block = committed_batch.last_block_number();
+        let mut finality_result = Ok(());
+        // SYSCOIN: Validate both frontiers under the finality writer's lock. A separate read
+        // could race another writer, and assigning the batch before checking the block leaves
+        // a partial update when validation fails.
+        self.finality.update_finality_status(|finality| {
+            if batch_number <= finality.last_committed_batch {
+                finality_result = Err(L1WatcherError::NonMonotonicCommittedBatch {
+                    previous: finality.last_committed_batch,
+                    actual: batch_number,
+                });
+                return;
+            }
+            if last_committed_block <= finality.last_committed_block {
+                finality_result = Err(L1WatcherError::NonMonotonicCommittedBlock {
+                    previous: finality.last_committed_block,
+                    actual: last_committed_block,
+                });
+                return;
+            }
+            finality.last_committed_batch = batch_number;
+            finality.last_committed_block = last_committed_block;
+        });
+        finality_result?;
+        self.committed_batch_provider.insert(committed_batch);
+        // SYSCOIN: A later processor error retries the range, including already published commits.
+        self.next_batch_number = next_batch_number;
+        Ok(())
+    }
+
+    // SYSCOIN: Historical reverts are already reflected in the startup snapshot. Live reverts
+    // invalidate the in-memory frontier and require recovery before further publication.
+    fn validate_revert(&self, log: &Log) -> Result<(), L1WatcherError> {
+        let revert = BlocksRevert::decode_log(&log.inner)?.data;
+        let block_number = log.block_number.ok_or(L1WatcherError::InvalidLogRange(
+            "revert log is missing its block number",
+        ))?;
+        if block_number > self.sl_block_initial_finality_init_at {
+            let total_batches_committed = revert
+                .totalBatchesCommitted
+                .try_into()
+                .map_err(|_| L1WatcherError::InvalidLogRange("reverted batch count exceeds u64"))?;
+            return Err(L1WatcherError::L1Reverted(total_batches_committed));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl<Finality: WriteFinality> ProcessRawEvents for L1CommitWatcher<Finality> {
+    fn name(&self) -> &'static str {
+        "block_commit"
+    }
+
+    fn event_signatures(&self) -> Topic {
+        Topic::default()
+            .extend(ReportCommittedBatchRangeZKsyncOS::SIGNATURE_HASH)
+            .extend(BlocksRevert::SIGNATURE_HASH)
+    }
+
+    fn filter_events(&self, logs: Vec<Log>) -> Vec<Log> {
+        logs
+    }
+
+    fn validate_events(&self, logs: &[Log]) -> Result<(), L1WatcherError> {
+        // SYSCOIN: A revert can invalidate an earlier commit in the same block or fetched range.
+        // Reject it before publishing any commit, regardless of task scheduling or log order.
+        for log in logs {
+            if log.topic0() == Some(&BlocksRevert::SIGNATURE_HASH) {
+                self.validate_revert(log)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn process_raw_event(
+        &mut self,
+        provider: &NodeProvider,
+        log: Log,
+    ) -> Result<(), L1WatcherError> {
+        match log.topic0() {
+            Some(signature) if *signature == ReportCommittedBatchRangeZKsyncOS::SIGNATURE_HASH => {
+                let report = ReportCommittedBatchRangeZKsyncOS::decode_log(&log.inner)?.data;
+                self.process_commit(provider, report, log).await
+            }
+            Some(signature) if *signature == BlocksRevert::SIGNATURE_HASH => {
+                self.validate_revert(&log)
+            }
+            _ => Err(L1WatcherError::InvalidLogRange(
+                "unexpected commit watcher event topic",
+            )),
+        }
+    }
+}
+
+fn commit_scan_start(discovered_commit_block: u64, startup_sl_block: u64) -> anyhow::Result<u64> {
+    let first_live_block = startup_sl_block
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("startup settlement block cursor overflow"))?;
+    Ok(discovered_commit_block.min(first_live_block))
 }
 
 /// Returns true if the commit event is for a batch that this session's pipeline has not yet
@@ -187,9 +302,389 @@ fn should_skip_historical_commit(
 
 #[cfg(test)]
 mod tests {
-    use super::should_restart_for_unexpected_commit;
-    use super::should_skip_historical_commit;
-    use tokio::sync::watch;
+    use super::*;
+    use alloy::primitives::{Address, B256, U256};
+    use alloy::transports::mock::Asserter;
+    use zksync_os_contract_interface::models::StoredBatchInfo;
+    use zksync_os_storage_api::{FinalityStatus, ReadFinality};
+
+    struct TestFinality(watch::Sender<FinalityStatus>);
+
+    impl ReadFinality for TestFinality {
+        fn get_finality_status(&self) -> FinalityStatus {
+            self.0.borrow().clone()
+        }
+
+        fn subscribe(&self) -> watch::Receiver<FinalityStatus> {
+            self.0.subscribe()
+        }
+    }
+
+    impl WriteFinality for TestFinality {
+        fn update_finality_status(&self, f: impl FnOnce(&mut FinalityStatus)) {
+            self.0.send_modify(f);
+        }
+    }
+
+    async fn processor(asserter: &Asserter) -> (L1CommitWatcher<TestFinality>, NodeProvider) {
+        let provider = crate::watcher::tests::mock_provider(asserter, true).await;
+        let (finality, _) = watch::channel(FinalityStatus {
+            last_committed_batch: 10,
+            last_committed_block: 99,
+            last_executed_batch: 0,
+            last_executed_block: 0,
+            last_finalized_executed_batch: 0,
+            last_finalized_executed_block: 0,
+        });
+        (
+            L1CommitWatcher {
+                next_batch_number: 11,
+                sl_block_initial_finality_init_at: 100,
+                startup_last_committed_batch: 10,
+                committed_batch_provider: CommittedBatchProvider::for_test(ZkChain::new(
+                    Address::ZERO,
+                    provider.clone(),
+                )),
+                finality: TestFinality(finality),
+                commit_submitted_rx: None,
+            },
+            provider,
+        )
+    }
+
+    fn event_log(event: impl SolEvent, block_number: u64) -> Log {
+        Log {
+            inner: alloy::primitives::Log {
+                address: Address::ZERO,
+                data: event.encode_log_data(),
+            },
+            block_number: Some(block_number),
+            ..Log::default()
+        }
+    }
+
+    fn commit_log(batch_number: u64, block_number: u64) -> Log {
+        event_log(
+            ReportCommittedBatchRangeZKsyncOS {
+                batchNumber: batch_number,
+                firstBlockNumber: 100,
+                lastBlockNumber: 109,
+            },
+            block_number,
+        )
+    }
+
+    fn revert_log(block_number: u64) -> Log {
+        event_log(
+            BlocksRevert {
+                totalBatchesCommitted: U256::from(10),
+                totalBatchesVerified: U256::ZERO,
+                totalBatchesExecuted: U256::ZERO,
+            },
+            block_number,
+        )
+    }
+
+    fn committed_batch(
+        batch_number: u64,
+        block_range: std::ops::RangeInclusive<u64>,
+    ) -> DiscoveredCommittedBatch {
+        DiscoveredCommittedBatch {
+            batch_info: StoredBatchInfo {
+                batch_number,
+                state_commitment: B256::ZERO,
+                number_of_layer1_txs: 0,
+                priority_operations_hash: B256::ZERO,
+                dependency_roots_rolling_hash: B256::ZERO,
+                l2_to_l1_logs_root_hash: B256::ZERO,
+                commitment: B256::ZERO,
+                last_block_timestamp: Some(0),
+            },
+            block_range,
+        }
+    }
+
+    #[test]
+    fn startup_cursor_includes_reverts_before_a_replacement_commit() {
+        assert_eq!(commit_scan_start(90, 100).unwrap(), 90);
+        assert_eq!(commit_scan_start(100, 100).unwrap(), 100);
+        assert_eq!(commit_scan_start(101, 100).unwrap(), 101);
+        assert_eq!(commit_scan_start(105, 100).unwrap(), 101);
+        assert!(commit_scan_start(0, u64::MAX).is_err());
+    }
+
+    #[tokio::test]
+    async fn live_revert_rejects_commit_revert_recommit_ranges() {
+        let asserter = Asserter::new();
+        let (processor, _) = processor(&asserter).await;
+        for (revert_block, recommit_block) in [(101, 101), (102, 102)] {
+            let logs = vec![
+                commit_log(11, 101),
+                revert_log(revert_block),
+                commit_log(11, recommit_block),
+            ];
+            assert!(matches!(
+                processor.validate_events(&logs),
+                Err(L1WatcherError::L1Reverted(10))
+            ));
+        }
+        assert_eq!(
+            processor
+                .finality
+                .get_finality_status()
+                .last_committed_batch,
+            10
+        );
+        assert!(processor.committed_batch_provider.get(11).is_none());
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_reverts_and_stale_commits_do_not_change_finality() {
+        let asserter = Asserter::new();
+        let (mut processor, provider) = processor(&asserter).await;
+        for block_number in [99, 100] {
+            let logs = vec![
+                commit_log(11, block_number),
+                revert_log(block_number),
+                commit_log(10, block_number),
+            ];
+            processor.validate_events(&logs).unwrap();
+            for log in logs {
+                processor.process_raw_event(&provider, log).await.unwrap();
+            }
+        }
+        processor.validate_events(&[commit_log(11, 101)]).unwrap();
+        assert_eq!(processor.next_batch_number, 11);
+        assert_eq!(
+            processor
+                .finality
+                .get_finality_status()
+                .last_committed_batch,
+            10
+        );
+        assert!(processor.committed_batch_provider.get(11).is_none());
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revert_requires_block_metadata_and_a_representable_batch_count() {
+        let asserter = Asserter::new();
+        let (processor, _) = processor(&asserter).await;
+        let mut missing_block = revert_log(101);
+        missing_block.block_number = None;
+        let overflowing_batch = event_log(
+            BlocksRevert {
+                totalBatchesCommitted: U256::MAX,
+                totalBatchesVerified: U256::ZERO,
+                totalBatchesExecuted: U256::ZERO,
+            },
+            101,
+        );
+        for log in [missing_block, overflowing_batch] {
+            assert!(matches!(
+                processor.validate_events(&[log]),
+                Err(L1WatcherError::InvalidLogRange(_))
+            ));
+        }
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn published_commit_is_not_republished_when_a_range_retries() {
+        let asserter = Asserter::new();
+        let (mut processor, provider) = processor(&asserter).await;
+        let mut finality_rx = processor.finality.subscribe();
+        let batch = committed_batch(11, 100..=109);
+        processor.publish_committed_batch(batch.clone()).unwrap();
+        assert_eq!(processor.next_batch_number, 12);
+        assert_eq!(finality_rx.borrow_and_update().last_committed_batch, 11);
+        processor
+            .process_raw_event(&provider, commit_log(11, 101))
+            .await
+            .unwrap();
+        assert!(!finality_rx.has_changed().unwrap());
+        assert_eq!(processor.committed_batch_provider.get(11), Some(batch));
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequential_commits_advance_both_frontiers_and_allow_old_event_replay() {
+        let asserter = Asserter::new();
+        let (mut processor, provider) = processor(&asserter).await;
+        let batches = [
+            committed_batch(11, 100..=109),
+            committed_batch(12, 110..=119),
+        ];
+        for batch in &batches {
+            processor.publish_committed_batch(batch.clone()).unwrap();
+        }
+        let mut finality_rx = processor.finality.subscribe();
+        let status = finality_rx.borrow_and_update().clone();
+        assert_eq!(
+            (status.last_committed_batch, status.last_committed_block),
+            (12, 119)
+        );
+        assert_eq!(processor.next_batch_number, 13);
+        for batch_number in [10, 11, 12] {
+            processor
+                .process_raw_event(&provider, commit_log(batch_number, 101))
+                .await
+                .unwrap();
+        }
+        assert!(!finality_rx.has_changed().unwrap());
+        for batch in batches {
+            assert_eq!(
+                processor.committed_batch_provider.get(batch.number()),
+                Some(batch)
+            );
+        }
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn live_forward_gap_is_rejected_before_rpc_or_publication() {
+        for submitted in [None, Some(12)] {
+            let asserter = Asserter::new();
+            let (mut processor, provider) = processor(&asserter).await;
+            let (_submitted_tx, submitted_rx) = watch::channel(submitted.unwrap_or(0));
+            processor.commit_submitted_rx = submitted.map(|_| submitted_rx);
+            let finality_rx = processor.finality.subscribe();
+            let error = processor
+                .process_raw_event(&provider, commit_log(12, 101))
+                .await
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                L1WatcherError::NonSequentialCommittedBatch {
+                    expected: 11,
+                    actual: 12
+                }
+            ));
+            let status = processor.finality.get_finality_status();
+            assert_eq!(
+                (status.last_committed_batch, status.last_committed_block),
+                (10, 99)
+            );
+            assert_eq!(processor.next_batch_number, 11);
+            assert!(!finality_rx.has_changed().unwrap());
+            assert!(processor.committed_batch_provider.get(11).is_none());
+            assert!(processor.committed_batch_provider.get(12).is_none());
+            assert!(asserter.read_q().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_gap_does_not_skip_the_next_batch_when_a_range_retries() {
+        let asserter = Asserter::new();
+        let (mut processor, provider) = processor(&asserter).await;
+        let batch = committed_batch(11, 100..=109);
+        processor.publish_committed_batch(batch.clone()).unwrap();
+        let finality_rx = processor.finality.subscribe();
+        for _ in 0..2 {
+            processor
+                .process_raw_event(&provider, commit_log(11, 101))
+                .await
+                .unwrap();
+            assert!(matches!(
+                processor
+                    .process_raw_event(&provider, commit_log(13, 102))
+                    .await,
+                Err(L1WatcherError::NonSequentialCommittedBatch {
+                    expected: 12,
+                    actual: 13
+                })
+            ));
+        }
+        let status = processor.finality.get_finality_status();
+        assert_eq!(
+            (status.last_committed_batch, status.last_committed_block),
+            (11, 109)
+        );
+        assert_eq!(processor.next_batch_number, 12);
+        assert!(!finality_rx.has_changed().unwrap());
+        assert_eq!(processor.committed_batch_provider.get(11), Some(batch));
+        assert!(processor.committed_batch_provider.get(12).is_none());
+        assert!(processor.committed_batch_provider.get(13).is_none());
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejected_publication_does_not_mutate_finality_provider_or_cursor() {
+        let asserter = Asserter::new();
+        let (mut processor, _) = processor(&asserter).await;
+        assert!(matches!(
+            processor.publish_committed_batch(committed_batch(12, 110..=119)),
+            Err(L1WatcherError::NonSequentialCommittedBatch {
+                expected: 11,
+                actual: 12
+            })
+        ));
+        let status = processor.finality.get_finality_status();
+        assert_eq!(
+            (status.last_committed_batch, status.last_committed_block),
+            (10, 99)
+        );
+        assert_eq!(processor.next_batch_number, 11);
+        assert!(processor.committed_batch_provider.get(12).is_none());
+
+        processor.next_batch_number = u64::MAX;
+        assert!(matches!(
+            processor.publish_committed_batch(committed_batch(u64::MAX, 100..=109)),
+            Err(L1WatcherError::InvalidLogRange(
+                "committed batch cursor overflow"
+            ))
+        ));
+        let status = processor.finality.get_finality_status();
+        assert_eq!(
+            (status.last_committed_batch, status.last_committed_block),
+            (10, 99)
+        );
+        assert_eq!(processor.next_batch_number, u64::MAX);
+        assert!(processor.committed_batch_provider.get(u64::MAX).is_none());
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_monotonic_finality_returns_typed_errors_without_partial_updates() {
+        for previous_batch in [11, 12] {
+            let asserter = Asserter::new();
+            let (mut processor, _) = processor(&asserter).await;
+            processor.finality.update_finality_status(|status| {
+                status.last_committed_batch = previous_batch;
+            });
+            assert!(matches!(
+                processor.publish_committed_batch(committed_batch(11, 100..=109)),
+                Err(L1WatcherError::NonMonotonicCommittedBatch { previous, actual: 11 })
+                    if previous == previous_batch
+            ));
+            let status = processor.finality.get_finality_status();
+            assert_eq!(
+                (status.last_committed_batch, status.last_committed_block),
+                (previous_batch, 99)
+            );
+            assert_eq!(processor.next_batch_number, 11);
+            assert!(processor.committed_batch_provider.get(11).is_none());
+            assert!(asserter.read_q().is_empty());
+        }
+        for last_block in [98, 99] {
+            let asserter = Asserter::new();
+            let (mut processor, _) = processor(&asserter).await;
+            assert!(matches!(
+                processor.publish_committed_batch(committed_batch(11, 90..=last_block)),
+                Err(L1WatcherError::NonMonotonicCommittedBlock { previous: 99, actual })
+                    if actual == last_block
+            ));
+            let status = processor.finality.get_finality_status();
+            assert_eq!(
+                (status.last_committed_batch, status.last_committed_block),
+                (10, 99)
+            );
+            assert_eq!(processor.next_batch_number, 11);
+            assert!(processor.committed_batch_provider.get(11).is_none());
+            assert!(asserter.read_q().is_empty());
+        }
+    }
 
     #[test]
     fn skips_historical_batch_above_startup_frontier() {

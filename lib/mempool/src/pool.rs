@@ -665,6 +665,7 @@ mod tests {
             confirmations,
             poll_interval: Duration::from_secs(1),
             finalized_poll_interval: Duration::from_secs(60),
+            canonical_header_retry_timeout: Duration::from_secs(300),
             logs_cache_capacity: 128,
         }
     }

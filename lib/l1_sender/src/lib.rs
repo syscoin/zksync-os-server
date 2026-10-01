@@ -17,7 +17,7 @@ use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::providers::Provider;
 use alloy::providers::ext::DebugApi;
 use alloy::providers::utils::Eip1559Estimation;
-use alloy::rpc::types::simulate::{SimBlock, SimulatePayload};
+use alloy::rpc::types::simulate::{SimBlock, SimCallResult, SimulatePayload};
 use alloy::rpc::types::state::{AccountOverride, StateOverridesBuilder};
 use alloy::rpc::types::trace::geth::{CallConfig, GethDebugTracingOptions};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
@@ -66,9 +66,6 @@ type TransactionReceiptFuture = BoxFuture<'static, anyhow::Result<TransactionRec
 type PendingTx<Input> = (TransactionReceiptFuture, Input, Instant);
 
 const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
-/// Per-tx gas limit used when `eth_simulateV1` cannot produce a usable estimate.
-/// Sized to cover the bounded set of commit/prove/execute calls.
-const L1_GAS_LIMIT_FALLBACK: u64 = 15_000_000;
 /// Per-call cap for `eth_simulateV1`. The simulation reports the actual `gas_used`.
 const L1_SIM_GAS_LIMIT: u64 = 30_000_000;
 // SYSCOIN: Preserve the safety margin used by the pre-pipeline `eth_estimateGas` path.
@@ -1034,8 +1031,8 @@ where
     /// `2 * gas_used` per call. Each command goes into its own simulated block so
     /// cumulative block-gas-limit constraints can't reject the batch, while writes from
     /// earlier blocks remain visible to later ones (spec-mandated overlay propagation).
-    /// Falls back to `eth_estimateGas` for a single command, or
-    /// [`L1_GAS_LIMIT_FALLBACK`] per tx for a multi-command wave.
+    /// Falls back to `eth_estimateGas` only for a single command without an unmined
+    /// prefix; dependent waves require a successful simulation for every command.
     ///
     /// `in_flight_prefix` mirrors already-submitted-but-unmined transactions ahead of
     /// `commands` in the payload so chained calls (batch N+1 requires batch N committed) see
@@ -1121,15 +1118,23 @@ where
             ..Default::default()
         };
 
-        // Top-level failures fall back across the batch; per-call reverts fall back only
-        // for that tx.
+        // SYSCOIN: No failed or incomplete simulation establishes a dependent wave's gas limits;
+        // only an independent singleton can be validated through `eth_estimateGas` instead.
         let blocks = match self.provider.simulate(&payload).pending().await {
-            Ok(blocks) if blocks.len() == expected_blocks => blocks,
+            Ok(blocks)
+                if simulation_block_count_matches(
+                    blocks.len(),
+                    expected_blocks,
+                    commands.len(),
+                )? =>
+            {
+                blocks
+            }
             Ok(blocks) => {
                 tracing::warn!(
                     returned = blocks.len(),
                     expected = expected_blocks,
-                    "eth_simulateV1 returned mismatched block count; using safe gas fallback",
+                    "eth_simulateV1 returned mismatched block count; trying independent gas estimate",
                 );
                 return self
                     .fallback_gas_limits(
@@ -1144,8 +1149,13 @@ where
             Err(err) => {
                 tracing::warn!(
                     %err,
-                    "eth_simulateV1 unavailable or errored; using safe gas fallback",
+                    "eth_simulateV1 unavailable or errored",
                 );
+                validate_simulation_error_fallback(
+                    err,
+                    original_in_flight_prefix_len,
+                    commands.len(),
+                )?;
                 return self
                     .fallback_gas_limits(
                         original_in_flight_prefix_len,
@@ -1166,23 +1176,14 @@ where
             .skip(in_flight_prefix.len())
             .enumerate()
         {
-            match block.calls.first() {
-                Some(call) if call.status => gas_limits.push(padded_simulation_result_gas_limit(
-                    call.gas_used,
-                    simulation_gas_limit,
-                )),
-                Some(call) => {
-                    tracing::warn!(
-                        tx_index = i,
-                        return_data = ?call.return_data,
-                        "eth_simulateV1 call reverted",
-                    );
-                    if commands.len() > 1 {
-                        anyhow::bail!(
-                            "refusing fixed gas fallback after eth_simulateV1 reverted for \
-                             command {i} in a multi-command wave"
-                        );
-                    }
+            match simulation_call_gas_limit(
+                block.calls.first(),
+                i,
+                commands.len(),
+                simulation_gas_limit,
+            )? {
+                Some(gas_limit) => gas_limits.push(gas_limit),
+                None => {
                     return self
                         .fallback_gas_limits(
                             original_in_flight_prefix_len,
@@ -1192,21 +1193,6 @@ where
                             starting_nonce,
                         )
                         .await;
-                }
-                None => {
-                    tracing::warn!(tx_index = i, "eth_simulateV1 block had no call result",);
-                    if commands.len() == 1 {
-                        return self
-                            .fallback_gas_limits(
-                                original_in_flight_prefix_len,
-                                commands,
-                                operator_address,
-                                fee_params,
-                                starting_nonce,
-                            )
-                            .await;
-                    }
-                    gas_limits.push(L1_GAS_LIMIT_FALLBACK);
                 }
             }
         }
@@ -1221,9 +1207,7 @@ where
         fee_params: FeeParams,
         starting_nonce: u64,
     ) -> anyhow::Result<Vec<u64>> {
-        if let Some(gas_limits) = fixed_fallback_gas_limits(in_flight_prefix_len, commands.len())? {
-            return Ok(gas_limits);
-        }
+        validate_independent_gas_estimate(in_flight_prefix_len, commands.len())?;
 
         let command = commands
             .first()
@@ -1645,21 +1629,87 @@ impl FeeParams {
     }
 }
 
-// SYSCOIN: waves and commands behind an unmined prefix can depend on earlier pending state, so
+// SYSCOIN: An incomplete successful reply cannot establish gas for every dependent command;
+// independent estimates would hide the missing simulation instead of validating the wave.
+fn simulation_block_count_matches(
+    returned: usize,
+    expected: usize,
+    command_count: usize,
+) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        returned == expected || command_count <= 1,
+        "refusing independent gas fallback after eth_simulateV1 returned {returned} blocks, \
+         expected {expected}, for a multi-command wave"
+    );
+    Ok(returned == expected)
+}
+
+// SYSCOIN: Independent fallback can estimate a singleton, but cannot validate a wave's
+// nonce-ordered state dependencies when a command result is missing or reverted.
+fn simulation_call_gas_limit(
+    call: Option<&SimCallResult>,
+    command_index: usize,
+    command_count: usize,
+    simulation_gas_limit: u64,
+) -> anyhow::Result<Option<u64>> {
+    let reason = match call {
+        Some(call) if call.status => {
+            return Ok(Some(padded_simulation_result_gas_limit(
+                call.gas_used,
+                simulation_gas_limit,
+            )));
+        }
+        Some(call) => {
+            tracing::warn!(
+                tx_index = command_index,
+                return_data = ?call.return_data,
+                "eth_simulateV1 call reverted",
+            );
+            "reverted"
+        }
+        None => {
+            tracing::warn!(
+                tx_index = command_index,
+                "eth_simulateV1 block had no call result",
+            );
+            "returned no call result"
+        }
+    };
+    anyhow::ensure!(
+        command_count == 1,
+        "refusing independent gas fallback after eth_simulateV1 {reason} for \
+         command {command_index} in a multi-command wave"
+    );
+    Ok(None)
+}
+
+// SYSCOIN: Waves and commands behind an unmined prefix can depend on earlier pending state, so
 // only one command with an empty prefix may fall back to an independent `eth_estimateGas` call.
-fn fixed_fallback_gas_limits(
+fn validate_independent_gas_estimate(
     in_flight_prefix_len: usize,
     command_count: usize,
-) -> anyhow::Result<Option<Vec<u64>>> {
-    if command_count == 1 {
-        anyhow::ensure!(
-            in_flight_prefix_len == 0,
-            "cannot independently estimate one L1 command behind an unmined transaction prefix"
-        );
-        Ok(None)
-    } else {
-        Ok(Some(vec![L1_GAS_LIMIT_FALLBACK; command_count]))
-    }
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        command_count == 1,
+        "cannot independently estimate gas for {command_count} L1 commands; \
+         a multi-command wave requires successful eth_simulateV1 results"
+    );
+    anyhow::ensure!(
+        in_flight_prefix_len == 0,
+        "cannot independently estimate one L1 command behind an unmined transaction prefix"
+    );
+    Ok(())
+}
+
+// SYSCOIN: Method absence and execution/transport errors all leave dependencies unvalidated.
+// Preserve the RPC error so operators can distinguish provider support from transient failure.
+fn validate_simulation_error_fallback(
+    error: TransportError,
+    in_flight_prefix_len: usize,
+    command_count: usize,
+) -> anyhow::Result<()> {
+    validate_independent_gas_estimate(in_flight_prefix_len, command_count)
+        .map_err(|fallback_error| anyhow::Error::new(error).context(fallback_error))
 }
 
 // SYSCOIN: `eth_estimateGas` reports the current minimum. Pad it for state movement between
@@ -1847,20 +1897,131 @@ mod tests {
 
     #[test]
     fn single_command_simulate_failure_uses_estimate_gas() {
-        assert_eq!(fixed_fallback_gas_limits(0, 1).unwrap(), None);
+        validate_independent_gas_estimate(0, 1).unwrap();
     }
 
     #[test]
     fn single_command_behind_unmined_prefix_refuses_independent_estimate() {
-        assert!(fixed_fallback_gas_limits(1, 1).is_err());
+        assert!(validate_independent_gas_estimate(1, 1).is_err());
     }
 
     #[test]
-    fn multi_command_simulate_failure_preserves_fixed_fallback() {
-        assert_eq!(
-            fixed_fallback_gas_limits(0, 2).unwrap(),
-            Some(vec![L1_GAS_LIMIT_FALLBACK; 2])
+    fn multi_command_simulate_failure_refuses_independent_estimate() {
+        for prefix_len in [0, 1] {
+            assert!(validate_independent_gas_estimate(prefix_len, 2).is_err());
+        }
+        assert!(validate_independent_gas_estimate(0, 0).is_err());
+    }
+
+    #[test]
+    fn top_level_simulation_errors_require_an_independent_single_command() {
+        use alloy::transports::TransportErrorKind;
+
+        let failures: [fn() -> TransportError; 3] = [
+            || {
+                TransportError::ErrorResp(ErrorPayload {
+                    code: METHOD_NOT_FOUND_CODE,
+                    message: "eth_simulateV1 unsupported".into(),
+                    data: None,
+                })
+            },
+            || {
+                TransportError::ErrorResp(ErrorPayload {
+                    code: 3,
+                    message: "execution reverted".into(),
+                    data: None,
+                })
+            },
+            || TransportErrorKind::custom_str("simulation transport disconnected"),
+        ];
+        for failure in failures {
+            validate_simulation_error_fallback(failure(), 0, 1).unwrap();
+            for (prefix_len, command_count) in [(0, 2), (1, 2), (1, 1)] {
+                let error =
+                    validate_simulation_error_fallback(failure(), prefix_len, command_count)
+                        .unwrap_err();
+                assert!(error.to_string().contains("cannot independently estimate"));
+                assert_eq!(error.root_cause().to_string(), failure().to_string());
+            }
+        }
+    }
+
+    #[test]
+    fn multi_command_simulation_rejects_mismatched_block_count() {
+        for expected in [2, 3] {
+            for returned in [0, expected - 1, expected + 1] {
+                let error = simulation_block_count_matches(returned, expected, 2)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(&format!("returned {returned} blocks")));
+                assert!(error.contains(&format!("expected {expected}")));
+            }
+            assert!(simulation_block_count_matches(expected, expected, 2).unwrap());
+        }
+    }
+
+    #[test]
+    fn single_command_simulation_count_mismatch_preserves_fallback() {
+        for expected in [1, 2] {
+            for returned in [0, expected - 1, expected + 1] {
+                assert!(!simulation_block_count_matches(returned, expected, 1).unwrap());
+            }
+            assert!(simulation_block_count_matches(expected, expected, 1).unwrap());
+        }
+        validate_independent_gas_estimate(0, 1).unwrap();
+        assert!(validate_independent_gas_estimate(1, 1).is_err());
+    }
+
+    #[test]
+    fn multi_command_simulation_requires_each_call_result() {
+        let successful = SimCallResult {
+            status: true,
+            gas_used: 100_000,
+            ..Default::default()
+        };
+        for missing_index in 0..2 {
+            let results = (0..2)
+                .map(|index| {
+                    simulation_call_gas_limit(
+                        (index != missing_index).then_some(&successful),
+                        index,
+                        2,
+                        16_000_000,
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>();
+            let error = results.unwrap_err().to_string();
+            assert!(error.contains("returned no call result"));
+            assert!(error.contains(&format!("command {missing_index}")));
+        }
+        assert!(
+            simulation_call_gas_limit(Some(&SimCallResult::default()), 0, 2, 16_000_000).is_err()
         );
+    }
+
+    #[test]
+    fn simulation_results_preserve_single_command_fallback_and_successful_limits() {
+        assert_eq!(
+            simulation_call_gas_limit(None, 0, 1, 16_000_000).unwrap(),
+            None
+        );
+        assert_eq!(
+            simulation_call_gas_limit(Some(&SimCallResult::default()), 0, 1, 16_000_000).unwrap(),
+            None
+        );
+        for (gas_used, expected) in [(100_000, 200_000), (9_000_000, 16_000_000)] {
+            let call = SimCallResult {
+                status: true,
+                gas_used,
+                ..Default::default()
+            };
+            for command_count in [1, 2] {
+                assert_eq!(
+                    simulation_call_gas_limit(Some(&call), 0, command_count, 16_000_000).unwrap(),
+                    Some(expected)
+                );
+            }
+        }
     }
 
     #[test]

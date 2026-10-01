@@ -8,11 +8,12 @@ use age_core::format::{FileKey, Stanza};
 use alloy::primitives::{BlockHash, BlockNumber, Sealed};
 use anyhow::Context as _;
 use futures::{StreamExt as _, TryStreamExt as _};
+use sha2::{Digest as _, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use zksync_os_storage::db::BlockReplayStorage;
 use zksync_os_storage_api::{ReplayRecord, WriteReplay};
 
@@ -30,8 +31,10 @@ pub const DEFAULT_DECRYPT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(32).unwr
 /// <output_root>/<block_number>/<block_hash>/<session>
 /// ```
 ///
-/// Objects already present under `output_root` are skipped without re-downloading, so an
-/// interrupted download can be restarted with the same arguments.
+/// Objects with matching local completion receipts are skipped without re-downloading, so an
+/// interrupted download can be restarted with the same arguments. Older downloads without receipts
+/// are fetched again. Receipts verify the downloaded bytes without decrypting archive objects.
+/// SYSCOIN: These local receipts protect download resume, not archive-source authenticity.
 ///
 /// `download_concurrency` bounds how many objects are fetched from the archive at once.
 pub async fn download_all_replay_archive_objects<Reader>(
@@ -50,7 +53,7 @@ where
     if !existing.is_empty() {
         tracing::info!(
             existing = existing.len(),
-            "Resuming download; objects already present locally are skipped"
+            "Resuming download; locally verified objects are skipped"
         );
     }
 
@@ -118,6 +121,11 @@ pub async fn recover_replay_records_to_rocksdb(
 ///
 /// If `identity` is provided, every downloaded object is decrypted in memory before replay record
 /// decoding. No decrypted archive objects are written to disk.
+///
+/// SYSCOIN: Import accepts legacy receiptless files and checks their linkage, not their executed
+/// block hashes. The operator must supply a trusted anchor; ordinary main-node replay validates the
+/// computed headers and immutable replay inputs before publishing state. Download receipts do
+/// not authenticate the archive writer and are not an import authorization mechanism.
 ///
 /// Records are decoded up to `decrypt_concurrency` blocks at a time. The canonical chain walk is
 /// inherently sequential (the parent hash lives inside the decrypted record), so it decodes
@@ -371,12 +379,68 @@ async fn scan_existing_downloaded_objects(
                 let Some(session) = parse_downloaded_session_name(&session_name) else {
                     continue;
                 };
-                existing.insert(ReplayArchiveKey::new(session, block_number, block_hash));
+                let key = ReplayArchiveKey::new(session, block_number, block_hash);
+                if downloaded_object_is_complete(output_root, &key, &session_entry.path()).await? {
+                    existing.insert(key);
+                }
             }
         }
     }
 
     Ok(existing)
+}
+
+fn downloaded_object_receipt_path(output_root: &Path, key: &ReplayArchiveKey) -> PathBuf {
+    output_root
+        .join(".download-receipts")
+        .join(key.block_number.to_string())
+        .join(format_block_hash(key.block_hash))
+        .join(key.session.folder_name())
+}
+
+async fn downloaded_object_is_complete(
+    output_root: &Path,
+    key: &ReplayArchiveKey,
+    object_path: &Path,
+) -> anyhow::Result<bool> {
+    let receipt_path = downloaded_object_receipt_path(output_root, key);
+    let receipt_bytes = match tokio::fs::read(&receipt_path).await {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("failed to read download receipt {}", receipt_path.display())
+            });
+        }
+    };
+    let Ok((version, length, digest)) =
+        serde_json::from_slice::<(u8, u64, [u8; 32])>(&receipt_bytes)
+    else {
+        return Ok(false);
+    };
+    if version != 1 {
+        return Ok(false);
+    }
+
+    let mut file = tokio::fs::File::open(object_path)
+        .await
+        .with_context(|| format!("failed to verify download {}", object_path.display()))?;
+    if file.metadata().await?.len() != length {
+        return Ok(false);
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .with_context(|| format!("failed to verify download {}", object_path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(<[u8; 32]>::from(hasher.finalize()) == digest)
 }
 
 async fn write_downloaded_object(
@@ -389,6 +453,24 @@ async fn write_downloaded_object(
         .join(format_block_hash(key.block_hash))
         .join(key.session.folder_name());
 
+    // SYSCOIN: A receipt must come from fetched bytes, never from an unverified legacy file.
+    // Publish it last so interruption leaves either a verified object or work for the next run.
+    let digest: [u8; 32] = Sha256::digest(&object).into();
+    let receipt = serde_json::to_vec(&(1_u8, object.len() as u64, digest))?;
+    write_download_file(&output_path, &key.session, &object).await?;
+    write_download_file(
+        &downloaded_object_receipt_path(output_root, key),
+        &key.session,
+        &receipt,
+    )
+    .await
+}
+
+async fn write_download_file(
+    output_path: &Path,
+    session: &ReplayArchiveSession,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
     let parent = output_path
         .parent()
         .expect("downloaded replay archive object path must have a parent");
@@ -402,7 +484,7 @@ async fn write_downloaded_object(
     // SYSCOIN: Keep temporary names outside the parseable session namespace. A valid node ID may
     // end in `.partial`, so replacing the extension could alias the final session path and make a
     // truncated download look complete to the resume scan.
-    let partial_path = partial_download_path(&output_path, &key.session);
+    let partial_path = partial_download_path(output_path, session);
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -415,7 +497,7 @@ async fn write_downloaded_object(
                 partial_path.display()
             )
         })?;
-    file.write_all(&object).await.with_context(|| {
+    file.write_all(bytes).await.with_context(|| {
         format!(
             "failed to write replay archive recovery object {}",
             partial_path.display()
@@ -427,8 +509,14 @@ async fn write_downloaded_object(
             partial_path.display()
         )
     })?;
+    file.sync_all().await.with_context(|| {
+        format!(
+            "failed to sync replay archive recovery object {}",
+            partial_path.display()
+        )
+    })?;
     drop(file);
-    tokio::fs::rename(&partial_path, &output_path)
+    tokio::fs::rename(&partial_path, output_path)
         .await
         .with_context(|| {
             format!(
@@ -436,6 +524,11 @@ async fn write_downloaded_object(
                 output_path.display()
             )
         })?;
+    tokio::fs::File::open(parent)
+        .await?
+        .sync_all()
+        .await
+        .with_context(|| format!("failed to sync download directory {}", parent.display()))?;
     Ok(())
 }
 
@@ -760,6 +853,121 @@ mod tests {
         assert!(!tokio::fs::try_exists(partial_path).await.unwrap());
     }
 
+    #[tokio::test]
+    async fn download_resume_repairs_unverified_or_corrupt_final_objects() {
+        let archive_root = tempfile::tempdir().unwrap();
+        let output_root = tempfile::tempdir().unwrap();
+        let key = ReplayArchiveKey::new(test_session(), 7, B256::with_last_byte(1));
+        let identity = age::x25519::Identity::generate();
+        let object = age::encrypt(&identity.to_public(), b"opaque archive bytes").unwrap();
+        let storage = FileSystemReplayArchiveStorage::init(
+            archive_root.path().to_path_buf(),
+            key.session.clone(),
+        )
+        .await
+        .unwrap();
+        storage
+            .append_object(key.block_number, key.block_hash, object.clone())
+            .await
+            .unwrap();
+        let reader = FileSystemReplayArchiveReader::new(archive_root.path().to_path_buf());
+        let object_path = output_root
+            .path()
+            .join(key.block_number.to_string())
+            .join(format_block_hash(key.block_hash))
+            .join(key.session.folder_name());
+        let receipt_path = downloaded_object_receipt_path(output_root.path(), &key);
+
+        // A legacy final file must be fetched before its bytes can acquire a trusted receipt.
+        tokio::fs::create_dir_all(object_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&object_path, b"legacy partial payload")
+            .await
+            .unwrap();
+        assert_eq!(
+            download_all_replay_archive_objects(
+                &reader,
+                output_root.path(),
+                DEFAULT_DOWNLOAD_CONCURRENCY,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(tokio::fs::read(&object_path).await.unwrap(), object);
+
+        for corruption in [
+            "missing receipt",
+            "interrupted receipt",
+            "malformed receipt",
+            "unknown receipt version",
+            "truncated object",
+            "same-length corrupted object",
+        ] {
+            assert_eq!(
+                download_all_replay_archive_objects(
+                    &reader,
+                    output_root.path(),
+                    DEFAULT_DOWNLOAD_CONCURRENCY,
+                )
+                .await
+                .unwrap(),
+                0,
+                "verified encrypted bytes must resume without a decryption identity"
+            );
+            match corruption {
+                "missing receipt" => tokio::fs::remove_file(&receipt_path).await.unwrap(),
+                "interrupted receipt" => {
+                    tokio::fs::rename(
+                        &receipt_path,
+                        partial_download_path(&receipt_path, &key.session),
+                    )
+                    .await
+                    .unwrap();
+                }
+                "malformed receipt" => tokio::fs::write(&receipt_path, b"[").await.unwrap(),
+                "unknown receipt version" => {
+                    let digest: [u8; 32] = Sha256::digest(&object).into();
+                    tokio::fs::write(
+                        &receipt_path,
+                        serde_json::to_vec(&(2_u8, object.len() as u64, digest)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                "truncated object" => {
+                    tokio::fs::write(&object_path, &object[..object.len() - 1])
+                        .await
+                        .unwrap();
+                }
+                "same-length corrupted object" => {
+                    let mut corrupted = object.clone();
+                    corrupted[0] ^= 1;
+                    tokio::fs::write(&object_path, corrupted).await.unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                download_all_replay_archive_objects(
+                    &reader,
+                    output_root.path(),
+                    DEFAULT_DOWNLOAD_CONCURRENCY,
+                )
+                .await
+                .unwrap(),
+                1,
+                "resume must replace {corruption}"
+            );
+            assert_eq!(tokio::fs::read(&object_path).await.unwrap(), object);
+            assert!(
+                downloaded_object_is_complete(output_root.path(), &key, &object_path)
+                    .await
+                    .unwrap()
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn downloaded_session_name_parser_rejects_non_utf8() {
@@ -1027,16 +1235,15 @@ mod tests {
         record: &ReplayRecord,
         recipient: &age::x25519::Recipient,
     ) {
-        let path = input_root
-            .join(block_number.to_string())
-            .join(format_block_hash(block_hash))
-            .join(test_session().folder_name());
-        tokio::fs::create_dir_all(path.parent().unwrap())
-            .await
-            .unwrap();
         let encrypted =
             age::encrypt(recipient, serde_json::to_vec(record).unwrap().as_slice()).unwrap();
-        tokio::fs::write(path, encrypted).await.unwrap();
+        write_downloaded_object(
+            input_root,
+            &ReplayArchiveKey::new(test_session(), block_number, block_hash),
+            encrypted,
+        )
+        .await
+        .unwrap();
     }
 
     fn test_session() -> ReplayArchiveSession {
