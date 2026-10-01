@@ -27,10 +27,10 @@ ZKSYNC_OS_SERVER_PATH="${_gl_repo_root}"
 readonly ZKSYNC_OS_SERVER_PATH
 unset _gl_actual_dir _gl_supplied_dir _gl_repo_root _gl_supplied_repo_root
 
-# Ensure required CLI tooling is discoverable in non-interactive shells.
+# Discover fallback tooling without replacing versions explicitly selected by callers.
 for _tool_dir in "${HOME}/.foundry/bin" "${HOME}/.cargo/bin"; do
   if [ -d "${_tool_dir}" ] && [[ ":${PATH}:" != *":${_tool_dir}:"* ]]; then
-    PATH="${_tool_dir}:${PATH}"
+    PATH="${PATH}:${_tool_dir}"
   fi
 done
 export PATH

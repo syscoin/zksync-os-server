@@ -10663,6 +10663,50 @@ gl_assert_gateway_config_identity
 
 
 class RunLocalBehaviorTests(unittest.TestCase):
+    def test_common_preserves_selected_tools_and_discovers_fallbacks(self) -> None:
+        bash = shutil.which("bash")
+        dirname = shutil.which("dirname")
+        self.assertIsNotNone(bash)
+        self.assertIsNotNone(dirname)
+        for caller_selects_tools in (False, True):
+            with self.subTest(caller_selects_tools=caller_selects_tools):
+                with tempfile.TemporaryDirectory() as temporary_dir:
+                    root = Path(temporary_dir)
+                    caller_bin = root / "selected-bin"
+                    caller_bin.mkdir()
+                    (caller_bin / "dirname").symlink_to(dirname)
+                    tool_dirs = {
+                        "anvil": root / ".foundry/bin",
+                        "cast": root / ".foundry/bin",
+                        "forge": root / ".foundry/bin",
+                        "cargo": root / ".cargo/bin",
+                    }
+                    expected = []
+                    for tool, fallback_dir in tool_dirs.items():
+                        fallback_dir.mkdir(parents=True, exist_ok=True)
+                        fallback = fallback_dir / tool
+                        fallback.write_text("#!/bin/sh\nprintf 'fallback\\n'\n")
+                        fallback.chmod(0o700)
+                        selected = caller_bin / tool
+                        if caller_selects_tools:
+                            selected.write_text("#!/bin/sh\nprintf 'selected\\n'\n")
+                            selected.chmod(0o700)
+                        expected.extend(
+                            [str(selected if caller_selects_tools else fallback),
+                             "selected" if caller_selects_tools else "fallback"]
+                        )
+                    result = subprocess.run(
+                        [bash, "-c", 'source "$COMMON"; for tool in anvil cast forge cargo; '
+                         'do command -v "$tool"; "$tool"; done'],
+                        env=gateway_harness_env(root, PATH=str(caller_bin)),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=5,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), expected)
+
     def test_first_boot_keeps_published_gas_tank_and_mismatch_fails(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
         command = r'''

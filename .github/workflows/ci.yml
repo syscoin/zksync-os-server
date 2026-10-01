@@ -136,7 +136,14 @@ jobs:
       - name: Run tests
         env:
           GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-        run: bash scripts/cargo-with-patched-zksync-os.sh ci-test -- nextest run --locked --release --workspace ${NEXTEST_ITERATIONS}
+        run: |
+          test_status=0
+          bash scripts/cargo-with-patched-zksync-os.sh ci-test -- nextest run --locked --release --workspace ${NEXTEST_ITERATIONS} || test_status=$?
+          # Nextest stores reports relative to its disposable workspace, not CARGO_TARGET_DIR.
+          report="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/ci-test/target/nextest/default/${TEST_RESULTS_XML}"
+          mkdir -p "${GITHUB_WORKSPACE}/target/nextest/default"
+          cp -- "${report}" "${GITHUB_WORKSPACE}/target/nextest/default/${TEST_RESULTS_XML}"
+          exit "${test_status}"
 
       - name: Upload test results
         if: always() && !cancelled()

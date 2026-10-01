@@ -7,8 +7,8 @@ inputs:
     type: string
     description: 'Version of foundry to use.'
     required: false
-    # Pinned to a specific stable version to avoid breaking changes.
-    default: 'v1.5.1'
+    # Match the Anvil version that generated the registered component fixture.
+    default: 'v1.7.1'
   enable_cache:
     type: string
     description: 'Whether to enable cache.'
