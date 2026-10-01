@@ -9,8 +9,8 @@ use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
 use serde_json::{Value, json};
 use smart_config::value::SecretString;
 use std::time::Duration;
-// SYSCOIN: Bitcoin-DA Gateway coverage stays on the V32 production topology until V8 exposes the
-// compact edge-DA inputs required by our settlement contract.
+// SYSCOIN: Gateway-settled children use compact relayed DA; the supporting Gateway
+// uses Blobs for its direct Root settlement.
 use zksync_os_integration_tests::CURRENT_TO_GATEWAY;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
 use zksync_os_server::config::BitcoinDaFinalityMode;
@@ -126,7 +126,7 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
     let env = CURRENT_TO_GATEWAY.environment().await?;
     let mut config = env.default_config().await?;
     config.sequencer_config.block_time = Duration::from_millis(50);
-    config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+    config.l1_sender_config.pubdata_mode = Some(PubdataMode::RelayedL2Calldata);
     config.batcher_config.batch_timeout = Duration::from_millis(100);
     config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
     config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
@@ -281,7 +281,7 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
     let block_count_calls_before_child = get_block_count.calls_async().await;
     let mut config = env.default_config().await?;
     config.sequencer_config.block_time = Duration::from_millis(50);
-    config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+    config.l1_sender_config.pubdata_mode = Some(PubdataMode::RelayedL2Calldata);
     config.batcher_config.batch_timeout = Duration::from_millis(100);
     config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
     config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
