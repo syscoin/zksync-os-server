@@ -374,6 +374,7 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     // Revert all committed batches on L1 (down to the executed frontier) while the EN is running.
     let chain_layout = ChainLayout::Default {
         protocol_version: CURRENT_TO_L1.protocol_version,
+        fixture_scope: CURRENT_TO_L1.fixture_scope,
     };
     revert_batches_on_l1(
         chain_layout,

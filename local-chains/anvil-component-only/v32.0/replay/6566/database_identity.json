@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "protocol_version": "v32.0",
+  "l1_chain_id": 31337,
+  "l1_genesis_block_hash": "0xba84f6da021521c8a50c99f392ac43d3bdbbe679d30f2d0937a81c2062990ac7",
+  "l2_chain_id": 6566,
+  "diamond_proxy_l1": "0xc649cdcde689052347035271c89b52fd66f555fd",
+  "l2_genesis_block_hash": "0xef97917ce9bd9fa7d12ad6a8d81ea26c80ac1d727acc37cbb9799ae199788dc5"
+}

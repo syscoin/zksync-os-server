@@ -56,6 +56,21 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # Component-only fixture smoke uses the same ConfigValidate and server::run,
+      # with the existing integration-test BitcoinDaMock, never production DA.
+      - name: Build explicit component bootstrap
+        env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/cargo-with-patched-zksync-os.sh ci-build -- build --locked --release -p zksync_os_integration_tests --bin anvil-component-bootstrap
+
+      - name: Upload component bootstrap
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: anvil-component-bootstrap-${{ github.sha }}
+          path: ${{ github.workspace }}/target/release/anvil-component-bootstrap
+          if-no-files-found: error
+          retention-days: 1
+
 
   ############################
   #     Format and lint      #
@@ -74,6 +89,14 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check
+
+      - name: Test current component fixture boundary
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/component-policy-python"
+          "${RUNNER_TEMP}/component-policy-python/bin/python" -m pip install 'PyYAML==6.0.1'
+          export PATH="${RUNNER_TEMP}/component-policy-python/bin:${PATH}"
+          echo "${RUNNER_TEMP}/component-policy-python/bin" >> "${GITHUB_PATH}"
+          PYTHONDONTWRITEBYTECODE=1 "${RUNNER_TEMP}/component-policy-python/bin/python" -m unittest scripts.tests.test_v32_component_fixture scripts.tests.test_v32_component_generator -v
 
       - name: Test patched zksync-os workspace tooling
         run: |
@@ -302,11 +325,19 @@ jobs:
           name: zksync-os-server-${{ github.sha }}
           path: .
 
+      - name: Download explicit component bootstrap
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: anvil-component-bootstrap-${{ github.sha }}
+          path: .
+
       - name: Run config smoke test
         env:
           LOG_USE_COLOR: false
           SERVER_LOGFILE: server.log
-        run: ./.github/scripts/test-configs.sh
+        # Genuine V32/V8 component package required; this is not the canonical
+        # Syscoin five-role release fixture. No test filter/skip is added.
+        run: ./.github/scripts/test-configs.sh --anvil-component-only
 
 
   ###############################

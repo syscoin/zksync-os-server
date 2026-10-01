@@ -1,0 +1,80 @@
+{
+  "batcher": {
+    "batch_timeout": "1s"
+  },
+  "external_price_api_client": {
+    "forced_prices": {
+      "0x0000000000000000000000000000000000000001": 3000
+    },
+    "source": "Forced"
+  },
+  "gateway_provider": {
+    "rpc_poll_interval": "100ms",
+    "rpc_url": "http://127.0.0.1:3052"
+  },
+  "gateway_sender": {
+    "command_limit": 1,
+    "operator_commit_sk": "0000000000000000000000000000000000000000000000000000000000000001",
+    "operator_execute_sk": "0000000000000000000000000000000000000000000000000000000000000002",
+    "operator_prove_sk": "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "poll_interval": "100ms"
+  },
+  "general": {
+    "rocks_db_path": "./db",
+    "startup_sl_finalization_timeout": "300s"
+  },
+  "genesis": {
+    "bridgehub_address": "0x46b6af21a71d6e14cd2571d126a77b42bf67e8c8",
+    "bytecode_supplier_address": "0x46a9daafcd3b4ca2d3bf1fed807084187bcb71f3",
+    "chain_id": 6565,
+    "genesis_input_path": "./local-chains/anvil-component-only/v32.0/default/genesis.json"
+  },
+  "l1_provider": {
+    "rpc_poll_interval": "100ms",
+    "rpc_url": "http://127.0.0.1:8545"
+  },
+  "l1_sender": {
+    "command_limit": 1,
+    "operator_commit_sk": "0000000000000000000000000000000000000000000000000000000000000001",
+    "operator_execute_sk": "0000000000000000000000000000000000000000000000000000000000000002",
+    "operator_prove_sk": "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "poll_interval": "100ms"
+  },
+  "l1_watcher": {
+    "confirmations": 0,
+    "finalized_poll_interval": "100ms",
+    "optimistic_gateway_head": true,
+    "poll_interval": "100ms"
+  },
+  "network": {
+    "enabled": false
+  },
+  "prover_api": {
+    "enabled": false,
+    "fake_fri_provers": {
+      "compute_time": "200ms",
+      "enabled": true,
+      "min_age": "0s"
+    },
+    "fake_snark_provers": {
+      "enabled": true,
+      "max_batch_age": "0s"
+    },
+    "proof_storage": {
+      "path": "./db/proof_storage"
+    }
+  },
+  "replay_archive": {
+    "type": "Noop"
+  },
+  "rpc": {
+    "address": "127.0.0.1:3050"
+  },
+  "sequencer": {
+    "block_pubdata_limit_bytes": 2097152,
+    "fee_collector_address": "0x5a67ee02274d9ec050d412b96fe810be4d71e7a0"
+  },
+  "status_server": {
+    "enabled": false
+  }
+}

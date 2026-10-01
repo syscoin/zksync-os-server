@@ -1,0 +1,32 @@
+{
+  "schema": "syscoin-v32-anvil-component-generation-v1",
+  "scope": "AnvilComponentOnly",
+  "execute": false,
+  "deadline_unix": null,
+  "working_directory": null,
+  "package_directory": null,
+  "era_root": null,
+  "source_attestation": null,
+  "tools": {
+    "python": null,
+    "zkstack": null,
+    "forge": null,
+    "cast": null,
+    "anvil": null,
+    "node": null,
+    "solc": null,
+    "era_solc": null,
+    "zksolc": null,
+    "bootstrap": null,
+    "deposit": null,
+    "zstd": null
+  },
+  "ports": {
+    "anvil": null,
+    "gateway": null,
+    "edge6565": null,
+    "edge6566": null
+  },
+  "genesis": null,
+  "server_revision": "64665f1139eaab0ec9874dfe99854188fd0f7eab"
+}

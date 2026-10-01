@@ -5,11 +5,17 @@ SERVER_LOGFILE=${SERVER_LOGFILE:-server.log}
 TIMEOUT=${TIMEOUT:-120}
 INTERVAL=${INTERVAL:-3}
 
-chmod a+x ./zksync-os-server
+COMPONENT_ONLY=false
+if [ "$#" -eq 1 ] && [ "$1" = "--anvil-component-only" ]; then
+  COMPONENT_ONLY=true
+elif [ "$#" -ne 0 ]; then
+  echo "usage: test-configs.sh [--anvil-component-only]" >&2
+  exit 1
+fi
 
 # SYSCOIN: Never exercise a stale fixture against the app-bound V8 execution and verifier lane.
 PENDING_FIXTURE=local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
-if [[ -f "${PENDING_FIXTURE}" ]]; then
+if [ "${COMPONENT_ONLY}" = false ] && [[ -f "${PENDING_FIXTURE}" ]]; then
   echo "error: canonical v32.0/V8 fixture regeneration is required: ${PENDING_FIXTURE}" >&2
   exit 1
 fi
@@ -19,9 +25,19 @@ fi
 CONFIGS=(
   "v32 default|local-chains/v32.0/l1-state.json|local-chains/v32.0/default/config.yaml"
 )
+if [ "${COMPONENT_ONLY}" = true ]; then
+  # Explicit component coverage, not an escape hatch in the canonical fixture.
+  python3 scripts/fixtures/verify-v32-component-fixture.py
+  test -f ./anvil-component-bootstrap
+  chmod a+x ./anvil-component-bootstrap
+  CONFIGS=(
+    "V32/V8 AnvilComponentOnly|local-chains/anvil-component-only/v32.0/l1-state.json|local-chains/anvil-component-only/v32.0/default/config.yaml"
+  )
+else
+  chmod a+x ./zksync-os-server
+fi
 
 cleanup() {
-  rm -rf ./db
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
     kill "${SERVER_PID}" 2>/dev/null || true
     wait "${SERVER_PID}" 2>/dev/null || true
@@ -32,6 +48,7 @@ cleanup() {
     wait "${ANVIL_PID}" 2>/dev/null || true
   fi
 
+  rm -rf ./db
   SERVER_PID=""
   ANVIL_PID=""
 }
@@ -64,14 +81,48 @@ for entry in "${CONFIGS[@]}"; do
   : > "${SERVER_LOGFILE}"
 
   echo "Decompressing anvil state..."
-  gzip -dfk "${CUR_STATE}.gz"
+  if [ "${COMPONENT_ONLY}" = true ]; then
+    zstd --long=27 -dfk "${CUR_STATE}.zst"
+  else
+    gzip -dfk "${CUR_STATE}.gz"
+  fi
+  ANVIL_CLOCK_ARGS=()
+  if [ "${COMPONENT_ONLY}" = true ]; then
+    # Authenticate the actual decoded bytes before starting either component.
+    python3 scripts/fixtures/verify-v32-component-fixture.py
+    L1_TIMESTAMP=$(jq --stream -c \
+      'select(length == 2 and .[0] == ["block", "timestamp"]) | .[1]' \
+      "${CUR_STATE}" | python3 -c '
+import json
+import re
+import sys
+
+timestamp = json.load(sys.stdin)
+if not isinstance(timestamp, str) or re.fullmatch(r"(?:0x[0-9a-fA-F]+|[0-9]+)", timestamp) is None:
+    raise ValueError("L1 state timestamp must be a hexadecimal or decimal string")
+value = int(timestamp[2:], 16) if timestamp.startswith("0x") else int(timestamp, 10)
+if not 0 <= value <= 2**64 - 1:
+    raise ValueError("L1 state timestamp is outside u64")
+print(value)
+'
+    )
+    # Match the registered bootstrap's sequencer offset to the replay clock.
+    ANVIL_CLOCK_ARGS=(--timestamp "${L1_TIMESTAMP}")
+  fi
 
   echo "Starting anvil..."
-  anvil --load-state "${CUR_STATE}" --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10 > anvil.log 2>&1 &
+  anvil --load-state "${CUR_STATE}" "${ANVIL_CLOCK_ARGS[@]}" --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10 > anvil.log 2>&1 &
   ANVIL_PID=$!
 
   echo "Starting server..."
-  ./zksync-os-server --config "local-chains/local_dev.yaml" --config "${CUR_CONFIG}" > "${SERVER_LOGFILE}" 2>&1 &
+  if [ "${COMPONENT_ONLY}" = true ]; then
+    # Normal config validation and server implementation, explicit test DA mock.
+    # This is component startup/RPC/tx coverage, not production Core/DA coverage.
+    COMPONENT_DEADLINE=$(( $(date +%s) + TIMEOUT + 60 ))
+    SYSCOIN_ANVIL_COMPONENT_ONLY=31337 ./anvil-component-bootstrap "${CUR_CONFIG}" "${COMPONENT_DEADLINE}" > "${SERVER_LOGFILE}" 2>&1 &
+  else
+    ./zksync-os-server --config "local-chains/local_dev.yaml" --config "${CUR_CONFIG}" > "${SERVER_LOGFILE}" 2>&1 &
+  fi
   SERVER_PID=$!
 
   RPC_PORT=$(yq -r '

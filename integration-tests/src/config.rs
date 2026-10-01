@@ -5,17 +5,25 @@ use zksync_os_server::config::{Config, build_external_config, load_config_file_s
 
 #[path = "fixture_backend.rs"]
 pub mod fixture_backend;
+pub use fixture_backend::FixtureScope;
 
 /// Layout of local chain directories.
 #[derive(Debug, Clone, Copy)]
 pub enum ChainLayout<'a> {
     /// local-chains/<version>/default/...
-    Default { protocol_version: &'a str },
+    Default {
+        protocol_version: &'a str,
+        fixture_scope: FixtureScope,
+    },
     /// Version-specific Gateway config: historical506, real V32 Syscoin57001.
-    Gateway { protocol_version: &'a str },
+    Gateway {
+        protocol_version: &'a str,
+        fixture_scope: FixtureScope,
+    },
     /// local-chains/<version>/multi_chain/chain_<id>.yaml for chains settling to the gateway.
     GatewayChain {
         protocol_version: &'a str,
+        fixture_scope: FixtureScope,
         chain_index: usize, // 0 -> 6565, 1 -> 6566, ...
     },
 }
@@ -24,7 +32,9 @@ impl<'a> ChainLayout<'a> {
     fn chain_id(self) -> Option<u64> {
         match self {
             ChainLayout::Default { .. } => None,
-            ChainLayout::Gateway { protocol_version } => Some(
+            ChainLayout::Gateway {
+                protocol_version, ..
+            } => Some(
                 fixture_backend::gateway_chain_id(protocol_version)
                     .expect("unknown Gateway fixture version"),
             ),
@@ -34,11 +44,23 @@ impl<'a> ChainLayout<'a> {
 
     pub fn protocol_version(self) -> &'a str {
         match self {
-            ChainLayout::Default { protocol_version } => protocol_version,
-            ChainLayout::Gateway { protocol_version } => protocol_version,
+            ChainLayout::Default {
+                protocol_version, ..
+            } => protocol_version,
+            ChainLayout::Gateway {
+                protocol_version, ..
+            } => protocol_version,
             ChainLayout::GatewayChain {
                 protocol_version, ..
             } => protocol_version,
+        }
+    }
+
+    pub fn fixture_scope(self) -> FixtureScope {
+        match self {
+            Self::Default { fixture_scope, .. }
+            | Self::Gateway { fixture_scope, .. }
+            | Self::GatewayChain { fixture_scope, .. } => fixture_scope,
         }
     }
 
@@ -49,15 +71,10 @@ impl<'a> ChainLayout<'a> {
         }
     }
 
-    fn protocol_dir(self) -> PathBuf {
-        assert!(
-            !self.protocol_version().contains(['/', '\\'])
-                && !self.protocol_version().contains(".."),
-            "invalid fixture protocol path"
-        );
-        workspace_dir()
-            .join("local-chains")
-            .join(self.protocol_version())
+    pub(crate) fn protocol_dir(self) -> PathBuf {
+        self.fixture_scope()
+            .protocol_dir(workspace_dir(), self.protocol_version())
+            .expect("invalid fixture scope/protocol path")
     }
 
     // SYSCOIN: A removed pre-mainnet fixture must never be mistaken for the blocked V32 rebuild.
@@ -71,11 +88,18 @@ impl<'a> ChainLayout<'a> {
         self,
     ) -> fixture_backend::FixtureResult<fixture_backend::ValidatedFixtureInventory> {
         self.assert_fixture_ready();
-        fixture_backend::load_fixture_inventory(
-            &self.protocol_dir(),
-            self.protocol_version(),
-            fixture_backend::trusted_descriptor_hash(self.protocol_version()),
-        )
+        match self.fixture_scope() {
+            FixtureScope::CanonicalSyscoin => fixture_backend::load_fixture_inventory(
+                &self.protocol_dir(),
+                self.protocol_version(),
+                fixture_backend::trusted_descriptor_hash(self.protocol_version()),
+            ),
+            FixtureScope::AnvilComponentOnly => fixture_backend::component::load(
+                &self.protocol_dir(),
+                self.protocol_version(),
+                &fixture_backend::component::registered_hash(self.protocol_version())?,
+            ),
+        }
     }
 
     fn assert_component_backend(self) {
@@ -131,11 +155,7 @@ impl<'a> ChainLayout<'a> {
 
     /// Genesis input is always taken from `<version>/default/genesis.json`
     fn genesis_input_path(self) -> PathBuf {
-        workspace_dir()
-            .join("local-chains")
-            .join(self.protocol_version())
-            .join("default")
-            .join("genesis.json")
+        self.protocol_dir().join("default").join("genesis.json")
     }
 }
 

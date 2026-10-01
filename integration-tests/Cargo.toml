@@ -60,6 +60,8 @@ blake2.workspace = true
 
 [build-dependencies]
 flate2.workspace = true
+zstd = "=0.13.3"
+tempfile.workspace = true
 sha2 = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true

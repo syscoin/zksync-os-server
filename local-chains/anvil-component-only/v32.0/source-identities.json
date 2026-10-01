@@ -1,0 +1,10 @@
+{
+  "component_adapter_sha256": "1a17ecd4c6461359dc9f71f02d655c528c88bbf7e5a08f5ad75670ef1ab12d97",
+  "server_revision": "64665f1139eaab0ec9874dfe99854188fd0f7eab",
+  "source_attestation": {
+    "path": "/home/ubuntu/syscoin-v32-validation-20260928/component-generation-public-64665f-11/SOURCE-ATTESTATION.actual.json",
+    "sha256": "7ad38a9ccf9e361398e9f549992dda0741e759a261693ef42d5bbf0b09dcee9a",
+    "size": 11247
+  },
+  "zkstack_base_tree": "2e4eed988d0014be40a7fcbdc0d9920229bfb56e"
+}

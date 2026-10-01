@@ -15333,6 +15333,7 @@ dependencies = [
  "zksync_os_tx_validators",
  "zksync_os_types",
  "zksync_os_verify_storage_proof",
+ "zstd",
 ]
 
 [[package]]
