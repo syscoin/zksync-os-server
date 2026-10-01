@@ -1589,64 +1589,6 @@ fn l1_state_timestamp(state: &[u8]) -> anyhow::Result<u64> {
     )
 }
 
-#[cfg(test)]
-mod l1_state_timestamp_tests {
-    use super::l1_state_timestamp;
-
-    #[test]
-    fn accepts_hexadecimal_timestamp() {
-        assert_eq!(
-            l1_state_timestamp(br#"{"block":{"timestamp":"0x6553f100"}}"#).unwrap(),
-            1_700_000_000
-        );
-    }
-
-    #[test]
-    fn accepts_decimal_timestamp() {
-        assert_eq!(
-            l1_state_timestamp(br#"{"block":{"timestamp":"1700000000"}}"#).unwrap(),
-            1_700_000_000
-        );
-    }
-
-    #[test]
-    fn rejects_malformed_timestamp_metadata() {
-        for state in [
-            "null",
-            "{}",
-            r#"[{"timestamp":"1"}]"#,
-            r#"{"block":null}"#,
-            r#"{"block":[]}"#,
-            r#"{"block":["1"]}"#,
-            r#"{"block":{}}"#,
-            r#"{"block":{"timestamp":null}}"#,
-            r#"{"block":{"timestamp":1700000000}}"#,
-            r#"{"block":{"timestamp":""}}"#,
-            r#"{"block":{"timestamp":"0x"}}"#,
-            r#"{"block":{"timestamp":"0xgg"}}"#,
-            r#"{"block":{"timestamp":"-1"}}"#,
-            r#"{"block":{"timestamp":"18446744073709551616"}}"#,
-            r#"{"block":{"timestamp":"0x10000000000000000"}}"#,
-            r#"{"block":{"timestamp":"1"}} trailing"#,
-            r#"{"block":{"timestamp":"1"},"historical_states":[}"#,
-        ] {
-            assert!(l1_state_timestamp(state.as_bytes()).is_err(), "{state}");
-        }
-    }
-
-    #[test]
-    fn ignores_historical_and_other_non_metadata_fields() {
-        let state = br#"{
-            "accounts":{"0x1":{"balance":"0x1","storage":{"0x0":"0x1"}}},
-            "historical_states":[{"block_hash":"0x1","accounts":[null,{"code":"0x00"}]}],
-            "blocks":[{"header":{"timestamp":"0x0"}}],
-            "transactions":[{"receipt":{"logs":[]}}],
-            "block":{"number":"0x2","timestamp":"1700000000","basefee":"0x0"}
-        }"#;
-        assert_eq!(l1_state_timestamp(state).unwrap(), 1_700_000_000);
-    }
-}
-
 #[cfg(feature = "prover-tests")]
 // SYSCOIN: Return the child monitor so the caller can propagate failure and synchronously abort
 // the owned process during test cleanup instead of detaching it.
@@ -1721,4 +1663,62 @@ async fn spawn_prover_service(
         tracing::info!("prover service finished running");
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod l1_state_timestamp_tests {
+    use super::l1_state_timestamp;
+
+    #[test]
+    fn accepts_hexadecimal_timestamp() {
+        assert_eq!(
+            l1_state_timestamp(br#"{"block":{"timestamp":"0x6553f100"}}"#).unwrap(),
+            1_700_000_000
+        );
+    }
+
+    #[test]
+    fn accepts_decimal_timestamp() {
+        assert_eq!(
+            l1_state_timestamp(br#"{"block":{"timestamp":"1700000000"}}"#).unwrap(),
+            1_700_000_000
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_timestamp_metadata() {
+        for state in [
+            "null",
+            "{}",
+            r#"[{"timestamp":"1"}]"#,
+            r#"{"block":null}"#,
+            r#"{"block":[]}"#,
+            r#"{"block":["1"]}"#,
+            r#"{"block":{}}"#,
+            r#"{"block":{"timestamp":null}}"#,
+            r#"{"block":{"timestamp":1700000000}}"#,
+            r#"{"block":{"timestamp":""}}"#,
+            r#"{"block":{"timestamp":"0x"}}"#,
+            r#"{"block":{"timestamp":"0xgg"}}"#,
+            r#"{"block":{"timestamp":"-1"}}"#,
+            r#"{"block":{"timestamp":"18446744073709551616"}}"#,
+            r#"{"block":{"timestamp":"0x10000000000000000"}}"#,
+            r#"{"block":{"timestamp":"1"}} trailing"#,
+            r#"{"block":{"timestamp":"1"},"historical_states":[}"#,
+        ] {
+            assert!(l1_state_timestamp(state.as_bytes()).is_err(), "{state}");
+        }
+    }
+
+    #[test]
+    fn ignores_historical_and_other_non_metadata_fields() {
+        let state = br#"{
+            "accounts":{"0x1":{"balance":"0x1","storage":{"0x0":"0x1"}}},
+            "historical_states":[{"block_hash":"0x1","accounts":[null,{"code":"0x00"}]}],
+            "blocks":[{"header":{"timestamp":"0x0"}}],
+            "transactions":[{"receipt":{"logs":[]}}],
+            "block":{"number":"0x2","timestamp":"1700000000","basefee":"0x0"}
+        }"#;
+        assert_eq!(l1_state_timestamp(state).unwrap(), 1_700_000_000);
+    }
 }
