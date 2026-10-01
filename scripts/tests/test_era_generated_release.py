@@ -216,6 +216,70 @@ class BundleAndLauncherTests(unittest.TestCase):
             self.assertNotIn("SOURCE", result.stdout)
             self.assertNotIn("RELEASE", result.stdout)
 
+    def standalone_bootstrap_dispatch(self, mode="gpu", mock="false", gateway=None,
+                                      edge=None, network="localhost", normalize_first=False):
+        bootstrap = (ROOT / "scripts/gateway-launch/zksys-l2-bootstrap.sh").read_text()
+        start = bootstrap.index("\ngl_resolve_required_source_pins\n") + 1
+        end = bootstrap.index("\ngl_require L1_RPC_URL\n", start)
+        entrypoint = bootstrap[start:end]
+        env = dict(os.environ, COMMON=str(ROOT / "scripts/gateway-launch/_common.sh"),
+                   ZKSYNC_ERA_PATH="/fixture-era", ZKSYNC_OS_SERVER_PATH=str(ROOT),
+                   PROTOCOL_VERSION="v32.0", PROVER_MODE=mode,
+                   GATEWAY_PROVER_MODE=mode if gateway is None else gateway,
+                   EDGE_PROVER_MODE=mode if edge is None else edge,
+                   SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER=mock, L1_NETWORK=network,
+                   L1_CHAIN_ID="57" if network == "mainnet" else "31337")
+        for name in ("USE_DUMMY_MESSAGE_ROOT", "GATEWAY_COMMIT_MODE",
+                     "GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE", "GATEWAY_L2_DA_COMMITMENT_SCHEME",
+                     "EDGE_GATEWAY_COMMITTER_WALLET_NAME", "ZKSYS_ZK_TOKEN_ASSET_ID", "ZK_TOKEN_ASSET_ID"):
+            env.pop(name, None)
+        # Execute the actual standalone ordering with only Git/source writes
+        # stubbed. Both the real normalizer and lane-selection gate stay intact.
+        probe = 'set -euo pipefail\nsource "$COMMON"\n'
+        probe += ('gl_resolve_required_source_pins() { :; }\n'
+                  'gl_assert_zksync_era_sha() { :; }\n'
+                  'gl_assert_contracts_sha() { :; }\n'
+                  'bash() { printf "SOURCE %s\\n" "$*"; }\n'
+                  'python3() { printf "RELEASE %s\\n" "$*"; }\n')
+        if normalize_first:
+            probe += 'gl_normalize_canonical_deployment_inputs\n'
+        probe += entrypoint + '\nprintf "MODES %s:%s:%s:%s\\n" "$PROVER_MODE" "$GATEWAY_PROVER_MODE" "$EDGE_PROVER_MODE" "$SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER"\n'
+        return subprocess.run(["bash", "-c", probe], env=env, capture_output=True, text=True)
+
+    def test_standalone_bootstrap_accepts_case_variants_before_postimage(self):
+        for mode, mock, gateway, edge in (("GPU", "FALSE", "GPU", "GPU"),
+                                          ("GpU", "FaLsE", "gPu", "gpU"),
+                                          ("gpu", "false", "gpu", "gpu")):
+            with self.subTest(mode=mode, mock=mock):
+                result = self.standalone_bootstrap_dispatch(mode, mock, gateway, edge)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("RELEASE -B", result.stdout)
+                self.assertIn("MODES gpu:gpu:gpu:false", result.stdout)
+                self.assertNotIn("SOURCE", result.stdout)
+
+    def test_standalone_bootstrap_preserves_already_normalized_launch_path(self):
+        result = self.standalone_bootstrap_dispatch("GpU", "FaLsE", "gPu", "gpU", normalize_first=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RELEASE -B", result.stdout)
+        self.assertIn("MODES gpu:gpu:gpu:false", result.stdout)
+
+    def test_standalone_bootstrap_preserves_mock_lane_and_rejects_invalid_modes(self):
+        mock = self.standalone_bootstrap_dispatch("NO-PROOFS", "TRUE")
+        self.assertEqual(mock.returncode, 0, mock.stderr)
+        self.assertIn("SOURCE", mock.stdout)
+        self.assertNotIn("RELEASE", mock.stdout)
+        self.assertIn("MODES no-proofs:no-proofs:no-proofs:true", mock.stdout)
+        for args in (("CPU", "FALSE", None, None, "localhost"),
+                     ("GPU", "TRUE", None, None, "localhost"),
+                     ("NO-PROOFS", "FALSE", None, None, "localhost"),
+                     ("GPU", "FALSE", "No-Proofs", "GPU", "localhost"),
+                     ("NO-PROOFS", "TRUE", None, None, "mainnet")):
+            with self.subTest(args=args):
+                result = self.standalone_bootstrap_dispatch(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("SOURCE", result.stdout)
+                self.assertNotIn("RELEASE", result.stdout)
+
     def test_fingerprint_covers_exact_new_inputs(self):
         common = (ROOT / "scripts/gateway-launch/_common.sh").read_text()
         fn = common.split("gl_zkstack_cli_release_fingerprint() {", 1)[1].split("\nPY\n}", 1)[0]
