@@ -207,7 +207,8 @@ contract ZkSysServiceLifecycleTest is Test {
             nonce: 0,
             services: 3
         });
-        return service.subscribe(sub, _sign(accountKey, service.subscriptionDigest(sub)));
+        bytes32 digest = service.subscriptionDigest(sub);
+        return service.subscribe(sub, _sign(accountKey, digest), _sign(operatorKey, digest));
     }
 
     function _sign(uint256 key, bytes32 digest) private pure returns (bytes memory) {

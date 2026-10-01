@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
+import {ECDSA} from "@openzeppelin/contracts-v4/utils/cryptography/ECDSA.sol";
 import {ZkSysMembershipRegistry} from "../src/zksys/ZkSysMembershipRegistry.sol";
 import {ZkSysProverServiceRegistryV1} from "../src/zksys/ZkSysProverServiceRegistryV1.sol";
 import {ZkSysWrapperCoordinatorV1} from "../src/zksys/ZkSysWrapperCoordinatorV1.sol";
@@ -25,6 +26,19 @@ import {
 contract ServiceClockMockV1 {
     uint256 public startTime = 10_000;
     uint256 public periodSeconds = 1_000;
+}
+
+contract ServiceContractSignerMockV1 {
+    address private immutable _signer;
+
+    constructor(address signer) {
+        _signer = signer;
+    }
+
+    function isValidSignature(bytes32 digest, bytes calldata signature) external view returns (bytes4) {
+        (address recovered, ECDSA.RecoverError error) = ECDSA.tryRecover(digest, signature);
+        return error == ECDSA.RecoverError.NoError && recovered == _signer ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
+    }
 }
 
 contract ServiceMembershipMockV1 {
@@ -342,7 +356,8 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
 
     function _subscribe(uint256 accountKey, uint256 operatorKey) internal returns (bytes32) {
         ProverSubscriptionV1 memory sub = _subscription(accountKey, operatorKey);
-        return service.subscribe(sub, _sign(accountKey, service.subscriptionDigest(sub)));
+        bytes32 digest = service.subscriptionDigest(sub);
+        return service.subscribe(sub, _sign(accountKey, digest), _sign(operatorKey, digest));
     }
 
     function _duty(uint256 accountKey, uint256 operatorKey, bytes32 sub, uint64 batch, uint64 period, uint16 slot)
@@ -448,8 +463,9 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             sub.sequencer = address(0xBAD);
             bytes32 hash = ZkSysServiceTypesV1.hashSubscription(sub);
             bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+            bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
             vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
-            service.subscribe(sub, signature);
+            service.subscribe(sub, signature, operatorSignature);
             assertEq(service.nonces(sub.account), 0);
             assertEq(service.subscription(hash).account, address(0));
             assertEq(service.subscriptionAt(sub.account, sub.sequencer, 0), bytes32(0));
@@ -577,8 +593,9 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             sub.services = invalidServices[i];
             bytes32 hash = ZkSysServiceTypesV1.hashSubscription(sub);
             bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+            bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
             vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
-            service.subscribe(sub, signature);
+            service.subscribe(sub, signature, operatorSignature);
             assertEq(service.nonces(sub.account), 0);
             assertEq(service.subscription(hash).account, address(0));
             assertEq(service.subscriptionAt(sub.account, sub.sequencer, 0), bytes32(0));
@@ -587,7 +604,11 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             assertEq(service.qualifiedWrapperCount(0), 0);
         }
         sub.services = 3;
-        service.subscribe(sub, _sign(ALICE_KEY, service.subscriptionDigest(sub)));
+        service.subscribe(
+            sub,
+            _sign(ALICE_KEY, service.subscriptionDigest(sub)),
+            _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub))
+        );
         assertEq(service.nonces(sub.account), 1);
         assertEq(service.friSubscriberCount(sub.sequencer, 0), 1);
         assertTrue(service.isEligibleFriSubscriber(vm.addr(ALICE_KEY), sub.sequencer, 0));
@@ -596,18 +617,19 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
     function testFirstSeniorAgeBoundaryAndAuthenticatedObservationRequired() public {
         ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
         bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+        bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
         membership.set(vm.addr(ALICE_KEY), 1_000, 135_000 ether, 211_239, uint64(block.timestamp));
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, vm.addr(ALICE_KEY))
         );
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         membership.set(vm.addr(ALICE_KEY), 1_000, 135_000 ether, 211_240, 0);
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, vm.addr(ALICE_KEY))
         );
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         _senior(ALICE_KEY, false);
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         assertEq(service.seniorBonus(vm.addr(ALICE_KEY)), 35_000 ether);
         assertEq(service.seniorBonus(vm.addr(BOB_KEY)), 100_000 ether);
     }
@@ -615,15 +637,16 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
     function testWrongAgeWeightAndStaleObservationCannotEnroll() public {
         ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
         bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+        bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
         membership.set(vm.addr(ALICE_KEY), 1_000, 200_000 ether, 211_240, uint64(block.timestamp));
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, vm.addr(ALICE_KEY))
         );
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         _senior(ALICE_KEY, false);
         vm.warp(block.timestamp + 100_001);
         vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, vm.addr(ALICE_KEY))
         );
@@ -633,20 +656,122 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
     function testSubscriptionSignatureBindsPayeeAndNonceAndOperatorCannotBeShared() public {
         ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
         bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+        bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
         address beneficiary = sub.beneficiary;
         sub.beneficiary = address(0xBAD);
         vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         sub.beneficiary = beneficiary;
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
         sub = _subscription(BOB_KEY, ALICE_OPERATOR_KEY);
         signature = _sign(BOB_KEY, service.subscriptionDigest(sub));
+        operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysProverServiceRegistryV1.OperatorAlreadyUsed.selector, sub.operator, uint64(0))
         );
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
+    }
+
+    function _assertUnregistered(ProverSubscriptionV1 memory sub) internal view {
+        assertEq(service.nonces(sub.account), 0);
+        assertEq(service.subscription(ZkSysServiceTypesV1.hashSubscription(sub)).account, address(0));
+        for (uint64 period = sub.firstPeriod; period <= sub.lastPeriod; ++period) {
+            assertEq(service.subscriptionAt(sub.account, sub.sequencer, period), bytes32(0));
+            assertEq(service.operatorAccountAt(sub.operator, period), address(0));
+            assertEq(service.friSubscriberCount(sub.sequencer, period), 0);
+            assertEq(service.qualifiedWrapperCount(period), 0);
+            assertEq(service.totalQualifiedBonusWeight(period), 0);
+        }
+    }
+
+    function testUnrelatedAccountCannotReserveAnOperatorWithoutItsConsent() public {
+        ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, BOB_OPERATOR_KEY);
+        bytes32 digest = service.subscriptionDigest(sub);
+        bytes memory accountSignature = _sign(ALICE_KEY, digest);
+        bytes memory wrongOperatorSignature = _sign(ALICE_OPERATOR_KEY, digest);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        service.subscribe(sub, accountSignature, "");
+        _assertUnregistered(sub);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        service.subscribe(sub, accountSignature, wrongOperatorSignature);
+        _assertUnregistered(sub);
+
+        _subscribe(BOB_KEY, BOB_OPERATOR_KEY);
+        assertEq(service.operatorAccountAt(sub.operator, 0), vm.addr(BOB_KEY));
+        assertEq(service.nonces(sub.account), 0);
+    }
+
+    function testOperatorConsentBindsEverySubscriptionField() public {
+        ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        bytes memory accountSignature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+        for (uint256 field; field < 8; ++field) {
+            ProverSubscriptionV1 memory authorized = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+            if (field == 0) authorized.account = vm.addr(BOB_KEY);
+            else if (field == 1) authorized.operator = vm.addr(BOB_OPERATOR_KEY);
+            else if (field == 2) authorized.beneficiary = address(0xBAD);
+            else if (field == 3) authorized.sequencer = address(0xBAD);
+            else if (field == 4) authorized.firstPeriod = 1;
+            else if (field == 5) authorized.lastPeriod = 11;
+            else if (field == 6) authorized.nonce = 1;
+            else authorized.services = 1;
+            bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(authorized));
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+            service.subscribe(sub, accountSignature, operatorSignature);
+            _assertUnregistered(sub);
+        }
+    }
+
+    function testOperatorConsentCannotCrossRegistryOrChainDomains() public {
+        ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        bytes memory accountSignature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+        ZkSysProverServiceRegistryV1 other = new ZkSysProverServiceRegistryV1(_config(address(source)));
+        bytes memory otherRegistrySignature = _sign(ALICE_OPERATOR_KEY, other.subscriptionDigest(sub));
+        uint256 chain = block.chainid;
+        vm.chainId(chain + 1);
+        bytes memory otherChainSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
+        vm.chainId(chain);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        service.subscribe(sub, accountSignature, otherRegistrySignature);
+        _assertUnregistered(sub);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        service.subscribe(sub, accountSignature, otherChainSignature);
+        _assertUnregistered(sub);
+    }
+
+    function testContractAccountAndOperatorBothAuthenticateEnrollment() public {
+        ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        sub.account = address(new ServiceContractSignerMockV1(vm.addr(ALICE_KEY)));
+        sub.operator = address(new ServiceContractSignerMockV1(vm.addr(ALICE_OPERATOR_KEY)));
+        membership.set(sub.account, 1_000, 135_000 ether, 211_240, uint64(block.timestamp));
+        bytes32 digest = service.subscriptionDigest(sub);
+        bytes memory accountSignature = _sign(ALICE_KEY, digest);
+        bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, digest);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        service.subscribe(sub, operatorSignature, operatorSignature);
+        _assertUnregistered(sub);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        service.subscribe(sub, accountSignature, accountSignature);
+        _assertUnregistered(sub);
+        service.subscribe(sub, accountSignature, operatorSignature);
+        assertEq(service.nonces(sub.account), 1);
+        assertEq(service.operatorAccountAt(sub.operator, 0), sub.account);
+    }
+
+    function testSameAccountAndOperatorCanReuseOneSignatureForEoaOrContract() public {
+        for (uint256 contractSigner; contractSigner < 2; ++contractSigner) {
+            ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_KEY);
+            if (contractSigner != 0) {
+                sub.account = address(new ServiceContractSignerMockV1(vm.addr(ALICE_KEY)));
+                sub.operator = sub.account;
+                membership.set(sub.account, 1_000, 135_000 ether, 211_240, uint64(block.timestamp));
+            }
+            bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+            service.subscribe(sub, signature, signature);
+            assertEq(service.nonces(sub.account), 1);
+            assertEq(service.operatorAccountAt(sub.operator, 0), sub.account);
+        }
     }
 
     function testDistinctBatchesCannotReuseQuotaSlotAndDifferentWorkersCannotReuseBatch() public {
@@ -698,6 +823,96 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         assertEq(service.totalAdmittedBonusWeight(1), 35_000 ether);
         vm.warp(11_100);
         assertEq(service.serviceFactorBps(vm.addr(ALICE_KEY), 0), 10_000);
+    }
+
+    function _completeAdjacentRenewal(bool rotateOperator, bool afterCutoff) internal {
+        ProverSubscriptionV1 memory oldSubscription = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        oldSubscription.lastPeriod = 63;
+        bytes32 digest = service.subscriptionDigest(oldSubscription);
+        bytes32 oldHash =
+            service.subscribe(oldSubscription, _sign(ALICE_KEY, digest), _sign(ALICE_OPERATOR_KEY, digest));
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, oldHash, 1, 0, 0);
+        duties[1] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, oldHash, 2, 0, 1);
+        source.bootstrap(service, _package(duties, true, 1, 2, 0), duties);
+
+        uint256 nextOperatorKey = rotateOperator ? BOB_OPERATOR_KEY : ALICE_OPERATOR_KEY;
+        ProverSubscriptionV1 memory successor = _subscription(ALICE_KEY, nextOperatorKey);
+        successor.firstPeriod = 64;
+        successor.lastPeriod = 127;
+        successor.nonce = 1;
+        if (rotateOperator) successor.beneficiary = address(0xBEEF);
+        digest = service.subscriptionDigest(successor);
+        bytes32 successorHash = service.subscribe(successor, _sign(ALICE_KEY, digest), _sign(nextOperatorKey, digest));
+        _activate(false);
+        vm.warp(issuer.startTime() + 63 * issuer.periodSeconds() + (afterCutoff ? 900 : 0));
+        uint64 destination = afterCutoff ? 65 : 64;
+        address account = oldSubscription.account;
+        assertEq(service.nextAdmissionPeriod(), destination);
+        assertEq(service.subscriptionAt(account, successor.sequencer, destination), successorHash);
+        uint256 frozenBonus = service.totalAdmittedBonusWeight(63);
+        duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, oldHash, 3, 63, 0);
+        duties[1] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, oldHash, 4, 63, 1);
+        AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 63);
+        if (rotateOperator) {
+            duties[0].operatorSignature = _sign(nextOperatorKey, service.dutyDigest(duties[0]));
+            accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+            source.accept(service, accepted, duties);
+            duties[0].operatorSignature = _sign(ALICE_OPERATOR_KEY, service.dutyDigest(duties[0]));
+            accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+        }
+        source.accept(service, accepted, duties);
+        assertEq(service.assessedSuccesses(account, 63), 2);
+        assertEq(service.totalAdmittedBonusWeight(63), frozenBonus);
+        assertEq(service.admittedBonusWeight(account, destination), 35_000 ether);
+        assertEq(service.totalAdmittedBonusWeight(destination), 35_000 ether);
+        assertEq(service.qualifiedWrapperCount(destination), 1);
+        WrapperCandidateV1[] memory candidates = new WrapperCandidateV1[](1);
+        candidates[0] = service.qualifiedWrapper(account, destination);
+        assertEq(candidates[0].operator, successor.operator);
+        assertEq(candidates[0].beneficiary, successor.beneficiary);
+        if (afterCutoff) {
+            assertEq(service.totalAdmittedBonusWeight(64), 0);
+            assertEq(service.qualifiedWrapperCount(64), 0);
+        }
+
+        source.accept(service, accepted, duties);
+        service.renewWrapper(successorHash, destination);
+        assertEq(service.totalAdmittedBonusWeight(destination), 35_000 ether);
+        assertEq(service.qualifiedWrapperCount(destination), 1);
+        vm.warp(service.rosterCutoff(destination));
+        bytes32 frozenRoot = service.publishRosterPage(destination, candidates);
+        source.accept(service, accepted, duties);
+        assertEq(service.publishedRosterRoot(destination), frozenRoot);
+        assertEq(service.totalAdmittedBonusWeight(destination), 35_000 ether);
+        assertEq(service.totalAdmittedBonusWeight(destination + 1), 0);
+        assertEq(service.qualifiedWrapperCount(destination + 1), 0);
+    }
+
+    function testAdjacentSubscriptionRenewalPreservesBonusAdmission() public {
+        _completeAdjacentRenewal(false, false);
+    }
+
+    function testAdjacentSubscriptionUsesNewOperatorAndPayeeButOriginalDutySignature() public {
+        _completeAdjacentRenewal(true, false);
+    }
+
+    function testAdjacentRenewalAfterCutoffUsesLaterDestinationWithoutChangingFrozenPeriod() public {
+        _completeAdjacentRenewal(false, true);
+    }
+
+    function testCompletedQuotaCannotAdmitAnExpiredSubscriptionWithoutSuccessor() public {
+        bytes32 sub = _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        _activate(false);
+        vm.warp(issuer.startTime() + 10 * issuer.periodSeconds());
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 3, 10, 0);
+        duties[1] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 4, 10, 1);
+        source.accept(service, _package(duties, false, 3, 4, 10), duties);
+        assertEq(service.assessedSuccesses(vm.addr(ALICE_KEY), 10), 2);
+        assertEq(service.totalAdmittedBonusWeight(11), 0);
+        assertEq(service.qualifiedWrapperCount(11), 0);
     }
 
     function testIdleVerifiedWrapperCanRenewWithoutAnyBonusAdmission() public {
@@ -759,8 +974,9 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         subscription_.nonce = 1;
         subscription_.firstPeriod = 1;
         bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(subscription_));
+        bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(subscription_));
         vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
-        service.subscribe(subscription_, signature);
+        service.subscribe(subscription_, signature, operatorSignature);
         assertEq(service.nonces(subscription_.account), 1);
         assertEq(service.subscriptionAt(subscription_.account, subscription_.sequencer, 1), bytes32(0));
         assertFalse(service.verifiedForSequencer(subscription_.account, subscription_.sequencer));

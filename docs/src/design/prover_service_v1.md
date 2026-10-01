@@ -22,6 +22,12 @@ bonus; at 525,600 blocks the bonus is 100,000. Completing a quota is evidence of
 accepted work, not proof of exclusive GPU ownership, independent control, or a
 particular hardware capacity.
 
+Admission uses the subscription registered for the destination period, including
+its operator and beneficiary. Completed duties remain bound to their original
+subscription. Adjacent subscriptions can therefore carry qualification across a
+renewal or operator rotation without changing the admission cutoff or reopening
+a frozen period.
+
 For an admitted period, the reward denominator is passive weight plus its frozen
 admitted bonus total. A recipient's positive duties release only its own bonus
 fraction. Missing bonus is never reassigned or minted later. A report cannot
@@ -62,9 +68,11 @@ resurrect a removed node. This is the sole membership update API for the initial
 deployment; there is no legacy update entrypoint. The observation mapping uses
 one reserved proxy storage slot.
 
-`ZkSysProverServiceRegistryV1` uses account-signed EIP-712 subscriptions, distinct
-operator and beneficiary fields, a bounded period interval, and operator-signed
-work receipts. Every subscription must set `services=3`, enrolling the same
+`ZkSysProverServiceRegistryV1` requires the account and nominated operator to sign
+the same EIP-712 subscription before reserving that operator. The subscription
+binds distinct operator and beneficiary fields and a bounded period interval;
+accepted work carries operator-signed receipts. Both enrollment signatures
+support ERC-1271. Every subscription must set `services=3`, enrolling the same
 operator for FRI and SNARK wrapping; single-service subscriptions are rejected.
 A batch can supply at most one canonical duty credit; a slot cannot
 be counted twice. Retry attempts and splitting an aggregate do not create another
@@ -192,8 +200,10 @@ certify that new deployment. Anyone can pay to relay a checkpoint through
 the existing Bridgehub to `ZkSysPriorityCheckpointReceiverV1` on Gateway. Only the
 canonical alias of that immutable root source can install a checkpoint. The source
 finds the overdue prefix by a bounded binary search over native append-order
-timestamps. Requests present before source deployment must drain before the guard
-starts, since timestamp coverage begins at its immutable deployment cursor.
+timestamps. All existing priority requests must drain before guard construction,
+which requires the native priority cursor to equal the total request count and
+all verified batches to be executed. Timestamp coverage begins at the source's
+immutable deployment cursor.
 
 The mandatory `ZkSysPriorityGuardV1` freezes a fresh authenticated checkpoint when
 the sequencer opens each bootstrap or service package. Bootstrap submission now
@@ -419,7 +429,7 @@ compute costs do not create service credit.
    including checkpoint delivery, delayed root-request forwarding, prefix witness
    construction, expired-proof recovery, and backlog drain. Deploy the patched
    native timestamp/tree-height getters and prove that existing requests are
-   drained before activating the guarded lane. Contract tests alone do not
+   drained before constructing the guard. Contract tests alone do not
    establish parent-Gateway inclusion or a deployed deadline guarantee.
 6. Perform the deployed validator/prover/emergency-path audit and production
    verifier integration test. Preserve all native final withdrawal checks.

@@ -263,7 +263,7 @@ contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
         uint256 cursor = chain_.getFirstUnprocessedPriorityTx();
         if (
             verified != chain_.getTotalBatchesExecuted() || verified > type(uint64).max || cursor > type(uint64).max
-                || chain_.isPriorityQueueActive()
+                || cursor != chain_.getTotalPriorityTxs() || chain_.isPriorityQueueActive()
         ) revert InvalidConfiguration();
         acceptanceGate = gate_;
         chain = chain_;

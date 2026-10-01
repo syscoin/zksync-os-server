@@ -183,10 +183,11 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         _;
     }
 
-    function subscribe(ProverSubscriptionV1 calldata subscription_, bytes calldata signature)
-        external
-        returns (bytes32 subscriptionHash)
-    {
+    function subscribe(
+        ProverSubscriptionV1 calldata subscription_,
+        bytes calldata accountSignature,
+        bytes calldata operatorSignature
+    ) external returns (bytes32 subscriptionHash) {
         uint64 earliestPeriod = _nextUnstartedPeriod();
         if (
             subscription_.account == address(0) || subscription_.operator == address(0)
@@ -199,7 +200,11 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         ) revert InvalidSubscription();
         _seniorBonus(subscription_.account);
         subscriptionHash = ZkSysServiceTypesV1.hashSubscription(subscription_);
-        if (!subscription_.account.isValidSignatureNow(_hashTypedDataV4(subscriptionHash), signature)) {
+        bytes32 digest = _hashTypedDataV4(subscriptionHash);
+        if (
+            !subscription_.account.isValidSignatureNow(digest, accountSignature)
+                || !subscription_.operator.isValidSignatureNow(digest, operatorSignature)
+        ) {
             revert InvalidSignature();
         }
 
@@ -374,9 +379,16 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         }
     }
 
-    function _admitForFuturePeriod(address account, ProverSubscriptionV1 storage subscription_) private {
+    function _admitForFuturePeriod(address account, ProverSubscriptionV1 storage completedSubscription) private {
         uint64 period = nextAdmissionPeriod();
-        if (period < subscription_.firstPeriod || period > subscription_.lastPeriod) return;
+        // A renewal can change the operator or payee without changing who completed the quota.
+        ProverSubscriptionV1 storage subscription_ =
+            _subscriptions[subscriptionAt[account][completedSubscription.sequencer][period]];
+        if (
+            subscription_.account != account || subscription_.sequencer != completedSubscription.sequencer
+                || period < subscription_.firstPeriod || period > subscription_.lastPeriod
+                || subscription_.services != (ZkSysServiceTypesV1.FRI_SERVICE | ZkSysServiceTypesV1.WRAPPER_SERVICE)
+        ) return;
         if (_admittedBonus[account][period] != 0) return;
 
         // Removal stops renewal, but cannot retroactively erase an accepted duty or a frozen quota.

@@ -281,19 +281,33 @@ class Coordinator:
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
             self.signing_wallet(), transactions.Store(self.store.root / "transactions"), self.clock)
         if op["maintenance"] is None:
-            op["maintenance"] = manager.stage(call)
+            op["maintenance"] = manager.plan(call)
             self.save()
+        operation_id = self.stage_maintenance(op["maintenance"], manager, True)
         def preflight(original, head, anchor):
+            if original["action"] in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
+                return False
             try:
                 current = producer()
             except s.Error:
                 return False
             return current["transaction"] == original["transaction"] and current["anchor"]["hash"] == head["hash"]
-        result = manager.step(op["maintenance"], True, preflight)
+        result = manager.step(operation_id, True, preflight)
         if result["status"] in transactions.TERMINAL:
             op["maintenance"] = None
             self.save()
         return result
+
+    def stage_maintenance(self, pending, manager, execute):
+        if isinstance(pending, str):
+            return pending
+        s.exact(pending, ("operation_id", "call", "invocation"))
+        expected = r.sha256(transactions.intent(self.settings, self.config["transaction_policy"],
+                                               pending["call"], pending["invocation"]))
+        s.require(pending["operation_id"] == expected, "maintenance_descriptor_changed")
+        if execute:
+            s.require(manager.stage(pending["call"], pending["invocation"]) == expected, "maintenance_descriptor_changed")
+        return expected
 
     def recover_maintenance(self, identifier, execute, bundle, evidence, payload):
         op = self.state["operations"][identifier]
@@ -301,9 +315,15 @@ class Coordinator:
             return None
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
             self.signing_wallet() if execute else None, transactions.Store(self.store.root / "transactions"), self.clock)
+        operation_id = self.stage_maintenance(op["maintenance"], manager, execute)
+        if operation_id not in manager.state["operations"]:
+            return {"next_action": "would_stage_maintenance", "operation_id": operation_id}
         def preflight(original, head, anchor):
             try:
                 action = original["action"]
+                # Legacy rows did not bind a checkpoint. A reserved nonce remains receipt-only recovery.
+                if action in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
+                    return False
                 if action == "openPackage":
                     call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open")
                 elif action == "refreshPriorityCheckpoint":
@@ -317,9 +337,9 @@ class Coordinator:
                 return call["transaction"] == original["transaction"] and call["anchor"]["hash"] == head["hash"]
             except (s.Error, OSError):
                 return False
-        result = manager.step(op["maintenance"], execute, preflight)
+        result = manager.step(operation_id, execute, preflight)
         # A staged call can be reconstructed below. Reserved nonces must first resolve.
-        entry = manager.state["operations"][op["maintenance"]]
+        entry = manager.state["operations"][operation_id]
         if result["status"] in transactions.TERMINAL or entry["unsigned_transaction"] is None:
             if execute:
                 op["maintenance"] = None

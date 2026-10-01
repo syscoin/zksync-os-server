@@ -2,6 +2,7 @@ import copy
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import relay as r
 import service as s
@@ -21,6 +22,8 @@ class Rpc:
         self.send_error, self.send_interrupt, self.reorg, self.bad_code = None, False, False, False
         self.chain = settings["settlement_chain_id"]
         self.store, self.operation_id = None, None
+        self.work_id, self.checkpoint_hash = h(150), h(151)
+        self.receipts = {}
 
     def advance(self):
         self.now += 30
@@ -34,6 +37,7 @@ class Rpc:
                         "to": op["call"]["transaction"]["to"], "blockNumber": self.head["number"],
                         "blockHash": self.head["hash"], "status": hex(status)}
         self.nonce = self.pending_nonce = s.uint(op["unsigned_transaction"]["nonce"]) + 1
+        self.receipts[op["transaction_hash"]] = copy.deepcopy(self.receipt)
 
     def call(self, method, params):
         self.calls.append((method, copy.deepcopy(params)))
@@ -57,7 +61,9 @@ class Rpc:
         if method == "eth_getBalance":
             return hex(self.balance)
         if method == "eth_getTransactionReceipt":
-            return copy.deepcopy(self.receipt)
+            if params[0] == self.store.load(self.settings, self.limits)["operations"][self.operation_id]["transaction_hash"]:
+                return copy.deepcopy(self.receipt)
+            return copy.deepcopy(self.receipts.get(params[0]))
         if method == "eth_sendRawTransaction":
             op = self.store.load(self.settings, self.limits)["operations"][self.operation_id]
             assert op["status"] == "send_uncertain" and op["raw_transaction"] == params[0]
@@ -75,7 +81,11 @@ class Rpc:
             values = {"chain()": self.settings["chain_address"], "childChainId()": s.uint(self.settings["execution_chain_id"]),
                       "sequencer()": self.settings["sequencer"], "policyHash()": self.settings["policy_hash"],
                       "productionVkHash()": self.settings["vk_hash"], "priorityGuard()": a(123),
-                      "coordinator()": self.settings["coordinator"]}
+                      "coordinator()": self.settings["coordinator"], "priorityWorkId()": self.work_id,
+                      "acceptanceGate()": self.settings["proof_gate"]}
+            if data == r.selector("work()"):
+                return "0x" + (s.raw_hex(self.work_id) + s.raw_hex(self.checkpoint_hash) + bytes(32)
+                               + b"".join(s.word(value) for value in (1, 1000, 0, 0, 0, 0))).hex()
             for signature, value in values.items():
                 if data == r.selector(signature):
                     return "0x" + (s.word(value) if type(value) is int else s.raw_hex(value).rjust(32, b"\0")).hex()
@@ -144,11 +154,219 @@ class TransactionsTests(unittest.TestCase):
                                    data="0x" + (r.selector("prepareRosterDraw(uint64)") + s.word(5)).hex())
         return self.runner().stage(call)
 
+    def scoped(self, call=None):
+        call = {**(call or self.call), "anchor": copy.deepcopy(self.rpc.head)}
+        descriptor = self.runner().plan(call)
+        self.identifier = self.runner().stage(descriptor["call"], descriptor["invocation"])
+        self.rpc.operation_id, self.rpc.receipt = self.identifier, None
+        return descriptor
+
+    def confirm(self, status=1):
+        self.rpc.mine(status)
+        self.rpc.advance()
+        self.assertEqual(self.step()["status"], "confirmed" if status else "reverted")
+
     def test_same_intent_is_idempotent_across_canonical_heads(self):
         self.rpc.advance()
         changed = {**self.call, "anchor": copy.deepcopy(self.rpc.head)}
         self.assertEqual(self.runner().stage(changed), self.identifier)
         self.assertEqual(len(self.store.load(self.settings, self.limits)["operations"]), 1)
+
+    def test_checkpoint_scope_repeats_refresh_after_restart_and_for_a_later_package(self):
+        identifiers, raw = [], []
+        for work_id, checkpoint in ((h(150), h(151)), (h(150), h(152)), (h(153), h(154))):
+            self.rpc.work_id, self.rpc.checkpoint_hash = work_id, checkpoint
+            descriptor = self.scoped()
+            self.assertEqual(descriptor["invocation"], {"scope": {"guard": a(123), "work_id": work_id,
+                             "checkpoint_hash": checkpoint}, "generation": 0})
+            self.assertEqual(self.step()["status"], "broadcast")
+            identifiers.append(self.identifier)
+            raw.append(self.rpc.sent[-1])
+            self.confirm()
+            replay = self.runner().plan({**self.call, "anchor": copy.deepcopy(self.rpc.head)})
+            self.assertEqual(replay["operation_id"], self.identifier)
+            self.assertEqual(self.step()["status"], "confirmed")
+        self.assertEqual(len(set(identifiers)), 3)
+        self.assertEqual(len(set(raw)), 3)
+        self.assertEqual([s.uint(call[1][0]["nonce"]) for call in self.signatures()], [0, 1, 2])
+        self.assertEqual(len(self.rpc.sent), 3)
+
+    def test_same_prefix_calldata_is_new_only_after_checkpoint_changes(self):
+        call = copy.deepcopy(self.call)
+        call["action"] = "publishPrefixWitness"
+        call["transaction"].update(to=a(123), data="0x" + (r.selector(t.ACTIONS[call["action"]][0])
+                                   + s.raw_hex(self.rpc.work_id) + bytes(128)).hex())
+        first = self.scoped(call)
+        self.step()
+        self.confirm()
+        self.rpc.checkpoint_hash = h(152)
+        second = self.scoped(call)
+        self.assertEqual(first["call"]["transaction"], second["call"]["transaction"])
+        self.assertNotEqual(first["operation_id"], second["operation_id"])
+        self.step()
+        self.confirm()
+        self.assertEqual(len(self.signatures()), 2)
+        self.assertEqual(len(self.rpc.sent), 2)
+
+    def test_scoped_ambiguous_send_and_crash_recover_the_same_signature_and_bytes(self):
+        descriptor = self.scoped()
+        self.rpc.send_interrupt = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.step()
+        self.rpc.send_interrupt = False
+        self.rpc.advance()
+        replay = self.runner().plan({**self.call, "anchor": copy.deepcopy(self.rpc.head)})
+        self.assertEqual(replay, descriptor)
+        self.assertEqual(self.runner().stage(replay["call"], replay["invocation"]), self.identifier)
+        self.step()
+        self.assertEqual(self.rpc.sent, [self.rpc.sent[0], self.rpc.sent[0]])
+        self.assertEqual(len(self.signatures()), 1)
+        self.confirm()
+
+    def test_changed_checkpoint_cannot_reauthorize_reserved_or_unsigned_scope(self):
+        descriptor = self.scoped()
+        self.rpc.checkpoint_hash = h(152)
+        self.assertEqual(self.step()["status"], "stale_unsigned")
+        self.assertEqual(self.signatures(), [])
+        self.rpc.checkpoint_hash = descriptor["invocation"]["scope"]["checkpoint_hash"]
+        self.step()
+        original = self.store.load(self.settings, self.limits)["operations"][self.identifier]
+        self.rpc.checkpoint_hash = h(152)
+        self.rpc.advance()
+        self.assertEqual(self.step()["status"], "authorization_stale_reserved")
+        planned = self.runner().plan({**self.call, "anchor": copy.deepcopy(self.rpc.head)})
+        self.assertEqual(planned, descriptor)
+        retained = self.store.load(self.settings, self.limits)["operations"][self.identifier]
+        for field in ("unsigned_transaction", "raw_transaction", "transaction_hash"):
+            self.assertEqual(retained[field], original[field])
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertEqual(len(self.rpc.sent), 1)
+
+    def test_checkpoint_changes_during_wallet_signing_prevent_broadcast(self):
+        self.scoped()
+        original = self.wallet.call
+        def changed(method, args):
+            result = original(method, args)
+            if method == "eth_signTransaction":
+                self.rpc.advance()
+                self.rpc.checkpoint_hash = h(152)
+            return result
+        with patch.object(self.wallet, "call", side_effect=changed):
+            self.assertEqual(self.step()["status"], "authorization_stale_reserved")
+        self.assertEqual(self.rpc.sent, [])
+        self.assertEqual(len(self.signatures()), 1)
+        retained = self.store.load(self.settings, self.limits)["operations"][self.identifier]
+        self.assertIsNotNone(retained["raw_transaction"])
+        self.assertEqual(s.uint(retained["unsigned_transaction"]["nonce"]), 0)
+
+    def test_confirmed_revert_allocates_one_retry_generation_and_reorg_blocks_it(self):
+        first = self.scoped()
+        self.step()
+        self.rpc.mine(0)
+        included, block_hash = self.rpc.receipt["blockNumber"], self.rpc.receipt["blockHash"]
+        self.assertEqual(self.step()["status"], "mined_unconfirmed")
+        self.assertEqual(self.runner().plan(self.call)["operation_id"], first["operation_id"])
+        self.rpc.advance()
+        self.assertEqual(self.step()["status"], "reverted")
+        second = self.scoped()
+        self.assertEqual(second["invocation"]["generation"], 1)
+        self.assertEqual(self.runner().plan({**self.call, "anchor": copy.deepcopy(self.rpc.head)}), second)
+        self.rpc.blocks[included]["hash"] = h(99)
+        self.assertEqual(self.step()["next_action"], "wait_for_existing_wallet_reservation")
+        self.assertEqual(len(self.signatures()), 1)
+        self.rpc.blocks[included]["hash"] = block_hash
+        self.assertEqual(self.step()["status"], "broadcast")
+        self.assertEqual([s.uint(call[1][0]["nonce"]) for call in self.signatures()], [0, 1])
+
+    def test_predecessor_reorg_during_retry_signing_keeps_bytes_without_broadcast(self):
+        for reset_nonce in (False, True):
+            with self.subTest(reset_nonce=reset_nonce):
+                self.root = Path(self.temp.name).resolve() / ("sign-reorg-" + str(reset_nonce))
+                self.store = t.initialize(self.root, self.settings, self.limits)
+                self.rpc = Rpc(self.settings, self.limits)
+                self.rpc.store = self.store
+                self.wallet = Wallet(self.settings, self.limits, self.store)
+                self.scoped()
+                self.step()
+                self.rpc.mine(0)
+                included, original_hash = self.rpc.receipt["blockNumber"], self.rpc.receipt["blockHash"]
+                self.rpc.advance()
+                self.assertEqual(self.step()["status"], "reverted")
+                self.scoped()
+                original = self.wallet.call
+                def reorg(method, args):
+                    result = original(method, args)
+                    if method == "eth_signTransaction":
+                        self.rpc.blocks[included]["hash"] = h(99)
+                        if reset_nonce:
+                            self.rpc.nonce = self.rpc.pending_nonce = 0
+                    return result
+                with patch.object(self.wallet, "call", side_effect=reorg):
+                    result = self.step()
+                self.assertEqual(result["next_action"], "investigate_reserved_nonce_without_receipt" if reset_nonce
+                                 else "wait_for_existing_wallet_reservation")
+                self.assertEqual(len(self.rpc.sent), 1)
+                self.assertEqual([s.uint(call[1][0]["nonce"]) for call in self.signatures()], [0, 1])
+                retained = self.store.load(self.settings, self.limits)["operations"][self.identifier]
+                self.assertIsNotNone(retained["raw_transaction"])
+                self.assertEqual(retained["broadcast_attempts"], 0)
+                self.rpc.blocks[included]["hash"] = original_hash
+                self.rpc.nonce = self.rpc.pending_nonce = 1
+                self.assertEqual(self.step()["status"], "broadcast")
+                self.assertEqual(self.rpc.sent[-1], retained["raw_transaction"])
+                self.assertEqual(len(self.signatures()), 2)
+
+    def test_signed_retry_reconciles_predecessor_reincluded_in_a_different_block(self):
+        first = self.scoped()
+        self.step()
+        self.rpc.mine(0)
+        old_receipt = copy.deepcopy(self.rpc.receipt)
+        self.rpc.advance()
+        self.assertEqual(self.step()["status"], "reverted")
+        self.scoped()
+        original = self.wallet.call
+        def reorg(method, args):
+            result = original(method, args)
+            if method == "eth_signTransaction":
+                self.rpc.blocks[old_receipt["blockNumber"]]["hash"] = h(99)
+            return result
+        with patch.object(self.wallet, "call", side_effect=reorg):
+            self.assertEqual(self.step()["next_action"], "wait_for_existing_wallet_reservation")
+        retained = self.store.load(self.settings, self.limits)["operations"][self.identifier]
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.rpc.advance()
+        new_receipt = {**old_receipt, "blockNumber": self.rpc.head["number"], "blockHash": self.rpc.head["hash"]}
+        self.rpc.receipts[old_receipt["transactionHash"]] = new_receipt
+        self.assertEqual(self.step()["next_action"], "wait_for_existing_wallet_reservation")
+        predecessor = self.store.load(self.settings, self.limits)["operations"][first["operation_id"]]
+        self.assertEqual(predecessor["receipt"]["block_hash"], new_receipt["blockHash"])
+        self.assertEqual(predecessor["status"], "mined_unconfirmed")
+        self.rpc.advance()
+        self.assertEqual(self.step()["status"], "broadcast")
+        predecessor = self.store.load(self.settings, self.limits)["operations"][first["operation_id"]]
+        self.assertEqual(predecessor["status"], "reverted")
+        self.assertEqual(self.rpc.sent[-1], retained["raw_transaction"])
+        self.assertEqual(len(self.signatures()), 2)
+        self.assertEqual(len(self.rpc.sent), 2)
+
+    def test_legacy_confirmed_row_does_not_block_scoped_refresh(self):
+        legacy = self.identifier
+        self.step()
+        self.confirm()
+        before = copy.deepcopy(self.store.load(self.settings, self.limits)["operations"][legacy])
+        descriptor = self.scoped()
+        self.assertNotEqual(descriptor["operation_id"], legacy)
+        self.assertEqual(self.step()["status"], "broadcast")
+        self.assertEqual(self.store.load(self.settings, self.limits)["operations"][legacy], before)
+
+    def test_scopes_do_not_make_nonrepeatable_calls_repeatable(self):
+        identifier = self.another()
+        original = self.store.load(self.settings, self.limits)["operations"][identifier]["call"]
+        self.rpc.advance()
+        self.assertEqual(self.runner().plan({**original, "anchor": copy.deepcopy(self.rpc.head)})["operation_id"], identifier)
+        invocation = {"scope": {"guard": a(123), "work_id": h(150), "checkpoint_hash": h(151)}, "generation": 0}
+        with self.assertRaisesRegex(s.Error, "nonrepeatable_maintenance_invocation"):
+            self.runner().stage(original, invocation)
 
     def test_dry_run_never_signs_sends_or_persists(self):
         (self.root / "relay.lock").unlink()

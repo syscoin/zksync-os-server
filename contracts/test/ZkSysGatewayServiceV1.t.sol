@@ -196,7 +196,8 @@ contract ZkSysGatewayServiceV1Test is Test {
         ProverSubscriptionV1 memory sub = ProverSubscriptionV1(
             vm.addr(ACCOUNT_KEY), vm.addr(OPERATOR_KEY), address(0xBEEF), vm.addr(SEQUENCER_KEY), 0, 10, 0, 3
         );
-        subscriptionHash = service.subscribe(sub, _sign(ACCOUNT_KEY, service.subscriptionDigest(sub)));
+        bytes32 digest = service.subscriptionDigest(sub);
+        subscriptionHash = service.subscribe(sub, _sign(ACCOUNT_KEY, digest), _sign(OPERATOR_KEY, digest));
     }
 
     function _sign(uint256 key, bytes32 digest) private pure returns (bytes memory) {
@@ -715,8 +716,9 @@ contract ZkSysGatewayServiceV1Test is Test {
             vm.addr(ACCOUNT_KEY), vm.addr(OPERATOR_KEY), address(0xBEEF), address(0xBAD), 1, 10, 1, 3
         );
         bytes memory signature = _sign(ACCOUNT_KEY, service.subscriptionDigest(sub));
+        bytes memory operatorSignature = _sign(OPERATOR_KEY, service.subscriptionDigest(sub));
         vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
-        service.subscribe(sub, signature);
+        service.subscribe(sub, signature, operatorSignature);
     }
 
     function testNativeRootEntropyIsFutureImmutableAndCannotBeRequestedByCaller() public {

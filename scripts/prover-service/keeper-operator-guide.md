@@ -112,6 +112,18 @@ the package as more FRIs arrive. Unavailable ranges remain unleased and are retr
 A protocol-boundary constraint can require an explicit package repair through the
 existing keeper workflow; renewal never invents a different report.
 
+Priority refresh and prefix-witness transactions are scoped to the guard, work
+identity and frozen checkpoint. The coordinator persists each invocation before
+staging its transaction. A new checkpoint gets a new invocation even when the
+calldata is identical; retries of an unresolved invocation retain its nonce and
+signed transaction. A canonically confirmed revert permits a new retry generation.
+Keep the transaction journal and coordinator state together across restarts.
+Legacy refresh or witness records that already reserved a nonce without a
+checkpoint scope can recover their original receipt, but are not rebroadcast
+under a new checkpoint.
+The maintenance journal retains at most 256 operations; reaching that limit
+blocks new entries. This limit includes completed refreshes and witnesses.
+
 ### Configuration and external inputs
 
 Configuration files and handoffs are owner-only files (mode 0600) in absolute,

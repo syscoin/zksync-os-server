@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 import unittest
 
 import service as s
@@ -127,6 +129,113 @@ class ServiceTests(unittest.TestCase):
 
     def setUp(self):
         self.f = copy.deepcopy(self.base)
+
+    def test_enrollment_requires_both_signers_for_identical_typed_data_and_matches_cast(self):
+        settings, signed = self.f["settings"], self.f["subscriptions"][0]
+        account = s.subscription_request(settings, signed["subscription"])
+        operator = s.operator_subscription_request(settings, signed)
+        self.assertEqual(operator, {**account, "signer": signed["subscription"]["operator"]})
+        operator_signature = sign(operator, "operator")
+        enrollment = s.prepare_enrollment(settings, signed, operator_signature)
+        expected = s.cast("calldata", "subscribe((address,address,address,address,uint64,uint64,uint64,uint8),bytes,bytes)",
+                          cast_value(struct_values(s.SUBSCRIPTION, signed["subscription"])),
+                          signed["signature"], operator_signature)
+        self.assertEqual(enrollment, {"schema_version": 1, "subscription_hash": account["struct_hash"],
+                                     "transaction": {"chainId": settings["registry_chain_id"],
+                                                     "from": signed["subscription"]["account"],
+                                                     "to": settings["registry"], "value": "0x0", "data": expected}})
+        for signature in ("0x", signed["signature"]):
+            with self.subTest(signature=signature), self.assertRaises(s.Error):
+                s.prepare_enrollment(settings, signed, signature)
+        signed["signature"] = operator_signature
+        with self.assertRaises(s.Error):
+            s.operator_subscription_request(settings, signed)
+        with self.assertRaises(s.Error):
+            s.prepare_enrollment(settings, signed, operator_signature)
+
+    def test_operator_consent_cannot_be_replayed_after_subscription_changes(self):
+        original = self.f["subscriptions"][0]
+        operator_signature = sign(s.operator_subscription_request(self.f["settings"], original), "operator")
+        mutations = {"account": self.f["proposal"]["candidate"]["operator"],
+                     "operator": self.f["proposal"]["candidate"]["operator"],
+                     "beneficiary": a(24), "sequencer": a(25), "firstPeriod": 6,
+                     "lastPeriod": 9, "nonce": 8, "services": 1}
+        for field, replacement in mutations.items():
+            with self.subTest(field=field):
+                signed, settings = copy.deepcopy(original), copy.deepcopy(self.f["settings"])
+                signed["subscription"][field] = replacement
+                if field == "sequencer":
+                    settings["sequencer"] = replacement
+                if field == "services":
+                    with self.assertRaisesRegex(s.Error, "combined_fri_and_wrapper_subscription_required"):
+                        s.prepare_enrollment(settings, signed, operator_signature)
+                    continue
+                with self.assertRaises(s.Error):
+                    s.operator_subscription_request(settings, signed)
+                # A fresh account endorsement must not turn old operator consent into new consent.
+                signed["signature"] = sign(s.subscription_request(settings, signed["subscription"]),
+                                           "wrapper" if field == "account" else "account")
+                with self.assertRaises(s.Error):
+                    s.prepare_enrollment(settings, signed, operator_signature)
+
+    def test_operator_consent_cannot_cross_registry_domains(self):
+        original = self.f["subscriptions"][0]
+        operator_signature = sign(s.operator_subscription_request(self.f["settings"], original), "operator")
+        for field, replacement in (("registry_chain_id", "0x23b"), ("registry", a(26))):
+            with self.subTest(field=field):
+                settings, signed = copy.deepcopy(self.f["settings"]), copy.deepcopy(original)
+                settings[field] = replacement
+                with self.assertRaises(s.Error):
+                    s.operator_subscription_request(settings, signed)
+                signed["signature"] = sign(s.subscription_request(settings, signed["subscription"]), "account")
+                with self.assertRaises(s.Error):
+                    s.prepare_enrollment(settings, signed, operator_signature)
+
+        for field, replacement in (("name", "WrongRegistryDomain"), ("version", "2")):
+            with self.subTest(field=field):
+                typed_data = s.operator_subscription_request(self.f["settings"], original)["typed_data"]
+                typed_data["domain"][field] = replacement
+                signature = s.cast("wallet", "sign", "--private-key", KEYS["operator"], "--data", json.dumps(typed_data))
+                with self.assertRaises(s.Error):
+                    s.prepare_enrollment(self.f["settings"], original, signature)
+
+    def test_enrollment_allows_same_account_and_operator_key(self):
+        settings, signed = self.f["settings"], self.f["subscriptions"][0]
+        signed["subscription"]["operator"] = signed["subscription"]["account"]
+        account = s.subscription_request(settings, signed["subscription"])
+        signed["signature"] = sign(account, "account")
+        self.assertEqual(s.operator_subscription_request(settings, signed), account)
+        transaction = s.prepare_enrollment(settings, signed, signed["signature"])["transaction"]
+        expected = s.cast("calldata", "subscribe((address,address,address,address,uint64,uint64,uint64,uint8),bytes,bytes)",
+                          cast_value(struct_values(s.SUBSCRIPTION, signed["subscription"])),
+                          signed["signature"], signed["signature"])
+        self.assertEqual(transaction["data"], expected)
+
+    def test_enrollment_cli_emits_operator_request_and_requires_consent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            settings, signed = self.f["settings"], self.f["subscriptions"][0]
+            s.write_new(directory / "config.json", settings)
+            s.write_new(directory / "signed.json", signed)
+            base = [sys.executable, str(Path(s.__file__)), "--config", str(directory / "config.json")]
+            request_path, enrollment_path = directory / "operator.json", directory / "enrollment.json"
+            result = subprocess.run(base + ["--output", str(request_path), "operator-subscription", "--signed-subscription",
+                                           str(directory / "signed.json")], capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            request = s.read_json(request_path)
+            self.assertEqual(request, s.operator_subscription_request(settings, signed))
+            command = base + ["--output", str(enrollment_path), "enroll", "--signed-subscription", str(directory / "signed.json")]
+            result = subprocess.run(command, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"--operator-signature", result.stderr)
+            self.assertFalse(enrollment_path.exists())
+            signature = sign(request, "operator")
+            (directory / "operator.sig").write_text(signature + "\n")
+            result = subprocess.run(command + ["--operator-signature", str(directory / "operator.sig")],
+                                    capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(s.read_json(enrollment_path), s.prepare_enrollment(settings, signed, signature))
+            self.assertEqual(set(s.read_json(directory / "signed.json")), {"subscription", "signature"})
 
     def test_static_hashes_and_typed_data_match_cast(self):
         cases = [("ProverSubscriptionV1", s.SUBSCRIPTION, self.f["subscription"]),

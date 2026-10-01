@@ -182,6 +182,35 @@ contract ZkSysPriorityGuardTest is Test {
         direct.relayCheckpoint(1_000_000, 800, address(this));
     }
 
+    function testGuardRejectsOutstandingPriorityRequestsUntilQueueIsDrained() public {
+        ZkSysRootPrioritySourceV1 direct = new ZkSysRootPrioritySourceV1(mailbox, hub, address(0), 0, POLICY, 100);
+        assertEq(direct.trackingStart(), 4);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        new ZkSysPriorityGuardV1(
+            address(this), mailbox, IZkSysPriorityCheckpointReceiverV1(address(direct)), POLICY, 50, 200, 2
+        );
+
+        mailbox.setProgress(7, 7, 4);
+        guard = new ZkSysPriorityGuardV1(
+            address(this), mailbox, IZkSysPriorityCheckpointReceiverV1(address(direct)), POLICY, 50, 200, 2
+        );
+        assertEq(guard.priorityCursor(), 4);
+        assertEq(guard.lastVerifiedBatch(), 7);
+        guard.open(WORK, 8);
+        guard.consume(WORK, 9, _counts(0, 0), _hashes(0, 0, 0));
+        assertEq(guard.priorityCursor(), 4);
+        assertEq(guard.lastVerifiedBatch(), 9);
+    }
+
+    function testGuardRejectsPriorityCursorPastQueueAndUnexecutedVerifiedBatches() public {
+        mailbox.setProgress(0, 0, 5);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
+        mailbox.setProgress(7, 6, 4);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
+    }
+
     function testOverdueQueueRejectsAllEmptyPackage() public {
         guard.open(WORK, 1);
         vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
@@ -335,7 +364,10 @@ contract ZkSysPriorityGuardTest is Test {
         uint256 limit = bound(limitSeed, 1, 2);
         uint256 count = 4 - from < limit ? 4 - from : limit;
         mailbox.setProgress(0, 0, from);
+        bytes32 root = mailbox.getPriorityTreeRoot();
+        mailbox.setTree(from, 2, root);
         guard = new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, uint64(limit));
+        mailbox.setTree(4, 2, root);
         vm.warp(1_100);
         vm.roll(101);
         _relay();
@@ -369,8 +401,11 @@ contract ZkSysPriorityGuardTest is Test {
         mailbox.setTimestamp(0, 990);
         mailbox.setTimestamp(1, 990);
         mailbox.setTimestamp(2, 990);
+        bytes32 root = mailbox.getPriorityTreeRoot();
+        mailbox.setTree(0, 0, keccak256(""));
         receiver = new ZkSysPriorityCheckpointReceiverV1(address(source), 57, POLICY);
         guard = new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
+        mailbox.setTree(4, 2, root);
         vm.roll(101);
         _relay();
         guard.open(WORK, 1);

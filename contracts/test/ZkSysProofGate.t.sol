@@ -140,6 +140,10 @@ contract GateSettlement is IZkSysNativeSettlementV1, IZkSysProverTimelockV1 {
         return 0;
     }
 
+    function getTotalPriorityTxs() external pure returns (uint256) {
+        return 0;
+    }
+
     function getPriorityTreeStartIndex() external pure returns (uint256) {
         return 0;
     }

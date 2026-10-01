@@ -21,6 +21,7 @@ ACTIONS.update({"refreshPriorityCheckpoint": ("refreshPriorityCheckpoint()", "ga
                 "recordRosterDraw": ("recordRosterDraw(uint64)", "coordinator", 36),
                 "publishPrefixWitness": ("publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
                                          "priority", None)})
+REPEATABLE = {"refreshPriorityCheckpoint", "publishPrefixWitness"}
 
 
 class Store(r.Store):
@@ -51,7 +52,7 @@ def initialize(root, settings, policy):
     return Store.initialize(root, settings, policy)
 
 
-def intent(settings, limits, call):
+def intent(settings, limits, call, invocation=None):
     s.exact(call, ("schema_version", "chain_id", "anchor", "transaction", "action", "broadcast"))
     s.require(type(call["schema_version"]) is int and call["schema_version"] == 1 and call["broadcast"] is False
               and call["chain_id"] == settings["settlement_chain_id"], "invalid_keeper_transaction")
@@ -72,8 +73,35 @@ def intent(settings, limits, call):
         s.require(tx["to"] == settings["proof_gate" if target == "gate" else "coordinator"], "keeper_target_mismatch")
     if target == "gate":
         s.require(tx["from"] == settings["sequencer"], "keeper_requires_sequencer_wallet")
-    # Head changes do not create another authorization for the same maintenance intent.
-    return {"chain_id": call["chain_id"], "action": call["action"], "transaction": copy.deepcopy(tx)}
+    frozen = {"chain_id": call["chain_id"], "action": call["action"], "transaction": copy.deepcopy(tx)}
+    if invocation is not None:
+        s.require(call["action"] in REPEATABLE, "nonrepeatable_maintenance_invocation")
+        s.exact(invocation, ("scope", "generation"))
+        s.uint(invocation["generation"], 32)
+        scope = invocation["scope"]
+        s.exact(scope, ("guard", "work_id", "checkpoint_hash"))
+        s.nonzero(scope["guard"], 20)
+        s.nonzero(scope["work_id"])
+        s.nonzero(scope["checkpoint_hash"])
+        frozen["invocation"] = copy.deepcopy(invocation)
+    return frozen
+
+
+def checkpoint_scope(rpc, settings, limits, head):
+    anchor = {"blockHash": head["hash"], "requireCanonical": True}
+    gate = settings["proof_gate"]
+    guard = r.call_word(rpc, gate, "priorityGuard()", anchor, kind="address")
+    s.nonzero(guard, 20)
+    code = s.raw_hex(rpc.call("eth_getCode", [guard, anchor]))
+    s.require(code and s.keccak(code) == limits["priority_guard_code_hash"], "priority_guard_code_changed")
+    for signature, kind, expected in (("acceptanceGate()", "address", gate),
+            ("chain()", "address", settings["chain_address"]), ("policyHash()", "bytes32", settings["policy_hash"])):
+        s.require(r.call_word(rpc, guard, signature, anchor, kind=kind) == expected, "priority_guard_configuration_changed")
+    work_id = r.call_word(rpc, gate, "priorityWorkId()", anchor, kind="bytes32")
+    raw = s.raw_hex(rpc.call("eth_call", [{"to": guard, "data": "0x" + r.selector("work()").hex()}, anchor]), 9 * 32)
+    if work_id == s.ZERO or raw[:32] != s.raw_hex(work_id) or int.from_bytes(raw[128:160], "big") == 0:
+        return None
+    return {"guard": guard, "work_id": work_id, "checkpoint_hash": "0x" + raw[32:64].hex()}
 
 
 class Transactions:
@@ -88,19 +116,59 @@ class Transactions:
         if execute:
             self.store.save(self.state)
 
-    def stage(self, call):
+    def descriptor(self, operation_id):
+        op = self.state["operations"][operation_id]
+        return {"operation_id": operation_id, "call": copy.deepcopy(op["call"]),
+                "invocation": copy.deepcopy(op.get("invocation"))}
+
+    def plan(self, call):
         frozen = intent(self.settings, self.limits, call)
+        with self.store.lock():
+            self.state = self.store.load(self.settings, self.limits)
+            for identifier, op in self.state["operations"].items():
+                self._validate(identifier, op)
+            head, _ = r.anchored_head(self.rpc, self.settings, self.limits, int(self.clock()))
+            # Recover orphaned reservations before allocating an invocation after a restart.
+            for identifier, op in self.state["operations"].items():
+                if op["unsigned_transaction"] is not None and not self._settled(op, head):
+                    r.check_anchor(self.rpc, self.settings, head)
+                    return self.descriptor(identifier)
+            invocation = None
+            if call["action"] in REPEATABLE:
+                s.require(call["anchor"]["hash"] == head["hash"], "maintenance_anchor_changed")
+                scope = checkpoint_scope(self.rpc, self.settings, self.limits, head)
+                s.require(scope is not None, "priority_work_not_frozen")
+                invocation = {"scope": scope, "generation": 0}
+                matching = [(identifier, op) for identifier, op in self.state["operations"].items()
+                            if op.get("invocation") is not None and op["invocation"]["scope"] == scope
+                            and intent(self.settings, self.limits, op["call"]) == frozen]
+                if matching:
+                    identifier, latest = max(matching, key=lambda item: item[1]["invocation"]["generation"])
+                    if latest["status"] == "reverted" and self._settled(latest, head):
+                        invocation["generation"] = latest["invocation"]["generation"] + 1
+                    else:
+                        r.check_anchor(self.rpc, self.settings, head)
+                        return self.descriptor(identifier)
+            operation_id = r.sha256(intent(self.settings, self.limits, call, invocation))
+            r.check_anchor(self.rpc, self.settings, head)
+            return {"operation_id": operation_id, "call": copy.deepcopy(call), "invocation": invocation}
+
+    def stage(self, call, invocation=None):
+        frozen = intent(self.settings, self.limits, call, invocation)
         operation_id = r.sha256(frozen)
         with self.store.lock():
             self.state = self.store.load(self.settings, self.limits)
             existing = self.state["operations"].get(operation_id)
             if existing is not None:
-                s.require(intent(self.settings, self.limits, existing["call"]) == frozen, "maintenance_intent_changed")
+                s.require(intent(self.settings, self.limits, existing["call"], existing.get("invocation")) == frozen,
+                          "maintenance_intent_changed")
                 return operation_id
             s.require(len(self.state["operations"]) < 256, "transaction_operation_limit")
             self.state["operations"][operation_id] = {"call": copy.deepcopy(call), "status": "staged",
                 "unsigned_transaction": None, "raw_transaction": None, "transaction_hash": None,
                 "broadcast_attempts": 0, "last_broadcast_at": None, "last_error": None, "receipt": None}
+            if invocation is not None:
+                self.state["operations"][operation_id]["invocation"] = copy.deepcopy(invocation)
             self.save(True)
         return operation_id
 
@@ -110,9 +178,11 @@ class Transactions:
                 "maxPriorityFeePerGas": self.limits["max_priority_fee_per_gas"], "accessList": []}
 
     def _validate(self, operation_id, op):
-        s.exact(op, ("call", "status", "unsigned_transaction", "raw_transaction", "transaction_hash",
-                     "broadcast_attempts", "last_broadcast_at", "last_error", "receipt"))
-        s.require(r.sha256(intent(self.settings, self.limits, op["call"])) == operation_id, "maintenance_intent_changed")
+        fields = ("call", "status", "unsigned_transaction", "raw_transaction", "transaction_hash",
+                  "broadcast_attempts", "last_broadcast_at", "last_error", "receipt")
+        s.exact(op, fields + (("invocation",) if "invocation" in op else ()))
+        s.require(r.sha256(intent(self.settings, self.limits, op["call"], op.get("invocation"))) == operation_id,
+                  "maintenance_intent_changed")
         s.require(op["status"] in STATUSES and s.uint(op["broadcast_attempts"], 32) <= self.limits["max_broadcast_attempts"],
                   "invalid_transaction_state")
         if op["last_broadcast_at"] is not None:
@@ -144,6 +214,10 @@ class Transactions:
     def _confirmations(self, receipt, head):
         return s.uint(head["number"]) - s.uint(receipt["block_number"]) + 1
 
+    def _settled(self, op, head):
+        return (op["status"] in TERMINAL and self._canonical(op["receipt"], head)
+                and self._confirmations(op["receipt"], head) >= self.limits["confirmations"])
+
     def _receipt(self, op, head):
         if op["receipt"] is not None and not self._canonical(op["receipt"], head):
             op.update(receipt=None, status="reorged")
@@ -164,7 +238,7 @@ class Transactions:
         if self._canonical(receipt, head):
             op["receipt"] = receipt
 
-    def _eligible(self, call, head, anchor, preflight):
+    def _eligible(self, call, head, anchor, preflight, invocation=None):
         settings, limits = self.settings, self.limits
         gate = settings["proof_gate"]
         code = s.raw_hex(self.rpc.call("eth_getCode", [gate, anchor]))
@@ -187,6 +261,9 @@ class Transactions:
         if target != "gate":
             code = s.raw_hex(self.rpc.call("eth_getCode", [call["transaction"]["to"], anchor]))
             s.require(code and s.keccak(code) == code_hash, "maintenance_target_code_changed")
+        if invocation is not None and checkpoint_scope(self.rpc, settings, limits, head) != invocation["scope"]:
+            r.check_anchor(self.rpc, settings, head)
+            return False
         ready = preflight(copy.deepcopy(call), copy.deepcopy(head), copy.deepcopy(anchor))
         s.require(type(ready) is bool, "invalid_maintenance_preflight_result")
         if ready:
@@ -201,11 +278,37 @@ class Transactions:
         for other_id, other in self.state["operations"].items():
             if other_id == operation_id or other["unsigned_transaction"] is None:
                 continue
-            if other["status"] in TERMINAL and self._canonical(other["receipt"], head):
+            if self._settled(other, head):
+                continue
+            # A predecessor can be re-included in another block while this row owns the signed retry.
+            self._receipt(other, head)
+            if other["receipt"] is not None:
                 if self._confirmations(other["receipt"], head) >= self.limits["confirmations"]:
+                    other["status"] = "confirmed" if other["receipt"]["status"] else "reverted"
                     continue
+                other["status"] = "mined_unconfirmed"
             return True
         return False
+
+    def _reservation_check(self, operation_id, head):
+        op = self.state["operations"][operation_id]
+        if op["unsigned_transaction"] is not None:
+            latest = s.uint(self.rpc.call("eth_getTransactionCount", [self.limits["account"],
+                              {"blockHash": head["hash"], "requireCanonical": True}]))
+            if latest != s.uint(op["unsigned_transaction"]["nonce"]):
+                r.check_anchor(self.rpc, self.settings, head)
+                op["status"] = "nonce_conflict"
+                return self.summary(operation_id, "investigate_reserved_nonce_without_receipt")
+        if self._other_reservation(operation_id, head):
+            r.check_anchor(self.rpc, self.settings, head)
+            return self.summary(operation_id, "wait_for_existing_wallet_reservation")
+        invocation = op.get("invocation")
+        if invocation is not None and invocation["generation"]:
+            previous = {**invocation, "generation": invocation["generation"] - 1}
+            predecessor = self.state["operations"].get(r.sha256(intent(self.settings, self.limits, op["call"], previous)))
+            s.require(predecessor is not None and predecessor["status"] == "reverted" and self._settled(predecessor, head),
+                      "maintenance_retry_requires_confirmed_revert")
+        return None
 
     def summary(self, operation_id, action):
         op = self.state["operations"][operation_id]
@@ -235,16 +338,11 @@ class Transactions:
                 return self.summary(operation_id, "complete")
             op["status"] = "mined_unconfirmed"
             return self.summary(operation_id, "wait_for_confirmations")
-        if op["unsigned_transaction"] is not None:
-            latest = s.uint(self.rpc.call("eth_getTransactionCount", [self.limits["account"], anchor]))
-            if latest != s.uint(op["unsigned_transaction"]["nonce"]):
-                r.check_anchor(self.rpc, self.settings, head)
-                op["status"] = "nonce_conflict"
-                return self.summary(operation_id, "investigate_reserved_nonce_without_receipt")
-        if self._other_reservation(operation_id, head):
-            r.check_anchor(self.rpc, self.settings, head)
-            return self.summary(operation_id, "wait_for_existing_wallet_reservation")
-        if not self._eligible(op["call"], head, anchor, preflight):
+        reservation = self._reservation_check(operation_id, head)
+        if reservation is not None:
+            return reservation
+        invocation = op.get("invocation")
+        if not self._eligible(op["call"], head, anchor, preflight, invocation):
             op["status"] = "stale_unsigned" if op["unsigned_transaction"] is None else "authorization_stale_reserved"
             return self.summary(operation_id, "wait_for_fresh_preflight" if op["unsigned_transaction"] is None
                                 else "reconcile_reserved_nonce_no_replacement")
@@ -271,7 +369,10 @@ class Transactions:
             op.update(raw_transaction=raw, transaction_hash=tx_hash, status="signed")
             self.save(True)
             head, anchor = r.anchored_head(self.rpc, self.settings, self.limits, int(self.clock()))
-            if not self._eligible(op["call"], head, anchor, preflight):
+            reservation = self._reservation_check(operation_id, head)
+            if reservation is not None:
+                return reservation
+            if not self._eligible(op["call"], head, anchor, preflight, invocation):
                 op["status"] = "authorization_stale_reserved"
                 return self.summary(operation_id, "reconcile_reserved_nonce_no_replacement")
         if op["broadcast_attempts"] >= self.limits["max_broadcast_attempts"]:

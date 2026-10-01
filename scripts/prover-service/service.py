@@ -213,6 +213,30 @@ def subscription_request(settings, subscription):
                          settings["registry_chain_id"], settings["registry"], subscription["account"])
 
 
+def operator_subscription_request(settings, signed_subscription):
+    exact(signed_subscription, ("subscription", "signature"))
+    request = subscription_request(settings, signed_subscription["subscription"])
+    verify_eoa(request, signed_subscription["signature"])
+    # Both parties consent to the same tuple; changing the expected signer must not change its digest.
+    request["signer"] = signed_subscription["subscription"]["operator"]
+    return request
+
+
+def prepare_enrollment(settings, signed_subscription, operator_signature):
+    request = operator_subscription_request(settings, signed_subscription)
+    verify_eoa(request, operator_signature)
+    subscription = signed_subscription["subscription"]
+    signature = "subscribe((address,address,address,address,uint64,uint64,uint64,uint8),bytes,bytes)"
+    calldata = raw_hex(type_hash(signature))[:4] + encode_dynamic_tuple([
+        (encode_fields(SUBSCRIPTION, subscription), False),
+        (encode_bytes(raw_hex(signed_subscription["signature"])), True),
+        (encode_bytes(raw_hex(operator_signature)), True),
+    ])
+    return {"schema_version": 1, "subscription_hash": request["struct_hash"],
+            "transaction": {"chainId": settings["registry_chain_id"], "from": subscription["account"],
+                            "to": settings["registry"], "value": "0x0", "data": "0x" + calldata.hex()}}
+
+
 def verify_eoa(request, signature):
     signature_bytes = raw_hex(signature)
     require(len(signature_bytes) == 65 and signature_bytes[64] in (27, 28), "eoa_signature_required")
@@ -640,6 +664,11 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     subscription = commands.add_parser("subscription")
     subscription.add_argument("--subscription", required=True)
+    operator_subscription = commands.add_parser("operator-subscription")
+    operator_subscription.add_argument("--signed-subscription", required=True)
+    enrollment = commands.add_parser("enroll")
+    enrollment.add_argument("--signed-subscription", required=True)
+    enrollment.add_argument("--operator-signature", required=True)
     manifest = commands.add_parser("manifest-request")
     manifest.add_argument("--payload", required=True)
     complete = commands.add_parser("complete")
@@ -664,6 +693,11 @@ def main():
         settings = config(read_json(args.config))
         if args.command == "subscription":
             result = subscription_request(settings, read_json(args.subscription))
+        elif args.command == "operator-subscription":
+            result = operator_subscription_request(settings, read_json(args.signed_subscription))
+        elif args.command == "enroll":
+            result = prepare_enrollment(settings, read_json(args.signed_subscription),
+                                        read(args.operator_signature).decode().strip())
         elif args.command == "manifest-request":
             payload = read_json(args.payload)
             result = manifest_request(settings, payload)

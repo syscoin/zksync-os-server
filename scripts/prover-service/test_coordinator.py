@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 import urllib.parse
@@ -14,10 +15,11 @@ import service as s
 import workflow_io as io
 import test_audit as ta
 import test_dispatcher as td
+import test_transactions as tt
 from test_keeper import setup
 from test_proof_check import ProofRpc
 from test_relay import FakeWallet, relay_policy, signed_raw
-from test_service import KEYS, a, h, sign
+from test_service import KEYS, a, h, sign, fixture
 from test_adapter import release
 
 
@@ -415,6 +417,230 @@ class CoordinatorTests(unittest.TestCase):
         bad["relay_policy"]["account"] = self.f["settings"]["sequencer"]
         with self.assertRaisesRegex(s.Error, "separate_relay_nonce_account"):
             c.configuration(bad)
+
+
+class CoordinatorMaintenanceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.base_fixture = fixture()
+        cls.base_keeper, _, _ = setup(cls.base_fixture)
+        cls.base_keeper["policy"]["expected_operator"] = cls.base_fixture["settings"]["sequencer"]
+        cls.base_policy = relay_policy(cls.base_fixture["settings"])
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name).resolve()
+        self.f = copy.deepcopy(self.base_fixture)
+        keeper, policy = copy.deepcopy(self.base_keeper), copy.deepcopy(self.base_policy)
+        for name in ("dispatcher", "rosters", "inbox", "witnesses", "publications"):
+            io.directory(self.base / name, create=True)
+        snark_release = release("SNARK")
+        snark_release["vk_hash"] = self.f["settings"]["vk_hash"]
+        io.immutable_json(self.base / "release.json", snark_release)
+        self.config = {"schema_version": 1, "keeper": keeper, "endpoint": "https://trusted.example/",
+            "native_auth_file": str(self.base / "auth"), "release_file": str(self.base / "release.json"),
+            "native_lease_seconds": 600, "dispatcher_dir": str(self.base / "dispatcher"), "roster_dir": str(self.base / "rosters"),
+            "operator_inboxes": {self.f["proposal"]["candidate"]["operator"]: str(self.base / "inbox")},
+            "priority_witness_dir": str(self.base / "witnesses"), "publication_dir": str(self.base / "publications"),
+            "sequencer_wallet_file": str(self.base / "sequencer-wallet"), "relay_wallet_file": str(self.base / "relay-wallet"),
+            "transaction_policy": {**policy, "account": self.f["settings"]["sequencer"]}, "relay_policy": policy,
+            "sequencer_beneficiary": self.f["proposal"]["accepted_package"]["sequencerBeneficiary"], "poll_interval_seconds": 1}
+        self.start("control")
+
+    def start(self, name):
+        self.store = c.initialize(self.base / name, self.config)
+        self.rpc = tt.Rpc(self.f["settings"], self.config["transaction_policy"])
+        self.rpc.store = c.transactions.Store(self.store.root / "transactions")
+        self.wallet = tt.Wallet(self.f["settings"], self.config["transaction_policy"], self.rpc.store)
+        self.reload()
+        self.identifier = self.controller.reserve()
+
+    def reload(self):
+        self.controller = c.Coordinator(self.store, self.rpc, self.wallet, clock=lambda: self.rpc.now)
+        return self.controller
+
+    def refresh(self):
+        return k.maintenance(self.config["keeper"], self.rpc, "refresh-priority", {}, self.rpc.now)
+
+    def pending(self):
+        return self.controller.state["operations"][self.identifier]["maintenance"]
+
+    def maintain(self, producer=None):
+        producer = producer or self.refresh
+        original_stage = c.transactions.Transactions.stage
+        def stage(manager, *args, **kwargs):
+            identifier = original_stage(manager, *args, **kwargs)
+            self.rpc.operation_id = identifier
+            return identifier
+        with patch.object(c.transactions.Transactions, "stage", new=stage):
+            return self.controller.maintenance(self.identifier, producer(), producer, True)
+
+    def recover(self, execute=True):
+        pending = self.pending()
+        if pending is not None:
+            self.rpc.operation_id = pending if isinstance(pending, str) else pending["operation_id"]
+        return self.controller.recover_maintenance(self.identifier, execute, None, self.f["evidence"], self.f["fri_payload"])
+
+    def confirm(self, status=1):
+        self.rpc.mine(status)
+        self.rpc.advance()
+        self.reload()
+        self.assertIsNone(self.recover())
+        self.assertIsNone(self.pending())
+        self.rpc.receipt = None
+
+    def signatures(self):
+        return [args[0] for method, args in self.wallet.calls if method == "eth_signTransaction"]
+
+    def test_successive_refreshes_and_later_package_survive_coordinator_restart(self):
+        identifiers = []
+        for work, checkpoint in ((h(150), h(151)), (h(150), h(152)), (h(153), h(154))):
+            self.rpc.work_id, self.rpc.checkpoint_hash = work, checkpoint
+            self.assertEqual(self.maintain()["status"], "broadcast")
+            pending = copy.deepcopy(self.pending())
+            identifiers.append(pending["operation_id"])
+            self.reload()
+            self.assertEqual(self.pending(), pending)
+            self.confirm()
+        self.assertEqual(len(set(identifiers)), 3)
+        self.assertEqual([s.uint(tx["nonce"]) for tx in self.signatures()], [0, 1, 2])
+        self.assertEqual(len(self.rpc.sent), 3)
+
+    def test_identical_prefix_witness_is_published_again_after_refresh(self):
+        witness = {"batch_item_preimages": [["0x0102"], ["0x0304"]], "left_path": [], "right_path": []}
+        for entry, batch in zip(witness["batch_item_preimages"], self.f["evidence"]["batches"]):
+            digest = s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(s.keccak(s.raw_hex(entry[0]))))
+            batch["output"]["priorityOperationsHash"] = batch["stored"]["priorityOperationsHash"] = digest
+            batch["stored"]["commitment"] = s.output_hash(batch["output"])
+        io.immutable_json(self.base / "witnesses" / (self.rpc.work_id[2:] + ".json"), witness)
+        producer = lambda: k.prefix_call(self.config["keeper"], self.rpc, self.f["evidence"], witness, self.rpc.now)
+        self.assertEqual(self.maintain(producer)["status"], "broadcast")
+        first = copy.deepcopy(self.pending())
+        self.confirm()
+        self.assertEqual(self.maintain()["status"], "broadcast")
+        self.rpc.checkpoint_hash = h(152)
+        self.confirm()
+        self.assertEqual(self.maintain(producer)["status"], "broadcast")
+        second = copy.deepcopy(self.pending())
+        self.assertEqual(first["call"]["transaction"], second["call"]["transaction"])
+        self.assertNotEqual(first["operation_id"], second["operation_id"])
+        self.confirm()
+        self.assertEqual(len(self.signatures()), 3)
+        self.assertEqual(len(self.rpc.sent), 3)
+
+    def test_descriptor_is_durable_before_stage_and_reconstructs_after_either_crash(self):
+        original_stage = c.transactions.Transactions.stage
+        for after_stage in (False, True):
+            with self.subTest(after_stage=after_stage):
+                self.start("crash-" + str(after_stage))
+                def interrupted(manager, *args, **kwargs):
+                    disk = io.private_json(self.store.root / "coordinator.json")["operations"][self.identifier]["maintenance"]
+                    self.assertEqual(disk["call"], args[0])
+                    self.assertEqual(disk["invocation"], args[1])
+                    if after_stage:
+                        original_stage(manager, *args, **kwargs)
+                    raise KeyboardInterrupt()
+                with patch.object(c.transactions.Transactions, "stage", new=interrupted), self.assertRaises(KeyboardInterrupt):
+                    self.controller.maintenance(self.identifier, self.refresh(), self.refresh, True)
+                pending = copy.deepcopy(self.pending())
+                self.assertEqual(self.signatures(), [])
+                self.assertEqual(len(self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"]), int(after_stage))
+                self.reload()
+                before = {str(path): path.read_bytes() for path in self.store.root.rglob("*") if path.is_file()}
+                self.recover(False)
+                self.assertEqual(before, {str(path): path.read_bytes() for path in self.store.root.rglob("*") if path.is_file()})
+                self.assertEqual(self.recover()["status"], "broadcast")
+                self.assertEqual(self.pending(), pending)
+                self.reload()
+                self.assertEqual(self.recover()["status"], "broadcast")
+                self.assertEqual(len(self.signatures()), 1)
+                self.assertEqual(len(self.rpc.sent), 1)
+                self.assertEqual(len(self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"]), 1)
+
+    def test_stale_unsigned_descriptor_keeps_scope_during_restart(self):
+        with patch.object(c.transactions.Transactions, "stage", side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
+            self.controller.maintenance(self.identifier, self.refresh(), self.refresh, True)
+        old = copy.deepcopy(self.pending())
+        self.rpc.checkpoint_hash = h(152)
+        self.reload()
+        self.assertIsNone(self.recover())
+        self.assertEqual(self.signatures(), [])
+        self.assertIsNone(self.pending())
+        self.assertEqual(self.maintain()["status"], "broadcast")
+        self.assertNotEqual(self.pending()["operation_id"], old["operation_id"])
+        old_row = self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"][old["operation_id"]]
+        self.assertEqual(old_row["status"], "stale_unsigned")
+        self.assertIsNone(old_row["unsigned_transaction"])
+        self.assertEqual(len(self.signatures()), 1)
+
+    def test_ambiguous_send_changed_scope_keeps_nonce_until_canonical_receipt(self):
+        self.rpc.send_error = s.Error("rpc_transport_failure")
+        self.assertEqual(self.maintain()["status"], "send_uncertain")
+        pending = copy.deepcopy(self.pending())
+        self.rpc.send_error, self.rpc.checkpoint_hash = None, h(152)
+        self.rpc.advance()
+        self.reload()
+        self.assertEqual(self.recover()["status"], "authorization_stale_reserved")
+        self.assertEqual(self.pending(), pending)
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.confirm()
+        self.assertEqual(self.maintain()["status"], "broadcast")
+        self.assertEqual([s.uint(tx["nonce"]) for tx in self.signatures()], [0, 1])
+
+    def test_legacy_pointer_and_orphaned_reservation_are_receipt_only(self):
+        for pointed in (False, True):
+            with self.subTest(pointed=pointed):
+                self.start("legacy-" + str(pointed))
+                manager = c.transactions.Transactions(self.f["settings"], self.config["transaction_policy"], self.rpc,
+                                                       self.wallet, self.rpc.store, lambda: self.rpc.now)
+                legacy = manager.stage(self.refresh())
+                self.rpc.operation_id = legacy
+                self.assertEqual(manager.step(legacy, True, lambda *args: True)["status"], "broadcast")
+                self.controller.state["operations"][self.identifier]["maintenance"] = legacy if pointed else None
+                self.controller.save()
+                self.rpc.checkpoint_hash = h(152)
+                self.rpc.advance()
+                self.reload()
+                result = self.recover() if pointed else self.maintain()
+                self.assertEqual(result["status"], "authorization_stale_reserved")
+                self.assertEqual(len(self.signatures()), 1)
+                self.assertEqual(len(self.rpc.sent), 1)
+                self.confirm()
+                retained = copy.deepcopy(self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"][legacy])
+                self.assertEqual(self.maintain()["status"], "broadcast")
+                self.assertNotEqual(self.pending()["operation_id"], legacy)
+                self.assertEqual(self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"][legacy], retained)
+                self.assertEqual(len(self.signatures()), 2)
+
+    def test_revert_retry_descriptor_survives_restart_and_reorg_blocks_new_nonce(self):
+        self.maintain()
+        first = copy.deepcopy(self.pending())
+        self.rpc.mine(0)
+        included, block_hash = self.rpc.receipt["blockNumber"], self.rpc.receipt["blockHash"]
+        self.rpc.advance()
+        self.reload()
+        self.assertIsNone(self.recover())
+        self.rpc.receipt = None
+        with patch.object(c.transactions.Transactions, "stage", side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
+            self.controller.maintenance(self.identifier, self.refresh(), self.refresh, True)
+        second = copy.deepcopy(self.pending())
+        self.assertEqual(second["invocation"]["generation"], 1)
+        self.assertEqual(first["invocation"]["scope"], second["invocation"]["scope"])
+        self.rpc.blocks[included]["hash"] = h(99)
+        self.reload()
+        self.assertIsNone(self.recover())
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertEqual(self.maintain()["next_action"], "investigate_reserved_nonce_without_receipt")
+        self.rpc.blocks[included]["hash"] = block_hash
+        self.rpc.receipt = copy.deepcopy(self.rpc.receipts[self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"][first["operation_id"]]["transaction_hash"]])
+        self.reload()
+        self.assertIsNone(self.recover())
+        self.rpc.receipt = None
+        self.assertEqual(self.maintain()["status"], "broadcast")
+        self.assertEqual(self.pending(), second)
+        self.assertEqual([s.uint(tx["nonce"]) for tx in self.signatures()], [0, 1])
 
 
 if __name__ == "__main__":

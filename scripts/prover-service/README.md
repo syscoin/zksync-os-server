@@ -126,11 +126,44 @@ python3 scripts/prover-service/service.py --config /trusted/config.json \
 ```
 
 Have the account wallet sign `typed_data`. Store the subscription and returned
-signature as `{"subscription": {…}, "signature": "0x…"}`. A subscription snapshot
-is a JSON array of these records, with unique account/operator identities; its
-commitment is Keccak-256 of canonical JSON (sorted keys, compact separators,
-UTF-8, no newline). The same canonicalization is used for all JSON commitments.
-Registration still requires the registry's `subscribe` transaction. Every
+account signature as `{"subscription": {…}, "signature": "0x…"}` in
+`/trusted/signed-subscription.json`. Then prepare the operator's consent:
+
+```sh
+python3 scripts/prover-service/service.py --config /trusted/config.json \
+  --output /trusted/operator-subscription-request.json operator-subscription \
+  --signed-subscription /trusted/signed-subscription.json
+```
+
+This checks the account signature and produces the same EIP-712 typed data and
+digest, with `signer` set to the subscription's operator. Have that operator
+wallet sign it and save the returned hex signature to `/trusted/operator.sig`.
+Both signatures bind the account, operator, beneficiary, sequencer, period range,
+nonce and service mask under the child registry's chain ID and address. If the
+account and operator use the same key, the same signature may be supplied twice.
+Prepare the unsigned registration transaction:
+
+```sh
+python3 scripts/prover-service/service.py --config /trusted/config.json \
+  --output /trusted/enrollment.json enroll \
+  --signed-subscription /trusted/signed-subscription.json \
+  --operator-signature /trusted/operator.sig
+```
+
+`enroll` verifies both signatures and returns `transaction` for wallet review and
+submission: the account is `from`, the child registry is `to`, and calldata calls
+`subscribe(subscription, accountSignature, operatorSignature)`. It does not
+broadcast. The registry checks current nonce, period, eligibility and both
+signatures before registration. These offline helpers require EOA signatures;
+ERC-1271 wallets need a separate caller that verifies consent against the trusted
+chain and supplies both signatures to the same contract call.
+
+Subscription snapshots remain JSON arrays of the existing account-signed
+`{"subscription": {…}, "signature": "0x…"}` records, with unique account/operator
+identities. Operator consent is checked on-chain at registration and is not added
+to historical snapshot or audit envelopes. Their commitment remains Keccak-256
+of canonical JSON (sorted keys, compact separators, UTF-8, no newline). The same
+canonicalization is used for all JSON commitments. Every
 subscription must set `services: 3`: the same operators perform FRI duties and
 enter the qualified SNARK-wrapper roster. FRI-only and wrapper-only subscriptions
 are rejected. The selected-wrapper watcher uses the operator's existing warm
