@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "account": "0x0000000000000000000000000000000000000000",
+  "gate_code_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "coordinator_code_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "priority_guard_code_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "gas_limit": 0,
+  "max_fee_per_gas": "0x0",
+  "max_priority_fee_per_gas": "0x0",
+  "max_total_fee_wei": "0x0",
+  "confirmations": 0,
+  "min_turn_seconds": 0,
+  "max_head_age_seconds": 0,
+  "rpc_timeout_seconds": 15,
+  "rebroadcast_interval_seconds": 30,
+  "max_broadcast_attempts": 3
+}

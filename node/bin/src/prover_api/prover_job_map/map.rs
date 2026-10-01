@@ -1986,7 +1986,6 @@ impl<T: Clone> ProverJobMap<T> {
     }
 
     /// If a job is present for a given batch_number, returns the corresponding BatchMetadata
-    #[cfg(test)]
     pub async fn get_job_batch_metadata(&self, batch_number: u64) -> Option<BatchMetadata> {
         let jobs = self
             .lock_with_tracking(JobMapMethod::GetJobBatchMetadata)

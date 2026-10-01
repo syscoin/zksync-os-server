@@ -1,0 +1,6 @@
+{
+  "read_url": "https://trusted-settlement-rpc.example/",
+  "read_authorization": null,
+  "wallet_url": "http://127.0.0.1:8546/",
+  "wallet_authorization": null
+}

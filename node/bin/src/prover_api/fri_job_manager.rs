@@ -329,6 +329,10 @@ impl FriJobManager {
         }
     }
 
+    pub async fn pending_batch_metadata(&self, batch_number: u64) -> Option<BatchMetadata> {
+        self.jobs.get_job_batch_metadata(batch_number).await
+    }
+
     /// Picks the oldest batch that is either pending and old enough
     /// or whose assignment has timed‑out.
     ///
@@ -347,10 +351,31 @@ impl FriJobManager {
         supported_proving_versions: Option<&[ProvingVersion]>,
         maximum_response_bytes: usize,
     ) -> Option<LeasedJob<ProverInput>> {
+        self.pick_next_job_filtered(
+            min_age,
+            prover_id,
+            supported_proving_versions,
+            maximum_response_bytes,
+            false,
+        )
+        .await
+    }
+
+    pub async fn pick_next_job_filtered(
+        &self,
+        min_age: Duration,
+        prover_id: String,
+        supported_proving_versions: Option<&[ProvingVersion]>,
+        maximum_response_bytes: usize,
+        nonempty_only: bool,
+    ) -> Option<LeasedJob<ProverInput>> {
         self.jobs
             .pick_job(min_age, &prover_id, |job| {
                 supported_proving_versions
                     .is_none_or(|versions| versions.contains(&job.metadata.proving_version))
+                    && (!nonempty_only
+                        || job.batch_envelope.batch.batch_info.number_of_layer1_txs > 0
+                        || job.batch_envelope.batch.batch_info.number_of_layer2_txs > 0)
                     && fri_input_fits_response_contract(
                         &job.batch_envelope.data,
                         maximum_response_bytes,
@@ -950,6 +975,44 @@ mod tests {
             .map_batch_envelope(|batch_envelope| {
                 batch_envelope.with_stage(BatchExecutionStage::FriProvedReal)
             })
+    }
+
+    #[tokio::test]
+    async fn service_nonempty_filter_does_not_lease_empty_work_or_change_ordinary_picks()
+    -> anyhow::Result<()> {
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, _downstream_rx) = mpsc::channel(1);
+        let manager = manager_for_test(downstream_tx, proof_storage, Duration::from_secs(60), 16);
+        let mut empty = dummy_input_batch(1);
+        empty.batch.batch_info.number_of_layer1_txs = 0;
+        empty.batch.batch_info.number_of_layer2_txs = 0;
+        let mut nonempty = dummy_input_batch(2);
+        nonempty.batch.batch_info.number_of_layer1_txs = 1;
+        nonempty.batch.batch_info.number_of_layer2_txs = 0;
+        manager.add_job(empty).await;
+        manager.add_job(nonempty).await;
+
+        let metadata = manager.pending_batch_metadata(2).await.unwrap();
+        assert_eq!(metadata.batch_info.number_of_layer1_txs, 1);
+        assert!(
+            manager
+                .status()
+                .await
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+        let picked = manager
+            .pick_next_job_filtered(Duration::ZERO, "service".into(), None, usize::MAX, true)
+            .await
+            .unwrap();
+        assert_eq!(picked.job.batch_number, 2);
+        assert!(manager.status().await[0].assigned_to_prover_id.is_none());
+        let ordinary = manager
+            .pick_next_job(Duration::ZERO, "ordinary".into(), None, usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(ordinary.job.batch_number, 1);
+        Ok(())
     }
 
     // SYSCOIN: Capacity is part of the existing atomic eligibility predicate. An oversized head

@@ -2,11 +2,11 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "3eefa0f127d1deff365ebffcf489b183cde0e756",
-  "candidate_tree": "9b4ff94d1ff647cc00aeb0c3b81dbb922646b946",
-  "source_patch_sha256": "9cba2e553e8604c6b64f4c4de633bec741539915ee719146c75eeadfa2a6f3e0",
-  "source_applicator_sha256": "7a672b6192c9de0253c4b1fb2aa82fcbd22ff26b513028211ab5a31017e74b90",
-  "overlay_sha256": "a94d385acdb885c45e47039188242738e810f0dea0fde0a2a7e6e9f66cac35d1",
+  "reviewed_source_tree": "264d98e758c3a032942dfb08ee7d87a3f46288b4",
+  "candidate_tree": "ff5565cd22b61259d6f886e9a0130f788bbdb11c",
+  "source_patch_sha256": "0cac53c803b502e67c4a14ccf8eef4f0f576a0430fa0ee007276becbf124e2c6",
+  "source_applicator_sha256": "503341ef094f5a5b6b7766906a53a6eda99615cdb0437f98aa563cb8b7fa029d",
+  "overlay_sha256": "8e84cb33aeaecb71b167e306ee88f6a71209cde94d268f2821059a3995e6da25",
   "overlay_size": 120412,
   "verification_key_hash": "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe",
   "inventory_rows": 278,
@@ -17,7 +17,7 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "496fde1040de26db06a5dd236f695ebfd1a2edc495d00e87be2b4f89cc609cc3"
+      "sha256": "2f36b5cb3c86be90af0ea5a4dbb1bde5e7a30253dc96dcffdd0170d0b14f8dbe"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
@@ -46,5 +46,10 @@
   "real_serialized_proof_sha256": "ee9c95301ae9f6de0756308e318b37ea8280dcc911e097d4a3fe8abc7a24c8f7",
   "real_evm_tests": 10,
   "real_evm_verified_record_sha256": "7b9e216483593fbb28c6675ca4f5c6a171e38f539c9d6d772fafa0a904611d6a",
-  "independent_host_reproduction": false
+  "independent_host_reproduction": false,
+  "crypto_validation_provenance": {
+    "reviewed_source_tree": "3eefa0f127d1deff365ebffcf489b183cde0e756",
+    "candidate_tree": "9b4ff94d1ff647cc00aeb0c3b81dbb922646b946",
+    "scope": "Retained real-proof, EVM, Cancun artifact and native build archive records validate the unchanged PR323 crypto artifacts. They do not attest a real-proof run or full deployment identity for the source tree containing priority observation getters."
+  }
 }

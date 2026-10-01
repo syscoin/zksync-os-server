@@ -263,11 +263,12 @@ pub(super) async fn pick_fri_job(
     // see `FakeProversPool` for fake provers implementation
     match state
         .fri_job_manager
-        .pick_next_job(
+        .pick_next_job_filtered(
             std::time::Duration::from_secs(0),
             query.id,
             supported_proving_versions.as_deref(),
             maximum_response_bytes,
+            query.nonempty_only,
         )
         .await
     {
@@ -626,12 +627,14 @@ pub(super) async fn peek_fri_job(
 
 // SYSCOIN: FRI pick, SNARK pick, FRI peek, and SNARK peek use independent lanes separate from
 // proof uploads. A saturated large-response class therefore cannot consume another class's capacity.
-fn try_acquire_response_slot(slots: &std::sync::Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+pub(super) fn try_acquire_response_slot(
+    slots: &std::sync::Arc<Semaphore>,
+) -> Option<OwnedSemaphorePermit> {
     std::sync::Arc::clone(slots).try_acquire_owned().ok()
 }
 
 // SYSCOIN: Transfer an admitted large-response slot into the body shared by FRI and SNARK lanes.
-fn retain_response_slot(response: Response, permit: OwnedSemaphorePermit) -> Response {
+pub(super) fn retain_response_slot(response: Response, permit: OwnedSemaphorePermit) -> Response {
     response.map(|inner| {
         Body::new(PermitResponseBody {
             inner,

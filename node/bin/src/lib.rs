@@ -2757,6 +2757,16 @@ async fn run_main_node_pipeline(
         .vk_hash()
         .parse::<B256>()
         .expect("compiled canonical V8 VK hash must be valid bytes32");
+    if config.service_publication_config.enabled {
+        assert!(
+            config.prover_api_config.enabled
+                && !config.prover_api_config.fake_fri_provers.enabled
+                && !config.prover_api_config.fake_snark_provers.enabled
+                && !expected_v8_vk_hash.is_zero()
+                && config.service_publication_config.production_vk_hash == expected_v8_vk_hash,
+            "service publication requires enabled real proving and the compiled canonical nonzero V8 VK"
+        );
+    }
     // SYSCOIN: Startup journal cleanup must use the exact prove sender selected for the active
     // settlement layer, including Gateway's intentionally different confirmation depth.
     let prove_required_confirmations = if settles_on_gateway {
@@ -2892,12 +2902,40 @@ async fn run_main_node_pipeline(
         } else {
             config.l1_sender_config.clone().into()
         };
-    let prove_sender_config: zksync_os_l1_sender::config::L1SenderConfig<ProofCommand> =
-        if settles_on_gateway {
-            config.gateway_sender_config.clone().into()
-        } else {
-            config.l1_sender_config.clone().into()
-        };
+    let service_publication = config.service_publication_config.enabled.then(|| {
+        prover_api::service_publication::ServicePublication::new(
+            config.service_publication_config.clone(),
+            sl_provider.clone(),
+            zksync_os_l1_sender::config::ConfirmationPolicy::new(if settles_on_gateway {
+                config.gateway_sender_config.required_confirmations
+            } else {
+                config.l1_sender_config.required_confirmations
+            }),
+            node_state_on_startup.l1_state.validator_timelock_sl,
+        )
+        .expect("failed to initialize protected service publication journal")
+    });
+    let snark_proving_step = if let Some(publication) = &service_publication {
+        snark_proving_step.with_service_publication(publication.clone())
+    } else {
+        snark_proving_step
+    };
+    let proof_publication = if let Some(publication) = service_publication {
+        prover_api::service_publication::ProofPublication::Service(publication)
+    } else {
+        prover_api::service_publication::ProofPublication::Ordinary(L1Sender::<ProofCommand> {
+            provider: sl_provider.clone(),
+            config: if settles_on_gateway {
+                config.gateway_sender_config.clone().into()
+            } else {
+                config.l1_sender_config.clone().into()
+            },
+            to_address: node_state_on_startup.l1_state.validator_timelock_sl,
+            gateway: settles_on_gateway,
+            commit_submitted_tx: None,
+            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
+        })
+    };
     let execute_sender_config: zksync_os_l1_sender::config::L1SenderConfig<ExecuteCommand> =
         if settles_on_gateway {
             config.gateway_sender_config.clone().into()
@@ -2998,14 +3036,7 @@ async fn run_main_node_pipeline(
         .pipe(GaplessL1ProofSender::new(
             node_state_on_startup.l1_state.last_executed_batch + 1,
         ))
-        .pipe(L1Sender::<ProofCommand> {
-            provider: sl_provider.clone(),
-            config: prove_sender_config,
-            to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: settles_on_gateway,
-            commit_submitted_tx: None,
-            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
-        })
+        .pipe(proof_publication)
         .pipe(
             PriorityTreePipelineStep::new(
                 block_replay_storage.clone(),
@@ -3382,7 +3413,7 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
         if gw.operator_commit_sk.is_none() {
             missing.push("operator_commit_sk");
         }
-        if gw.operator_prove_sk.is_none() {
+        if !config.service_publication_config.enabled && gw.operator_prove_sk.is_none() {
             missing.push("operator_prove_sk");
         }
         if gw.operator_execute_sk.is_none() {
@@ -3395,7 +3426,7 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
         if l1.operator_commit_sk.is_none() {
             missing.push("operator_commit_sk");
         }
-        if l1.operator_prove_sk.is_none() {
+        if !config.service_publication_config.enabled && l1.operator_prove_sk.is_none() {
             missing.push("operator_prove_sk");
         }
         if l1.operator_execute_sk.is_none() {

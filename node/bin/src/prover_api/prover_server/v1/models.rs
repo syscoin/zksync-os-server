@@ -51,6 +51,8 @@ pub(super) struct ProverQuery {
     // it to the server / trusted-proxy envelope before the existing queue predicate creates a lease.
     #[serde(default)]
     pub max_fri_pick_response_bytes: Option<usize>,
+    #[serde(default)]
+    pub nonempty_only: bool,
 }
 
 impl ProverQuery {
@@ -183,6 +185,7 @@ mod tests {
 
     fn query(supported_vk_hashes: Option<&str>) -> ProverQuery {
         ProverQuery {
+            nonempty_only: false,
             id: "test_prover".to_string(),
             supported_vk_hashes: supported_vk_hashes.map(str::to_string),
             max_fri_pick_response_bytes: None,

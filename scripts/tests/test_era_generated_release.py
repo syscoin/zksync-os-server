@@ -159,11 +159,21 @@ class ActivationTests(unittest.TestCase):
 class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
-        self.assertEqual(module.CANDIDATE, "9b4ff94d1ff647cc00aeb0c3b81dbb922646b946")
+        self.assertEqual(module.CANDIDATE, "ff5565cd22b61259d6f886e9a0130f788bbdb11c")
         self.assertEqual(len(manifest["paths"]), 4)
         self.assertIsNone(M.CANONICAL_BINDING)
         self.assertEqual(sha((ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_bytes()),
                          module.SOURCE_APPLICATOR_SHA)
+
+    def test_historical_crypto_evidence_does_not_claim_current_deployment_tree(self):
+        module, manifest = M.load_bundle()
+        evidence = manifest["crypto_validation_provenance"]
+        self.assertEqual(evidence["reviewed_source_tree"], "3eefa0f127d1deff365ebffcf489b183cde0e756")
+        self.assertEqual(evidence["candidate_tree"], "9b4ff94d1ff647cc00aeb0c3b81dbb922646b946")
+        self.assertNotEqual(evidence["reviewed_source_tree"], module.SOURCE)
+        self.assertNotEqual(evidence["candidate_tree"], module.CANDIDATE)
+        self.assertFalse(manifest["canonical_fixture_activated"])
+        self.assertFalse(manifest["deployed"])
 
     def test_explicit_fixture_check_marker_first_and_environment_cannot_override(self):
         env = dict(os.environ, CANONICAL_BINDING="approved", PROVER_MODE="gpu")

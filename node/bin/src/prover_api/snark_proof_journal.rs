@@ -700,6 +700,38 @@ impl SnarkProofJournal {
         self.confirmation_sender.clone()
     }
 
+    /// Covered service proofs must retain their full command until the service gate receipt is
+    /// authenticated. Reading here cannot retire, replay or notify the ordinary journal reaper.
+    pub(super) async fn covered_service_commands(
+        &self,
+        last_proved_batch: u64,
+    ) -> anyhow::Result<Vec<ProofCommand>> {
+        let entries: Vec<_> = self
+            .inner
+            .records
+            .lock()
+            .await
+            .entries
+            .values()
+            .cloned()
+            .collect();
+        let mut commands = Vec::new();
+        for entry in entries {
+            if entry.batch_to > last_proved_batch {
+                continue;
+            }
+            let record = load_record(&self.inner.directory.join(&entry.key)).await?;
+            validate_record_structure(&record)?;
+            anyhow::ensure!(
+                parse_journal_key(&entry.key) == Some((record.batch_from, record.batch_to))
+                    && entry.batch_to == record.batch_to,
+                "covered service journal range changed"
+            );
+            commands.push(ProofCommand::new(record.batches, record.proof));
+        }
+        Ok(commands)
+    }
+
     pub(super) async fn has_records(&self) -> bool {
         !self.inner.records.lock().await.entries.is_empty()
     }

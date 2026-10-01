@@ -8,6 +8,9 @@ use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_contract_interface::IExecutor;
 use zksync_os_contract_interface::IExecutor::{proofPayloadCall, proveBatchesSharedBridgeCall};
 use zksync_os_contract_interface::models::StoredBatchInfo;
+use zksync_os_contract_interface::prover_service_v1::{
+    BatchOutput, IZkSysProofGateV1, PackagePhaseV1, ProverServiceSidecarV1, ValidationContextV1,
+};
 use zksync_os_types::syscoin_chain_config_hash;
 
 const OHBENDER_PROOF_TYPE: u32 = 2;
@@ -26,6 +29,23 @@ pub const ZKSYNC_OS_V8_REAL_PROOF_BYTES: usize = ZKSYNC_OS_V8_REAL_PROOF_WORDS *
 pub struct ZksyncOsVerifierInput {
     pub public_inputs: Vec<U256>,
     pub proof: Vec<U256>,
+}
+
+/// An explicitly prepared V1 submission for a relayer. The ordinary proof sender continues to
+/// target its configured timelock until turn-aware service publication is enabled separately.
+pub struct ServiceProofSubmission {
+    pub gate: Address,
+    pub calldata: Bytes,
+}
+
+impl std::fmt::Debug for ServiceProofSubmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServiceProofSubmission")
+            .field("gate", &self.gate)
+            .field("calldata_bytes", &self.calldata.len())
+            .finish()
+    }
 }
 
 /// SYSCOIN: Fallible verifier-input construction lets HTTP admission retain the exact lease on an
@@ -139,6 +159,104 @@ impl ProofCommand {
             sender: confirmation_sender,
         });
         command
+    }
+
+    /// Exports exactly the native payload also used by the existing Executor submission.
+    pub fn native_proof_data(&self) -> Result<Bytes, ZksyncOsVerifierInputError> {
+        Self::zksync_os_verifier_input(&self.batches, &self.proof)?;
+        Ok(self.to_calldata_suffix().into())
+    }
+
+    pub fn service_batch_outputs(&self) -> Vec<BatchOutput> {
+        self.batches
+            .iter()
+            .map(|envelope| {
+                let info = &envelope.batch.batch_info;
+                let commit = &info.commit_info;
+                BatchOutput {
+                    firstBlockTimestamp: commit.first_block_timestamp,
+                    lastBlockTimestamp: commit.last_block_timestamp,
+                    daScheme: U256::from(commit.l2_da_commitment_scheme as u8),
+                    daCommitment: commit.da_commitment,
+                    l1TxCount: U256::from(commit.number_of_layer1_txs),
+                    l2TxCount: U256::from(commit.number_of_layer2_txs),
+                    priorityOperationsHash: commit.priority_operations_hash,
+                    l2LogsRoot: commit.l2_to_l1_logs_root_hash,
+                    upgradeTxHash: info.upgrade_tx_hash.unwrap_or(B256::ZERO),
+                    dependencyRootsRollingHash: commit.dependency_roots_rolling_hash,
+                    settlementChainId: U256::from(commit.sl_chain_id),
+                    edgeDARefsRoot: commit.edge_da_refs_root,
+                }
+            })
+            .collect()
+    }
+
+    /// Binds the portable endorsements to this command's exact retained batches and real proof.
+    /// The caller must read the context from the intended gate/coordinator and simulate the call;
+    /// local encoding checks do not validate signatures, live turns or production proof soundness.
+    pub fn service_submission(
+        &self,
+        gate: Address,
+        sidecar: &ProverServiceSidecarV1,
+        context: &ValidationContextV1,
+    ) -> anyhow::Result<ServiceProofSubmission> {
+        anyhow::ensure!(!gate.is_zero(), "service proof gate must be nonzero");
+        anyhow::ensure!(
+            matches!(&self.proof, SnarkProof::Real(_)),
+            "service endorsements require a real native proof"
+        );
+        let first = self
+            .batches
+            .first()
+            .ok_or(ZksyncOsVerifierInputError::EmptyBatches)?;
+        let last = self
+            .batches
+            .last()
+            .ok_or(ZksyncOsVerifierInputError::EmptyBatches)?;
+        anyhow::ensure!(
+            context.batch_from == first.batch_number()
+                && context.batch_to == last.batch_number()
+                && context.child_chain_address == first.batch.chain_address
+                && context.child_chain_id
+                    == U256::from(first.batch.batch_info.commit_info.chain_id)
+                && context.settlement_chain_id
+                    == U256::from(first.batch.batch_info.commit_info.sl_chain_id),
+            "service context does not describe this proof command"
+        );
+        anyhow::ensure!(
+            sidecar.batch_outputs == self.service_batch_outputs(),
+            "service output preimages differ from retained native batch metadata"
+        );
+        let proof_data = self.native_proof_data()?;
+        sidecar.validate(context, &proof_data)?;
+        let calldata = match &context.phase {
+            PackagePhaseV1::Bootstrap => IZkSysProofGateV1::submitBootstrapCall {
+                accepted: sidecar.accepted_package.clone(),
+                duties: sidecar.duties.clone(),
+                outputs: sidecar.batch_outputs.clone(),
+                proofData: proof_data,
+                sequencerSignature: sidecar.sequencer_signature.clone(),
+            }
+            .abi_encode(),
+            PackagePhaseV1::Service { .. } => IZkSysProofGateV1::submitCall {
+                accepted: sidecar.accepted_package.clone(),
+                duties: sidecar.duties.clone(),
+                outputs: sidecar.batch_outputs.clone(),
+                proofData: proof_data,
+                candidate: sidecar
+                    .candidate
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("missing wrapper candidate"))?,
+                candidateProof: sidecar.candidate_proof.clone(),
+                sequencerSignature: sidecar.sequencer_signature.clone(),
+                wrapperSignature: sidecar.wrapper_signature.clone(),
+            }
+            .abi_encode(),
+        };
+        Ok(ServiceProofSubmission {
+            gate,
+            calldata: calldata.into(),
+        })
     }
 }
 
@@ -399,6 +517,170 @@ mod tests {
     };
     use alloy::primitives::{B256, keccak256};
     use zksync_os_batch_types::batcher_model::{RealSnarkProof, SnarkProof};
+
+    fn service_command() -> ProofCommand {
+        use alloy::primitives::{Address, Bytes};
+        use zksync_os_batch_types::PendingBatchInfo;
+        use zksync_os_batch_types::batcher_model::{
+            BatchForSigning, BatchMetadata, BatchSignatureData, FriProof, RealFriProof,
+        };
+        use zksync_os_contract_interface::models::{CommitBatchInfo, DACommitmentScheme};
+        use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
+
+        let mut previous = StoredBatchInfo {
+            batch_number: 0,
+            state_commitment: B256::repeat_byte(1),
+            number_of_layer1_txs: 0,
+            priority_operations_hash: B256::ZERO,
+            dependency_roots_rolling_hash: B256::ZERO,
+            l2_to_l1_logs_root_hash: B256::ZERO,
+            commitment: B256::ZERO,
+            last_block_timestamp: None,
+        };
+        let mut batches = Vec::new();
+        for batch_number in 1..=2 {
+            let batch_info = PendingBatchInfo {
+                commit_info: CommitBatchInfo {
+                    batch_number,
+                    new_state_commitment: B256::repeat_byte(batch_number as u8 + 1),
+                    number_of_layer1_txs: 0,
+                    number_of_layer2_txs: 1,
+                    priority_operations_hash: B256::ZERO,
+                    dependency_roots_rolling_hash: B256::ZERO,
+                    l2_to_l1_logs_root_hash: B256::ZERO,
+                    l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+                    da_commitment: B256::repeat_byte(3),
+                    first_block_timestamp: batch_number,
+                    first_block_number: Some(batch_number),
+                    last_block_timestamp: batch_number,
+                    last_block_number: Some(batch_number),
+                    chain_id: 57,
+                    operator_da_input: vec![],
+                    edge_da_refs_input: vec![],
+                    edge_da_refs_root: B256::ZERO,
+                    sl_chain_id: 5050,
+                },
+                upgrade_tx_hash: None,
+                protocol_version: ProtocolSemanticVersion::new(0, 32, 0),
+            };
+            let stored = batch_info.clone().into_stored();
+            let metadata = BatchMetadata {
+                previous_stored_batch_info: previous,
+                batch_info,
+                chain_address: Address::repeat_byte(4),
+                first_block_number: batch_number,
+                last_block_number: batch_number,
+                last_block_hash: None,
+                pubdata_mode: PubdataMode::Blobs,
+                tx_count: 1,
+                computational_native_used: None,
+                logs: vec![],
+                messages: vec![],
+                multichain_root: B256::ZERO,
+                set_sl_chain_id_migration_number: None,
+            };
+            batches.push(
+                BatchForSigning::new(
+                    metadata,
+                    FriProof::Real(RealFriProof {
+                        proof: Bytes::from_static(b"shape-only fixture"),
+                        proving_execution_version: 8,
+                    }),
+                )
+                .with_signatures(BatchSignatureData::NotNeeded),
+            );
+            previous = stored;
+        }
+        ProofCommand::new(
+            batches,
+            SnarkProof::Real(RealSnarkProof {
+                proof: vec![7; super::ZKSYNC_OS_V8_REAL_PROOF_BYTES],
+                proving_execution_version: 8,
+            }),
+        )
+    }
+
+    #[test]
+    fn service_submission_preserves_exact_native_payload_and_rejects_other_context() {
+        use alloy::primitives::{Address, Bytes, U256};
+        use alloy::sol_types::SolCall;
+        use zksync_os_contract_interface::prover_service_v1::{
+            AcceptedPackageV1, IZkSysProofGateV1, PackagePhaseV1, ProverServiceSidecarV1,
+            ValidationContextV1, hash_report,
+        };
+        let mut command = service_command();
+        let proof_data = command.native_proof_data().unwrap();
+        let context = ValidationContextV1 {
+            child_chain_id: U256::from(57),
+            child_chain_address: Address::repeat_byte(4),
+            settlement_chain_id: U256::from(5050),
+            policy_hash: B256::repeat_byte(5),
+            production_vk_hash: B256::repeat_byte(6),
+            sequencer: Address::repeat_byte(7),
+            expected_parent: B256::repeat_byte(8),
+            batch_from: 1,
+            batch_to: 2,
+            phase: PackagePhaseV1::Bootstrap,
+        };
+        let mut sidecar = ProverServiceSidecarV1 {
+            accepted_package: AcceptedPackageV1 {
+                domainVersion: 1,
+                policyHash: context.policy_hash,
+                chainId: context.child_chain_id,
+                chainAddress: context.child_chain_address,
+                parent: context.expected_parent,
+                batchFrom: 1,
+                batchTo: 2,
+                protocolVersion: 32,
+                vkHash: context.production_vk_hash,
+                period: 0,
+                rosterRoot: B256::ZERO,
+                turn: 0,
+                manifestHash: B256::repeat_byte(9),
+                reportHash: hash_report(&[]),
+                proofHash: keccak256(&proof_data),
+                sequencer: context.sequencer,
+                sequencerBeneficiary: Address::repeat_byte(10),
+                wrapper: Address::ZERO,
+                wrapperBeneficiary: Address::ZERO,
+            },
+            duties: vec![],
+            batch_outputs: command.service_batch_outputs(),
+            candidate: None,
+            candidate_proof: vec![],
+            sequencer_signature: Bytes::new(),
+            wrapper_signature: Bytes::new(),
+        };
+        let gate = Address::repeat_byte(11);
+        let submission = command
+            .service_submission(gate, &sidecar, &context)
+            .unwrap();
+        assert_eq!(submission.gate, gate);
+        let call =
+            IZkSysProofGateV1::submitBootstrapCall::abi_decode(&submission.calldata).unwrap();
+        assert_eq!(call.proofData, proof_data);
+        assert_eq!(call.outputs, command.service_batch_outputs());
+        let mut wrong_context = context.clone();
+        wrong_context.settlement_chain_id = U256::from(1);
+        assert!(
+            command
+                .service_submission(gate, &sidecar, &wrong_context)
+                .is_err()
+        );
+        sidecar.batch_outputs[0].upgradeTxHash = B256::repeat_byte(12);
+        assert!(
+            command
+                .service_submission(gate, &sidecar, &context)
+                .is_err()
+        );
+        sidecar.batch_outputs = command.service_batch_outputs();
+        command.proof = SnarkProof::Fake;
+        assert!(
+            command
+                .service_submission(gate, &sidecar, &context)
+                .is_err()
+        );
+    }
 
     #[test]
     fn real_proofs_use_v8_verifier_slot() {

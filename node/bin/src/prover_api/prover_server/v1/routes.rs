@@ -5,6 +5,7 @@ use axum::{
 
 use crate::prover_api::prover_server::{
     AppState,
+    v1::evidence::{fri_evidence, snark_evidence},
     v1::handlers::{
         get_failed_fri_proof, peek_fri_job, peek_snark_job, pick_fri_job, pick_snark_job, status,
         status_default, submit_fri_proof, submit_snark_proof,
@@ -20,8 +21,10 @@ pub(in crate::prover_api::prover_server) fn v1_routes() -> Router<AppState> {
         .route("/SNARK/submit", post(submit_snark_proof))
         // debugging routes
         .route("/FRI/{id}/peek", get(peek_fri_job))
+        .route("/FRI/{id}/evidence", get(fri_evidence))
         .route("/FRI/{id}/failed", get(get_failed_fri_proof))
         .route("/SNARK/{from}/{to}/peek", get(peek_snark_job))
+        .route("/SNARK/{from}/{to}/evidence", get(snark_evidence))
         // SYSCOIN: Expose queue status for multi-worker prover orchestration and monitoring.
         .route("/status/", get(status_default))
         .route("/status/{stage}", get(status))

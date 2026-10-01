@@ -11,10 +11,23 @@ interface IZkSysWeightReceiver {
     function startTime() external view returns (uint256);
 }
 
+interface IZkSysServiceWeightReceiver {
+    function onWeightComponentsChange(
+        address account,
+        uint256 oldWeight,
+        uint256 newWeight,
+        uint256 oldPassiveWeight,
+        uint256 newPassiveWeight,
+        uint256 oldTotalWeight,
+        uint256 oldTotalPassiveWeight
+    ) external;
+}
+
 /// @title ZkSysRewardWeightRegistry
 /// @notice Converts native SYS stake and membership facts into issuer reward weights.
 contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, IZkSysSentryNodeReceiver {
     bytes32 public constant STAKE_WEIGHT_UPDATER_ROLE = keccak256("STAKE_WEIGHT_UPDATER_ROLE");
+    uint256 public constant SENTRY_NODE_BASE_WEIGHT = 100_000 ether;
 
     struct Weight {
         uint256 stakeWeight;
@@ -43,15 +56,22 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
     error UnauthorizedMembershipRegistry();
     error WeightReceiverAlreadySet(address currentWeightReceiver);
     error WeightReceiverNotSet();
+    error UnauthorizedWeightReceiver();
+    error ServiceAccountingAlreadyConfigured();
+    error NonemptyServiceAccountingMigration();
 
     ZkSysMembershipRegistry public membershipRegistry;
     IZkSysWeightReceiver public weightReceiver;
+    // Preserve the legacy potential-weight getter and storage layout. Service issuance instead
+    // combines totalPassiveWeight with the separate, verified period-admission aggregate.
     uint256 public totalWeight;
 
     mapping(address account => Weight weight) private _weights;
     uint256 public activationDelayPeriods;
     mapping(address account => PendingWeight pendingWeight) private _pendingWeights;
-    uint256[44] private __gap;
+    uint256 public serviceStartPeriodPlusOne;
+    uint256 public totalPassiveWeight;
+    uint256[42] private __gap;
 
     event StakeWeightUpdated(address indexed account, uint256 oldStakeWeight, uint256 newStakeWeight);
     event StakeWeightQueued(
@@ -67,16 +87,16 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
     event WeightReceiverUpdated(address indexed weightReceiver);
     event WeightUpdated(address indexed account, uint256 oldWeight, uint256 newWeight);
     event PendingWeightActivated(address indexed account, uint256 oldWeight, uint256 newWeight);
+    event ServiceAccountingEnabled(uint256 activationPeriod);
 
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(
-        address admin,
-        ZkSysMembershipRegistry membershipRegistry_,
-        uint256 activationDelayPeriods_
-    ) external initializer {
+    function initialize(address admin, ZkSysMembershipRegistry membershipRegistry_, uint256 activationDelayPeriods_)
+        external
+        initializer
+    {
         if (admin == address(0) || address(membershipRegistry_) == address(0)) {
             revert InvalidAddress();
         }
@@ -101,6 +121,22 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         }
         weightReceiver = weightReceiver_;
         emit WeightReceiverUpdated(address(weightReceiver_));
+    }
+
+    function enableServiceAccounting(uint256 activationPeriod) external {
+        if (msg.sender != address(weightReceiver)) {
+            revert UnauthorizedWeightReceiver();
+        }
+        if (serviceStartPeriodPlusOne != 0) {
+            revert ServiceAccountingAlreadyConfigured();
+        }
+        // Existing nonempty deployments need an explicit aggregate migration; an empty launch
+        // can track passive weight exactly without trusting an administrator-supplied total.
+        if (totalWeight != 0) {
+            revert NonemptyServiceAccountingMigration();
+        }
+        serviceStartPeriodPlusOne = activationPeriod + 1;
+        emit ServiceAccountingEnabled(activationPeriod);
     }
 
     function updateStakeWeight(address account, uint256 stakeWeight) external onlyRole(STAKE_WEIGHT_UPDATER_ROLE) {
@@ -134,12 +170,23 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         _activatePendingWeight(account);
     }
 
+    /// @notice Legacy potential weight; use the issuer's currentRewardWeight for service issuance.
     function weightOf(address account) external view returns (uint256) {
         return _totalAccountWeight(_weights[account]);
     }
 
     function weightComponents(address account) external view returns (Weight memory) {
         return _weights[account];
+    }
+
+    function rewardWeightComponents(address account)
+        external
+        view
+        returns (uint256 passiveWeight, uint256 seniorBonus)
+    {
+        Weight memory weight = _weights[account];
+        passiveWeight = _passiveWeight(weight.stakeWeight, weight.sentryNodeWeight);
+        seniorBonus = _totalAccountWeight(weight) - passiveWeight;
     }
 
     function pendingWeightComponents(address account) external view returns (PendingWeightView memory pendingWeight) {
@@ -269,26 +316,46 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         emit PendingWeightActivated(account, oldWeight, newWeight);
     }
 
-    function _applyWeightChange(
-        address account,
-        uint256 newStakeWeight,
-        uint256 newSentryNodeWeight
-    ) private returns (uint256 oldWeight, uint256 newWeight) {
+    function _applyWeightChange(address account, uint256 newStakeWeight, uint256 newSentryNodeWeight)
+        private
+        returns (uint256 oldWeight, uint256 newWeight)
+    {
         Weight storage stored = _weights[account];
         oldWeight = _totalAccountWeight(stored);
         uint256 oldTotalWeight = totalWeight;
+        uint256 oldPassiveWeight = _passiveWeight(stored.stakeWeight, stored.sentryNodeWeight);
         newWeight = newStakeWeight + newSentryNodeWeight;
         _checkWeight(newWeight);
 
         stored.stakeWeight = newStakeWeight;
         stored.sentryNodeWeight = newSentryNodeWeight;
         totalWeight = oldTotalWeight - oldWeight + newWeight;
-        _checkpointWeightChange(account, oldWeight, newWeight, oldTotalWeight);
+        if (serviceStartPeriodPlusOne == 0) {
+            _checkpointWeightChange(account, oldWeight, newWeight, oldTotalWeight);
+        } else {
+            uint256 oldTotalPassiveWeight = totalPassiveWeight;
+            uint256 newPassiveWeight = _passiveWeight(newStakeWeight, newSentryNodeWeight);
+            totalPassiveWeight = oldTotalPassiveWeight - oldPassiveWeight + newPassiveWeight;
+            if (oldWeight != newWeight || oldPassiveWeight != newPassiveWeight) {
+                IZkSysServiceWeightReceiver(address(weightReceiver))
+                    .onWeightComponentsChange(
+                        account,
+                        oldWeight,
+                        newWeight,
+                        oldPassiveWeight,
+                        newPassiveWeight,
+                        oldTotalWeight,
+                        oldTotalPassiveWeight
+                    );
+            }
+        }
 
         emit WeightUpdated(account, oldWeight, newWeight);
     }
 
-    function _checkpointWeightChange(address account, uint256 oldWeight, uint256 newWeight, uint256 oldTotalWeight) private {
+    function _checkpointWeightChange(address account, uint256 oldWeight, uint256 newWeight, uint256 oldTotalWeight)
+        private
+    {
         IZkSysWeightReceiver receiver = weightReceiver;
         if (oldWeight != newWeight) {
             if (address(receiver) == address(0)) {
@@ -325,5 +392,10 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
 
     function _totalAccountWeight(Weight memory weight) private pure returns (uint256) {
         return weight.stakeWeight + weight.sentryNodeWeight;
+    }
+
+    function _passiveWeight(uint256 stakeWeight, uint256 sentryNodeWeight) private pure returns (uint256) {
+        uint256 baseWeight = sentryNodeWeight < SENTRY_NODE_BASE_WEIGHT ? sentryNodeWeight : SENTRY_NODE_BASE_WEIGHT;
+        return stakeWeight + baseWeight;
     }
 }

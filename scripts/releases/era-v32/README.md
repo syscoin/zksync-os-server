@@ -1,13 +1,13 @@
 # Generated Era sources and separate canonical fixture certification
 
-The copied overlay, manifest and read-only checker are the exact reviewed
-domain-corrected crypto bundle. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`,
-reviewed source tree `3eefa0f127d1deff365ebffcf489b183cde0e756`, and generated tree
-`9b4ff94d1ff647cc00aeb0c3b81dbb922646b946`. Only four exact paths are overlaid;
+The overlay, manifest and read-only checker bind the reviewed domain-corrected
+crypto bundle to the source tree containing the native priority observation getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`,
+reviewed source tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
+`ff5565cd22b61259d6f886e9a0130f788bbdb11c`. Only four exact paths are overlaid;
 all 278 identities and retained FFLONK remain unchanged. The manifest binds the
 pre-reviewed proof/EVM artifacts but is not a live fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
-bytes and absence of the generated source copy; the unchanged manifest binds
+bytes and absence of the generated source copy; the manifest binds
 all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
@@ -95,3 +95,24 @@ not artifact attestation; normal artifact/build gates remain necessary.
 Focused tests use synthetic temporary repositories/fixtures only; the real
 bundle reconstruction is read-only. No build, deployment, signing, original
 checkout mutation or fixture registry activation is part of this implementation.
+
+## Priority observation source integration
+
+The service source adds only the concrete Getters facet's priority transaction
+timestamp and tree-height observations, their selectors, generated inventory row,
+and regression test. The shared IGetters interface, genesis predeploys, real VK,
+generated PLONK/key bytes, and guest application identity are unchanged. The
+source-only inventory and the generated overlay are re-attested as distinct exact
+trees; the overlay still changes only its two permitted verifier inventory rows.
+
+`crypto_validation_provenance` retains the original PR323 source/generated trees
+for the existing real-proof, EVM, Cancun and native-build archive records. Their
+unchanged hashes are historical crypto evidence, not a claim that a real proof
+or deployment was rerun for the service source tree. The published offline
+critical Gateway input/helper/result under `scripts/keygen/gateway-identity` is
+also preserved byte-for-byte at its historical source tree. It is not consumed
+as current deployment authorization. Before a fresh service deployment, rebuild
+and rederive the full CTM configuration, including the new Getters facet address
+and selectors, and recheck the critical timelock/relay identities against those
+artifacts. The production identity and canonical fixture regeneration gates
+remain closed.

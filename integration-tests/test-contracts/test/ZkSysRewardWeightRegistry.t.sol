@@ -4,15 +4,22 @@ pragma solidity ^0.8.26;
 import {ERC1967Proxy} from "@openzeppelin/contracts-v4/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
-import {IZkSysWeightReceiver, ZkSysRewardWeightRegistry} from "contracts/src/zksys/ZkSysRewardWeightRegistry.sol";
+import {
+    IZkSysWeightReceiver,
+    IZkSysServiceWeightReceiver,
+    ZkSysRewardWeightRegistry
+} from "contracts/src/zksys/ZkSysRewardWeightRegistry.sol";
 
-contract MockRewardWeightReceiver is IZkSysWeightReceiver {
+contract MockRewardWeightReceiver is IZkSysWeightReceiver, IZkSysServiceWeightReceiver {
     address public lastAccount;
     uint256 public lastOldWeight;
     uint256 public lastNewWeight;
     uint256 public lastOldTotalWeight;
     uint256 public startTime = 1_000;
     uint256 public currentPeriod;
+    uint256 public lastOldPassiveWeight;
+    uint256 public lastNewPassiveWeight;
+    uint256 public lastOldTotalPassiveWeight;
 
     function setCurrentPeriod(uint256 currentPeriod_) external {
         currentPeriod = currentPeriod_;
@@ -24,9 +31,32 @@ contract MockRewardWeightReceiver is IZkSysWeightReceiver {
         lastNewWeight = newWeight;
         lastOldTotalWeight = oldTotalWeight;
     }
+
+    function enableServiceAccounting(ZkSysRewardWeightRegistry registry, uint256 period) external {
+        registry.enableServiceAccounting(period);
+    }
+
+    function onWeightComponentsChange(
+        address account,
+        uint256 oldWeight,
+        uint256 newWeight,
+        uint256 oldPassiveWeight,
+        uint256 newPassiveWeight,
+        uint256 oldTotalWeight,
+        uint256 oldTotalPassiveWeight
+    ) external {
+        lastAccount = account;
+        lastOldWeight = oldWeight;
+        lastNewWeight = newWeight;
+        lastOldPassiveWeight = oldPassiveWeight;
+        lastNewPassiveWeight = newPassiveWeight;
+        lastOldTotalWeight = oldTotalWeight;
+        lastOldTotalPassiveWeight = oldTotalPassiveWeight;
+    }
 }
 
 contract ZkSysRewardWeightRegistryTest is Test {
+    uint64 private observationHeight = uint64(type(uint32).max) + 1;
     uint256 private constant ACTIVATION_DELAY_PERIODS = 1;
     uint256 private constant LAUNCH_ACTIVATION_DELAY_PERIODS = 3;
     uint128 private constant DEFAULT_SENTRY_NODE_WEIGHT = 100_000 ether;
@@ -512,6 +542,71 @@ contract ZkSysRewardWeightRegistryTest is Test {
         assertEq(weightRegistry.totalWeight(), DEFAULT_SENTRY_NODE_WEIGHT);
     }
 
+    function testOnlyReceiverCanEnableServiceAccountingAndOnlyOnce() public {
+        vm.prank(admin);
+        vm.expectRevert(ZkSysRewardWeightRegistry.UnauthorizedWeightReceiver.selector);
+        weightRegistry.enableServiceAccounting(1);
+        receiver.enableServiceAccounting(weightRegistry, 1);
+        assertEq(weightRegistry.serviceStartPeriodPlusOne(), 2);
+        vm.expectRevert(ZkSysRewardWeightRegistry.ServiceAccountingAlreadyConfigured.selector);
+        receiver.enableServiceAccounting(weightRegistry, 1);
+    }
+
+    function testNonemptyRegistryCannotSilentlyReinterpretLegacyWeight() public {
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 1 ether);
+        weightRegistry.activatePendingWeightFor(alice);
+        vm.expectRevert(ZkSysRewardWeightRegistry.NonemptyServiceAccountingMigration.selector);
+        receiver.enableServiceAccounting(weightRegistry, 1);
+        assertEq(weightRegistry.serviceStartPeriodPlusOne(), 0);
+        assertEq(weightRegistry.totalWeight(), 1 ether);
+    }
+
+    function testServiceModeTracksPassiveAggregateWithoutTreatingPotentialAsAdmission() public {
+        receiver.enableServiceAccounting(weightRegistry, 0);
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 2 ether);
+        weightRegistry.activatePendingWeightFor(alice);
+        assertEq(weightRegistry.totalPassiveWeight(), 2 ether);
+
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 135_000 ether);
+        weightRegistry.activatePendingWeightFor(alice);
+        assertEq(weightRegistry.totalWeight(), 135_002 ether);
+        assertEq(weightRegistry.totalPassiveWeight(), 100_002 ether);
+        (uint256 passive, uint256 bonus) = weightRegistry.rewardWeightComponents(alice);
+        assertEq(passive, 100_002 ether);
+        assertEq(bonus, 35_000 ether);
+        assertEq(receiver.lastOldPassiveWeight(), 2 ether);
+        assertEq(receiver.lastNewPassiveWeight(), 100_002 ether);
+        assertEq(receiver.lastOldTotalPassiveWeight(), 2 ether);
+
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 0, 0);
+        assertEq(weightRegistry.totalWeight(), 2 ether);
+        assertEq(weightRegistry.totalPassiveWeight(), 2 ether);
+        assertEq(receiver.lastOldPassiveWeight(), 100_002 ether);
+        assertEq(receiver.lastOldTotalPassiveWeight(), 100_002 ether);
+        (passive, bonus) = weightRegistry.rewardWeightComponents(alice);
+        assertEq(passive, 2 ether);
+        assertEq(bonus, 0);
+    }
+
+    function testSeniorPotentialIncreaseDoesNotChangePassiveAggregate() public {
+        receiver.enableServiceAccounting(weightRegistry, 0);
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 135_000 ether);
+        weightRegistry.activatePendingWeightFor(alice);
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 200_000 ether);
+        weightRegistry.activatePendingWeightFor(alice);
+        assertEq(weightRegistry.totalPassiveWeight(), 100_000 ether);
+        assertEq(receiver.lastOldPassiveWeight(), 100_000 ether);
+        assertEq(receiver.lastNewPassiveWeight(), 100_000 ether);
+        assertEq(receiver.lastOldWeight(), 135_000 ether);
+        assertEq(receiver.lastNewWeight(), 200_000 ether);
+    }
+
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {
         _applyL1Update(
             account, sentryNodeCollateralHeight, sentryNodeCollateralHeight == 0 ? 0 : DEFAULT_SENTRY_NODE_WEIGHT
@@ -530,11 +625,9 @@ contract ZkSysRewardWeightRegistryTest is Test {
     ) private {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
-            account: account,
-            sentryNodeCollateralHeight: sentryNodeCollateralHeight,
-            sentryNodeWeight: sentryNodeWeight
+            account: account, sentryNodeCollateralHeight: sentryNodeCollateralHeight, sentryNodeWeight: sentryNodeWeight
         });
-        registry.applyL1SentryNodeUpdates(updates);
+        registry.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
     }
 
     function _deployMembershipRegistry(address admin_, address l1Bridge_) private returns (ZkSysMembershipRegistry) {
@@ -560,9 +653,7 @@ contract ZkSysRewardWeightRegistryTest is Test {
         ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation),
-            abi.encodeCall(
-                ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, activationDelayPeriods_)
-            )
+            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, activationDelayPeriods_))
         );
         return ZkSysRewardWeightRegistry(address(proxy));
     }

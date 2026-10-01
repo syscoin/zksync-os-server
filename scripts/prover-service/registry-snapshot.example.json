@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "chain_id": "0x0",
+  "registry": "0x0000000000000000000000000000000000000000",
+  "block_number": "0x0",
+  "block_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "block_timestamp": "0x0",
+  "start_time": "0x0",
+  "period_seconds": "0x0",
+  "first_service_period": 0,
+  "roster_publication_lead_seconds": 0
+}

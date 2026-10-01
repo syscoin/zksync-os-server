@@ -44,6 +44,8 @@ use zksync_os_types::{NodeRole, PubdataMode};
 mod build_external_config;
 mod cli;
 mod metrics;
+mod service_publication;
+pub use service_publication::ServicePublicationConfig;
 mod util;
 
 pub use build_external_config::{build_external_config, load_config_file_sources};
@@ -81,6 +83,7 @@ pub struct Config {
     pub l1_watcher_config: L1WatcherConfig,
     pub batcher_config: BatcherConfig,
     pub prover_api_config: ProverApiConfig,
+    pub service_publication_config: ServicePublicationConfig,
     pub status_server_config: StatusServerConfig,
     pub observability_config: ObservabilityConfig,
     pub gas_adjuster_config: GasAdjusterConfig,
@@ -245,6 +248,12 @@ impl Config {
             .insert(&ProverApiConfig::DESCRIPTION, "prover_api")
             .expect("Failed to insert prover api config");
         schema
+            .insert(
+                &ServicePublicationConfig::DESCRIPTION,
+                "service_publication",
+            )
+            .expect("Failed to insert service publication config");
+        schema
             .insert(&StatusServerConfig::DESCRIPTION, "status_server")
             .expect("Failed to insert status server config");
         schema
@@ -301,6 +310,17 @@ impl Config {
         let Some(commit) = &l1_sender_config.operator_commit_sk else {
             return Ok(());
         };
+        if root.service_publication_config.enabled {
+            if let Some(execute) = &l1_sender_config.operator_execute_sk
+                && commit.address().await? == execute.address().await?
+            {
+                errors.push(ValidationError::new(
+                    "l1_sender.operator_commit_sk",
+                    "must differ from the execute signer in service publication mode",
+                ));
+            }
+            return Ok(());
+        }
         let Some(prove) = &l1_sender_config.operator_prove_sk else {
             return Ok(());
         };
@@ -373,6 +393,17 @@ impl Config {
         let Some(commit) = &gateway_sender_config.operator_commit_sk else {
             return Ok(());
         };
+        if root.service_publication_config.enabled {
+            if let Some(execute) = &gateway_sender_config.operator_execute_sk
+                && commit.address().await? == execute.address().await?
+            {
+                errors.push(ValidationError::new(
+                    "gateway_sender.operator_commit_sk",
+                    "must differ from the execute signer in service publication mode",
+                ));
+            }
+            return Ok(());
+        }
         let Some(prove) = &gateway_sender_config.operator_prove_sk else {
             return Ok(());
         };
@@ -1448,7 +1479,7 @@ pub struct L1SenderConfig {
     /// Signer to submit proofs to L1.
     /// Must hold `PROVER_ROLE` for the chain on the ValidatorTimelock (permissioned).
     /// Not required for External Nodes, which do not send L1 transactions.
-    /// On a Main Node, required at runtime only when settling on L1 (see `operator_commit_sk`).
+    /// On a Main Node, required when settling on L1 with service publication disabled.
     #[config(secret, alias = "operator_prove_pk", with = SignerConfigDeserializer)]
     pub operator_prove_sk: Option<SignerConfig>,
 
@@ -1608,9 +1639,8 @@ pub struct GatewaySenderConfig {
     #[config(secret, alias = "operator_commit_pk", with = SignerConfigDeserializer)]
     pub operator_commit_sk: Option<SignerConfig>,
 
-    /// Signer to submit proofs to the Gateway.
-    /// Can be an arbitrary funded address — proof submission is permissionless.
-    /// Required at runtime when the chain settles on Gateway.
+    /// Signer to submit proofs to the Gateway, holding the timelock's `PROVER_ROLE`.
+    /// Required when settling on Gateway with service publication disabled.
     #[config(secret, alias = "operator_prove_pk", with = SignerConfigDeserializer)]
     pub operator_prove_sk: Option<SignerConfig>,
 
@@ -3401,6 +3431,7 @@ mod tests {
             l1_watcher_config: L1WatcherConfig::default(),
             batcher_config: BatcherConfig::default(),
             prover_api_config: ProverApiConfig::default(),
+            service_publication_config: ServicePublicationConfig::default(),
             status_server_config: StatusServerConfig::default(),
             observability_config: ObservabilityConfig::default(),
             gas_adjuster_config: GasAdjusterConfig::default(),
@@ -3414,6 +3445,62 @@ mod tests {
             fee_config: FeeConfig::default(),
             backpressure_config: BackpressureConfig::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn service_publication_config_requires_real_pinned_main_node_but_no_proof_wallet() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.service_publication_config = ServicePublicationConfig {
+            enabled: true,
+            directory: PathBuf::from("/private/tmp/service-publication-test"),
+            gate: Address::repeat_byte(1),
+            gate_code_hash: B256::repeat_byte(2),
+            policy_hash: B256::repeat_byte(3),
+            production_vk_hash: B256::repeat_byte(4),
+            sequencer: Address::repeat_byte(5),
+            ..Default::default()
+        };
+        config.prover_api_config.fake_fri_provers.enabled = false;
+        config.prover_api_config.fake_snark_provers.enabled = false;
+        config.l1_sender_config.operator_prove_sk = None;
+        let mut errors = Vec::new();
+        config.service_publication_config.validate_conditional(
+            &config,
+            &mut errors,
+            "service_publication",
+        );
+        Config::validate_operator_signers(&config, &config.l1_sender_config, &mut errors)
+            .await
+            .unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        config.prover_api_config.fake_snark_provers.enabled = true;
+        config.service_publication_config.validate_conditional(
+            &config,
+            &mut errors,
+            "service_publication",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("real FRI"))
+        );
+        errors.clear();
+        config.prover_api_config.fake_snark_provers.enabled = false;
+        config.service_publication_config.production_vk_hash = B256::ZERO;
+        config.service_publication_config.validate_conditional(
+            &config,
+            &mut errors,
+            "service_publication",
+        );
+        assert!(!errors.is_empty());
+        errors.clear();
+        config.service_publication_config.enabled = false;
+        config.service_publication_config.validate_conditional(
+            &config,
+            &mut errors,
+            "service_publication",
+        );
+        assert!(errors.is_empty());
     }
 
     fn set_bitcoin_da_credentials(
