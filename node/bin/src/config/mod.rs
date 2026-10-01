@@ -2061,7 +2061,12 @@ pub struct FakeSnarkProversConfig {
     #[config(default_t = false)]
     pub enabled: bool,
 
-    /// Only pick up jobs that are this time old.
+    /// Minimum queued age before the fake worker may consume any FRI input, including fake ones.
+    /// Zero preserves immediate fake-FRI completion; tests can delay wrapping while commits advance.
+    #[config(default_t = Duration::ZERO)]
+    pub min_age: Duration,
+
+    /// Age after which the fake worker may also consume real FRI inputs.
     #[config(default_t = Duration::from_secs(10))]
     pub max_batch_age: Duration,
 }
@@ -3562,6 +3567,10 @@ mod tests {
     async fn prover_api_snark_defaults_support_cpu_wrapper() {
         let config = base_config(NodeRole::MainNode);
 
+        assert_eq!(
+            config.prover_api_config.fake_snark_provers.min_age,
+            Duration::ZERO
+        );
         assert_eq!(
             config.prover_api_config.snark_job_timeout,
             Duration::from_secs(7200)

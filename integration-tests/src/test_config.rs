@@ -26,12 +26,11 @@ impl fmt::Debug for BitcoinDaMock {
     }
 }
 
-/// SYSCOIN: Configures the node to commit batches on L1 without starting either proof stage.
-/// Commitment precedes proving, so the intentionally idle pipeline keeps batches committed but
-/// unproved without violating the V32 rule that rejects partial fake-prover topologies.
+/// Advances fake FRI and L1 commits while holding fake SNARKs beyond the bounded test lifetime.
+/// FRI precedes commitment; both fake pools stay enabled to preserve the validated test topology.
 pub fn make_commit_only_config(config: &mut Config) {
-    config.prover_api_config.fake_fri_provers.enabled = false;
-    config.prover_api_config.fake_snark_provers.enabled = false;
+    make_full_pipeline_config(config);
+    config.prover_api_config.fake_snark_provers.min_age = Duration::from_secs(3600);
 }
 
 /// Runs the full settlement pipeline so batches commit, prove, and execute on L1.
@@ -40,6 +39,7 @@ pub fn make_full_pipeline_config(config: &mut Config) {
     config.prover_api_config.fake_fri_provers.compute_time = Duration::from_millis(200);
     config.prover_api_config.fake_fri_provers.min_age = Duration::ZERO;
     config.prover_api_config.fake_snark_provers.enabled = true;
+    config.prover_api_config.fake_snark_provers.min_age = Duration::ZERO;
     config.prover_api_config.fake_snark_provers.max_batch_age = Duration::ZERO;
 }
 
@@ -331,4 +331,45 @@ pub async fn run_component_fixture_bootstrap(
     ensure!(stopped, "component node did not stop cleanly");
     ensure!(booted, "component bootstrap stopped before RPC startup");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CURRENT_TO_L1;
+
+    #[tokio::test]
+    async fn commit_only_and_full_pipeline_keep_paired_fake_producers() {
+        let mut config = load_chain_config(ChainLayout::Default {
+            protocol_version: CURRENT_TO_L1.protocol_version,
+            fixture_scope: CURRENT_TO_L1.fixture_scope,
+        })
+        .await;
+        make_commit_only_config(&mut config);
+        assert!(config.prover_api_config.fake_fri_provers.enabled);
+        assert!(config.prover_api_config.fake_snark_provers.enabled);
+        assert_eq!(
+            config.prover_api_config.fake_fri_provers.min_age,
+            Duration::ZERO
+        );
+        assert_eq!(
+            config.prover_api_config.fake_fri_provers.compute_time,
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            config.prover_api_config.fake_snark_provers.min_age,
+            Duration::from_secs(3600)
+        );
+        make_full_pipeline_config(&mut config);
+        assert!(config.prover_api_config.fake_fri_provers.enabled);
+        assert!(config.prover_api_config.fake_snark_provers.enabled);
+        assert_eq!(
+            config.prover_api_config.fake_snark_provers.min_age,
+            Duration::ZERO
+        );
+        assert_eq!(
+            config.prover_api_config.fake_snark_provers.max_batch_age,
+            Duration::ZERO
+        );
+    }
 }

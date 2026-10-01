@@ -211,7 +211,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     );
     assert_eq!(
         committed_state.last_proved_batch, initial_state.last_proved_batch,
-        "fake SNARK provers are disabled, so the proved frontier must not advance"
+        "fake SNARK proving is delayed, so the proved frontier must not advance"
     );
 
     let safe_before_revert = wait_for_block_number_by_id(
