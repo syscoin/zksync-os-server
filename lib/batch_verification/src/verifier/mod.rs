@@ -1410,8 +1410,7 @@ mod tests {
         );
         assert!(
             run(&wrong_output, &tree)
-                .err()
-                .expect("canonical output drift must fail")
+                .expect_err("canonical output drift must fail")
                 .to_string()
                 .contains("output mismatch")
         );
@@ -1419,8 +1418,7 @@ mod tests {
         let mut missing_tree = genesis_tree(&genesis_state, missing_dir.path());
         assert!(
             run(&tree_block.output, &missing_tree)
-                .err()
-                .expect("missing final tree must fail")
+                .expect_err("missing final tree must fail")
                 .to_string()
                 .contains("missing canonical Merkle tree")
         );
@@ -1432,8 +1430,7 @@ mod tests {
             .unwrap();
         assert!(
             run(&tree_block.output, &missing_tree)
-                .err()
-                .expect("wrong final tree must fail")
+                .expect_err("wrong final tree must fail")
                 .to_string()
                 .contains("final state commitment mismatch")
         );
