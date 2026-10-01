@@ -718,6 +718,7 @@ impl SnarkJobManager {
     /// Consumes FRI proofs from the head of the queue that satisfy the following conditions:
     /// * FRI proof is fake
     /// * if `timeout_for_real_fris` is Some, then also jobs that are older than `timeout_for_real_fris`
+    ///
     /// In either case, the input must also have reached `min_age` before it can be leased.
     async fn process_pending_fake_or_timed_out_fri_proofs(
         &self,
