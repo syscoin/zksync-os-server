@@ -17,6 +17,7 @@ use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, Tester, test_m
 use zksync_os_provider::NodeProvider;
 use zksync_os_rpc_api::types::BatchStorageProof;
 use zksync_os_server::config::FeeConfig;
+use zksync_os_types::SYSCOIN_MAX_TX_GAS_LIMIT;
 
 #[test_multisetup([CURRENT_TO_L1])]
 async fn get_code(tester: Tester) -> anyhow::Result<()> {
@@ -221,10 +222,11 @@ async fn send_raw_transaction_sync_timeout(tester: Tester) -> anyhow::Result<()>
 #[test_multisetup([CURRENT_TO_L1])]
 async fn estimate_gas_with_high_prices(env: TestEnvironment) -> anyhow::Result<()> {
     // Tests the estimations are accurate with high fee overrides.
-    // Following config has high pubdata price, that makes base token transfer to take >21000 gas.
+    // Keep pubdata expensive enough to exceed 21,000 gas while staying inside V32's
+    // immutable per-transaction gas ceiling; an unexecutable estimate is not this test's target.
     let fee_config = FeeConfig {
         native_price_usd: 3e-9, // doesn't matter
-        pubdata_price_override: Some(U128::from(10_000_000_000_000u64)),
+        pubdata_price_override: Some(U128::from(1_000_000_000_000u64)),
         native_price_override: Some(U128::from(1_000_000u64)),
         base_fee_override: Some(U128::from(100_000_000u64)),
         native_per_gas: 100, // doesn't matter
@@ -242,14 +244,23 @@ async fn estimate_gas_with_high_prices(env: TestEnvironment) -> anyhow::Result<(
 
     let gas = tester.l2_provider.estimate_gas(tx.clone()).await?;
     tracing::info!("Estimated gas: {gas}");
+    assert!(gas > 21_000, "high pubdata price must affect the estimate");
+    assert!(
+        gas <= SYSCOIN_MAX_TX_GAS_LIMIT,
+        "estimate must be executable"
+    );
 
     let receipt = tester
         .l2_provider
-        .send_transaction(tx)
+        .send_transaction(tx.gas_limit(gas))
         .await?
         .expect_successful_receipt()
         .await?;
     tracing::info!("Got receipt, gas used: {}", receipt.gas_used);
+    assert!(
+        receipt.gas_used <= gas,
+        "the returned estimate must suffice"
+    );
 
     Ok(())
 }
