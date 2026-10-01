@@ -3,6 +3,8 @@ use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use anyhow::Context as _;
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, ReceiptAssert};
@@ -22,6 +24,40 @@ const REPLAY_ARCHIVE_RECIPIENT: &str =
 const REPLAY_ARCHIVE_IDENTITY_FILE: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/replay-archive.key");
 const TRANSACTIONS_BEFORE_RECOVERY: usize = 3;
+const DATABASE_IDENTITY_FILE: &str = "database_identity.json";
+const MAX_DATABASE_IDENTITY_BYTES: u64 = 16 * 1024;
+
+fn read_runtime_database_identity(path: &Path) -> anyhow::Result<Vec<u8>> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && (1..=MAX_DATABASE_IDENTITY_BYTES).contains(&metadata.len()),
+        "runtime database identity must be a bounded regular file"
+    );
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_DATABASE_IDENTITY_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() as u64 == metadata.len(),
+        "runtime database identity changed while reading"
+    );
+    Ok(bytes)
+}
+
+fn restore_runtime_database_identity(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
 
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
@@ -75,6 +111,10 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
         .context("replay archive should contain a canonical recovery anchor")?;
     let latest_block_number = archive_head.block_number;
     let latest_block_hash = archive_head.block_hash;
+    // The WAL archive is not a deployment identity. Retain the actual stopped
+    // node's marker so unchanged startup can authenticate the recovered database.
+    let identity_path = rocks_db_path.join(DATABASE_IDENTITY_FILE);
+    let original_identity = read_runtime_database_identity(&identity_path)?;
 
     tokio::fs::remove_dir_all(&rocks_db_path)
         .await
@@ -87,6 +127,7 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
         latest_block_hash,
     )
     .await?;
+    restore_runtime_database_identity(&identity_path, &original_identity)?;
     // SYSCOIN: Recovery writes a fresh RocksDB and drops it asynchronously. Ensure that handle is
     // fully gone before the in-process restart opens the same path, otherwise it can observe the
     // pre-recovery fixture handle and replay only its older tip.
@@ -227,4 +268,34 @@ fn replay_archive_root(rocks_db_path: &Path) -> anyhow::Result<PathBuf> {
         .parent()
         .context("rocks DB path should have a parent")?
         .join("replay_archive"))
+}
+
+#[test]
+fn runtime_database_identity_recovery_preserves_bytes_and_rejects_unsafe_inputs() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source.json");
+    let bytes = b"unit-only original identity bytes\n";
+    std::fs::write(&source, bytes).unwrap();
+    let retained = read_runtime_database_identity(&source).unwrap();
+    let output = root.path().join(DATABASE_IDENTITY_FILE);
+    restore_runtime_database_identity(&output, &retained).unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), bytes);
+    assert_eq!(
+        std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(restore_runtime_database_identity(&output, b"replacement").is_err());
+    assert_eq!(std::fs::read(&output).unwrap(), bytes);
+    let link = root.path().join("link");
+    symlink(&source, &link).unwrap();
+    assert!(read_runtime_database_identity(&link).is_err());
+    assert!(read_runtime_database_identity(root.path()).is_err());
+    std::fs::write(
+        &source,
+        vec![b'x'; MAX_DATABASE_IDENTITY_BYTES as usize + 1],
+    )
+    .unwrap();
+    assert!(read_runtime_database_identity(&source).is_err());
 }
