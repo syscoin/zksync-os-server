@@ -53,9 +53,34 @@ pub(super) struct ProverQuery {
     pub max_fri_pick_response_bytes: Option<usize>,
     #[serde(default)]
     pub nonempty_only: bool,
+    #[serde(default)]
+    pub snark_batch_from: Option<u64>,
+    #[serde(default)]
+    pub snark_batch_to: Option<u64>,
 }
 
 impl ProverQuery {
+    pub fn requested_snark_range(
+        &self,
+        maximum: usize,
+    ) -> Result<Option<(u64, u64)>, &'static str> {
+        match (self.snark_batch_from, self.snark_batch_to) {
+            (None, None) => Ok(None),
+            (Some(from), Some(to)) => {
+                let count = to
+                    .checked_sub(from)
+                    .and_then(|length| length.checked_add(1));
+                if from == 0 || count.is_none_or(|count| count < 2 || count > maximum as u64) {
+                    return Err(
+                        "requested SNARK range must contain 2..=maximum consecutive batches",
+                    );
+                }
+                Ok(Some((from, to)))
+            }
+            _ => Err("snark_batch_from and snark_batch_to must be supplied together"),
+        }
+    }
+
     pub fn fri_pick_response_capacity(&self, server_maximum: usize) -> usize {
         self.max_fri_pick_response_bytes
             .unwrap_or(server_maximum)
@@ -186,9 +211,35 @@ mod tests {
     fn query(supported_vk_hashes: Option<&str>) -> ProverQuery {
         ProverQuery {
             nonempty_only: false,
+            snark_batch_from: None,
+            snark_batch_to: None,
             id: "test_prover".to_string(),
             supported_vk_hashes: supported_vk_hashes.map(str::to_string),
             max_fri_pick_response_bytes: None,
+        }
+    }
+
+    #[test]
+    fn requested_snark_range_requires_paired_bounded_non_singleton_range() {
+        let mut query = query(None);
+        assert_eq!(query.requested_snark_range(100), Ok(None));
+        for (from, to) in [
+            (Some(1), None),
+            (None, Some(2)),
+            (Some(0), Some(2)),
+            (Some(2), Some(1)),
+            (Some(1), Some(1)),
+            (Some(1), Some(101)),
+            (Some(0), Some(u64::MAX)),
+        ] {
+            query.snark_batch_from = from;
+            query.snark_batch_to = to;
+            assert!(query.requested_snark_range(100).is_err());
+        }
+        for (from, to) in [(1, 2), (1, 100), (u64::MAX - 1, u64::MAX)] {
+            query.snark_batch_from = Some(from);
+            query.snark_batch_to = Some(to);
+            assert_eq!(query.requested_snark_range(100), Ok(Some((from, to))));
         }
     }
 

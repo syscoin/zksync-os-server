@@ -555,21 +555,42 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
 
     function testDispatcherEnumerationIncludesPendingApplicantsAndScopesEligibility() public {
         _subscribe(ALICE_KEY, ALICE_OPERATOR_KEY);
-        ProverSubscriptionV1 memory wrapperOnly = _subscription(BOB_KEY, BOB_OPERATOR_KEY);
-        wrapperOnly.services = 2;
-        service.subscribe(wrapperOnly, _sign(BOB_KEY, service.subscriptionDigest(wrapperOnly)));
+        _subscribe(BOB_KEY, BOB_OPERATOR_KEY);
         address seq = vm.addr(SEQUENCER_KEY);
-        assertEq(service.friSubscriberCount(seq, 0), 1);
-        assertEq(service.friSubscriberCount(seq, 10), 1);
+        assertEq(service.friSubscriberCount(seq, 0), 2);
+        assertEq(service.friSubscriberCount(seq, 10), 2);
         assertEq(service.friSubscriberCount(seq, 11), 0);
         assertEq(service.friSubscriberCount(address(123), 0), 0);
         assertEq(service.friSubscriberAt(seq, 0, 0), vm.addr(ALICE_KEY));
         assertTrue(service.isEligibleFriSubscriber(vm.addr(ALICE_KEY), seq, 0));
-        assertFalse(service.isEligibleFriSubscriber(vm.addr(BOB_KEY), seq, 0));
+        assertTrue(service.isEligibleFriSubscriber(vm.addr(BOB_KEY), seq, 0));
         assertEq(service.totalQualifiedBonusWeight(0), 0);
         membership.set(vm.addr(ALICE_KEY), 0, 0, 211_241, uint64(block.timestamp));
         assertFalse(service.isEligibleFriSubscriber(vm.addr(ALICE_KEY), seq, 0));
-        assertEq(service.friSubscriberCount(seq, 0), 1);
+        assertEq(service.friSubscriberCount(seq, 0), 2);
+    }
+
+    function testSubscriptionRequiresTheSharedFriAndWrapperPool() public {
+        ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        uint8[6] memory invalidServices = [uint8(0), 1, 2, 4, 7, 255];
+        for (uint256 i; i < invalidServices.length; ++i) {
+            sub.services = invalidServices[i];
+            bytes32 hash = ZkSysServiceTypesV1.hashSubscription(sub);
+            bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
+            vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
+            service.subscribe(sub, signature);
+            assertEq(service.nonces(sub.account), 0);
+            assertEq(service.subscription(hash).account, address(0));
+            assertEq(service.subscriptionAt(sub.account, sub.sequencer, 0), bytes32(0));
+            assertEq(service.operatorAccountAt(sub.operator, 0), address(0));
+            assertEq(service.friSubscriberCount(sub.sequencer, 0), 0);
+            assertEq(service.qualifiedWrapperCount(0), 0);
+        }
+        sub.services = 3;
+        service.subscribe(sub, _sign(ALICE_KEY, service.subscriptionDigest(sub)));
+        assertEq(service.nonces(sub.account), 1);
+        assertEq(service.friSubscriberCount(sub.sequencer, 0), 1);
+        assertTrue(service.isEligibleFriSubscriber(vm.addr(ALICE_KEY), sub.sequencer, 0));
     }
 
     function testFirstSeniorAgeBoundaryAndAuthenticatedObservationRequired() public {

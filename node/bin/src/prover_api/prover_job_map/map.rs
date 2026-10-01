@@ -1238,22 +1238,25 @@ impl<T: Clone> ProverJobMap<T> {
     /// SYSCOIN: The SNARK HTTP response cap is a readiness boundary, not a topology mismatch.
     /// Release a two-proof prefix immediately when the next compatible proof crosses that cap;
     /// report a deterministic fatal if even the oldest two-proof prefix cannot fit.
+    #[allow(clippy::too_many_arguments)]
     pub async fn pick_ready_snark_jobs_with_response_capacity<F>(
         &self,
         limit: usize,
         target_fris: usize,
         max_wait: Duration,
+        requested_range: Option<(u64, u64)>,
         prover_id: &str,
         predicate: F,
     ) -> SnarkJobPick<T>
     where
         F: FnMut(&JobEntry<T>) -> SnarkJobEligibility,
     {
-        self.pick_ready_snark_jobs_with_limits(
+        self.pick_ready_snark_jobs_with_limits_and_range(
             limit,
             target_fris,
             max_wait,
             MAX_JOURNAL_RECORD_BYTES,
+            requested_range,
             prover_id,
             predicate,
         )
@@ -1293,12 +1296,39 @@ impl<T: Clone> ProverJobMap<T> {
         .await
     }
 
+    #[cfg(test)]
     async fn pick_ready_snark_jobs_with_limits<F>(
         &self,
         limit: usize,
         target_fris: usize,
         max_wait: Duration,
         journal_record_limit: usize,
+        prover_id: &str,
+        predicate: F,
+    ) -> SnarkJobPick<T>
+    where
+        F: FnMut(&JobEntry<T>) -> SnarkJobEligibility,
+    {
+        self.pick_ready_snark_jobs_with_limits_and_range(
+            limit,
+            target_fris,
+            max_wait,
+            journal_record_limit,
+            None,
+            prover_id,
+            predicate,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn pick_ready_snark_jobs_with_limits_and_range<F>(
+        &self,
+        limit: usize,
+        target_fris: usize,
+        max_wait: Duration,
+        journal_record_limit: usize,
+        requested_range: Option<(u64, u64)>,
         prover_id: &str,
         mut predicate: F,
     ) -> SnarkJobPick<T>
@@ -1321,6 +1351,7 @@ impl<T: Clone> ProverJobMap<T> {
                 target_fris,
                 max_wait,
                 journal_record_limit,
+                requested_range,
                 prover_id,
                 &mut predicate,
             );
@@ -1328,6 +1359,7 @@ impl<T: Clone> ProverJobMap<T> {
         let mut candidate_jobs = Vec::<JobMetadata>::new();
         let mut candidate_batch_json_bytes = 0usize;
         let mut capacity_limited = false;
+        let mut ends_at_incompatible_boundary = false;
 
         for entry in jobs.values() {
             // SYSCOIN: A timed-out assignment cannot be stolen while its admitted verifier owns
@@ -1352,7 +1384,11 @@ impl<T: Clone> ProverJobMap<T> {
                     break;
                 }
 
-                if entry.metadata.proving_version != last.proving_version || !is_assignable {
+                if entry.metadata.proving_version != last.proving_version {
+                    ends_at_incompatible_boundary = true;
+                    break;
+                }
+                if !is_assignable {
                     break;
                 }
             }
@@ -1365,7 +1401,10 @@ impl<T: Clone> ProverJobMap<T> {
             match predicate(entry) {
                 SnarkJobEligibility::Eligible => {}
                 SnarkJobEligibility::Incompatible if candidate_jobs.is_empty() => continue,
-                SnarkJobEligibility::Incompatible => break,
+                SnarkJobEligibility::Incompatible => {
+                    ends_at_incompatible_boundary = true;
+                    break;
+                }
                 SnarkJobEligibility::ResponseCapacityExceeded {
                     required_bytes,
                     max_bytes,
@@ -1427,6 +1466,27 @@ impl<T: Clone> ProverJobMap<T> {
             return SnarkJobPick::Waiting(SnarkReadinessWait {
                 eligible_fris: candidate_jobs.len(),
                 oldest_eligible_age,
+            });
+        }
+
+        // The normal queue policy decides readiness before a renewal may shorten its prefix.
+        if let Some((from, to)) = requested_range {
+            let count = to
+                .checked_sub(from)
+                .and_then(|length| length.checked_add(1));
+            if from != oldest_candidate.batch_number
+                || count.is_none_or(|count| count < 2 || count > candidate_jobs.len() as u64)
+                // A frozen prefix cannot consume the partner of a singleton at a protocol boundary.
+                || (ends_at_incompatible_boundary && count == Some(candidate_jobs.len() as u64 - 1))
+            {
+                return SnarkJobPick::Waiting(SnarkReadinessWait {
+                    eligible_fris: candidate_jobs.len(),
+                    oldest_eligible_age,
+                });
+            }
+            candidate_jobs.truncate(count.unwrap() as usize);
+            candidate_batch_json_bytes = candidate_jobs.iter().fold(0usize, |total, metadata| {
+                total.saturating_add(metadata.durable_snark_batch_json_bytes)
             });
         }
 
@@ -1498,6 +1558,7 @@ impl<T: Clone> ProverJobMap<T> {
         target_fris: usize,
         max_wait: Duration,
         journal_record_limit: usize,
+        requested_range: Option<(u64, u64)>,
         prover_id: &str,
         predicate: &mut F,
     ) -> SnarkJobPick<T>
@@ -1613,7 +1674,27 @@ impl<T: Clone> ProverJobMap<T> {
             candidate_jobs.push(entry.metadata.clone());
         }
 
-        if candidate_jobs.len() < head_len {
+        if let Some((from, to)) = requested_range {
+            let count = to
+                .checked_sub(from)
+                .and_then(|length| length.checked_add(1));
+            if from != head.batch_from()
+                || count.is_none_or(|count| count < 2 || count > candidate_jobs.len() as u64)
+                || (to.checked_add(1) == Some(head.batch_to()) && !boundary.can_defer_tip_after(to))
+            {
+                // A caller's preferred cut must not repartition recovery or strand an interior singleton.
+                return SnarkJobPick::Waiting(SnarkReadinessWait {
+                    eligible_fris: candidate_jobs.len(),
+                    oldest_eligible_age: oldest_loaded_age,
+                });
+            }
+            candidate_jobs.truncate(count.unwrap() as usize);
+            candidate_batch_json_bytes = candidate_jobs.iter().fold(0usize, |total, metadata| {
+                total.saturating_add(metadata.durable_snark_batch_json_bytes)
+            });
+        }
+
+        if requested_range.is_none() && candidate_jobs.len() < head_len {
             debug_assert!(capacity_limited);
             let remainder = head_len - candidate_jobs.len();
             if remainder == 1 {
@@ -3751,6 +3832,278 @@ mod tests {
         assert_eq!(
             assigned_counts.iter().filter(|&&count| count > 0).count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn requested_snark_range_renews_exact_prefix_despite_new_arrivals() {
+        let map = Arc::new(ProverJobMap::new(Duration::ZERO, 100, ProverStage::Snark));
+        for batch in 1..=2 {
+            map.add_job(create_test_batch_envelope(batch)).await;
+        }
+        let SnarkJobPick::Assigned {
+            lease_token: old_token,
+            ..
+        } = map
+            .pick_ready_snark_jobs(100, 2, Duration::ZERO, "first", |_| true)
+            .await
+        else {
+            panic!("initial range must be ready")
+        };
+        for batch in 3..=4 {
+            map.add_job(create_test_batch_envelope(batch)).await;
+        }
+        let SnarkJobPick::Assigned { jobs, lease_token } = map
+            .pick_ready_snark_jobs_with_response_capacity(
+                100,
+                4,
+                Duration::from_secs(3600),
+                Some((1, 2)),
+                "renew",
+                |_| SnarkJobEligibility::Eligible,
+            )
+            .await
+        else {
+            panic!("frozen range must be renewable without adding new proofs")
+        };
+        assert_eq!(
+            jobs.iter()
+                .map(|(job, _)| job.batch_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_ne!(old_token, lease_token);
+        assert!(
+            map.status().await[2..]
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+        assert_eq!(
+            map.begin_submission(1, 2, &old_token).await.err(),
+            Some(BeginSubmissionError::InvalidLease)
+        );
+        let submitting = map.begin_submission(1, 2, &lease_token).await.unwrap();
+        assert!(matches!(
+            map.pick_ready_snark_jobs_with_response_capacity(
+                100,
+                2,
+                Duration::ZERO,
+                Some((1, 2)),
+                "blocked",
+                |_| SnarkJobEligibility::Eligible
+            )
+            .await,
+            SnarkJobPick::Waiting(_)
+        ));
+        assert!(
+            map.status().await[2..]
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+        drop(submitting);
+    }
+
+    #[tokio::test]
+    async fn requested_snark_range_cannot_skip_prefix_or_bypass_readiness() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        for batch in 1..=4 {
+            map.add_job(create_test_batch_envelope(batch)).await;
+        }
+        for requested in [(2, 3), (1, 5), (1, 1)] {
+            assert!(matches!(
+                map.pick_ready_snark_jobs_with_response_capacity(
+                    100,
+                    2,
+                    Duration::ZERO,
+                    Some(requested),
+                    "wrong",
+                    |_| SnarkJobEligibility::Eligible
+                )
+                .await,
+                SnarkJobPick::Waiting(_)
+            ));
+        }
+        assert!(matches!(
+            map.pick_ready_snark_jobs_with_response_capacity(
+                100,
+                100,
+                Duration::from_secs(3600),
+                Some((1, 2)),
+                "early",
+                |_| SnarkJobEligibility::Eligible
+            )
+            .await,
+            SnarkJobPick::Waiting(_)
+        ));
+        assert!(
+            map.status()
+                .await
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+        let SnarkJobPick::Assigned { jobs, .. } = map
+            .pick_ready_snark_jobs(100, 2, Duration::ZERO, "default", |_| true)
+            .await
+        else {
+            panic!("default selection must retain its complete prefix")
+        };
+        assert_eq!(jobs.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn requested_snark_range_cannot_exceed_normal_response_capacity() {
+        let map = ProverJobMap::new(Duration::ZERO, 100, ProverStage::Snark);
+        for batch in 1..=3 {
+            map.add_job(create_test_batch_envelope(batch)).await;
+        }
+        let eligible = |entry: &JobEntry<Vec<u8>>| {
+            if entry.metadata.batch_number <= 2 {
+                SnarkJobEligibility::Eligible
+            } else {
+                SnarkJobEligibility::ResponseCapacityExceeded {
+                    required_bytes: 11,
+                    max_bytes: 10,
+                }
+            }
+        };
+        assert!(matches!(
+            map.pick_ready_snark_jobs_with_response_capacity(
+                100,
+                100,
+                Duration::from_secs(3600),
+                Some((1, 3)),
+                "too-large",
+                eligible
+            )
+            .await,
+            SnarkJobPick::Waiting(_)
+        ));
+        assert!(
+            map.status()
+                .await
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+        let SnarkJobPick::Assigned { jobs, .. } = map
+            .pick_ready_snark_jobs_with_response_capacity(
+                100,
+                100,
+                Duration::from_secs(3600),
+                None,
+                "default",
+                eligible,
+            )
+            .await
+        else {
+            panic!("the bounded native prefix remains ready")
+        };
+        assert_eq!(jobs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn requested_snark_range_does_not_strand_singleton_before_incompatible_work() {
+        let map = ProverJobMap::new(Duration::ZERO, 100, ProverStage::Snark);
+        for batch in 1..=5 {
+            map.add_job(create_test_batch_envelope(batch)).await;
+        }
+        let eligible = |entry: &JobEntry<Vec<u8>>| {
+            if entry.metadata.batch_number <= 3 {
+                SnarkJobEligibility::Eligible
+            } else {
+                SnarkJobEligibility::Incompatible
+            }
+        };
+        assert!(matches!(
+            map.pick_ready_snark_jobs_with_response_capacity(
+                100,
+                2,
+                Duration::ZERO,
+                Some((1, 2)),
+                "unsafe-cut",
+                eligible
+            )
+            .await,
+            SnarkJobPick::Waiting(_)
+        ));
+        assert!(
+            map.status()
+                .await
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+        let SnarkJobPick::Assigned { jobs, .. } = map
+            .pick_ready_snark_jobs_with_response_capacity(
+                100,
+                2,
+                Duration::ZERO,
+                None,
+                "default",
+                eligible,
+            )
+            .await
+        else {
+            panic!("the default prefix remains wrappable")
+        };
+        assert_eq!(jobs.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn requested_snark_range_preserves_startup_head_and_singleton_boundaries() {
+        let map = Arc::new(ProverJobMap::new(Duration::ZERO, 100, ProverStage::Snark));
+        map.install_startup_recovery_plan(
+            StartupRecoveryPlan::build(0, 6, &[], 4, 100, false).unwrap(),
+        )
+        .await
+        .unwrap();
+        for batch in 1..=6 {
+            map.add_job(create_test_batch_envelope(batch)).await;
+        }
+        for requested in [(5, 6), (1, 5), (1, 3)] {
+            assert!(matches!(
+                map.pick_ready_snark_jobs_with_response_capacity(
+                    4,
+                    4,
+                    Duration::ZERO,
+                    Some(requested),
+                    "wrong",
+                    |_| SnarkJobEligibility::Eligible
+                )
+                .await,
+                SnarkJobPick::Waiting(_)
+            ));
+        }
+        assert!(
+            map.status()
+                .await
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+        let SnarkJobPick::Assigned { jobs, lease_token } = map
+            .pick_ready_snark_jobs_with_response_capacity(
+                4,
+                4,
+                Duration::ZERO,
+                Some((1, 2)),
+                "prefix",
+                |_| SnarkJobEligibility::Eligible,
+            )
+            .await
+        else {
+            panic!("a prefix leaving two proofs must remain viable")
+        };
+        assert_eq!(jobs.len(), 2);
+        complete_command_owned_range(&map, 1, 2, &lease_token).await;
+        let SnarkJobPick::Assigned { jobs, .. } = map
+            .pick_ready_snark_jobs(4, 4, Duration::ZERO, "default", |_| true)
+            .await
+        else {
+            panic!("default must retain the rest of the same head")
+        };
+        assert_eq!(
+            jobs.iter()
+                .map(|(job, _)| job.batch_number)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
         );
     }
 

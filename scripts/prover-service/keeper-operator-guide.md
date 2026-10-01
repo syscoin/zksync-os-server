@@ -8,13 +8,21 @@ verifier and V8 key, native prover role, parent, committed native batch hashes,
 frozen package, selected wrapper and turn, priority prefix witness, and remaining
 runtime. Both child and Gateway work use this path with their own lane settings.
 
-These commands do not deploy, sign, broadcast, rent, or start a supervisor.
-Unsigned calls require the existing operator wallet and transaction supervisor.
+The low-level `keeper.py` commands do not deploy, sign, broadcast, rent, or start
+a supervisor. The automated coordinator below passes its validated calls to the
+durable transaction supervisor and existing signing-only wallet under `--execute`.
 The configured `expected_operator` is an assertion by the trusted host controlling
 its rental account; it is not remote-worker authentication. Enrollment and FRI
 requests use account/operator signatures through the shared dispatcher. Final
 package acceptance still requires the selected wrapper and sequencer signatures
 plus the native proof verifier.
+
+Every subscriber uses `services: 3`, so FRI workers and selected SNARK wrappers
+come from the same enrolled pool. The wrapper watcher runs on that operator's
+trusted controller beside its existing warm compute supervisor. It does not
+require an EN: it authenticates canonical native commitments, verifies the exact
+FRIs on CPU, checks the returned native SNARK, and audits signed dispatch history
+before endorsing. Selection and wrapping add no duty points, fee entitlement, or bonus weight.
 
 ## Pin the trusted host
 
@@ -70,6 +78,142 @@ compute. External FRI carries `service: null`; its offer authentication belongs
 to the shared FRI dispatcher and operator handoff. Never expose the native API's
 shared Basic Auth to enrolled operators: it would let an unselected party acquire
 a SNARK lease and obstruct the selected wrapper.
+
+## Supervise the automatic service workflow
+
+`coordinator.py` and `wrapper.py` automate service-mode handoffs after the reviewed
+coordinator has been installed and service activation has completed. Bootstrap
+still uses the explicit low-level keeper/Sentry path below. Run one coordinator
+per execution lane on the trusted sequencer host. Both lanes read the same current
+dispatcher journal, whose enrollment and quota are shared across chains. Each
+selected operator runs a wrapper watcher per configured lane and uses its existing
+external-input pool and warm supervisor.
+
+The coordinator retains the private native SNARK pick, evidence and conservative
+lease deadline. It signs a frozen dispatcher manifest and complete audit snapshot,
+opens the package through `transactions.py`, and delivers a signed work envelope
+for the exact selected operator and turn. The wrapper authenticates the complete
+roster, audit, canonical batch commitments, and native FRI proofs before renting
+or reusing compute. On completion it calls the production native SNARK verifier
+at a canonical block and signs the package only if the exact work and its turn
+remain current. A valid proof returned after a turn change can be retained without
+reusing the stale endorsement.
+
+The sequencer independently verifies the signed result and native SNARK, submits
+its original lease, and waits for the node's matching publication `work.json`.
+It then adds the sequencer endorsement, advances the durable relay journal, and
+exports the confirmed `relay.json` to that publication directory. The node still
+performs its own receipt, calldata, code-pin and confirmation checks. An ambiguous
+native pick, wallet signature, send or nonce does not authorize a replacement;
+the journals retain the original work for reconciliation. A known expired lease
+is renewed with paired `snark_batch_from` / `snark_batch_to` bounds. The native
+picker must return the exact frozen range and payload; it cannot silently enlarge
+the package as more FRIs arrive. Unavailable ranges remain unleased and are retried.
+A protocol-boundary constraint can require an explicit package repair through the
+existing keeper workflow; renewal never invents a different report.
+
+### Configuration and external inputs
+
+Configuration files and handoffs are owner-only files (mode 0600) in absolute,
+owner-only directories (mode 0700), without symlinks. Configure real reviewed
+deployment values; the examples' zero VK/code/address placeholders remain invalid.
+The automatic coordinator configuration has these exact top-level fields:
+
+| Fields | Required input |
+| --- | --- |
+| `schema_version`, `keeper` | Version `1` and the complete lane keeper object. Its `expected_operator` is the sequencer. |
+| `endpoint`, `native_auth_file`, `release_file`, `native_lease_seconds` | Native prover API, private Basic Auth file, reviewed SNARK release, and a conservative lease duration matching the node. The API does not attest its lease duration. |
+| `dispatcher_dir`, `roster_dir` | The current shared dispatcher journal and complete authenticated roster files named `<period>.json`. |
+| `operator_inboxes` | Map of registered lowercase operator addresses to private handoff directories. |
+| `priority_witness_dir`, `publication_dir` | Authenticated priority witnesses named `<work_id_without_0x>.json`, and this lane's node service-publication directory. |
+| `sequencer_wallet_file`, `relay_wallet_file` | Private connection files for the sequencer signing/maintenance wallet and a separate proof-relay wallet. |
+| `transaction_policy`, `relay_policy` | Complete [relay-policy](relay-policy.example.json) objects with matching reviewed code pins and explicit gas/fee/confirmation limits. Maintenance uses the sequencer account; proof relay must use a different nonce account. |
+| `sequencer_beneficiary`, `poll_interval_seconds` | The fixed nonzero sequencer payee and a polling interval from 1 to 60 seconds. |
+
+The wrapper configuration has exactly `schema_version: 1`, `keeper`, `pool_dir`,
+`inbox_dir`, `roster_dir`, `audit_trust_dir`, `wallet_file`, `registry_rpc_file`,
+`fri_verifier`, and `poll_interval_seconds`. Its keeper uses the registered local
+operator as `expected_operator`, and must exactly match the pool lane's external
+SNARK service configuration. `fri_verifier` contains the absolute `executable`,
+its lowercase `sha256`, and `timeout_seconds` from 1 to 1800. Use a reviewed CPU
+build of `zksync_os_snark_prover` containing `verify-fri`; no GPU or SNARK CRS is
+needed for this local verification. The reviewed release binds its nonzero VK
+and program commitment. The GPU worker retains its own release/VK startup gates.
+
+Wallet and registry RPC connection files contain exactly
+`{"url":"https://trusted-endpoint.example/","authorization":null}`; use the real
+endpoint and authorization value. Typed signing uses `eth_signTypedData_v4`.
+Transaction signing uses signing-only `eth_signTransaction`; the journals persist
+the exact raw transaction before sending it to the chain RPC. These files and
+wallet capabilities never enter rental inputs.
+
+Build each complete roster artifact from the sorted registry candidates:
+
+```sh
+python3 scripts/prover-service/roster.py build --period 5 \
+  --candidates /trusted/candidates.json --output /trusted/rosters/5.json
+```
+
+The output includes its root, count and all Merkle proofs. The watcher authenticates that complete artifact against the
+canonical on-chain roster. Populate `audit_trust_dir/<journal_id_without_0x>.json`
+from the wrapper's own enrollment-block pin and retained checkpoint/readiness/duty
+observations as described in the [audit guide](dispatch-audit.md). Do not derive
+those independent trust pins from the current untrusted work envelope.
+
+The coordinator writes `work.json` and `payload.json` inside a work-hash directory
+under the selected operator's inbox; the wrapper returns a signed `result.json`
+there. On separate machines, provide authenticated bidirectional synchronization
+that preserves exact bytes, private permissions and publication order. No public
+transport service is started by these scripts. Never synchronize the coordinator's
+native authority, lease, credentials, transaction journal or signing files.
+
+Roster publication, both future-draw registrations and cross-chain deliveries,
+and priority checkpoint relayers remain external prerequisites. Supply actual
+native priority preimages and tree paths when the coordinator reports
+`await_authenticated_priority_witness`; it will validate and publish that witness,
+but cannot construct it from a transaction count. Rotate the dispatcher snapshot
+only under its period/phase rules and preserve outstanding journals; an old
+snapshot is not silently rewritten for a new period.
+
+### Start and inspect
+
+Initialize with complete private configurations, then inspect a single step:
+
+```sh
+export ZKSYNC_AIRBENDER_PROVER_DIR=/trusted/zksync-airbender-prover
+python3 scripts/prover-service/coordinator.py --state-dir /trusted/child-coordinator \
+  --execute init --config /trusted/child-coordinator-config.json
+python3 scripts/prover-service/wrapper.py --state-dir /trusted/child-wrapper \
+  --execute init --config /trusted/child-wrapper-config.json
+python3 scripts/prover-service/coordinator.py --state-dir /trusted/child-coordinator run --once
+python3 scripts/prover-service/wrapper.py --state-dir /trusted/child-wrapper run --once
+```
+
+`run` without `--execute` inspects the next action without picking, signing,
+renting or broadcasting. Run both loops under the existing process supervisor
+when authorized:
+
+```sh
+python3 scripts/prover-service/coordinator.py --state-dir /trusted/child-coordinator --execute run
+python3 scripts/prover-service/wrapper.py --state-dir /trusted/child-wrapper --execute run
+```
+
+Use `status` or `run --once` to inspect progress. Separately keep the prover-owned
+warm supervisor and watchdogs running against this same external pool, following
+the [pool guide](../prover-rental/pool-README.md). It prioritizes eligible wrapping
+before starting another FRI assignment and processes one job at a time; an active
+FRI is not proof of an idle GPU. Missing handoffs, stale turns, insufficient lease
+time, unavailable witnesses and uncertain transactions produce wait/recovery
+states instead of synthetic work or service credit. No production end-to-end
+deployment or live GPU run is established by the local regression tests.
+
+`dispatcher_dir` may name a single initialized period journal, or a private
+parent containing one initialized journal per period (`5/`, `6/`, and so on).
+The coordinator selects the frozen/opening roster period before taking its signed
+snapshot. Retain older journals for control work using an older ready roster;
+create the next period's journal through the existing enrollment workflow and
+supply its independently reviewed audit trust pin to the operators. This lets the
+SNARK coordinator keep its state while enrollment moves between periods.
 
 ## Inspect the phase before offering rewarded FRI work
 
@@ -154,7 +298,43 @@ chain data; the keeper does not invent or fetch them. Empty priority counts need
 the native empty rolling hash and no published witness. A stale checkpoint,
 missing overdue prefix, or missing nonempty witness refuses compute.
 
-## Preserve the real SNARK lease from pick through settlement
+## Native proof checks for a manual handoff
+
+The automatic wrapper creates its CPU verifier inputs after authenticating
+canonical commitments. For manual operation, prepare `fri-expected.json` with
+exactly `schema_version: 1`, `protocol_version: 32`, `proving_version: 8`,
+`security_level: 100`, `from_batch_number`, `to_batch_number`, `vk_hash`,
+`program_commitment`, `statements`, and `payload_sha256`. Take the program/VK
+binding from the reviewed release, derive the ordered statements from the
+canonically authenticated batch/output preimages, and hash the exact payload
+file bytes for `payload_sha256` (lowercase hex without `0x`). Hashes and statements
+otherwise use canonical lowercase `0x` hex. This trusted expected file is not a
+worker-supplied claim; the standalone CPU command does not authenticate an RPC or
+register a new program/VK association.
+
+```sh
+/trusted/bin/zksync_os_snark_prover verify-fri \
+  --payload /trusted/original-snark-lease/payload.json \
+  --expected /trusted/fri-expected.json --output /trusted/fri-verified.json
+python3 scripts/prover-service/proof_check.py --config /trusted/child-keeper.json \
+  --evidence /trusted/native-evidence.json \
+  --payload /trusted/original-snark-lease/payload.json \
+  --proof /trusted/returned-snark.json --output /trusted/snark-verified.json
+```
+
+The first command verifies every proof and its program/statement binding before
+creating a new private result. The second authenticates the deployed native V32
+verifier, current canonical commitments and proof range, then checks the SNARK
+through a pinned-block `eth_call`. Neither command signs or submits a transaction.
+The wrapper also needs the complete signed dispatch audit and current selection
+checks; these verification records alone are not a service receipt or permission
+to sign a later turn.
+
+## Manual inspection and recovery of the native SNARK lease
+
+The commands below expose the same underlying primitives for controlled manual
+operation. Do not run a second picker or transaction supervisor over a lease or
+nonce already owned by the automatic coordinator.
 
 1. The trusted sequencer host picks SNARK work with the existing Sentry. Stage is
    read from the reviewed SNARK release, not supplied as a separate CLI flag:
@@ -196,10 +376,12 @@ missing overdue prefix, or missing nonempty witness refuses compute.
 
 3. Read the selected candidate/index/current turn and update the proposal for that
    exact candidate. Deliver only the stripped payload, signed report ingredients,
-   and evidence to the selected wrapper through authenticated transport. Compare
-   producer evidence with the wrapper's independent execution node before signing
-   or spending compute. The keeper authenticates native committed hashes but does
-   not run an execution node or a FRI verifier.
+   audit bundle, and evidence to the selected wrapper through authenticated
+   transport. Authenticate the audit against independently retained trust inputs,
+   check the native committed hashes, and run the pinned CPU `verify-fri` command
+   against the exact ordered payload and reviewed program commitment before
+   spending SNARK compute. The automated wrapper performs these checks; `keeper.py`
+   alone authenticates commitments and permits but does not execute a FRI verifier.
 
    ```sh
    python3 scripts/prover-service/keeper.py --config /trusted/child-keeper.json \
@@ -246,7 +428,9 @@ missing overdue prefix, or missing nonempty witness refuses compute.
    writes its immutable `work.json` for this exact proof/range. Use `service.py
    package` and `complete` to obtain both package endorsements (sequencer only for
    bootstrap). The selected wrapper independently checks the native statement,
-   report, proof, candidate, and current turn before signing. Use the durable
+   signed dispatch audit, exact FRIs, report, proof, candidate, and current turn
+   before signing. `proof_check.py` verifies the native SNARK against canonical
+   production-verifier state; a rental result hash is insufficient. Use the durable
    [relay](relay-README.md) to publish the native gate transaction. Once confirmed:
 
    ```sh

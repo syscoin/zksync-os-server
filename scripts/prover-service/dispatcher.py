@@ -13,6 +13,7 @@ import time
 import urllib.parse
 
 import service as s
+import audit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "prover-rental"))
 import job
@@ -58,18 +59,24 @@ def fixed_word(raw):
     return int.from_bytes(raw, "big")
 
 
-def enrollment_snapshot(settings, subscriptions, period, rpc):
+def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
     s.config(settings)
     s.uint(period, 64)
     s.require(type(subscriptions) is list and 0 < len(subscriptions) <= 256, "invalid_subscription_count")
     s.require(rpc.call("eth_chainId", []) == settings["registry_chain_id"], "wrong_rpc_chain")
-    block = rpc.call("eth_getBlockByNumber", ["finalized", False])
+    block = (rpc.call("eth_getBlockByHash", [s.nonzero(block_hash), False]) if block_hash is not None
+             else rpc.call("eth_getBlockByNumber", ["finalized", False]))
     s.require(type(block) is dict, "finalized_block_required")
     anchor = s.nonzero(block["hash"])
+    s.require(block_hash is None or anchor == block_hash, "enrollment_block_changed")
     timestamp = s.uint(block["timestamp"])
     registry = settings["registry"]
     def view(signature, *values):
-        return rpc.contract(registry, signature, values, anchor)
+        if hasattr(rpc, "contract"):
+            return rpc.contract(registry, signature, values, anchor)
+        return s.raw_hex(rpc.call("eth_call", [{"to": registry,
+                         "data": s.cast("calldata", signature, *map(str, values))},
+                         {"blockHash": anchor, "requireCanonical": True}]))
     s.require(view("policyHash()") == s.raw_hex(settings["policy_hash"]), "registry_policy_mismatch")
     lane = view("supportedLane(uint256)", s.uint(settings["execution_chain_id"]))
     s.require(len(lane) == 64 and lane[:32] == b"\0" * 12 + s.raw_hex(settings["chain_address"]),
@@ -114,7 +121,7 @@ def enrollment_snapshot(settings, subscriptions, period, rpc):
         account, operator = subscription["account"], subscription["operator"]
         s.require(account not in accounts and operator not in operators, "duplicate_subscription_identity")
         s.require(subscription["firstPeriod"] <= period <= subscription["lastPeriod"]
-                  and subscription["services"] & 1, "inactive_subscription")
+                  and subscription["services"] == 3, "inactive_or_nonunified_subscription")
         hashed = request["struct_hash"]
         s.require(view("subscriptionAt(address,address,uint64)", account, settings["sequencer"], period)
                   == s.raw_hex(hashed), "subscription_not_enrolled")
@@ -157,9 +164,15 @@ def initialize(root, settings, subscriptions, period, endpoint, rpc, gateway=Non
     store = Store(root)
     identity = {"settings": settings, "subscriptions": subscriptions, "period": period,
                 "endpoint": endpoint, "lanes": lanes, "enrollment": anchor}
-    journal_id = s.keccak(s.canonical(identity))
+    public_identity = {"schema_version": 1, "settings": settings, "subscriptions": subscriptions,
+                       "period": period, "enrollment": anchor,
+                       "lanes": {name: {"settings": lane["settings"],
+                                        "endpoint_commitment": s.keccak(lane["endpoint"].encode())}
+                                 for name, lane in lanes.items()}}
+    journal_id = s.keccak(s.canonical(public_identity))
     state = {"schema_version": 1, **identity, "journal_id": journal_id, "cursor": journal_id,
              "next_account": 0, "next_lane": 0, "next_operation": 0, "pending_pick": None, "operations": {},
+             "audit": {"identity": public_identity, "events": [], "head": journal_id},
              "accounts": {item["subscription"]["account"]: {"nonce": 0, "offered": 0, "ready": None}
                           for item in subscriptions}}
     s.write_new(root / "state.json", state)
@@ -202,6 +215,22 @@ class Dispatcher:
         finally:
             Path(temporary).unlink(missing_ok=True)
 
+    def record(self, kind, payload):
+        # Old journals lack the authenticated history needed to reconstruct fair dispatch.
+        # They may finish their existing work, but can never export an invented audit prefix.
+        ledger = self.state.get("audit")
+        if ledger is None:
+            return
+        events = ledger["events"]
+        s.require(len(events) < audit.MAX_EVENTS, "audit_capacity_reached")
+        s.require(self.now >= (events[-1]["at"] if events else self.state["enrollment"]["timestamp"]),
+                  "audit_clock_regressed")
+        event = {"sequence": len(events) + 1, "at": self.now, "kind": kind,
+                 "payload": copy.deepcopy(payload), "previous": ledger["head"]}
+        event["hash"] = s.keccak(s.canonical(event))
+        events.append(event)
+        ledger["head"] = event["hash"]
+
     def live(self):
         s.require(self.now < self.state["enrollment"]["ends_at"], "dispatch_window_closed")
 
@@ -242,6 +271,7 @@ class Dispatcher:
                           for op in self.state["operations"].values()), "account_has_live_job")
         entry["ready"] = {"request": expected, "signature": signature}
         entry["nonce"] += 1
+        self.record("ready", entry["ready"])
         self.save()
 
     def next_account(self):
@@ -279,6 +309,7 @@ class Dispatcher:
                                                 "assignment": None, "submit_attempts": 0}
         self.state["pending_pick"] = operation
         self.state["next_operation"] += 1
+        self.record("pick_started", {"operation": operation, "account": account, "lane": lane_name})
         self.save()
         query = urllib.parse.urlencode({"id": "service-dispatcher", "supported_vk_hashes": lane["settings"]["vk_hash"],
                                         "nonempty_only": "true", "max_fri_pick_response_bytes": job.MAX_PICK["FRI"]})
@@ -288,6 +319,7 @@ class Dispatcher:
         if status == 204 or unleased == "unleased" and status in (429, 500):
             del self.state["operations"][operation]
             self.state["pending_pick"] = None
+            self.record("pick_empty", {"operation": operation})
             self.save()
             return "no_job"
         s.require(status == 200, "pick_uncertain_keep_journal")
@@ -350,6 +382,8 @@ class Dispatcher:
         self.state["next_account"] = (op["account_index"] + 1) % len(self.subscriptions)
         self.state["cursor"] = s.keccak(s.canonical({"previous": self.state["cursor"], "assignment": assignment}))
         self.state["pending_pick"] = None
+        self.record("assigned", {"operation": operation, "assignment": assignment,
+                                  "transaction_count": statements[number]["count"]})
         self.save()
         return operation
 
@@ -363,6 +397,7 @@ class Dispatcher:
         # lease to expire in the node; this record never becomes an opportunity or accepted duty.
         op["status"] = "unexported_pick_abandoned"
         self.state["pending_pick"] = None
+        self.record("pick_abandoned", {"operation": operation})
         self.save()
 
     def manifest_payload(self, operations):
@@ -406,6 +441,10 @@ class Dispatcher:
         manifest = {"payload": self.manifest_payload([operation]), "sequencer_signature": signature}
         if op["status"] == "picked":
             self.state["accounts"][op["account"]]["offered"] += 1
+            self.record("offered", {"operation": operation, "sequencer_signature": signature})
+            op["offer_signature"] = signature
+        elif "offer_signature" in op:
+            s.require(op["offer_signature"] == signature, "offer_signature_changed")
         op["status"] = "offered"
         self.save()
         atomic_json(self.directory(operation) / "manifest.json", manifest)
@@ -434,7 +473,10 @@ class Dispatcher:
                                  s.read_json(directory / "manifest.json", private=True), self.state["subscriptions"],
                                  authority, proof)
         s.verify_eoa(request, signature)
-        atomic_json(directory / "duty.json", {**request["typed_data"]["message"], "operatorSignature": signature})
+        duty = {**request["typed_data"]["message"], "operatorSignature": signature}
+        atomic_json(directory / "duty.json", duty)
+        if self.state["operations"][operation]["status"] != "accepted":
+            self.record("accepted", {"operation": operation, "duty": duty})
         self.state["operations"][operation]["status"] = "accepted"
         self.save()
         return "accepted"
@@ -486,6 +528,9 @@ class Dispatcher:
         if op["status"] != "submission_pending":
             self.live()
             s.require(op["request"]["request"]["typed_data"]["message"]["expiresAt"] > self.now, "offer_expired")
+        if op["status"] != "submission_pending":
+            self.record("submission_started", {"operation": operation,
+                        "duty": {**request["typed_data"]["message"], "operatorSignature": signature}})
         op["status"] = "submission_pending"
         op["submit_attempts"] += 1
         authority["status"] = "submission_pending"
@@ -500,6 +545,7 @@ class Dispatcher:
                 status == 409 and disposition == "rejected" and op["submit_attempts"] == 1):
             op["status"] = authority["status"] = "rejected"
             atomic_json(directory / "authority.json", authority)
+            self.record("rejected", {"operation": operation})
             self.save()
             return "rejected"
         raise s.Error("submission_uncertain_retry_identical_bytes")
@@ -509,7 +555,48 @@ class Dispatcher:
         s.require(op["status"] in ("picked", "offered") and self.now >=
                   op["request"]["request"]["typed_data"]["message"]["expiresAt"], "live_or_ambiguous_job_cannot_expire")
         op["status"] = "expired"
+        self.record("expired", {"operation": operation})
         self.save()
+
+    def range_manifest_payload(self, lane, batch_from, batch_to):
+        s.require(lane in self.state["lanes"] and 0 < s.uint(batch_from, 64) <= s.uint(batch_to, 64),
+                  "invalid_audit_range")
+        operations = [key for key, op in self.state["operations"].items()
+                      if op["lane"] == lane and op["assignment"] is not None
+                      and batch_from <= op["assignment"]["batch_number"] <= batch_to]
+        if operations:
+            return self.manifest_payload(operations)
+        settings = self.state["lanes"][lane]["settings"]
+        return {"schema_version": 1, "chain_id": settings["execution_chain_id"],
+                "chain_address": settings["chain_address"], "sequencer": settings["sequencer"],
+                "period": self.state["period"], "previous_cursor": self.state["cursor"],
+                "subscription_snapshot_hash": s.keccak(s.canonical(self.state["subscriptions"])),
+                "assignments": [], "retries": []}
+
+    def audit_payload(self, lane, batch_from, batch_to):
+        s.require("audit" in self.state, "legacy_journal_has_no_authenticated_audit_history")
+        self.range_manifest_payload(lane, batch_from, batch_to)
+        ledger, settings = self.state["audit"], self.state["lanes"][lane]["settings"]
+        s.require(self.now >= (ledger["events"][-1]["at"] if ledger["events"]
+                              else self.state["enrollment"]["timestamp"]), "audit_clock_regressed")
+        return copy.deepcopy({"schema_version": 1, "identity": ledger["identity"],
+                "journal_id": self.state["journal_id"], "events": ledger["events"],
+                "checkpoint": {"journalId": self.state["journal_id"], "eventCount": len(ledger["events"]),
+                               "eventHead": ledger["head"], "assignmentCursor": self.state["cursor"],
+                               "issuedAt": self.now, "chainId": settings["execution_chain_id"],
+                               "chainAddress": settings["chain_address"], "batchFrom": batch_from,
+                               "batchTo": batch_to, "period": self.state["period"]}})
+
+    def export_audit(self, lane, batch_from, batch_to, signature, prepared=None):
+        bundle = self.audit_payload(lane, batch_from, batch_to)
+        if prepared is not None:
+            issued_at = prepared["checkpoint"]["issuedAt"]
+            s.require(s.uint(issued_at, 64) <= self.now, "audit_checkpoint_from_future")
+            bundle["checkpoint"]["issuedAt"] = issued_at
+            s.require(bundle == prepared and issued_at >= (bundle["events"][-1]["at"] if bundle["events"]
+                      else self.state["enrollment"]["timestamp"]), "audit_changed_after_signing_request")
+        s.verify_eoa(audit.checkpoint_request(bundle), signature)
+        return {**bundle, "sequencer_signature": signature}
 
     def export(self, operation, destination):
         op = self.state["operations"][operation]
@@ -581,6 +668,15 @@ def main():
     export = commands.add_parser("export")
     export.add_argument("--operation", required=True)
     export.add_argument("--output-directory", required=True)
+    audit_request = commands.add_parser("audit-request")
+    audit_request.add_argument("--lane", choices=("child", "gateway"), required=True)
+    audit_request.add_argument("--batch-from", type=int, required=True)
+    audit_request.add_argument("--batch-to", type=int, required=True)
+    audit_request.add_argument("--output", required=True)
+    audit_export = commands.add_parser("export-audit")
+    audit_export.add_argument("--request", required=True)
+    audit_export.add_argument("--signature", required=True)
+    audit_export.add_argument("--output", required=True)
     commands.add_parser("report")
     args = parser.parse_args()
     if not args.execute:
@@ -629,6 +725,21 @@ def main():
             s.write_new(args.output, {"payload": payload, "request": s.manifest_request(dispatcher.settings, payload)})
         elif args.command == "export":
             dispatcher.export(args.operation, args.output_directory)
+        elif args.command == "audit-request":
+            bundle = dispatcher.audit_payload(args.lane, args.batch_from, args.batch_to)
+            s.write_new(args.output, {"bundle": bundle, "request": audit.checkpoint_request(bundle)})
+        elif args.command == "export-audit":
+            prepared = s.read_json(args.request)
+            s.exact(prepared, ("bundle", "request"))
+            bundle = prepared["bundle"]
+            s.require(prepared["request"] == audit.checkpoint_request(bundle), "audit_signing_request_changed")
+            checkpoint = bundle["checkpoint"]
+            lanes = [name for name, lane in dispatcher.state["lanes"].items()
+                     if lane["settings"]["execution_chain_id"] == checkpoint["chainId"]
+                     and lane["settings"]["chain_address"] == checkpoint["chainAddress"]]
+            s.require(len(lanes) == 1, "audit_package_lane_changed")
+            s.write_new(args.output, dispatcher.export_audit(lanes[0], checkpoint["batchFrom"], checkpoint["batchTo"],
+                        s.read_json(args.signature)["signature"], prepared=bundle))
         else:
             print(json.dumps(dispatcher.report(), sort_keys=True))
 

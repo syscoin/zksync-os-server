@@ -194,7 +194,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
                 || subscription_.operator == subscription_.sequencer || subscription_.firstPeriod < earliestPeriod
                 || subscription_.lastPeriod < subscription_.firstPeriod
                 || subscription_.lastPeriod - subscription_.firstPeriod >= MAX_SUBSCRIPTION_PERIODS
-                || subscription_.services == 0 || subscription_.services > 3
+                || subscription_.services != (ZkSysServiceTypesV1.FRI_SERVICE | ZkSysServiceTypesV1.WRAPPER_SERVICE)
                 || subscription_.nonce != nonces[subscription_.account] || subscription_.sequencer != sharedSequencer
         ) revert InvalidSubscription();
         _seniorBonus(subscription_.account);
@@ -215,9 +215,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             }
             subscriptionAt[subscription_.account][subscription_.sequencer][period] = subscriptionHash;
             operatorAccountAt[subscription_.operator][period] = subscription_.account;
-            if ((subscription_.services & ZkSysServiceTypesV1.FRI_SERVICE) != 0) {
-                _friSubscribers[subscription_.sequencer][period].push(subscription_.account);
-            }
+            _friSubscribers[subscription_.sequencer][period].push(subscription_.account);
             if (period == subscription_.lastPeriod) break;
         }
         emit Subscribed(subscriptionHash, subscription_.account, subscription_.operator);
@@ -247,7 +245,10 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     /// remains immutable; this view makes eligibility exclusions explicit at the same pinned block.
     function isEligibleFriSubscriber(address account, address sequencer, uint64 period) external view returns (bool) {
         ProverSubscriptionV1 storage sub = _subscriptions[subscriptionAt[account][sequencer][period]];
-        if (sub.account == address(0) || (sub.services & ZkSysServiceTypesV1.FRI_SERVICE) == 0) return false;
+        if (
+            sub.account == address(0)
+                || sub.services != (ZkSysServiceTypesV1.FRI_SERVICE | ZkSysServiceTypesV1.WRAPPER_SERVICE)
+        ) return false;
         try this.seniorBonus(account) returns (uint256) {
             return true;
         } catch {
@@ -336,7 +337,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
                 duty.account == address(0) || subscription_.account != duty.account
                     || subscription_.sequencer != accepted.sequencer || duty.period != accepted.period
                     || duty.period < subscription_.firstPeriod || duty.period > subscription_.lastPeriod
-                    || (subscription_.services & ZkSysServiceTypesV1.FRI_SERVICE) == 0
+                    || subscription_.services != (ZkSysServiceTypesV1.FRI_SERVICE | ZkSysServiceTypesV1.WRAPPER_SERVICE)
                     || duty.batchNumber < accepted.batchFrom || duty.batchNumber > accepted.batchTo
                     || duty.statementHash == bytes32(0) || duty.friProofHash == bytes32(0) || duty.transactionCount == 0
                     || duty.assignmentId == bytes32(0) || duty.attempt == 0 || duty.slot >= dutiesPerRound
@@ -382,9 +383,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         try this.seniorBonus(account) returns (uint256 bonus) {
             _admittedBonus[account][period] = bonus;
             _totalAdmittedBonus[period] += bonus;
-            if ((subscription_.services & ZkSysServiceTypesV1.WRAPPER_SERVICE) != 0) {
-                _installWrapper(subscription_, period);
-            }
+            _installWrapper(subscription_, period);
             emit ProverAdmitted(account, period, bonus);
         } catch {}
     }
@@ -396,7 +395,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         if (
             subscription_.account == address(0) || period != nextAdmissionPeriod() || period < subscription_.firstPeriod
                 || period > subscription_.lastPeriod
-                || (subscription_.services & ZkSysServiceTypesV1.WRAPPER_SERVICE) == 0
+                || subscription_.services != (ZkSysServiceTypesV1.FRI_SERVICE | ZkSysServiceTypesV1.WRAPPER_SERVICE)
         ) revert InvalidSubscription();
         if (!verifiedForSequencer[subscription_.account][subscription_.sequencer]) {
             revert ServiceNotVerified(subscription_.account, subscription_.sequencer);

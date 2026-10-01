@@ -1,4 +1,4 @@
-# Trusted service signing packages
+# Trusted prover service workflow
 
 `service.py` prepares explicit, reviewable EIP-712 wallet requests and a strict
 `ProverServiceSidecarV1` for the opt-in V1 proof gate. It never accepts signing
@@ -7,28 +7,47 @@ Run it on the trusted Sentry or sequencer host with Python 3 and Foundry `cast`.
 The rental image does not contain this tool, signing requests, subscriptions,
 real prover leases, or wallet credentials.
 
+Rental execution is owned by the **zksync-airbender-prover** checkout. Set
+`ZKSYNC_AIRBENDER_PROVER_DIR` before running the dispatcher or compatibility
+commands below; see [rental migration](../prover-rental/README.md). The server
+continues to own service admission, assignments, verification and accounting.
+
 The module is a staged integration using the reproduced V32/V8 guest and key.
-Service hardware qualification, real enrolled-roster dispatcher exercises, independent EN export
-and deployment closure of alternative proof paths remain launch gates. The
-authenticated trusted-host dispatcher is implemented below; it does not replace
-these production checks.
+Service hardware qualification, real enrolled-roster dispatcher exercises, and
+deployment closure of alternative proof paths remain launch gates. The trusted
+coordinator and selected-wrapper watcher automate the handoffs described below;
+they do not replace those production checks.
 The zero values in `config.example.json` deliberately fail validation.
 
-Use the [keeper operator guide](keeper-operator-guide.md) for package opening,
-selected-wrapper compute permits, both rental queues, and the private SNARK lease
-handoff. The [node publication guide](node-publication.md) covers the opt-in
+Use the [keeper operator guide](keeper-operator-guide.md) for the automated
+coordinator/wrapper workflow, package opening, selected-wrapper compute permits,
+both rental queues, and private SNARK lease recovery. The
+[node publication guide](node-publication.md) covers the opt-in
 sender configuration and receipt recovery; the [relay guide](relay-README.md)
 covers wallet signing and durable broadcast.
 
 ## Trust and validation
 
-The checker reconstructs the native V32 chain configuration hash, packed
-`BatchOutput` commitment, complete per-batch statement and transaction count
-from an **independently synchronized EN's** stored-batch and output preimages.
-Its evidence file must be exported from that trusted EN; copying the sequencer's
-claims into this file does not establish independent validation. An authentic
-exporter and its connection to independently replayed state are required before
-launch. No `verified: true` property is accepted as evidence.
+The tools reconstruct the native V32 chain configuration hash, packed
+`BatchOutput` commitment, complete per-batch statement and transaction count from
+stored-batch and output preimages. The native evidence endpoint can supply these
+preimages. The keeper authenticates their hashes against canonical settlement
+state, and the selected wrapper runs the pinned CPU `verify-fri` command over
+every exact FRI in the SNARK input, binding each verified statement to the reviewed
+V8 program commitment. `proof_check.py` then checks the returned SNARK through the
+pinned production verifier at a canonical block before package endorsement.
+This wrapping flow requires no execution node (EN). Native EN operation remains
+separately supported and is not a wrapper prerequisite. Producer metadata, a
+matching artifact hash, or a `verified: true` property alone establishes no proof
+validity.
+
+The wrapper also checks the [signed dispatch audit](dispatch-audit.md): the full
+enrollment, readiness, assignment, retry and accepted-duty history, anchored by
+its own enrollment block and retained checkpoint/receipt observations. This
+detects omissions or scheduling inconsistencies against those observations and
+the disclosed history; it cannot establish the absence of withheld off-ledger
+activity. Cryptographic proof validity and dispatch accountability are separate
+checks, and both must pass.
 
 For a FRI duty, it requires the protected node's durable `accepted` authority
 from `../prover-rental/sentry.py`, rechecks the exact accepted submission hash,
@@ -40,13 +59,14 @@ untrusted host; an attacker who can rewrite trusted authority files defeats this
 trust boundary.
 
 For a package, it checks account-signed subscriptions, a sequencer-signed
-manifest, operator-signed current duties, exact FRI artifact hashes, EN statement
+manifest, operator-signed current duties, exact FRI artifact hashes, native statement
 and output preimages, duplicate batch/slot credit, complete retry chains, the
 wrapper's Merkle membership and fixed beneficiaries. The native SNARK proof is
 encoded as `0x01 || abi.encode(previous, batches, [0x802, 0, 44 proof words])`.
 The proof gate and production verifier make the final native validity decision;
-this Python checker does not implement the FRI or SNARK cryptographic verifier.
-The wrapper must independently verify the native FRIs before signing.
+`service.py` itself does not implement the FRI or SNARK cryptographic verifier.
+The automated wrapper performs the CPU FRI and canonical native SNARK checks
+before signing; low-level manual signing must apply the same checks.
 
 Current signatures are verified with `cast wallet verify --no-hash` and require
 canonical 65-byte EOA signatures. Contracts support ERC-1271, but this offline
@@ -58,12 +78,13 @@ personal-message prefix to that digest.
 Signatures authenticate these records. They do not prove physical computation,
 private offer or delivery times, fairness, completeness of omitted work, or
 independent ownership of operator keys. The snapshot only checks signed
-subscription contents; live registration, seniority, eligibility, selected
-wrapper index/turn, frozen parent and roster must be checked against the settled
-contracts by the operator before endorsement and are enforced where applicable
-by the contracts. A producer-authenticated cursor/retry exporter, fair dispatch
-policy, priority deadlines/source freezing and live pipeline enrollment are
-separate launch work.
+subscription contents; live registration, seniority, eligibility, selected wrapper
+index/turn, frozen parent and roster are authenticated by the dispatcher, audit,
+and keeper against canonical contract state before the automated workflow
+endorses work. The contracts enforce the applicable on-chain checks again.
+Low-level signing helpers are not a substitute for those live checks. Real
+enrolled-roster operation, authenticated transport, and deployed priority/message
+delivery still require production qualification.
 
 ## Domain and JSON conventions
 
@@ -109,14 +130,18 @@ signature as `{"subscription": {…}, "signature": "0x…"}`. A subscription sna
 is a JSON array of these records, with unique account/operator identities; its
 commitment is Keccak-256 of canonical JSON (sorted keys, compact separators,
 UTF-8, no newline). The same canonicalization is used for all JSON commitments.
-Registration still requires the registry's `subscribe` transaction.
+Registration still requires the registry's `subscribe` transaction. Every
+subscription must set `services: 3`: the same operators perform FRI duties and
+enter the qualified SNARK-wrapper roster. FRI-only and wrapper-only subscriptions
+are rejected. The selected-wrapper watcher uses the operator's existing warm
+compute pool; selection does not create another enrollment or bonus lane.
 
 ## Wrapper renewal during idle periods
 
 Completing the quota records historical capability for that account/sequencer.
 Thereafter any keeper can call `renewWrapper(subscriptionHash, period)` using
-an active signed wrapper subscription. The registry rechecks membership and
-seniority and installs a future wrapper candidate. Renewal itself does not
+an active signed shared-service subscription (`services: 3`). The registry
+rechecks membership and seniority and installs a future wrapper candidate. Renewal itself does not
 admit reward bonus weight, mint credit, or fabricate new completed duties; idle
 periods can retain proof availability without paying for nonexistent work.
 
@@ -139,7 +164,7 @@ python3 scripts/prover-service/service.py --config /trusted/config.json \
 
 The helper reproduces `nextAdmissionPeriod()`, including the first-service-period
 floor and exact roster-cutoff boundary. It verifies the account signature and
-that the subscription includes wrapper service for the selected period, then
+that the subscription covers both services for the selected period, then
 emits an **unsigned** zero-value transaction to the child registry plus the
 source block and submission cutoff. Before sending through the trusted wallet
 or keeper, re-read `nextAdmissionPeriod()` and `rosterCutoff(period)` at a current
@@ -174,7 +199,7 @@ Assignments start at attempt 1. A retry contains `assignment_id`,
 must link the same batch to the next attempt with a different lease commitment.
 No fork, omitted intermediate attempt, duplicate ID or multiple current
 assignments for a batch is allowed. Retired assignments cannot earn a duty.
-All statements must match the current EN snapshot; a changed execution history
+All statements must match the authenticated native evidence; a changed execution history
 requires new dependent evidence and authorization.
 
 The trusted-host `dispatcher.py` journal supplies the previous cursor, enrolled
@@ -192,9 +217,9 @@ After external signing, put the signature in the envelope. Package
 The previous cursor must be authenticated and checked against prior accepted
 history externally; a nonzero value alone is not proof of scheduling continuity.
 
-## EN evidence and duty requests
+## Native evidence and duty requests
 
-The EN evidence file contains exactly `schema_version`, `chain_id`,
+The native evidence file contains exactly `schema_version`, `chain_id`,
 `chain_address`, `settlement_chain_id`, `protocol_version`, `vk_hash`,
 `previous_batch`, and `batches`. `previous_batch` is the gate's `StoredBatch`;
 each element of `batches` is `{"stored": StoredBatch, "output": BatchOutput}`.
@@ -207,7 +232,7 @@ After `sentry.py submit` receives a native accepted disposition, prepare a duty:
 ```sh
 python3 scripts/prover-service/service.py --config /trusted/config.json \
   --output /trusted/duty-request.json duty \
-  --evidence /trusted/independent-en.json --manifest /trusted/manifest.json \
+  --evidence /trusted/native-evidence.json --manifest /trusted/manifest.json \
   --subscriptions /trusted/subscriptions.json \
   --authority /trusted/duty-attempt/authority.json \
   --proof /trusted/collected-fri-artifact.json
@@ -239,7 +264,7 @@ both carry native bytes in base64, and neither includes a real lease.
 ```sh
 python3 scripts/prover-service/service.py --config /trusted/config.json \
   --output /trusted/package-request.json package \
-  --evidence /trusted/independent-en.json --manifest /trusted/manifest.json \
+  --evidence /trusted/native-evidence.json --manifest /trusted/manifest.json \
   --subscriptions /trusted/subscriptions.json --duties /trusted/duties.json \
   --proposal /trusted/proposal.json --proof /trusted/snark-artifact.json \
   --fri-payload /trusted/stripped-snark-pick.json
@@ -262,7 +287,7 @@ package and report, verifies signatures, and outputs exactly the Rust sidecar
 fields. `proof_data` stays in the review artifact; the server recomputes it from
 its own canonical batches and proof. A different proof, turn, report, parent or
 range requires fresh signatures. Use the opt-in server integration only after
-all deployment and independent-source gates are satisfied.
+the reviewed deployment, proof verification, and audit trust inputs are configured.
 
 ## Durable relay
 
@@ -285,7 +310,7 @@ python3 -m unittest discover -s scripts/prover-service -p 'test_*.py' -v
 
 Tests compare ABI encoding and EIP-712 digests to `cast`, exercise full signed
 sidecar preparation, and reject missing authentication, changed native accepted
-bytes, wrong leases, altered EN outputs/statements, changed FRI artifacts,
+bytes, wrong leases, altered native outputs/statements, changed FRI artifacts,
 missing retry history, wrong signers and domain mutation. The shared vectors
 also feed Rust/Solidity regression tests. These are protocol tests with synthetic
 proofs; they do not constitute production proving or live-chain validation.
@@ -315,8 +340,9 @@ fallback. This adapter currently accepts canonical EOA signatures. The contracts
 also support ERC-1271 accounts, which require a separate contract-wallet adapter.
 The supplied account list must exactly match the on-chain FRI subscriber
 enumeration at that block after explicit fresh-membership eligibility checks.
-Removed or stale entries need no supplied subscription, and wrapper-only
-subscriptions are excluded from FRI enumeration. The 256-account bound applies
+Removed or stale entries need no supplied subscription. Every enrolled operator
+must subscribe to both services (`services: 3`); there is no separate wrapper-only
+pool. The 256-account bound applies
 to enumerated registrations, including ineligible ones.
 
 The account snapshot is fixed for that journal, so finish bootstrap enrollment
@@ -433,8 +459,9 @@ For a multi-batch package, `manifest-request --operations job-000000 job-000001
 --output package-manifest-request.json` returns the exact combined payload and
 sequencer signing request, including retry history. Assemble its signed manifest
 as `{"payload": ..., "sequencer_signature": "0x..."}` and pass it with the retained
-accepted duties and independent execution comparison to the existing package
-builder. Do not count an older assignment as a second duty for the same batch.
+accepted duties, signed dispatch audit, and canonical native evidence to the
+package workflow. The wrapper checks the native proofs before endorsement.
+Do not count an older assignment as a second duty for the same batch.
 All operations in one package must belong to the same execution lane; the tool
 rejects a mixed-chain manifest. Each lane uses its own gate, parent, native proof,
 selected wrapper and settlement transaction journal, while their accepted duties

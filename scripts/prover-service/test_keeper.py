@@ -3,6 +3,7 @@ import unittest
 
 import keeper as k
 import relay as r
+import roster
 import service as s
 from test_relay import FakeRpc, relay_policy
 from test_service import fixture, prepare, h, a, abi_type, cast_value, struct_values
@@ -30,6 +31,7 @@ class NativeRpc(FakeRpc):
         self.control, self.bad_stored, self.bad_role, self.bad_code = False, False, False, False
         self.native_proved, self.opening_period = self.evidence["previous_batch"]["batchNumber"], 5
         self.frozen_bootstrap = k.normalized(item["sidecar"]["accepted_package"])
+        self.roster_count, self.status_overrides = 1, {}
         self.simulated = []
 
     def call(self, method, params):
@@ -44,6 +46,9 @@ class NativeRpc(FakeRpc):
             assert anchor.get("requireCanonical") is True
             data, target = s.raw_hex(tx["data"]), tx["to"]
             selector = data[:4]
+            for (address, signature), value in self.status_overrides.items():
+                if target == address and selector == r.selector(signature):
+                    return "0x" + (s.word(int(value)) if type(value) in (bool, int) else s.raw_hex(value).rjust(32, b"\0")).hex()
             if selector == r.selector("getSemverProtocolVersion()"):
                 return "0x" + (s.word(0) + s.word(32) + s.word(0)).hex()
             if selector == r.selector("bootstrapPackage()"):
@@ -58,7 +63,9 @@ class NativeRpc(FakeRpc):
                 stored = next(item for item in [self.evidence["previous_batch"]] + [b["stored"] for b in self.evidence["batches"]]
                               if item["batchNumber"] == number)
                 return h(99) if self.bad_stored else s.keccak(s.encode_fields(s.STORED, stored))
-            values = {"getChainId()": s.uint(self.settings["execution_chain_id"]), "productionVerifier()": a(130),
+            values = {"getChainId()": s.uint(self.settings["execution_chain_id"]),
+                      "childChainAddress()": self.settings["chain_address"], "rosterCount()": self.roster_count,
+                      "productionVerifier()": a(130),
                       "plonkVerifier()": a(131), "getVerifier()": a(130), "plonkVerifiers(uint32)": a(131),
                       "IS_TESTNET_VERIFIER()": False, "verificationKeyHash(uint256)": self.settings["vk_hash"],
                       "verifierCodeHash()": s.keccak(b"verifier"), "plonkVerifierCodeHash()": s.keccak(b"plonk"),
@@ -198,11 +205,165 @@ class KeeperTests(unittest.TestCase):
         result = k.status(self.config, self.rpc, 1000)
         self.assertTrue(result["control_work"])
         self.assertEqual(result["frozen_package"]["period"], 5)
+        self.assertTrue(result["package_open"])
+        self.assertEqual(result["current_turn"], 3)
+        self.assertEqual(result["selected_wrapper_index"], 0)
+        self.assertEqual(result["turn_deadline"], 1200)
+        self.assertEqual(result["roster"]["count"], 1)
+        self.assertIsNone(result["local_operator_selected"])
         self.rpc.opened = False
         result = k.status(self.config, self.rpc, 1000)
         self.assertTrue(result["control_work"])
         self.assertEqual(result["opening_roster"]["period"], 5)
         self.assertIsNone(result["frozen_package"])
+        self.assertFalse(result["package_open"])
+        self.assertIsNone(result["current_turn"])
+        self.assertIsNone(result["selected_wrapper_index"])
+
+    def roster_fixture(self):
+        first = self.f["proposal"]["candidate"]
+        second = {"index": 1, "account": a(92), "operator": a(95), "beneficiary": a(96)}
+        artifact = roster.construct(5, [first, second])
+        self.f["proposal"]["accepted_package"]["rosterRoot"] = artifact["root"]
+        self.f["proposal"]["candidate_proof"] = artifact["proofs"][0]
+        self.config, self.request, item = setup(self.f)
+        self.rpc = NativeRpc(self.f, self.config, item)
+        self.rpc.roster_count = artifact["count"]
+        return artifact
+
+    def test_status_authenticates_complete_roster_and_detects_turn_rollover(self):
+        artifact = self.roster_fixture()
+        state = k.status(self.config, self.rpc, 1000, artifact)
+        self.assertTrue(state["local_operator_selected"])
+        self.assertEqual(state["selected_candidate"], artifact["candidates"][0])
+        self.rpc.turn, self.rpc.selected, self.rpc.deadline = 4, 1, 1400
+        state = k.status(self.config, self.rpc, 1000, artifact)
+        self.assertFalse(state["local_operator_selected"])
+        self.assertEqual(state["selected_candidate"], artifact["candidates"][1])
+        self.assertEqual(state["current_turn"], 4)
+        self.assertEqual(state["turn_deadline"], 1400)
+
+    def test_status_rejects_stale_wrong_and_incomplete_rosters(self):
+        artifact = self.roster_fixture()
+        for field, value, reason in (("period", 6, "roster_context_mismatch"),
+            ("root", h(201), "roster_context_mismatch"), ("count", 1, "roster_context_mismatch"),
+            ("candidates", artifact["candidates"][:1], "incomplete_roster"),
+            ("proofs", artifact["proofs"][:1], "incomplete_roster_proofs")):
+            with self.subTest(field=field), self.assertRaisesRegex(s.Error, reason):
+                k.status(self.config, self.rpc, 1000, {**artifact, field: value})
+
+    def test_status_pins_configuration_and_canonical_head(self):
+        gate, coordinator = self.config["settings"]["proof_gate"], self.config["settings"]["coordinator"]
+        for target, signature, wrong, reason in (
+            (gate, "sequencer()", a(220), "gate_configuration_changed"),
+            (coordinator, "acceptanceGate()", a(220), "coordinator_configuration_changed"),
+            (coordinator, "childChainId()", 1, "coordinator_configuration_changed"),
+            (coordinator, "childChainAddress()", a(220), "coordinator_configuration_changed"),
+            (coordinator, "sequencer()", a(220), "coordinator_configuration_changed"),
+            (coordinator, "policyHash()", h(220), "coordinator_configuration_changed"),
+            (coordinator, "productionVkHash()", h(220), "coordinator_configuration_changed"),
+            (coordinator, "acceptedParent()", h(220), "coordinator_configuration_changed"),
+            (coordinator, "nextBatch()", 3, "coordinator_configuration_changed"),
+            (coordinator, "frozenPackageHash()", h(220), "frozen_package_hash_mismatch"),
+            (coordinator, "selectedWrapperIndex()", 1, "selected_wrapper_out_of_range")):
+            with self.subTest(signature=signature):
+                self.rpc.status_overrides = {(target, signature): wrong}
+                with self.assertRaisesRegex(s.Error, reason):
+                    k.status(self.config, self.rpc, 1000)
+        self.rpc.status_overrides = {}
+        self.rpc.reorg_anchor = True
+        with self.assertRaisesRegex(s.Error, "rpc_reorg_or_chain_change"):
+            k.status(self.config, self.rpc, 1000)
+
+    def test_rebind_changes_only_current_endorsement_fields(self):
+        artifact = self.roster_fixture()
+        original = copy.deepcopy(self.request)
+        self.rpc.turn, self.rpc.selected, self.rpc.deadline = 4, 1, 1400
+        state = k.status(self.config, self.rpc, 1000, artifact)
+        rebound = k.rebind_request(self.config["settings"], self.request, state, artifact)
+        expected = copy.deepcopy(original)
+        expected["proposal"].update(candidate=artifact["candidates"][1], candidate_proof=artifact["proofs"][1])
+        expected["proposal"]["accepted_package"].update(turn=4, wrapper=a(95), wrapperBeneficiary=a(96))
+        self.assertEqual(rebound, expected)
+        self.assertEqual(self.request, original)
+        self.assertEqual(k.normalized(k.prepare(self.config["settings"], rebound, self.f["evidence"], self.f["fri_payload"])
+                                     ["accepted_package"]), state["frozen_package"])
+
+    def test_rebind_requires_updated_artifacts_after_package_repair(self):
+        artifact = self.roster_fixture()
+        self.rpc.item["sidecar"]["accepted_package"]["batchTo"] = 3
+        state = k.status(self.config, self.rpc, 1000, artifact)
+        with self.assertRaisesRegex(s.Error, "request_frozen_commitments_changed"):
+            k.rebind_request(self.config["settings"], self.request, state, artifact)
+        self.request["proposal"]["accepted_package"]["batchTo"] = 3
+        self.assertEqual(k.rebind_request(self.config["settings"], self.request, state, artifact), self.request)
+        self.request["manifest"]["payload"]["period"] = 6
+        with self.assertRaisesRegex(s.Error, "request_frozen_commitments_changed"):
+            k.rebind_request(self.config["settings"], self.request, state, artifact)
+
+    def test_rebind_is_not_a_permit_and_cannot_bypass_a_later_turn(self):
+        artifact = self.roster_fixture()
+        state = k.status(self.config, self.rpc, 1000, artifact)
+        with self.assertRaisesRegex(s.Error, "complete_roster_required"):
+            k.rebind_request(self.config["settings"], self.request, state)
+        rebound = k.rebind_request(self.config["settings"], self.request, state, artifact)
+        self.rpc.turn, self.rpc.selected, self.rpc.deadline = 4, 1, 1400
+        with self.assertRaisesRegex(s.Error, "stale_wrapper_turn"):
+            k.permit(self.config, self.rpc, rebound, self.f["evidence"], self.f["fri_payload"], 1000, 50)
+
+    def test_closed_and_activation_pending_states_cannot_be_rebound(self):
+        artifact = self.roster_fixture()
+        self.rpc.opened = False
+        state = k.status(self.config, self.rpc, 1000)
+        with self.assertRaisesRegex(s.Error, "package_not_open"):
+            k.rebind_request(self.config["settings"], self.request, state, artifact)
+        gate = self.config["settings"]["proof_gate"]
+        self.rpc.status_overrides = {(gate, "serviceActive()"): False}
+        state = k.status(self.config, self.rpc, 1000)
+        self.assertEqual(state["mode"], "activation_pending")
+        self.assertIsNone(state["local_operator_selected"])
+        with self.assertRaisesRegex(s.Error, "request_phase_mismatch"):
+            k.rebind_request(self.config["settings"], self.request, state, artifact)
+
+    def test_compute_permit_rechecks_coordinator_identity(self):
+        coordinator = self.config["settings"]["coordinator"]
+        for signature, wrong in (("childChainId()", 1), ("childChainAddress()", a(220)), ("sequencer()", a(220))):
+            with self.subTest(signature=signature):
+                self.rpc.status_overrides = {(coordinator, signature): wrong}
+                with self.assertRaisesRegex(s.Error, "coordinator_configuration_changed"):
+                    self.permit()
+
+    def test_rebind_control_does_not_invent_reward_duties(self):
+        artifact = self.roster_fixture()
+        self.rpc.control = True
+        state = k.status(self.config, self.rpc, 1000, artifact)
+        with self.assertRaisesRegex(s.Error, "control_work_must_have_empty_report"):
+            k.rebind_request(self.config["settings"], self.request, state, artifact)
+        self.request["duties"] = []
+        self.rpc.item["sidecar"]["accepted_package"]["reportHash"] = s.report_hash([])
+        state = k.status(self.config, self.rpc, 1000, artifact)
+        self.assertEqual(k.rebind_request(self.config["settings"], self.request, state, artifact)["duties"], [])
+
+    def test_bootstrap_status_and_rebind_require_frozen_zero_wrapper(self):
+        self.f["proposal"].update(mode="bootstrap", candidate=None, candidate_proof=[])
+        self.f["proposal"]["accepted_package"].update(rosterRoot=s.ZERO, turn=0, wrapper=s.ZERO_ADDRESS,
+                                                    wrapperBeneficiary=s.ZERO_ADDRESS)
+        self.f["settings"]["coordinator"] = s.ZERO_ADDRESS
+        self.config, self.request, item = setup(self.f)
+        self.config["policy"]["coordinator_code_hash"] = s.ZERO
+        self.rpc = NativeRpc(self.f, self.config, item)
+        state = k.status(self.config, self.rpc, 1000)
+        self.assertTrue(state["package_open"])
+        self.assertTrue(state["local_operator_selected"])
+        self.assertIsNone(state["roster"])
+        self.assertEqual(k.rebind_request(self.config["settings"], self.request, state), self.request)
+        self.request["proposal"]["accepted_package"]["turn"] = 1
+        with self.assertRaisesRegex(s.Error, "invalid_bootstrap_compute"):
+            k.rebind_request(self.config["settings"], self.request, state)
+        self.rpc.guard_work_missing = True
+        state = k.status(self.config, self.rpc, 1000)
+        self.assertFalse(state["package_open"])
+        self.assertIsNone(state["frozen_package"])
 
     def test_root_draw_and_checkpoint_call_encodings_match_cast(self):
         target = self.config["settings"]["coordinator"]

@@ -360,6 +360,25 @@ impl SnarkJobManager {
         .await
     }
 
+    pub fn max_fris_per_snark(&self) -> usize {
+        self.max_fris_per_snark
+    }
+
+    pub async fn pick_real_job_in_range(
+        &self,
+        prover_id: String,
+        supported_proving_versions: Option<&[ProvingVersion]>,
+        requested_range: (u64, u64),
+    ) -> anyhow::Result<Option<LeasedSnarkJob>> {
+        self.pick_real_job_with_limits(
+            prover_id,
+            supported_proving_versions,
+            MAX_SNARK_PICK_RESPONSE_BYTES,
+            Some(requested_range),
+        )
+        .await
+    }
+
     // SYSCOIN: Keep the exact response boundary injectable for focused tests while production
     // always supplies the hard public HTTP cap above.
     async fn pick_real_job_with_response_limit(
@@ -368,6 +387,27 @@ impl SnarkJobManager {
         supported_proving_versions: Option<&[ProvingVersion]>,
         response_limit: usize,
     ) -> anyhow::Result<Option<LeasedSnarkJob>> {
+        self.pick_real_job_with_limits(prover_id, supported_proving_versions, response_limit, None)
+            .await
+    }
+
+    async fn pick_real_job_with_limits(
+        &self,
+        prover_id: String,
+        supported_proving_versions: Option<&[ProvingVersion]>,
+        response_limit: usize,
+        requested_range: Option<(u64, u64)>,
+    ) -> anyhow::Result<Option<LeasedSnarkJob>> {
+        if let Some((from, to)) = requested_range {
+            anyhow::ensure!(
+                from > 0
+                    && to
+                        .checked_sub(from)
+                        .and_then(|length| length.checked_add(1))
+                        .is_some_and(|count| (2..=self.max_fris_per_snark as u64).contains(&count)),
+                "invalid requested SNARK range"
+            );
+        }
         if let Some(message) = self.fatal_error.current() {
             anyhow::bail!("SNARK manager is terminally faulted: {message}");
         }
@@ -389,6 +429,7 @@ impl SnarkJobManager {
                 self.max_fris_per_snark,
                 self.target_fris_per_snark,
                 self.max_snark_batch_wait,
+                requested_range,
                 &prover_id,
                 |job| {
                     // SYSCOIN: Only real FRI bytes are eligible for an external wrapper. The

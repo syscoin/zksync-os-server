@@ -55,8 +55,10 @@ After native SNARK acceptance, the node fsyncs one immutable `work.json` per
 execution chain/range/native-proof hash. It contains the exact native
 `proof_data`, batch output preimages, actual execution/settlement identity,
 timelock and reviewed publication pins. No signing key or native lease appears
-in this file. Prepare the signed service package through the normal independent
-EN and operator workflow, and relay its identical native `proof_data`.
+in this file. The [automatic coordinator and wrapper](keeper-operator-guide.md)
+verify canonical batch commitments, the exact native FRI proofs, the SNARK and
+the signed dispatch audit before endorsing the package. This flow requires no EN.
+The relay uses the identical native `proof_data`.
 
 After `relay.py step` reports confirmed acceptance, export a bound hint:
 

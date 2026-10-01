@@ -2,12 +2,14 @@
 """Prepare unsigned service maintenance calls and revalidate SNARK compute permits."""
 
 import argparse
+import copy
 import hashlib
 import os
 import sys
 import time
 
 import relay as r
+import roster as rosters
 import service as s
 
 
@@ -170,6 +172,9 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True):
         s.require(active and installed == coordinator, "service_phase_not_active")
         check_code(rpc, coordinator, limits["coordinator_code_hash"], anchor, "coordinator_code_changed")
         for signature, kind, value in (("acceptanceGate()", "address", gate), ("acceptedParent()", "bytes32", accepted["parent"]),
+                                        ("childChainId()", "uint", s.uint(settings["execution_chain_id"])),
+                                        ("childChainAddress()", "address", settings["chain_address"]),
+                                        ("sequencer()", "address", settings["sequencer"]),
                                         ("nextBatch()", "uint", accepted["batchFrom"]), ("policyHash()", "bytes32", settings["policy_hash"]),
                                         ("productionVkHash()", "bytes32", settings["vk_hash"])):
             s.require(call(coordinator, signature, kind=kind) == value, "coordinator_configuration_changed")
@@ -329,8 +334,80 @@ def prefix_call(config, rpc, evidence, witness, now):
                          s.encode_dynamic_tuple([(s.raw_hex(work_id), False)] + arrays))
 
 
-def status(config, rpc, now):
-    """Expose control status before assigning work that could consume a reward opportunity."""
+def decode_package(raw):
+    s.require(len(raw) == 32 * len(s.PACKAGE), "invalid_frozen_package_size")
+    frozen = {}
+    for index, (key, kind) in enumerate(s.PACKAGE):
+        word = raw[index * 32:(index + 1) * 32]
+        if kind == "address":
+            s.require(word[:12] == bytes(12), "invalid_frozen_address")
+            frozen[key] = "0x" + word[12:].hex()
+        elif kind == "bytes32":
+            frozen[key] = "0x" + word.hex()
+        else:
+            number = s.uint(int.from_bytes(word, "big"), int(kind[4:]))
+            frozen[key] = hex(number) if kind == "uint256" else number
+    return frozen
+
+
+def check_frozen(settings, state):
+    frozen = state["frozen_package"]
+    s.encode_fields(s.PACKAGE, frozen)
+    s.require(frozen == normalized(frozen), "invalid_normalized_frozen_package")
+    for field, value in (("domainVersion", 1), ("protocolVersion", 32), ("chainId", settings["execution_chain_id"]),
+        ("chainAddress", settings["chain_address"]), ("policyHash", settings["policy_hash"]),
+        ("vkHash", settings["vk_hash"]), ("sequencer", settings["sequencer"]), ("parent", state["parent"]),
+        ("batchFrom", state["next_native_batch"])):
+        s.require(frozen[field] == value, "frozen_package_configuration_changed")
+    s.nonzero(frozen["parent"])
+    s.nonzero(frozen["sequencerBeneficiary"], 20)
+    s.nonzero(frozen["manifestHash"])
+    s.require(0 < frozen["batchTo"] - frozen["batchFrom"] < 100 and frozen["batchTo"] < 2**64 - 1,
+              "invalid_frozen_batch_range")
+    digest = s.struct_hash("AcceptedPackageV1", s.PACKAGE, frozen)
+    s.require(digest == state["frozen_package_hash"], "frozen_package_hash_mismatch")
+    if state["mode"] == "bootstrap":
+        s.require(frozen["rosterRoot"] == s.ZERO, "invalid_bootstrap_roster")
+    else:
+        s.require(state["roster"] is not None and frozen["period"] == state["roster"]["period"]
+                  and frozen["rosterRoot"] == state["roster"]["root"], "frozen_roster_mismatch")
+
+
+def rebind_request(settings, request, state, roster_artifact=None):
+    """Bind only endorsement fields to an authenticated turn; repairs require new source artifacts."""
+    s.config(settings)
+    s.exact(request, ("proposal", "manifest", "subscriptions", "duties"))
+    proposal = request["proposal"]
+    s.exact(proposal, ("mode", "accepted_package", "candidate", "candidate_proof"))
+    s.require(state["mode"] in ("service", "bootstrap") and proposal["mode"] == state["mode"], "request_phase_mismatch")
+    s.require(state["package_open"] and state["frozen_package"] is not None, "package_not_open")
+    check_frozen(settings, state)
+    accepted = dict(proposal["accepted_package"])
+    s.exact(accepted, [key for key, _ in s.PACKAGE if key not in ("manifestHash", "reportHash", "proofHash")])
+    accepted.update(manifestHash=s.keccak(s.canonical(request["manifest"])), reportHash=s.report_hash(request["duties"]),
+                    proofHash=s.ZERO)
+    s.encode_fields(s.PACKAGE, accepted)
+    s.require(normalized(accepted) == state["frozen_package"], "request_frozen_commitments_changed")
+    s.require(not state["control_work"] or not request["duties"], "control_work_must_have_empty_report")
+    rebound = copy.deepcopy(request)
+    if state["mode"] == "bootstrap":
+        s.require(proposal["candidate"] is None and proposal["candidate_proof"] == [] and accepted == normalized(accepted),
+                  "invalid_bootstrap_compute")
+        return rebound
+    s.require(roster_artifact is not None, "complete_roster_required")
+    selected = rosters.selected(roster_artifact, state["roster"], state["selected_wrapper_index"])
+    candidate = selected["candidate"]
+    s.require(candidate["operator"] != settings["sequencer"], "wrapper_must_differ_from_sequencer")
+    s.uint(state["current_turn"], 32)
+    rebound["proposal"].update(selected)
+    rebound["proposal"]["accepted_package"].update(turn=state["current_turn"], wrapper=candidate["operator"],
+                                                     wrapperBeneficiary=candidate["beneficiary"])
+    return rebound
+
+
+def status(config, rpc, now, roster_artifact=None):
+    """Read the frozen package and schedule from one canonical, configuration-pinned head."""
+    configuration(config)
     settings, limits = config["settings"], config["policy"]
     head, anchor = r.anchored_head(rpc, settings, limits, now)
     gate = settings["proof_gate"]
@@ -338,6 +415,7 @@ def status(config, rpc, now):
     call = lambda target, signature, kind="uint": r.call_word(rpc, target, signature, anchor, kind=kind)
     for signature, kind, expected in (("chain()", "address", settings["chain_address"]),
         ("childChainId()", "uint", s.uint(settings["execution_chain_id"])),
+        ("sequencer()", "address", settings["sequencer"]),
         ("policyHash()", "bytes32", settings["policy_hash"]), ("productionVkHash()", "bytes32", settings["vk_hash"])):
         s.require(call(gate, signature, kind) == expected, "gate_configuration_changed")
     coordinator = call(gate, "coordinator()", "address")
@@ -346,34 +424,63 @@ def status(config, rpc, now):
               "parent": call(gate, "lastAcceptedPackage()", "bytes32"),
               "priority_work_id": call(gate, "priorityWorkId()", "bytes32"),
               "next_native_batch": call(settings["chain_address"], "getTotalBatchesVerified()") + 1,
-              "mode": "bootstrap", "control_work": False, "opening_roster": None, "frozen_package": None}
+              "mode": "bootstrap", "control_work": False, "opening_roster": None, "frozen_package": None,
+              "package_open": False, "frozen_package_hash": None, "current_turn": None,
+              "selected_wrapper_index": None, "turn_deadline": None, "roster": None,
+              "selected_candidate": None, "selected_candidate_proof": None, "local_operator_selected": None}
+    s.uint(result["next_native_batch"], 64)
     if coordinator != s.ZERO_ADDRESS:
         s.require(coordinator == settings["coordinator"], "coordinator_configuration_changed")
         check_code(rpc, coordinator, limits["coordinator_code_hash"], anchor, "coordinator_code_changed")
+        for signature, kind, expected in (("acceptanceGate()", "address", gate),
+            ("childChainId()", "uint", s.uint(settings["execution_chain_id"])),
+            ("childChainAddress()", "address", settings["chain_address"]), ("sequencer()", "address", settings["sequencer"]),
+            ("policyHash()", "bytes32", settings["policy_hash"]), ("productionVkHash()", "bytes32", settings["vk_hash"]),
+            ("acceptedParent()", "bytes32", result["parent"]), ("nextBatch()", "uint", result["next_native_batch"])):
+            s.require(call(coordinator, signature, kind) == expected, "coordinator_configuration_changed")
         result["mode"] = "service" if active else "activation_pending"
-        if call(coordinator, "packageOpen()", "bool"):
+        result["package_open"] = call(coordinator, "packageOpen()", "bool")
+        s.require(active or not result["package_open"], "invalid_service_phase")
+        if result["package_open"]:
             raw = raw_call(rpc, coordinator, "frozenPackage()", anchor, size=32 * len(s.PACKAGE))
-            frozen = {}
-            for index, (key, kind) in enumerate(s.PACKAGE):
-                word = raw[index * 32:(index + 1) * 32]
-                if kind == "address":
-                    s.require(word[:12] == bytes(12), "invalid_frozen_address")
-                    frozen[key] = "0x" + word[12:].hex()
-                elif kind == "bytes32":
-                    frozen[key] = "0x" + word.hex()
-                else:
-                    number = s.uint(int.from_bytes(word, "big"), int(kind[4:]))
-                    frozen[key] = hex(number) if kind == "uint256" else number
-            result["frozen_package"] = frozen
+            result["frozen_package"] = decode_package(raw)
+            result["frozen_package_hash"] = call(coordinator, "frozenPackageHash()", "bytes32")
+            result["current_turn"] = s.uint(call(coordinator, "currentTurn()"), 32)
+            result["selected_wrapper_index"] = s.uint(call(coordinator, "selectedWrapperIndex()"), 32)
+            result["turn_deadline"] = call(coordinator, "turnDeadline()")
+            result["roster"] = {"period": result["frozen_package"]["period"],
+                                "root": call(coordinator, "rosterRoot()", "bytes32"),
+                                "count": s.uint(call(coordinator, "rosterCount()"), 32)}
+            s.require(result["selected_wrapper_index"] < result["roster"]["count"], "selected_wrapper_out_of_range")
+            s.require(result["turn_deadline"] > s.uint(head["timestamp"]), "invalid_turn_deadline")
             result["control_work"] = call(gate, "transitionWork()", "bool")
         else:
             raw = raw_call(rpc, coordinator, "openingRoster()", anchor, size=128)
             numbers = [int.from_bytes(raw[i:i + 32], "big") for i in (0, 64, 96)]
             s.require(numbers[2] in (0, 1), "invalid_control_status")
-            result["opening_roster"] = {"period": numbers[0], "root": "0x" + raw[32:64].hex(), "count": numbers[1]}
+            result["opening_roster"] = {"period": s.uint(numbers[0], 64), "root": "0x" + raw[32:64].hex(),
+                                       "count": s.uint(numbers[1], 32)}
             result["control_work"] = bool(numbers[2])
+            result["roster"] = result["opening_roster"]
+        s.nonzero(result["roster"]["root"])
+        s.require(result["roster"]["count"] > 0, "invalid_roster_count")
     else:
         s.require(not active, "invalid_service_phase")
+        result["package_open"] = result["priority_work_id"] != s.ZERO
+        if result["package_open"]:
+            result["frozen_package"] = decode_package(raw_call(rpc, gate, "bootstrapPackage()", anchor,
+                                                              size=32 * len(s.PACKAGE)))
+            result["frozen_package_hash"] = s.struct_hash("AcceptedPackageV1", s.PACKAGE, result["frozen_package"])
+            result["local_operator_selected"] = limits["expected_operator"] == settings["sequencer"]
+    if result["package_open"]:
+        check_frozen(settings, result)
+        if result["mode"] == "service" and roster_artifact is not None:
+            selected = rosters.selected(roster_artifact, result["roster"], result["selected_wrapper_index"])
+            result["selected_candidate"] = selected["candidate"]
+            result["selected_candidate_proof"] = selected["candidate_proof"]
+            result["local_operator_selected"] = selected["candidate"]["operator"] == limits["expected_operator"]
+    elif result["roster"] is not None and roster_artifact is not None:
+        rosters.authenticate(roster_artifact, result["roster"])
     r.check_anchor(rpc, settings, head)
     return result
 
@@ -383,7 +490,7 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("status")
+    commands.add_parser("status").add_argument("--roster")
     for name in ("permit", "open", "repair"):
         command = commands.add_parser(name)
         for field in ("request", "evidence", "payload"):
@@ -399,7 +506,7 @@ def main():
     config = configuration(s.read_json(args.config))
     rpc, now = rpc_for(config), time.time()
     if args.command == "status":
-        result = status(config, rpc, now)
+        result = status(config, rpc, now, s.read_json(args.roster) if args.roster else None)
     elif args.command in ("permit", "open", "repair"):
         request, evidence = s.read_json(args.request), s.read_json(args.evidence)
         payload = s.read_json(args.payload, maximum=256 * 1024 * 1024)

@@ -208,7 +208,7 @@ def subscription_request(settings, subscription):
         nonzero(subscription[field], 20)
     require(subscription["sequencer"] == settings["sequencer"] != subscription["operator"], "wrong_sequencer_or_operator")
     require(0 <= subscription["lastPeriod"] - subscription["firstPeriod"] < 64, "invalid_subscription_period")
-    require(1 <= subscription["services"] <= 3, "invalid_subscription_service")
+    require(subscription["services"] == 3, "combined_fri_and_wrapper_subscription_required")
     return typed_request("ProverSubscriptionV1", SUBSCRIPTION, subscription, "ZkSysProverService",
                          settings["registry_chain_id"], settings["registry"], subscription["account"])
 
@@ -247,7 +247,7 @@ def prepare_renewal(settings, signed_subscription, snapshot):
         next_period += 1
         cutoff = max(0, uint(start + next_period * seconds) - lead)
     uint(next_period, 64)
-    require(subscription["services"] & 2 and subscription["firstPeriod"] <= next_period <= subscription["lastPeriod"],
+    require(subscription["services"] == 3 and subscription["firstPeriod"] <= next_period <= subscription["lastPeriod"],
             "no_active_wrapper_subscription_for_next_period")
     signature = "renewWrapper(bytes32,uint64)"
     calldata = raw_hex(type_hash(signature))[:4] + raw_hex(request["struct_hash"]) + word(next_period)
@@ -375,7 +375,7 @@ def validate_manifest(settings, manifest, subscriptions, evidence, allow_empty=F
         require(subscription["account"] not in accounts and subscription["operator"] not in operators,
                 "duplicate_subscription_identity")
         require(subscription["firstPeriod"] <= payload["period"] <= subscription["lastPeriod"]
-                and subscription["services"] & 1, "inactive_fri_subscription")
+                and subscription["services"] == 3, "inactive_fri_subscription")
         accounts.add(subscription["account"])
         operators.add(subscription["operator"])
         by_hash[request["struct_hash"]] = subscription

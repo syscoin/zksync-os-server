@@ -72,9 +72,11 @@ jq -r .proof_data /trusted/package-request.json > /trusted/proof-data.hex
 
 The relayer revalidates the signatures, report hash, native calldata encoding,
 batch-output preimages and full duty statements through the same portable
-checker before accepting the artifact. The independent EN and native proof
-verification requirements in `README.md` still apply; this does not turn copied
-producer metadata into independent evidence.
+checker before accepting the artifact. The [automatic wrapper](keeper-operator-guide.md)
+also checks settlement-authenticated batch commitments, verifies every native FRI
+with the pinned CPU verifier, verifies the SNARK and audits signed dispatch
+history before endorsement. This flow requires no EN; copied producer metadata
+alone cannot satisfy those checks.
 
 Inspect the current state without staging, signing or broadcasting:
 

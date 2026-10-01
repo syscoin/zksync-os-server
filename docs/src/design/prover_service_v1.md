@@ -64,7 +64,9 @@ one reserved proxy storage slot.
 
 `ZkSysProverServiceRegistryV1` uses account-signed EIP-712 subscriptions, distinct
 operator and beneficiary fields, a bounded period interval, and operator-signed
-work receipts. A batch can supply at most one canonical duty credit; a slot cannot
+work receipts. Every subscription must set `services=3`, enrolling the same
+operator for FRI and SNARK wrapping; single-service subscriptions are rejected.
+A batch can supply at most one canonical duty credit; a slot cannot
 be counted twice. Retry attempts and splitting an aggregate do not create another
 credit for the same batch. An empty companion can settle, but earns no duty credit.
 
@@ -96,14 +98,15 @@ authorization and native proof binding as the child's gate on Gateway. It is the
 sole configured timelock prover for Gateway and runs Gateway's native verifier
 exactly once. Both native proof lanes contribute to the same child accounting.
 
-The child computes a complete, sorted wrapper roster from qualified accounts that
-subscribed for wrapping. Paginated publication is permissionless and cannot omit
+The child computes a complete, sorted wrapper roster from the qualified shared
+service pool. Completing the FRI quota installs the operator as a wrapper candidate;
+there is no separate wrapper enrollment. Paginated publication is permissionless and cannot omit
 qualified accounts or substitute an operator/payee. Admission closes ahead of
 the period so the roster can be proved to Gateway and its root entropy prepared.
 This cutoff and the receipt grace must cover measured cross-chain proof latency.
 
 An account that previously completed a full quota for this sequencer can renew
-its wrapper subscription during an idle period, provided its senior membership
+its shared-service wrapper eligibility during an idle period, provided its senior membership
 is still fresh. Renewal adds no bonus admission, success credit, or denominator
 weight. This keeps capable verified wrappers available when sparse demand has not
 produced another FRI quota. A newcomer or a partial qualifier cannot use renewal.
@@ -236,9 +239,15 @@ authorization unless the complete deployed bypass audit passes.
 
 ## Trusted operator and rental boundaries
 
-`scripts/prover-rental` contains a Runpod v2 controller, a concrete one-job image
-adapter for the existing FRI/SNARK CLI, and a trusted Sentry lease handoff. Tests
-exercise both stages through a mocked provider and node. Defaults are dry-run;
+The **zksync-airbender-prover** repository owns `scripts/prover-rental`: the
+Runpod v2 controller, reusable GPU worker, continuous supervisor, and trusted
+Sentry lease handoff. This server checkout retains compatibility entry points;
+set `ZKSYNC_AIRBENDER_PROVER_DIR` to the prover checkout when the repositories
+are not adjacent. The supervisor rents after finding eligible work, processes
+one lease at a time, checks for wrapping before taking another FRI job, and
+reuses the pod until an idle grace period expires. A failed endpoint is not
+evidence that its queue is empty. Tests exercise both stages through a mocked
+provider and node. Defaults are dry-run;
 the policy intentionally has no guessed hardware, runtime, price, image, or CUDA
 values. An independently supervised watchdog and durable journal are required
 before live creation. Ambiguous creation is reconciled without a second POST.
@@ -251,7 +260,14 @@ with the retained lease through the existing verifier-backed API and preserves
 them across nonterminal responses.
 
 `scripts/prover-service` prepares portable manifests and exact typed wallet
-requests from independently obtained EN/native proof evidence. Rust V1 bindings
+requests from native batch/output preimages and proof bytes. Canonical settlement
+reads authenticate the committed batch hashes; the pinned CPU FRI verifier checks
+the batch statements and reviewed program commitment; the production native SNARK
+verifier checks the final aggregate before endorsement. This wrapping flow
+requires no execution node (EN). Native EN operation remains separately supported;
+it is not a wrapper prerequisite. Producer metadata alone cannot replace these
+proof and canonical-state checks.
+Rust V1 bindings
 share the Solidity encodings. These tools do not transform diagnostic `prover_id`
 strings or Basic Auth into on-chain Sentry identity. The current v1 API remains a
 compute lease API.
@@ -293,8 +309,9 @@ The read-only `/v1/SNARK/{from}/{to}/evidence` endpoint exports canonical stored
 batch/output preimages from retained proof metadata. It has the existing bounded
 peek admission, checks contiguous V32/V8 identities, and refuses the zero VK
 sentinel. It exports neither lease capabilities nor raw proofs. This is producer
-evidence to compare with independently executed EN results; it is not itself an
-independent EN verification. `ProofCommand::service_submission` validates a
+evidence for reconstructing statements and checking canonical committed hashes;
+it is not itself proof verification or an independent replay result.
+`ProofCommand::service_submission` validates a
 completed sidecar against its exact retained native metadata and proof bytes and
 constructs the gate call.
 
@@ -325,6 +342,15 @@ complete the journal. This is a trusted-wallet RPC handoff with a dedicated nonc
 journal. Its handoff export connects the confirmed wallet journal to the node's
 retained work; it does not bypass the node's independent receipt check.
 
+The wrapper also verifies the complete signed dispatch history against its own
+enrollment-block pin, retained checkpoints, and known readiness/duty receipts.
+This checks roster completeness, the shared account cursor and quota, retry
+continuity, exact accepted-duty coverage, and hashes of the actual native FRI
+inputs. Known omissions and inconsistencies refuse endorsement. A signed history
+cannot prove that the sequencer disclosed every off-ledger request or rejected
+proof honestly; independent observations remain necessary to detect those cases.
+The audit introduces no new reward rule or duty points.
+
 `keeper.py` prepares and simulates unsigned package opening, repair and fixed
 maintenance calls. For external service SNARK work it validates the actual native
 commitments, frozen package, selected wrapper, current turn and priority witness
@@ -335,11 +361,27 @@ Selected-wrapper keys and native leases remain on trusted hosts. A provider can
 still start late or fail, and a competing state change can invalidate work after
 the last check; these checks do not guarantee paid work or a provider invoice cap.
 
-The [keeper operator guide](https://github.com/syscoin/zksync-os-server/blob/0156211b1ff3dc827a65eccff716eba9cf6c977e/scripts/prover-service/keeper-operator-guide.md)
-describes the trusted sequencer lease, independent evidence, selected wrapper,
-pool output, native SNARK submission, wallet and node handoff. The keeper produces
-reviewable unsigned calls; operators must supply actual native cross-chain proofs,
-sign and submit required calls, and supervise message capture and delivery.
+After service activation, `coordinator.py` retains the native SNARK lease and
+evidence, snapshots and signs the dispatcher manifest/audit, and opens the package
+through durable maintenance transactions. It sends a signed turn-bound inbox
+envelope to the currently selected operator. That operator's `wrapper.py` watcher
+checks the audit, pinned CPU FRI verifier and canonical chain state, then queues
+SNARK work in the same warm pool used for FRI. It checks the native SNARK before
+returning an authenticated result and, only while still selected, its endorsement.
+The coordinator rechecks the result, submits its original native lease, matches
+the node's publication record, and relays the dual-endorsed package. Both journals
+retain exact signed bytes across ambiguous sends, and the node still independently
+verifies the confirmed gate receipt before advancing execution. Maintenance and
+proof-relay transactions use separate nonce accounts.
+
+The [keeper operator guide](https://github.com/syscoin/zksync-os-server/blob/codex/senior-prover-service/scripts/prover-service/keeper-operator-guide.md)
+documents configuration, automatic operation, and manual recovery. The automation
+does not register subscriptions, publish or relay cross-chain rosters and draws,
+invent priority-tree witnesses, or authorize an unreviewed image/VK. Operators
+supply the complete roster artifacts, independently pinned audit trust, actual
+native priority preimages/paths, and authenticated inbox transport; existing
+cross-chain capture and relay keepers must continue running. Bootstrap remains
+the explicit pre-activation keeper path.
 Prestart and rollover control packages require empty duty reports, so their FRI
 compute must not consume the dispatcher's paid assessment slots. Their ordinary
 compute costs do not create service credit.
@@ -360,7 +402,8 @@ compute costs do not create service credit.
    without declaring failure; finish the protocol-level assessment policy before
    making availability or penalty claims. No enrollment or synthetic workload
    can qualify a service account.
-3. Exercise the implemented selected-wrapper/EN sidecar and durable relayer with
+3. Exercise the implemented coordinator, CPU-verifying selected wrapper, sidecar,
+   and durable relayer with
    the reviewed production wallet RPC and deployed gate. Mocked tests cover stale
    turns, repaired manifests, process crashes, ambiguous sends, receipt replay
    and restart after acceptance; qualify real Gateway roots, native-proof gas,
@@ -384,7 +427,7 @@ compute costs do not create service credit.
    combination/compression, wrapping, artifact return, and forced termination.
    Provider outages can prevent termination; software budgets are not an absolute
    provider invoice cap. No real rental or GPU proof was run by these unit tests.
-8. Test sequencer/EN checkpoint recovery and Gateway unsettled-history recovery.
+8. Test sequencer checkpoint recovery and Gateway unsettled-history recovery.
    The launch still has one producer and no multi-sequencer fork choice. Ordinary
    RPC receipts and fast interop retain their existing provisional-history
    assumptions.

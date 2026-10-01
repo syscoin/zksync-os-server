@@ -30,6 +30,9 @@ class Rpc:
         if method == "eth_getBlockByNumber":
             assert params == ["finalized", False]
             return {"hash": h(100), "timestamp": "0x226" if self.active else "0x1c2"}
+        if method == "eth_getBlockByHash":
+            assert params == [h(100), False]
+            return {"hash": h(100), "timestamp": "0x226" if self.active else "0x1c2"}
         raise AssertionError(method)
 
     def contract(self, address, signature, values, anchor):
