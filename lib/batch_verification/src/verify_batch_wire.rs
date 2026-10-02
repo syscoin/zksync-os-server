@@ -63,62 +63,6 @@ impl TryFrom<VerifyBatch> for VerificationRequest {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tests::dummy_batch_envelope;
-    use alloy::primitives::Bytes;
-
-    #[test]
-    fn verification_request_rejects_inverted_block_range_before_decoding() {
-        let result = VerificationRequest::try_from(VerifyBatch {
-            request_id: 1,
-            batch_number: 1,
-            first_block_number: 2,
-            last_block_number: 1,
-            pubdata_mode: PubdataMode::Blobs.to_u8(),
-            commit_data: Bytes::new(),
-            prev_commit_data: Bytes::new(),
-            execution_protocol_version: CANONICAL_PROTOCOL_MINOR,
-        });
-        let Err(err) = result else {
-            panic!("inverted batch range was accepted");
-        };
-        assert!(err.to_string().contains("invalid empty batch block range"));
-    }
-
-    #[test]
-    fn verification_request_binds_outer_and_commit_batch_numbers() {
-        let mut request = encode_verify_batch_request(&dummy_batch_envelope(7, 1, 1), 1).unwrap();
-        request.batch_number = 8;
-
-        let Err(err) = VerificationRequest::try_from(request) else {
-            panic!("mismatched outer and commit batch numbers were accepted");
-        };
-        assert!(
-            err.to_string()
-                .contains("commit batch number does not match request")
-        );
-    }
-
-    #[test]
-    fn verification_request_requires_a_contiguous_predecessor() {
-        let mut request = encode_verify_batch_request(&dummy_batch_envelope(7, 1, 1), 1).unwrap();
-        let mut previous =
-            IExecutor::StoredBatchInfo::abi_decode(&request.prev_commit_data).unwrap();
-        previous.batchNumber = u64::MAX;
-        request.prev_commit_data = previous.abi_encode().into();
-
-        let Err(err) = VerificationRequest::try_from(request) else {
-            panic!("non-contiguous previous batch was accepted");
-        };
-        assert!(
-            err.to_string()
-                .contains("previous batch is not contiguous with request")
-        );
-    }
-}
-
 pub(crate) fn encode_verify_batch_request<E>(
     batch_envelope: &BatchForSigning<E>,
     request_id: u64,
@@ -177,4 +121,60 @@ fn encode_commit_data(
         )));
     }
     Ok(IExecutor::CommitBatchInfoZKsyncOS::from(commit_info).abi_encode())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::dummy_batch_envelope;
+    use alloy::primitives::Bytes;
+
+    #[test]
+    fn verification_request_rejects_inverted_block_range_before_decoding() {
+        let result = VerificationRequest::try_from(VerifyBatch {
+            request_id: 1,
+            batch_number: 1,
+            first_block_number: 2,
+            last_block_number: 1,
+            pubdata_mode: PubdataMode::Blobs.to_u8(),
+            commit_data: Bytes::new(),
+            prev_commit_data: Bytes::new(),
+            execution_protocol_version: CANONICAL_PROTOCOL_MINOR,
+        });
+        let Err(err) = result else {
+            panic!("inverted batch range was accepted");
+        };
+        assert!(err.to_string().contains("invalid empty batch block range"));
+    }
+
+    #[test]
+    fn verification_request_binds_outer_and_commit_batch_numbers() {
+        let mut request = encode_verify_batch_request(&dummy_batch_envelope(7, 1, 1), 1).unwrap();
+        request.batch_number = 8;
+
+        let Err(err) = VerificationRequest::try_from(request) else {
+            panic!("mismatched outer and commit batch numbers were accepted");
+        };
+        assert!(
+            err.to_string()
+                .contains("commit batch number does not match request")
+        );
+    }
+
+    #[test]
+    fn verification_request_requires_a_contiguous_predecessor() {
+        let mut request = encode_verify_batch_request(&dummy_batch_envelope(7, 1, 1), 1).unwrap();
+        let mut previous =
+            IExecutor::StoredBatchInfo::abi_decode(&request.prev_commit_data).unwrap();
+        previous.batchNumber = u64::MAX;
+        request.prev_commit_data = previous.abi_encode().into();
+
+        let Err(err) = VerificationRequest::try_from(request) else {
+            panic!("non-contiguous previous batch was accepted");
+        };
+        assert!(
+            err.to_string()
+                .contains("previous batch is not contiguous with request")
+        );
+    }
 }

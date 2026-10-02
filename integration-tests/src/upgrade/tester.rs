@@ -26,6 +26,16 @@ use zksync_os_types::{
     L1PriorityTxType, L1TxType, ProtocolSemanticVersion, REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
 };
 
+/// Optional settlement-layer updates applied after the upgrade's diamond cut.
+#[derive(Debug, Default)]
+pub struct DefaultUpgradePostActions {
+    pub da_validator_pair: Option<(Address, interfaces::L2DACommitmentScheme)>,
+    // Optional verifier bytecode to install (via `anvil_setCode`, keeping storage)
+    // together with a diamond cut. Any future upgrade that changes the verifier's
+    // public-input ABI must replace both atomically.
+    pub new_verifier_code: Option<Bytes>,
+}
+
 /// Object that helps with preparation and execution of protocol upgrades in integration tests.
 ///
 /// SYSCOIN: Fresh V32 fixtures intentionally omit the retired V30/V31 compatibility branches.
@@ -209,12 +219,12 @@ impl<'a> UpgradeTester<'a> {
         upgrade_timestamp: U256,
         patch_only: bool,
         facet_cuts: Vec<FacetCut>,
-        da_validator_pair: Option<(Address, interfaces::L2DACommitmentScheme)>,
-        // Optional verifier bytecode to install (via `anvil_setCode`, keeping storage)
-        // together with a diamond cut. Any future upgrade that changes the verifier's
-        // public-input ABI must replace both atomically.
-        new_verifier_code: Option<Bytes>,
+        post_actions: DefaultUpgradePostActions,
     ) -> anyhow::Result<()> {
+        let DefaultUpgradePostActions {
+            da_validator_pair,
+            new_verifier_code,
+        } = post_actions;
         // Deploy the upgrade contract on SL.
         let upgrade_contract =
             DefaultUpgrade::deploy(self.tester.sl_provider(), protocol_upgrade).await?;

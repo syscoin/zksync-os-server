@@ -4059,11 +4059,13 @@ fn run_fake_snark_provers(
 ) {
     tracing::info!(
         max_batch_age = ?config.fake_snark_provers.max_batch_age,
+        min_age = ?config.fake_snark_provers.min_age,
         "Initializing fake SNARK prover"
     );
     let fake_snark_prover = FakeSnarkProver::new(
         snark_job_manager.clone(),
         config.fake_snark_provers.max_batch_age,
+        config.fake_snark_provers.min_age,
     );
     runtime.spawn_critical_task("fake snark prover", fake_snark_prover.run());
 }

@@ -7,8 +7,8 @@ inputs:
     type: string
     description: 'Version of foundry to use.'
     required: false
-    # Pinned to a specific stable version to avoid breaking changes.
-    default: 'v1.5.1'
+    # Match the Anvil version that generated the registered component fixture.
+    default: 'v1.7.1'
   enable_cache:
     type: string
     description: 'Whether to enable cache.'
@@ -45,7 +45,7 @@ runs:
         if command -v sudo >/dev/null 2>&1; then
           SUDO=sudo
         fi
-        ${SUDO} apt update && ${SUDO} apt install -y libclang-dev wget jq libssl-dev pkg-config
+        ${SUDO} apt update && ${SUDO} apt install -y libclang-dev wget jq zstd libssl-dev pkg-config
 
     - name: Add cuda to path
       shell: 'bash -ex {0}'
@@ -53,7 +53,7 @@ runs:
       run: echo "/usr/local/nvidia/bin:/usr/local/cuda/bin" >> "${GITHUB_PATH}"
 
     - name: Install cmake
-      if: ${{ contains(runner.name, 'matterlabs') && runner.arch == 'X64' }}
+      if: ${{ runner.os == 'Linux' && runner.arch == 'X64' }}
       shell: 'bash -ex {0}'
       env:
         CMAKE_VERSION: '4.1.1'

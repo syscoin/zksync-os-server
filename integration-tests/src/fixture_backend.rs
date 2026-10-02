@@ -18,6 +18,39 @@ const EDGE_CHAIN_IDS: [u64; 2] = [6565, 6566];
 
 pub type FixtureResult<T> = Result<T, String>;
 
+/// Test purpose is separate from the protocol identity. Component fixtures never
+/// satisfy the canonical Core/NEVM release gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureScope {
+    CanonicalSyscoin,
+    AnvilComponentOnly,
+}
+
+impl FixtureScope {
+    pub const fn integration_default() -> Self {
+        if cfg!(feature = "prover-tests") {
+            Self::CanonicalSyscoin
+        } else {
+            Self::AnvilComponentOnly
+        }
+    }
+
+    pub fn protocol_dir(self, workspace: &Path, version: &str) -> FixtureResult<PathBuf> {
+        check_version(version)?;
+        let base = workspace.join("local-chains");
+        match self {
+            Self::CanonicalSyscoin => Ok(base.join(version)),
+            Self::AnvilComponentOnly if version == "v32.0" => {
+                Ok(base.join("anvil-component-only").join(version))
+            }
+            Self::AnvilComponentOnly => Err("current component scope requires V32/V8".into()),
+        }
+    }
+}
+
+#[path = "fixture_component.rs"]
+pub mod component;
+
 // These are the two historical compressed-Anvil layouts before the V32 reset.
 // Never extend this by numerical comparison or treat V32 as a legacy version.
 const LEGACY_ANVIL_VERSIONS: &[&str] = &["v30.2", "v31.0"];
@@ -117,7 +150,7 @@ pub enum BackendDescriptor {
         decompressed_state: FileIdentity,
     },
     SyscoinCoreNevm {
-        inventory: CoreNevmInventory,
+        inventory: Box<CoreNevmInventory>,
     },
 }
 
@@ -136,6 +169,8 @@ pub enum ValidatedFixtureInventory {
         compressed_state: PathBuf,
     },
     Descriptor(FixtureDescriptor),
+    /// Explicit current component lane, not a canonical Syscoin fixture.
+    AnvilComponentOnly(Box<component::ComponentDescriptor>),
 }
 
 pub fn check_regeneration_marker(root: &Path) -> FixtureResult<()> {
@@ -417,6 +452,10 @@ impl ValidatedFixtureInventory {
     pub fn anvil_state(&self, root: &Path) -> FixtureResult<(PathBuf, Option<&FileIdentity>)> {
         match self {
             Self::LegacyAnvilComponent { compressed_state } => Ok((compressed_state.clone(), None)),
+            Self::AnvilComponentOnly(descriptor) => Ok((
+                descriptor.compressed_state.verify(root)?,
+                Some(&descriptor.decompressed_state),
+            )),
             Self::Descriptor(FixtureDescriptor { backend: BackendDescriptor::AnvilComponent {
                 compressed_state, decompressed_state }, .. }) =>
                 Ok((compressed_state.verify(root)?, Some(decompressed_state))),

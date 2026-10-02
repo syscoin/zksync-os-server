@@ -10,13 +10,6 @@ source "${SCRIPT_DIR}/_common.sh"
 gl_require ZKSYNC_ERA_PATH
 # SYSCOIN: Create only the canonical fresh V32 ecosystem.
 : "${PROTOCOL_VERSION:=v32.0}"
-export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
-export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
-gl_assert_zksync_era_sha
-gl_assert_contracts_sha
-gl_ensure_zkstack_cli_release_current
-gl_path_for_zkstack
-
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 : "${GATEWAY_ECOSYSTEM_NAME:=$(basename "${GATEWAY_DIR}")}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
@@ -24,10 +17,18 @@ gl_path_for_zkstack
 : "${GATEWAY_PROVER_MODE:=gpu}"
 : "${GATEWAY_COMMIT_MODE:=rollup}"
 : "${L1_NETWORK:=localhost}"
+L1_NETWORK="$(gl_to_lower "${L1_NETWORK}")"
+export L1_NETWORK
 : "${GATEWAY_WALLET_CREATION:=}"
 : "${GATEWAY_WALLET_PATH:=${GATEWAY_DIR}.wallets.yaml}"
 gl_normalize_canonical_deployment_inputs
 gl_reject_no_proofs_on_mainnet
+export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
+export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
+gl_assert_zksync_era_sha
+gl_assert_contracts_sha
+gl_ensure_zkstack_cli_release_current
+gl_path_for_zkstack
 gl_resolve_gateway_dir planned
 gl_acquire_gateway_launch_lock
 

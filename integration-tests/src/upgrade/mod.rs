@@ -1,7 +1,7 @@
 pub use self::builder::ProtocolUpgradeBuilder;
 pub use self::default_upgrade::DefaultUpgrade;
 pub use self::interfaces::{Action, FacetCut, L2DACommitmentScheme};
-pub use self::tester::UpgradeTester;
+pub use self::tester::{DefaultUpgradePostActions, UpgradeTester};
 
 mod builder;
 mod default_upgrade;

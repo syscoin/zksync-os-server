@@ -124,8 +124,8 @@ async fn wait_for_block_hash_change(
     }
 }
 
-/// Waits until an in-progress block rebuild has reached `pre_restart_tip` (the chain tip snapshotted
-/// before the restart).
+/// Waits until a block rebuild or startup replay has reached `pre_restart_tip` (the chain tip
+/// snapshotted before the restart).
 async fn wait_for_rebuild_to_reach_tip(
     tester: &Tester,
     pre_restart_tip: u64,
@@ -579,6 +579,7 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     let first_new_batch = initial_state.last_committed_batch + 1;
     let (_, first_new_block, _) = fetch_committed_batch(&tester, first_new_batch).await?;
     let original_block_hash = block_hash(&tester, first_new_block).await?;
+    let pre_restart_tip = tester.l2_provider.get_block_number().await?;
 
     let stopped = tester.stop().await?;
     let reverter_signer = make_reverter_config(&stopped)?;
@@ -600,6 +601,7 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
 
     // Wait for the target block to be rebuilt with a new timestamp (hash changes).
     wait_for_block_hash_change(&first_restart, first_new_block, original_block_hash).await?;
+    wait_for_rebuild_to_reach_tip(&first_restart, pre_restart_tip).await?;
 
     // Wait for the batcher to re-commit a batch after rebuild; record the count.
     let state_before_second_restart = wait_for_l1_state(
@@ -611,9 +613,13 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     let committed_before = state_before_second_restart.last_committed_batch;
 
     // Second restart: same config, but the target hash has changed → guard fires, revert skipped.
+    let pre_second_restart_tip = first_restart.l2_provider.get_block_number().await?;
     let stopped2 = first_restart.stop().await?;
     let second_restart = stopped2.start_with_config(restart_config).await?;
 
+    // SYSCOIN: RPC is reachable during WAL replay. Wait for the preserved tip before the fresh
+    // provider fills a nonce; otherwise replay can consume that nonce and evict the new transaction.
+    wait_for_rebuild_to_reach_tip(&second_restart, pre_second_restart_tip).await?;
     // Confirm node is alive.
     send_throwaway_tx(&second_restart).await?;
 
@@ -680,6 +686,8 @@ async fn revert_l1_commits_without_rebuild_leaves_local_blocks_intact(
 
     let reverted = stopped.start_with_config(revert_config).await?;
 
+    // SYSCOIN: The preserved blocks must finish replaying before filling the next wallet nonce.
+    wait_for_rebuild_to_reach_tip(&reverted, tip_block).await?;
     // Confirm the node is alive.
     send_throwaway_tx(&reverted).await?;
 

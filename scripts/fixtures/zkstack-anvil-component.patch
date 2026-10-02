@@ -1,0 +1,168 @@
+diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
+--- a/zkstack_cli/crates/common/src/forge.rs
++++ b/zkstack_cli/crates/common/src/forge.rs
+@@ -249,6 +249,35 @@ impl ForgeScript {
+         self
+     }
+ 
++    /// Test-only adapter; never available in the unmodified release CLI.
++    /// The generator must own a fresh loopback Anvil, chain ID 31337.
++    pub fn with_anvil_component_sender(mut self, address: String) -> anyhow::Result<Self> {
++        anyhow::ensure!(
++            std::env::var("SYSCOIN_ANVIL_COMPONENT_ONLY").as_deref() == Ok("31337"),
++            "component-only signer scope is required"
++        );
++        let url = url::Url::parse(&self.rpc_url().ok_or_else(|| anyhow::anyhow!("missing RPC"))?)?;
++        anyhow::ensure!(
++            url.scheme() == "http"
++                && url.host_str() == Some("127.0.0.1")
++                && url.port().is_some_and(|port| port > 1024)
++                && url.username().is_empty()
++                && url.password().is_none()
++                && url.path() == "/"
++                && url.query().is_none()
++                && url.fragment().is_none(),
++            "component-only signer requires uncredentialed loopback RPC"
++        );
++        anyhow::ensure!(self.private_key.is_none() && !self.args.wallet_args_passed(), "mixed signer mode");
++        anyhow::ensure!(
++            !self.args.additional_args.iter().any(|a| argument_uses_flag(a, "--sender") || argument_uses_flag(a, "--unlocked")),
++            "component-only sender cannot be overridden"
++        );
++        self.args.add_arg(ForgeScriptArg::Sender { address });
++        self.args.add_arg(ForgeScriptArg::Unlocked);
++        Ok(self)
++    }
++
+     /// Add the broadcast flag to the forge script command.
+     pub fn with_broadcast(mut self) -> Self {
+         self.args.add_arg(ForgeScriptArg::Broadcast);
+@@ -401,4 +430,5 @@ pub enum ForgeScriptArg {
+     Broadcast,
++    Unlocked,
+     #[strum(to_string = "etherscan-api-key={api_key}")]
+     EtherscanApiKey {
+         api_key: String,
+diff --git a/zkstack_cli/crates/zkstack/src/utils/forge.rs b/zkstack_cli/crates/zkstack/src/utils/forge.rs
+--- a/zkstack_cli/crates/zkstack/src/utils/forge.rs
++++ b/zkstack_cli/crates/zkstack/src/utils/forge.rs
+@@ -17,6 +17,13 @@ pub fn fill_forge_private_key(
+     wallet: Option<&Wallet>,
+     wallet_owner: WalletOwner,
+ ) -> anyhow::Result<ForgeScript> {
++    if std::env::var_os("SYSCOIN_ANVIL_COMPONENT_ONLY").is_some() {
++        let address = wallet.ok_or_else(|| anyhow::anyhow!("component wallet is missing"))?.address;
++        anyhow::ensure!(address != ethers::types::Address::zero(), "component sender is zero");
++        // Never access a key for this path. Fixed constructor identities and
++        // ordinary public development governors remain distinct public senders.
++        return forge.with_anvil_component_sender(format!("{address:#x}"));
++    }
+     if !forge.wallet_args_passed() {
+         forge = forge.with_private_key(
+             wallet
+diff --git a/zkstack_cli/crates/zkstack/build.rs b/zkstack_cli/crates/zkstack/build.rs
+--- a/zkstack_cli/crates/zkstack/build.rs
++++ b/zkstack_cli/crates/zkstack/build.rs
+@@ -19,10 +19,14 @@
+     // single-colon `cargo:error` directive is non-fatal under the pinned Cargo.
+     build_dependencies().context("It was not possible to install project dependencies")?;
+ 
+-    if let Err(e) = configure_shell_autocompletion() {
+-        println!("cargo:warning=It was not possible to install autocomplete scripts. Please generate them manually with `zkstack autocomplete`");
+-        println!("cargo:error={}", e);
+-    };
++    // Component-only builds must not read or mutate the user shell profile.
++    // Ordinary release builds retain the original optional installation.
++    if std::env::var("SYSCOIN_ANVIL_COMPONENT_ONLY").as_deref() != Ok("31337") {
++        if let Err(e) = configure_shell_autocompletion() {
++            println!("cargo:warning=It was not possible to install autocomplete scripts. Please generate them manually with `zkstack autocomplete`");
++            println!("cargo:error={}", e);
++        }
++    }
+ 
+     Ok(())
+ }
+@@ -140,19 +144,28 @@
+ 
+     let _dir_guard = shell.push_dir(code_dir);
+ 
+-    // SYSCOIN: This zkstack revision is paired with newer V32 contracts.
+-    // Keep the reviewed combined workspace lock immutable. Prove dependency
+-    // closure with lifecycle scripts disabled before allowing them to run.
+-    cmd!(shell, "yarn install --frozen-lockfile --ignore-scripts")
++    // This isolated adapter retains the reviewed combined lock byte-for-byte.
++    // Yarn 1's deprecated check --integrity compares unused lock selectors with
++    // a resolver-only integrity file after --frozen-lockfile; --check-files is
++    // the supported installed-file check and does not rewrite the lock.
++    let lock = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../yarn.lock");
++    let original_lock = std::fs::read(&lock).context("Missing reviewed workspace lock")?;
++    cmd!(
++        shell,
++        "yarn install --frozen-lockfile --ignore-scripts --check-files"
++    )
++    .run()
++    .context("Failed to preflight dependencies")?;
++    anyhow::ensure!(
++        std::fs::read(&lock)? == original_lock,
++        "Reviewed workspace lock changed during dependency preflight"
++    );
++    cmd!(shell, "yarn install --frozen-lockfile --check-files")
+         .run()
+-        .context("Failed to preflight dependencies")?;
+-    cmd!(shell, "yarn check --integrity --ignore-scripts")
+-        .run()
+-        .context("Failed to verify dependency closure")?;
+-    cmd!(shell, "yarn install --frozen-lockfile")
+-        .run()
+         .context("Failed to install dependencies")?;
+-    cmd!(shell, "yarn check --integrity")
+-        .run()
+-        .context("Failed to verify installed dependencies")
++    anyhow::ensure!(
++        std::fs::read(&lock)? == original_lock,
++        "Reviewed workspace lock changed during dependency installation"
++    );
++    Ok(())
+ }
+diff --git a/zkstack_cli/crates/zkstack/src/utils/link_to_code.rs b/zkstack_cli/crates/zkstack/src/utils/link_to_code.rs
+--- a/zkstack_cli/crates/zkstack/src/utils/link_to_code.rs
++++ b/zkstack_cli/crates/zkstack/src/utils/link_to_code.rs
+@@ -88,6 +88,38 @@
+     base_path: &Path,
+     link_to_code: Option<PathBuf>,
+ ) -> anyhow::Result<PathBuf> {
++    if std::env::var_os("SYSCOIN_ANVIL_COMPONENT_ONLY").is_some() {
++        anyhow::ensure!(
++            std::env::var("SYSCOIN_ANVIL_COMPONENT_ONLY").as_deref() == Ok("31337"),
++            "component-only vendored source scope is required"
++        );
++        let link_to_code = link_to_code
++            .ok_or_else(|| anyhow::anyhow!("component-only source must be supplied explicitly"))?;
++        anyhow::ensure!(
++            link_to_code.is_absolute()
++                && link_to_code.is_dir()
++                && std::fs::canonicalize(&link_to_code)? == link_to_code,
++            "component-only source must be a canonical absolute directory"
++        );
++        // The component generator uses a separately manifest-qualified public
++        // tree, not a Git checkout. Never clone or invent repository metadata.
++        for required in [
++            "contracts/l1-contracts",
++            "contracts/l2-contracts",
++            "contracts/system-contracts",
++            "contracts/da-contracts",
++            "contracts/lib/forge-std/src",
++            "contracts/lib/murky/src",
++            "contracts/lib/openzeppelin-contracts-v4/contracts",
++            "contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts",
++        ] {
++            anyhow::ensure!(
++                link_to_code.join(required).is_dir(),
++                "component-only vendored source is incomplete: {required}"
++            );
++        }
++        return Ok(link_to_code);
++    }
+     if let Some(link_to_code) = link_to_code {
+         git::submodule_update(shell, &link_to_code)?;
+         Ok(link_to_code)
