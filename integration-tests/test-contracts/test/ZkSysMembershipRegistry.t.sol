@@ -29,6 +29,7 @@ contract MockSentryNodeReceiver is IZkSysSentryNodeReceiver {
 }
 
 contract ZkSysMembershipRegistryTest is Test {
+    uint64 private observationHeight = uint64(type(uint32).max) + 1;
     address private admin = address(0xAD);
     address private l1Bridge = address(0xB111D6E);
     address private alice = address(0xA11CE);
@@ -43,19 +44,17 @@ contract ZkSysMembershipRegistryTest is Test {
     function testOnlyAliasedL1BridgeCanApplyL1Updates() public {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
-            account: alice,
-            sentryNodeCollateralHeight: 1_000,
-            sentryNodeWeight: 135_000 ether
+            account: alice, sentryNodeCollateralHeight: 1_000, sentryNodeWeight: 135_000 ether
         });
 
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysMembershipRegistry.UnauthorizedL1RegistryBridge.selector, address(this))
         );
-        registry.applyL1SentryNodeUpdates(updates);
+        registry.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
 
         _wireReceiver();
         vm.prank(registry.aliasedL1RegistryBridge());
-        registry.applyL1SentryNodeUpdates(updates);
+        registry.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
 
         ZkSysMembershipRegistry.Member memory member = registry.member(alice);
         assertEq(member.sentryNodeCollateralHeight, 1_000);
@@ -120,18 +119,14 @@ contract ZkSysMembershipRegistryTest is Test {
         _wireReceiver();
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](2);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
-            account: alice,
-            sentryNodeCollateralHeight: 1_000,
-            sentryNodeWeight: 100_000 ether
+            account: alice, sentryNodeCollateralHeight: 1_000, sentryNodeWeight: 100_000 ether
         });
         updates[1] = ZkSysMembershipRegistry.SentryNodeUpdate({
-            account: bob,
-            sentryNodeCollateralHeight: 2_000,
-            sentryNodeWeight: 135_000 ether
+            account: bob, sentryNodeCollateralHeight: 2_000, sentryNodeWeight: 135_000 ether
         });
 
         vm.prank(registry.aliasedL1RegistryBridge());
-        registry.applyL1SentryNodeUpdates(updates);
+        registry.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
 
         ZkSysMembershipRegistry.Member memory aliceMember = registry.member(alice);
         ZkSysMembershipRegistry.Member memory bobMember = registry.member(bob);
@@ -148,14 +143,12 @@ contract ZkSysMembershipRegistryTest is Test {
         _wireReceiver();
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
-            account: address(0),
-            sentryNodeCollateralHeight: 1_000,
-            sentryNodeWeight: 100_000 ether
+            account: address(0), sentryNodeCollateralHeight: 1_000, sentryNodeWeight: 100_000 ether
         });
 
         vm.prank(registry.aliasedL1RegistryBridge());
         vm.expectRevert(ZkSysMembershipRegistry.InvalidAddress.selector);
-        registry.applyL1SentryNodeUpdates(updates);
+        registry.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
     }
 
     function testChangedL1FactRequiresReceiver() public {
@@ -261,10 +254,8 @@ contract ZkSysMembershipRegistryTest is Test {
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
-            account: account,
-            sentryNodeCollateralHeight: sentryNodeCollateralHeight,
-            sentryNodeWeight: sentryNodeWeight
+            account: account, sentryNodeCollateralHeight: sentryNodeCollateralHeight, sentryNodeWeight: sentryNodeWeight
         });
-        registry.applyL1SentryNodeUpdates(updates);
+        registry.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
     }
 }

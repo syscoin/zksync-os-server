@@ -29,7 +29,8 @@ interface IZkSysMembershipRegistryL2 {
         uint128 sentryNodeWeight;
     }
 
-    function applyL1SentryNodeUpdates(SentryNodeUpdate[] calldata updates) external;
+    function applyL1SentryNodeUpdates(SentryNodeUpdate[] calldata updates, uint64 observedCoreHeight, uint64 observedAt)
+        external;
 }
 
 /// @title ZkSysRegistryBridge
@@ -48,6 +49,7 @@ contract ZkSysRegistryBridge is Initializable {
     error NevmLookupFailed(address account);
     error InvalidSeniorityConfig();
     error SentryNodeWeightOverflow(uint256 weight);
+    error ObservationOverflow();
 
     IL1BridgehubMinimal public bridgehub;
     uint256 public zksysChainId;
@@ -134,6 +136,11 @@ contract ZkSysRegistryBridge is Initializable {
             });
         }
 
+        uint256 coreHeight = uint256(nevmStartBlock) + block.number;
+        if (coreHeight > type(uint64).max || block.timestamp > type(uint64).max) revert ObservationOverflow();
+        bytes memory l2Calldata = abi.encodeCall(
+            IZkSysMembershipRegistryL2.applyL1SentryNodeUpdates, (updates, uint64(coreHeight), uint64(block.timestamp))
+        );
         bytes[] memory factoryDeps = new bytes[](0);
         canonicalTxHash = bridgehub.requestL2TransactionDirect{value: msg.value}(
             IL1BridgehubMinimal.L2TransactionRequestDirect({
@@ -141,7 +148,7 @@ contract ZkSysRegistryBridge is Initializable {
                 mintValue: msg.value,
                 l2Contract: l2Registry,
                 l2Value: 0,
-                l2Calldata: abi.encodeCall(IZkSysMembershipRegistryL2.applyL1SentryNodeUpdates, (updates)),
+                l2Calldata: l2Calldata,
                 l2GasLimit: l2GasLimit,
                 l2GasPerPubdataByteLimit: l2GasPerPubdataByteLimit,
                 factoryDeps: factoryDeps,

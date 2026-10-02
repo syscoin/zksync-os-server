@@ -15192,6 +15192,7 @@ dependencies = [
  "backon",
  "futures",
  "serde",
+ "serde_json",
  "structdiff",
  "thiserror 2.0.17",
  "tokio",

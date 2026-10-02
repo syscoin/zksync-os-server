@@ -36,6 +36,7 @@ use zksync_os_types::{ProtocolSemanticVersion, ProvingVersion};
 /// - HTTP server (provers call pick_next_job, submit_proof, etc.)
 /// - Fake provers pool
 pub struct SnarkProvingPipelineStep {
+    service_publication: Option<super::service_publication::ServicePublication>,
     // SYSCOIN: The recreated pipeline begins exactly after the executed frontier, including
     // already-proved passthrough markers before the first unproved FRI.
     last_executed_batch_number: u64,
@@ -193,6 +194,14 @@ impl<'a> SortedJournalCoverageCursor<'a> {
 }
 
 impl SnarkProvingPipelineStep {
+    pub(crate) fn with_service_publication(
+        mut self,
+        publication: super::service_publication::ServicePublication,
+    ) -> Self {
+        self.service_publication = Some(publication);
+        self
+    }
+
     // SYSCOIN: Keep startup-discovered proof frontiers, settlement identity, verifier mode, and
     // the journal receiver explicit at this one construction boundary; collapsing them into an
     // unvalidated bag would obscure which values are bound during durable recovery.
@@ -245,6 +254,7 @@ impl SnarkProvingPipelineStep {
         ));
 
         let result = Self {
+            service_publication: None,
             last_executed_batch_number,
             last_proved_batch_number,
             last_committed_batch_number,
@@ -758,6 +768,17 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             !output.is_closed(),
             "SNARK pipeline outbound channel closed before startup recovery"
         );
+
+        // The native proved counter is insufficient service authority after a crash between gate
+        // acceptance and handoff. Authenticate covered exact commands before recovery may reap.
+        if let Some(publication) = self.service_publication {
+            for command in journal
+                .covered_service_commands(last_proved_batch_number)
+                .await?
+            {
+                publication.confirm_command(&command).await?;
+            }
+        }
 
         // SYSCOIN: Only the historical state block with the selected prove sender's inclusive
         // confirmation depth may authorize startup deletion. Skip the extra RPC snapshot when the

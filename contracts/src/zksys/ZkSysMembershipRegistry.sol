@@ -28,11 +28,18 @@ contract ZkSysMembershipRegistry is Initializable, AccessControlUpgradeable {
         uint128 sentryNodeWeight;
     }
 
+    struct MembershipObservation {
+        uint64 observedCoreHeight;
+        uint64 observedAt;
+    }
+
     error InvalidAddress();
     error L1RegistryBridgeAlreadySet(address currentL1RegistryBridge);
     error UnauthorizedL1RegistryBridge(address caller);
     error SentryNodeReceiverAlreadySet(address currentReceiver);
     error SentryNodeReceiverNotSet();
+    error InvalidMembershipObservation();
+    error ConflictingMembershipObservation(address account, uint64 observedCoreHeight);
 
     mapping(address account => Member member) private _members;
     mapping(address account => uint256 indexPlusOne) private _activeSentryNodeIndexPlusOne;
@@ -41,7 +48,8 @@ contract ZkSysMembershipRegistry is Initializable, AccessControlUpgradeable {
     IZkSysSentryNodeReceiver public sentryNodeReceiver;
     address public l1RegistryBridge;
     address public aliasedL1RegistryBridge;
-    uint256[46] private __gap;
+    mapping(address account => MembershipObservation observation) public membershipObservation;
+    uint256[45] private __gap;
 
     event L1RegistryBridgeUpdated(address indexed l1RegistryBridge, address indexed aliasedL1RegistryBridge);
     event SentryNodeReceiverUpdated(address indexed receiver);
@@ -50,6 +58,7 @@ contract ZkSysMembershipRegistry is Initializable, AccessControlUpgradeable {
     );
     event SentryNodeWeightUpdated(address indexed account, uint128 oldSentryNodeWeight, uint128 newSentryNodeWeight);
     event SentryNodeMembershipUpdated(address indexed account, bool active);
+    event MembershipObserved(address indexed account, uint64 observedCoreHeight, uint64 observedAt);
 
     constructor() {
         _disableInitializers();
@@ -83,14 +92,37 @@ contract ZkSysMembershipRegistry is Initializable, AccessControlUpgradeable {
         _setL1RegistryBridge(l1RegistryBridge_);
     }
 
-    function applyL1SentryNodeUpdates(SentryNodeUpdate[] calldata updates) external {
+    function applyL1SentryNodeUpdates(SentryNodeUpdate[] calldata updates, uint64 observedCoreHeight, uint64 observedAt)
+        external
+    {
         if (msg.sender != aliasedL1RegistryBridge) {
             revert UnauthorizedL1RegistryBridge(msg.sender);
         }
-
+        if (observedCoreHeight == 0 || observedAt == 0 || observedAt > block.timestamp) {
+            revert InvalidMembershipObservation();
+        }
         for (uint256 i = 0; i < updates.length; ++i) {
             SentryNodeUpdate calldata update = updates[i];
+            if (update.account == address(0)) revert InvalidAddress();
+            if (
+                update.sentryNodeCollateralHeight > observedCoreHeight
+                    || (update.sentryNodeCollateralHeight == 0) != (update.sentryNodeWeight == 0)
+            ) revert InvalidMembershipObservation();
+            MembershipObservation memory previous = membershipObservation[update.account];
+            if (observedCoreHeight < previous.observedCoreHeight) continue;
+            if (observedCoreHeight == previous.observedCoreHeight) {
+                Member memory stored = _members[update.account];
+                if (
+                    observedAt != previous.observedAt
+                        || stored.sentryNodeCollateralHeight != update.sentryNodeCollateralHeight
+                        || stored.sentryNodeWeight != update.sentryNodeWeight
+                ) revert ConflictingMembershipObservation(update.account, observedCoreHeight);
+                continue;
+            }
+            if (observedAt < previous.observedAt) revert InvalidMembershipObservation();
+            membershipObservation[update.account] = MembershipObservation(observedCoreHeight, observedAt);
             _updateSentryNode(update.account, update.sentryNodeCollateralHeight, update.sentryNodeWeight);
+            emit MembershipObserved(update.account, observedCoreHeight, observedAt);
         }
     }
 
@@ -149,10 +181,16 @@ contract ZkSysMembershipRegistry is Initializable, AccessControlUpgradeable {
                 revert SentryNodeReceiverNotSet();
             }
             receiver.onSentryNodeStatusChange(
-                account, oldSentryNodeCollateralHeight, sentryNodeCollateralHeight, oldSentryNodeWeight, sentryNodeWeight
+                account,
+                oldSentryNodeCollateralHeight,
+                sentryNodeCollateralHeight,
+                oldSentryNodeWeight,
+                sentryNodeWeight
             );
             if (oldSentryNodeCollateralHeight != sentryNodeCollateralHeight) {
-                emit SentryNodeCollateralHeightUpdated(account, oldSentryNodeCollateralHeight, sentryNodeCollateralHeight);
+                emit SentryNodeCollateralHeightUpdated(
+                    account, oldSentryNodeCollateralHeight, sentryNodeCollateralHeight
+                );
             }
             if (oldSentryNodeWeight != sentryNodeWeight) {
                 emit SentryNodeWeightUpdated(account, oldSentryNodeWeight, sentryNodeWeight);

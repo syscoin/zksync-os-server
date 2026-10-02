@@ -6,7 +6,7 @@ index 7e1d9037d..71702e655 100644
 +# SYSCOIN: track the exact V32 compact Edge-DA relay deployment manifest.
 +!l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd18..37794f6dc 100644
+index a0200fd18..b5de446cd 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
@@ -316,15 +316,17 @@ index a0200fd18..37794f6dc 100644
 +    "evmDeployedBytecodeBlakeHash": "0x65646e3a9ccce22eb1b422c8edba5f26574ab337b5797d884a066d5474c8eeb1",
 @@ -1264 +1264 @@
 -    "zkBytecodeHash": "0x010001bfbd1a80582193320b95b988d20aac9568af6302b05d6ce62dad34b56c",
-+    "zkBytecodeHash": "0x010001bf98a7bd3b677a1d8ff4dd4d2d614c7296331a48fab4e8f91c0f1507c7",
++    "zkBytecodeHash": "0x010001d12d42d192c1626f3f5e3e4017f9844c196925e008b4f6fbe8b8a022c2",
 @@ -1266 +1266 @@
 -    "evmBytecodeHash": "0xc8ef66bf8a8e57229bf92a4701a61a09a04f0c776b8090b8827d79ac01c2caad",
-+    "evmBytecodeHash": "0x43dfb0cd74273a6b3640454b250ced8a203bf4891ba16529586bcc219a28267a",
-@@ -1268,2 +1268,2 @@
++    "evmBytecodeHash": "0x47b17ab91bb26f3e8d6dcc2e1c839bcc86d33e731b9e4930614c3a357471ac62",
+@@ -1268,3 +1268,3 @@
 -    "evmDeployedBytecodeHash": "0x6d365a6b21c0e41b2bd047fd28c2817449c15e0fb0e358f8a4e81656537e06bb",
 -    "evmDeployedBytecodeBlakeHash": "0xbeba2a018c388669afcadf83b916a12a93eafc9b3e62efc1e5f0c4e80a762835",
-+    "evmDeployedBytecodeHash": "0x028540b5104000536a287bacd8d3bb0a2338b45829c9c354171155377d914d38",
-+    "evmDeployedBytecodeBlakeHash": "0x809235dfcac597bea76529d6ca70506f13d058d45f0bd0a40943f315763dd408",
+-    "evmDeployedBytecodeLength": 5186
++    "evmDeployedBytecodeHash": "0x4362184e0d439f8e1b2377e21f8597322b7b7b27a6d53caff5ef60fdea581f1a",
++    "evmDeployedBytecodeBlakeHash": "0x893a541bf2b5bf566e3727dba65caae35ee621ee1b03f052b5aa2ed3b4720e56",
++    "evmDeployedBytecodeLength": 5401
 @@ -1294 +1294 @@
 -    "zkBytecodeHash": "0x0100090976731ab1816c31f3c4cd7ce9793fce9f69664747c3d1cec7b9f06777",
 +    "zkBytecodeHash": "0x0100090919f3cb33e4370a79a4e342ef8b6a0e26ba7b435b0173bb51451e278d",
@@ -1802,6 +1804,27 @@ index b8d073a5b..a73e7f3bb 100644
 +                _newBatch.slChainId,
 +                // SYSCOIN: Bind the proven batch output to the ordered compact edge-DA root.
 +                _newBatch.edgeDARefsRoot
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
+index 2f5c0c0d7..0425dfe7a 100644
+--- a/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
+@@ -126,0 +127,16 @@ contract GettersFacet is ZKChainBase, IGetters, ILegacyGetters {
++    // SYSCOIN: Expose native queue facts so root-deadline enforcement never trusts relay arrival time.
++    /// @notice Returns native settlement arrival time; root deadlines must read the root Mailbox.
++    /// @dev Rejects indices outside the current tree, including pre-tree legacy entries.
++    function getPriorityTransactionTimestamp(uint256 _index) external view returns (uint256) {
++        require(
++            _index >= s.priorityTree.startIndex && _index < s.priorityTree.getTotalPriorityTxs(),
++            "priority index outside tree"
++        );
++        return s.priorityOpsRequestTimestamp[_index];
++    }
++
++    /// @return Number of siblings in a proof against the current initialized priority tree root.
++    function getPriorityTreeHeight() external view returns (uint256) {
++        return s.priorityTree.tree._sides.length - 1;
++    }
++
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
 index 55ce6a6cc..be486cebf 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
@@ -3013,7 +3036,7 @@ index 000000000..7918b2a11
 +  "expectedAddress": "0x758b06cDA80BDD016F79AFd0df1A984039067A21"
 +}
 diff --git a/l1-contracts/selectors b/l1-contracts/selectors
-index 35a078048..0b1b2bdda 100644
+index 35a078048..eed27f374 100644
 --- a/l1-contracts/selectors
 +++ b/l1-contracts/selectors
 @@ -1650,2 +1649,0 @@ CommitterFacet
@@ -3044,7 +3067,12 @@ index 35a078048..0b1b2bdda 100644
 +|----------+-------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
 +| Error    | SyscoinEdgeDARefsRootMismatch(bytes32,bytes32)                                                                                | 0x05dc7af9                                                         |
 +|----------+-------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------|
-@@ -4440,5 +4456,9 @@ GatewayCTMDeployerDA
+@@ -1989,0 +2006,4 @@ DiamondCutTestContract
++| Function | getPriorityTransactionTimestamp(uint256)                    | 0x6a8e93e1                                                         |
++|----------+-------------------------------------------------------------+--------------------------------------------------------------------|
++| Function | getPriorityTreeHeight()                                     | 0xecdce672                                                         |
++|----------+-------------------------------------------------------------+--------------------------------------------------------------------|
+@@ -4440,5 +4460,9 @@ GatewayCTMDeployerDA
 -╭----------+-------------+------------╮
 -| Type     | Signature   | Selector   |
 -+=====================================+
@@ -3059,10 +3087,15 @@ index 35a078048..0b1b2bdda 100644
 +|----------+-------------------------------------------------------------+------------|
 +| Error    | SyscoinEdgeDARelayMissing(address)                          | 0xcc2c2e20 |
 +╰----------+-------------------------------------------------------------+------------╯
-@@ -4916,0 +4937,2 @@ IAdminFunctions
+@@ -4596,0 +4621,4 @@ GettersFacet
++| Function | getPriorityTransactionTimestamp(uint256)  | 0x6a8e93e1 |
++|----------+-------------------------------------------+------------|
++| Function | getPriorityTreeHeight()                   | 0xecdce672 |
++|----------+-------------------------------------------+------------|
+@@ -4916,0 +4945,2 @@ IAdminFunctions
 +| Function | adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,uint256,bytes,address,bool)                  | 0x36cec6db |
 +|----------+------------------------------------------------------------------------------------------------------------+------------|
-@@ -7930,7 +7952,11 @@ IZKsyncOSDualVerifier
+@@ -7930,7 +7960,11 @@ IZKsyncOSDualVerifier
 -╭----------+-------------------------+------------╮
 -| Type     | Signature               | Selector   |
 -+=================================================+
@@ -3081,7 +3114,7 @@ index 35a078048..0b1b2bdda 100644
 +|----------+---------------------------------+------------|
 +| Function | replaceVerifier(uint32,address) | 0x39c0a35a |
 +╰----------+---------------------------------+------------╯
-@@ -13192,0 +13219,52 @@ StoredBatchHashing
+@@ -13194,0 +13229,52 @@ StoredBatchHashing
 +SyscoinRelayedSLDAValidator
 +
 +╭----------+--------------------------------------------------+------------╮
@@ -3134,10 +3167,10 @@ index 35a078048..0b1b2bdda 100644
 +| Error    | ZeroAddress()                                    | 0xd92e233d                                                         |
 +╰----------+--------------------------------------------------+--------------------------------------------------------------------╯
 +
-@@ -13349,2 +13426,0 @@ TestCommitter
+@@ -13349,2 +13434,0 @@ TestCommitter
 -| Error    | NonZeroBlobToVerifyZKsyncOS(uint256,bytes32,bytes32)     | 0x0e0ff4d9                                                         |
 -|----------+----------------------------------------------------------+--------------------------------------------------------------------|
-@@ -13360,0 +13437,10 @@ TestCommitter
+@@ -13362,0 +13447,10 @@ TestCommitter
 +| Error    | SyscoinEdgeDACommitmentMismatch(bytes32,bytes32)         | 0xe4e9188e                                                         |
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
 +| Error    | SyscoinEdgeDANotAvailable(bytes32)                       | 0x076d05e9                                                         |
@@ -3148,27 +3181,33 @@ index 35a078048..0b1b2bdda 100644
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
 +| Error    | SyscoinEdgeDARefsRootMismatch(bytes32,bytes32)           | 0x05dc7af9                                                         |
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
-@@ -14027 +14113 @@ ZKsyncOSDualVerifier
+@@ -14027 +14121 @@ ZKsyncOSDualVerifier
 -| Function | acceptOwnership()                         | 0x79ba5097                                                         |
 +| Function | IS_TESTNET_VERIFIER()                     | 0x272d0f1a                                                         |
-@@ -14029 +14115 @@ ZKsyncOSDualVerifier
+@@ -14029 +14123 @@ ZKsyncOSDualVerifier
 -| Function | addVerifier(uint32,address,address)       | 0x80c6c967                                                         |
 +| Function | acceptOwnership()                         | 0x79ba5097                                                         |
-@@ -14043 +14129 @@ ZKsyncOSDualVerifier
+@@ -14043,2 +14136,0 @@ ZKsyncOSDualVerifier
 -| Function | removeVerifier(uint32)                    | 0x58406bf9                                                         |
+-|----------+-------------------------------------------+--------------------------------------------------------------------|
+@@ -14046,0 +14139,2 @@ ZKsyncOSDualVerifier
 +| Function | replaceVerifier(uint32,address)           | 0x39c0a35a                                                         |
-@@ -14059 +14145,3 @@ ZKsyncOSDualVerifier
++|----------+-------------------------------------------+--------------------------------------------------------------------|
+@@ -14059 +14153,3 @@ ZKsyncOSDualVerifier
 -| Error    | AddressAlreadySet(address)                | 0x0dfb42bf                                                         |
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
-@@ -14159,2 +14246,0 @@ ZKsyncOSTestnetVerifier
+@@ -14159,2 +14254,0 @@ ZKsyncOSTestnetVerifier
 -| Function | addVerifier(uint32,address,address)       | 0x80c6c967                                                         |
 -|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14173 +14259 @@ ZKsyncOSTestnetVerifier
+@@ -14173,2 +14266,0 @@ ZKsyncOSTestnetVerifier
 -| Function | removeVerifier(uint32)                    | 0x58406bf9                                                         |
+-|----------+-------------------------------------------+--------------------------------------------------------------------|
+@@ -14176,0 +14269,2 @@ ZKsyncOSTestnetVerifier
 +| Function | replaceVerifier(uint32,address)           | 0x39c0a35a                                                         |
-@@ -14189 +14275,3 @@ ZKsyncOSTestnetVerifier
++|----------+-------------------------------------------+--------------------------------------------------------------------|
+@@ -14189 +14283,3 @@ ZKsyncOSTestnetVerifier
 -| Error    | AddressAlreadySet(address)                | 0x0dfb42bf                                                         |
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
@@ -4686,6 +4725,77 @@ index 10d0ddc1a..25d33e9ee 100644
 +        vm.expectEmit(true, true, true, true, address(adminFacet));
 +        emit NewZKsyncOSMaxTxGasLimit(ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT, ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT);
 +        adminFacet.setZKsyncOSMaxTxGasLimit(ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT);
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol
+new file mode 100644
+index 000000000..31d351c37
+--- /dev/null
++++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol
+@@ -0,0 +1,65 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {Test} from "forge-std/Test.sol";
++import {GettersFacet} from "contracts/state-transition/chain-deps/facets/Getters.sol";
++import {PriorityTree} from "contracts/state-transition/libraries/PriorityTree.sol";
++
++// SYSCOIN: Exercise the actual getter/storage boundary used by authenticated root checkpoints.
++contract SyscoinPriorityObservationHarness is GettersFacet {
++    using PriorityTree for PriorityTree.Tree;
++
++    function initializeTree(uint256 start) external {
++        s.priorityTree.setup(start);
++    }
++
++    function append(bytes32 hash, uint256 timestamp) external {
++        uint256 index = s.priorityTree.getTotalPriorityTxs();
++        s.priorityTree.push(hash);
++        s.priorityOpsRequestTimestamp[index] = timestamp;
++    }
++
++    function process(uint256 count) external {
++        s.priorityTree.unprocessedIndex += count;
++    }
++}
++
++contract SyscoinPriorityObservationsTest is Test {
++    SyscoinPriorityObservationHarness private getters;
++
++    function setUp() public {
++        getters = new SyscoinPriorityObservationHarness();
++        getters.initializeTree(7);
++    }
++
++    function testTimestampUsesAbsoluteRootQueueIndexAndSurvivesProcessing() public {
++        getters.append(keccak256("first"), 1000);
++        getters.append(keccak256("second"), 1200);
++        bytes32 root = getters.getPriorityTreeRoot();
++        getters.process(1);
++        assertEq(getters.getPriorityTransactionTimestamp(7), 1000);
++        assertEq(getters.getPriorityTransactionTimestamp(8), 1200);
++        assertEq(getters.getPriorityTreeRoot(), root);
++        assertEq(getters.getFirstUnprocessedPriorityTx(), 8);
++    }
++
++    function testTimestampRejectsOutsideTreeInsteadOfPretendingZeroIsAnArrival() public {
++        getters.append(keccak256("first"), 1000);
++        vm.expectRevert("priority index outside tree");
++        getters.getPriorityTransactionTimestamp(6);
++        vm.expectRevert("priority index outside tree");
++        getters.getPriorityTransactionTimestamp(8);
++    }
++
++    function testTreeHeightTracksActualNativeMerkleDepth() public {
++        assertEq(getters.getPriorityTreeHeight(), 0);
++        getters.append(keccak256("first"), 1000);
++        assertEq(getters.getPriorityTreeHeight(), 0);
++        getters.append(keccak256("second"), 1001);
++        assertEq(getters.getPriorityTreeHeight(), 1);
++        getters.append(keccak256("third"), 1002);
++        assertEq(getters.getPriorityTreeHeight(), 2);
++        getters.append(keccak256("fourth"), 1003);
++        assertEq(getters.getPriorityTreeHeight(), 2);
++    }
++}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 new file mode 100644
 index 000000000..02cbef307

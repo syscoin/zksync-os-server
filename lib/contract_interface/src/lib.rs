@@ -2,6 +2,7 @@ pub mod calldata;
 pub mod l1_discovery;
 mod metrics;
 pub mod models;
+pub mod prover_service_v1;
 pub mod settlement_layer_intervals;
 
 use crate::IBridgehub::{

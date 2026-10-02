@@ -237,6 +237,18 @@ fn definitely_unleased_pick_response(status: StatusCode, message: impl Into<Stri
     response
 }
 
+fn empty_pick_response() -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(
+        PROVER_PICK_OUTCOME_HEADER,
+        HeaderValue::from_static(PROVER_PICK_OUTCOME_UNLEASED),
+    );
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 pub(super) async fn pick_fri_job(
     Query(query): Query<ProverQuery>,
     State(state): State<AppState>,
@@ -263,11 +275,12 @@ pub(super) async fn pick_fri_job(
     // see `FakeProversPool` for fake provers implementation
     match state
         .fri_job_manager
-        .pick_next_job(
+        .pick_next_job_filtered(
             std::time::Duration::from_secs(0),
             query.id,
             supported_proving_versions.as_deref(),
             maximum_response_bytes,
+            query.nonempty_only,
         )
         .await
     {
@@ -297,7 +310,7 @@ pub(super) async fn pick_fri_job(
         }
         None => {
             guard.finish(PickJobResult::NoJob);
-            StatusCode::NO_CONTENT.into_response()
+            empty_pick_response()
         }
     }
 }
@@ -410,6 +423,14 @@ pub(super) async fn pick_snark_job(
     State(state): State<AppState>,
 ) -> Response {
     let mut guard = PickJobGuard::new(ProverStage::Snark);
+    let requested_range =
+        match query.requested_snark_range(state.snark_job_manager.max_fris_per_snark()) {
+            Ok(range) => range,
+            Err(message) => {
+                guard.finish(PickJobResult::Error);
+                return (StatusCode::BAD_REQUEST, message).into_response();
+            }
+        };
     // SYSCOIN: Admit before manager assignment or any aggregate clone/encoding. A 429 therefore
     // transfers no lease, while a successful permit remains owned through the trusted proxy drain.
     let Some(permit) = try_acquire_response_slot(&state.snark_pick_slots) else {
@@ -424,11 +445,18 @@ pub(super) async fn pick_snark_job(
         query.id
     );
     let supported_proving_versions = query.supported_proving_versions();
-    match state
-        .snark_job_manager
-        .pick_real_job(query.id, supported_proving_versions.as_deref())
-        .await
-    {
+    let picked = if let Some(range) = requested_range {
+        state
+            .snark_job_manager
+            .pick_real_job_in_range(query.id, supported_proving_versions.as_deref(), range)
+            .await
+    } else {
+        state
+            .snark_job_manager
+            .pick_real_job(query.id, supported_proving_versions.as_deref())
+            .await
+    };
+    match picked {
         Ok(Some(leased_job)) => {
             // SYSCOIN: One pick-only token authorizes precisely this returned aggregate.
             let batches = leased_job.batches;
@@ -488,7 +516,7 @@ pub(super) async fn pick_snark_job(
         }
         Ok(None) => {
             guard.finish(PickJobResult::NoJob);
-            StatusCode::NO_CONTENT.into_response()
+            empty_pick_response()
         }
         Err(e) => {
             tracing::error!("error picking SNARK job: {e}");
@@ -626,12 +654,14 @@ pub(super) async fn peek_fri_job(
 
 // SYSCOIN: FRI pick, SNARK pick, FRI peek, and SNARK peek use independent lanes separate from
 // proof uploads. A saturated large-response class therefore cannot consume another class's capacity.
-fn try_acquire_response_slot(slots: &std::sync::Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+pub(super) fn try_acquire_response_slot(
+    slots: &std::sync::Arc<Semaphore>,
+) -> Option<OwnedSemaphorePermit> {
     std::sync::Arc::clone(slots).try_acquire_owned().ok()
 }
 
 // SYSCOIN: Transfer an admitted large-response slot into the body shared by FRI and SNARK lanes.
-fn retain_response_slot(response: Response, permit: OwnedSemaphorePermit) -> Response {
+pub(super) fn retain_response_slot(response: Response, permit: OwnedSemaphorePermit) -> Response {
     response.map(|inner| {
         Body::new(PermitResponseBody {
             inner,
@@ -945,7 +975,18 @@ mod tests {
     }
 
     // SYSCOIN: Only the exact pre-lease application helper emits the cross-endpoint retry marker;
-    // ordinary no-job and indistinguishable post-lease failures remain deliberately unmarked.
+    // raw proxy responses and indistinguishable post-lease failures remain deliberately unmarked.
+    #[test]
+    fn empty_pick_is_explicitly_unleased_and_uncacheable() {
+        let response = empty_pick_response();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response.headers()[PROVER_PICK_OUTCOME_HEADER],
+            PROVER_PICK_OUTCOME_UNLEASED
+        );
+        assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    }
+
     #[test]
     fn definitely_unleased_pick_responses_are_narrowly_marked() {
         for status in [

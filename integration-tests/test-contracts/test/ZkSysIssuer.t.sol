@@ -4,7 +4,12 @@ pragma solidity ^0.8.26;
 import {ERC1967Proxy} from "@openzeppelin/contracts-v4/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {SyscoinZKSYSToken} from "contracts/src/zksys/SyscoinZKSYSToken.sol";
-import {IZkSysMintableToken, IZkSysRewardWeightSource, ZkSysIssuer} from "contracts/src/zksys/ZkSysIssuer.sol";
+import {
+    IZkSysMintableToken,
+    IZkSysRewardWeightSource,
+    IZkSysProverServiceSource,
+    ZkSysIssuer
+} from "contracts/src/zksys/ZkSysIssuer.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
 import {IZkSysStakeWeightRegistry, ZkSysNativeStakingVault} from "contracts/src/zksys/ZkSysNativeStakingVault.sol";
 import {
@@ -28,11 +33,7 @@ contract IssuerBridgehubMock is IL1BridgehubMinimal {
         return TX_HASH;
     }
 
-    function lastDecodedUpdates()
-        external
-        view
-        returns (IZkSysMembershipRegistryL2.SentryNodeUpdate[] memory updates)
-    {
+    function lastDecodedUpdates() external view returns (IZkSysMembershipRegistryL2.SentryNodeUpdate[] memory updates) {
         updates = abi.decode(_withoutSelector(lastRequest.l2Calldata), (IZkSysMembershipRegistryL2.SentryNodeUpdate[]));
     }
 
@@ -44,7 +45,51 @@ contract IssuerBridgehubMock is IL1BridgehubMinimal {
     }
 }
 
+contract IssuerServiceSourceMock {
+    address public immutable issuer;
+    uint256 public immutable startTime;
+    uint256 public immutable periodSeconds;
+    uint256 public immutable firstServicePeriod;
+    bool public serviceActive = true;
+    mapping(address => bool) public enrolled;
+    mapping(address => mapping(uint256 => uint256)) public admittedBonusWeight;
+    mapping(uint256 => uint256) public totalAdmittedBonusWeight;
+    mapping(address => mapping(uint256 => uint256)) public serviceFactorBps;
+
+    constructor(ZkSysIssuer issuer_, uint256 firstPeriod) {
+        issuer = address(issuer_);
+        startTime = issuer_.startTime();
+        periodSeconds = issuer_.periodSeconds();
+        firstServicePeriod = firstPeriod;
+    }
+
+    function setActive(bool active) external {
+        serviceActive = active;
+    }
+
+    function enroll(address account, bool accepted) external {
+        enrolled[account] = accepted;
+    }
+
+    function admit(address account, uint256 period, uint256 bonus) external {
+        require(block.timestamp < startTime + period * periodSeconds, "admission already frozen");
+        totalAdmittedBonusWeight[period] =
+            totalAdmittedBonusWeight[period] - admittedBonusWeight[account][period] + bonus;
+        admittedBonusWeight[account][period] = bonus;
+    }
+
+    function setFactor(address account, uint256 period, uint256 factor) external {
+        require(!isRoundFinalized(period), "factor already final");
+        serviceFactorBps[account][period] = factor;
+    }
+
+    function isRoundFinalized(uint256 period) public view returns (bool) {
+        return block.timestamp >= startTime + (period + 1) * periodSeconds + 60;
+    }
+}
+
 contract ZkSysIssuerTest is Test {
+    uint64 private observationHeight = uint64(type(uint32).max) + 1;
     address private constant NEVM_ADDRESS_PRECOMPILE = address(0x62);
 
     uint256 private constant START_TIME = 1_000;
@@ -334,7 +379,7 @@ contract ZkSysIssuerTest is Test {
         }
 
         vm.prank(localMembership.aliasedL1RegistryBridge());
-        localMembership.applyL1SentryNodeUpdates(updates);
+        localMembership.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
         assertEq(localRegistry.weightOf(alice), 0);
 
         vm.warp(START_TIME + PERIOD_SECONDS);
@@ -648,6 +693,393 @@ contract ZkSysIssuerTest is Test {
         );
     }
 
+    function testServiceRegistrationAndRejectedReportsCannotDiluteQualifiedWeights() public {
+        IssuerServiceSourceMock source = _configureService(0);
+        _addSenior(alice, 135_000 ether);
+        _addSenior(bob, 200_000 ether);
+        source.admit(alice, 0, 35_000 ether);
+        source.setFactor(alice, 0, 10_000);
+        source.enroll(bob, true);
+        source.enroll(bob, false);
+        source.setFactor(bob, 0, 10_000);
+
+        assertEq(registry.totalWeight(), 335_000 ether);
+        assertEq(registry.totalPassiveWeight(), 200_000 ether);
+        assertEq(source.totalAdmittedBonusWeight(0), 35_000 ether);
+        vm.warp(START_TIME);
+        assertEq(issuer.currentRewardDenominator(), 235_000 ether);
+        assertEq(issuer.currentRewardWeight(alice), 135_000 ether);
+        assertEq(issuer.currentRewardWeight(bob), 100_000 ether);
+        vm.warp(START_TIME + PERIOD_SECONDS + 60);
+        uint256 emitted = issuer.distribute();
+        uint256 index = emitted * issuer.REWARD_PRECISION() / (235_000 ether);
+        assertEq(issuer.servicePeriodRewardIndex(0), index);
+        assertEq(issuer.pendingRewards(alice), 100_000 ether * index / issuer.REWARD_PRECISION());
+        assertEq(issuer.pendingRewards(bob), issuer.pendingRewards(alice));
+        assertEq(issuer.pendingServiceRewards(bob, 0), 0);
+        assertEq(issuer.pendingServiceRewards(alice, 0), 35_000 ether * index / issuer.REWARD_PRECISION());
+    }
+
+    function testMissedAdmittedBonusExpiresWithoutSameRoundRedistributionOrCatchup() public {
+        IssuerServiceSourceMock source = _configureService(0);
+        _addSenior(alice, 135_000 ether);
+        _addSenior(bob, 200_000 ether);
+        source.admit(alice, 0, 35_000 ether);
+        source.admit(bob, 0, 100_000 ether);
+        source.admit(alice, 1, 35_000 ether);
+        source.setFactor(alice, 0, 10_000);
+        source.setFactor(alice, 1, 10_000);
+        source.setFactor(bob, 0, 0);
+        source.setFactor(bob, 1, 10_000);
+
+        vm.warp(START_TIME + PERIOD_SECONDS + 60);
+        uint256 firstEmission = issuer.distribute();
+        uint256 firstIndex = firstEmission * issuer.REWARD_PRECISION() / (335_000 ether);
+        assertEq(issuer.servicePeriodRewardIndex(0), firstIndex);
+        uint256 unearned = 100_000 ether * firstIndex / issuer.REWARD_PRECISION();
+        assertEq(_claimService(bob, 0), 0);
+        assertEq(_claimService(alice, 0), 35_000 ether * firstIndex / issuer.REWARD_PRECISION());
+
+        vm.prank(alice);
+        issuer.claim(alice);
+        vm.prank(bob);
+        issuer.claim(bob);
+        assertGe(firstEmission - token.totalSupply(), unearned);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS + 60);
+        uint256 secondEmission = issuer.distribute();
+        uint256 secondIndex = secondEmission * issuer.REWARD_PRECISION() / (235_000 ether);
+        // A later admission snapshot may change shares; it cannot reissue the previous shortfall.
+        assertEq(issuer.servicePeriodRewardIndex(1), secondIndex);
+        assertEq(_claimService(bob, 1), 0);
+        _claimService(alice, 1);
+        vm.prank(alice);
+        issuer.claim(alice);
+        vm.prank(bob);
+        issuer.claim(bob);
+        assertEq(issuer.totalScheduledRewards(), issuer.cumulativeScheduledRewards(2));
+        assertGe(issuer.totalScheduledRewards() - token.totalSupply(), unearned);
+        assertEq(issuer.pendingServiceRewards(bob, 0), 0);
+    }
+
+    function testServiceClaimRequiresFinalRoundAndCannotReplay() public {
+        IssuerServiceSourceMock source = _configureService(0);
+        _addSenior(alice, 135_000 ether);
+        source.admit(alice, 0, 35_000 ether);
+        source.setFactor(alice, 0, 5_000);
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        issuer.distribute();
+        vm.expectRevert(abi.encodeWithSelector(ZkSysIssuer.ServiceRoundNotFinalized.selector, 0));
+        issuer.pendingServiceRewards(alice, 0);
+
+        vm.warp(START_TIME + PERIOD_SECONDS + 60);
+        uint256 expected = issuer.pendingServiceRewards(alice, 0);
+        assertEq(_claimService(alice, 0), expected);
+        uint256[] memory periods = new uint256[](1);
+        periods[0] = 0;
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysIssuer.ServiceRewardAlreadyClaimed.selector, 0));
+        issuer.claimServiceRewards(periods, bob);
+        assertEq(token.balanceOf(bob), 0);
+    }
+
+    function testDuplicateServiceClaimBatchRevertsWithoutPartialPayment() public {
+        IssuerServiceSourceMock source = _configureService(0);
+        _addSenior(alice, 135_000 ether);
+        source.admit(alice, 0, 35_000 ether);
+        source.setFactor(alice, 0, 10_000);
+        vm.warp(START_TIME + PERIOD_SECONDS + 60);
+        issuer.distribute();
+        uint256[] memory periods = new uint256[](2);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysIssuer.ServiceRewardAlreadyClaimed.selector, 0));
+        issuer.claimServiceRewards(periods, alice);
+        assertFalse(issuer.serviceRewardClaimed(alice, 0));
+        assertEq(token.totalSupply(), 0);
+    }
+
+    function testInvalidServiceFactorCannotMintOrConsumeClaim() public {
+        IssuerServiceSourceMock source = _configureService(0);
+        _addSenior(alice, 135_000 ether);
+        source.admit(alice, 0, 35_000 ether);
+        source.setFactor(alice, 0, 10_001);
+        vm.warp(START_TIME + PERIOD_SECONDS + 60);
+        issuer.distribute();
+        uint256[] memory periods = new uint256[](1);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysIssuer.InvalidServiceFactor.selector, 10_001));
+        issuer.claimServiceRewards(periods, alice);
+        assertFalse(issuer.serviceRewardClaimed(alice, 0));
+        assertEq(token.totalSupply(), 0);
+        vm.prank(alice);
+        assertGt(issuer.claim(alice), 0);
+    }
+
+    function testPastEarnedServiceSurvivesMembershipRemoval() public {
+        IssuerServiceSourceMock source = _configureService(0);
+        _addSenior(alice, 135_000 ether);
+        _depositStake(bob, 1 ether);
+        source.admit(alice, 0, 35_000 ether);
+        source.setFactor(alice, 0, 10_000);
+        vm.warp(START_TIME + PERIOD_SECONDS + 60);
+        issuer.distribute();
+        uint256 earned = issuer.pendingServiceRewards(alice, 0);
+        uint256 passiveEarned = issuer.pendingRewards(alice);
+        _applyL1Update(alice, 0, 0);
+        assertEq(registry.weightOf(alice), 0);
+        assertEq(registry.totalPassiveWeight(), 1 ether);
+        assertEq(_claimService(alice, 0), earned);
+        vm.prank(alice);
+        assertEq(issuer.claim(alice), passiveEarned);
+    }
+
+    function testServiceWeightChangeSettlesOldPassiveDenominator() public {
+        _configureService(0);
+        _depositStake(alice, 1 ether);
+        _depositStake(bob, 1 ether);
+        vm.warp(START_TIME + PERIOD_SECONDS + 1);
+        _withdrawStake(alice, 1 ether);
+        uint256 first = issuer.cumulativeScheduledRewards(1);
+        assertEq(issuer.pendingRewards(alice), first / 2);
+        assertEq(issuer.pendingRewards(bob), first / 2);
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        uint256 second = issuer.distribute();
+        assertEq(issuer.pendingRewards(alice), first / 2);
+        assertEq(issuer.pendingRewards(bob), first / 2 + second);
+        assertEq(registry.totalPassiveWeight(), 1 ether);
+    }
+
+    function testServiceCheckpointBacklogIsBoundedAndNeverDroppedOnWeightChange() public {
+        _configureService(0);
+        _depositStake(alice, 1 ether);
+        vm.warp(START_TIME + 70 * PERIOD_SECONDS);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysIssuer.ServiceCheckpointRequired.selector, 64, 70));
+        stakingVault.withdraw(1 ether);
+        assertEq(issuer.nextServicePeriod(), 0);
+        assertEq(registry.totalPassiveWeight(), 1 ether);
+        issuer.checkpointServicePeriods(64);
+        assertEq(issuer.nextServicePeriod(), 64);
+        assertEq(issuer.totalScheduledRewards(), issuer.cumulativeScheduledRewards(64));
+        issuer.checkpointServicePeriods(6);
+        _withdrawStake(alice, 1 ether);
+        assertEq(issuer.nextServicePeriod(), 70);
+        assertEq(issuer.totalScheduledRewards(), issuer.cumulativeScheduledRewards(70));
+        vm.prank(alice);
+        assertEq(issuer.claim(alice), issuer.cumulativeScheduledRewards(70));
+    }
+
+    function testServicePassiveChurnNeverBorrowsUnearnedBudget() public {
+        _configureService(0);
+        address carol = address(0xCA20);
+        address dave = address(0xDA7E);
+        (uint256 a, uint256 b, uint256 c, uint256 d) = _prepareClaimDustOverAllocation(carol, dave);
+        assertLe(a + b + c + d, issuer.totalScheduledRewards());
+        vm.prank(alice);
+        assertEq(issuer.claim(alice), a);
+        vm.prank(bob);
+        assertEq(issuer.claim(bob), b);
+        vm.prank(carol);
+        assertEq(issuer.claim(carol), c);
+        vm.prank(dave);
+        assertEq(issuer.claim(dave), d);
+        assertLe(token.totalSupply(), issuer.totalScheduledRewards());
+    }
+
+    function testServiceConfigurationRequiresCleanRegistryAndFutureMatchingPeriod() public {
+        IssuerServiceSourceMock source = new IssuerServiceSourceMock(issuer, 0);
+        _depositStake(alice, 1 ether);
+        vm.prank(admin);
+        vm.expectRevert(ZkSysRewardWeightRegistry.NonemptyServiceAccountingMigration.selector);
+        issuer.configureServiceAccounting(IZkSysProverServiceSource(address(source)), 0);
+        assertEq(issuer.serviceStartPeriodPlusOne(), 0);
+        assertEq(registry.serviceStartPeriodPlusOne(), 0);
+
+        _withdrawStake(alice, 1 ether);
+        vm.prank(admin);
+        vm.expectRevert(ZkSysIssuer.InvalidServiceConfiguration.selector);
+        issuer.configureServiceAccounting(IZkSysProverServiceSource(address(source)), 1);
+        vm.warp(START_TIME);
+        vm.prank(admin);
+        vm.expectRevert(ZkSysIssuer.InvalidServiceConfiguration.selector);
+        issuer.configureServiceAccounting(IZkSysProverServiceSource(address(source)), 0);
+    }
+
+    function testServiceConfigurationIsOneWayAndCannotChangeEmissionSchedule() public {
+        uint256 priorFourYears = issuer.cumulativeScheduledRewards(4 * PERIODS_PER_YEAR);
+        uint256 supplyCap = token.maxSupply();
+        IssuerServiceSourceMock source = _configureService(0);
+        assertEq(issuer.YEAR_1_RATE_BPS(), 2_000);
+        assertEq(issuer.YEAR_2_RATE_BPS(), 1_200);
+        assertEq(issuer.YEAR_3_RATE_BPS(), 800);
+        assertEq(issuer.LONG_RUN_RATE_BPS(), 500);
+        assertEq(issuer.cumulativeScheduledRewards(4 * PERIODS_PER_YEAR), priorFourYears);
+        assertEq(token.maxSupply(), supplyCap);
+        vm.prank(admin);
+        vm.expectRevert(ZkSysIssuer.ServiceAccountingAlreadyConfigured.selector);
+        issuer.configureServiceAccounting(IZkSysProverServiceSource(address(source)), 0);
+    }
+
+    function testMissedServiceActivationCannotLockPassiveClaimsOrPrincipal() public {
+        IssuerServiceSourceMock source = _configureService(2);
+        source.setActive(false);
+        _depositStake(alice, 1 ether);
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        issuer.distribute();
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        uint256 balanceBefore = alice.balance;
+        _withdrawStake(alice, 1 ether);
+        assertEq(alice.balance, balanceBefore + 1 ether);
+        assertTrue(issuer.serviceLaunchAborted());
+        assertTrue(issuer.serviceAccountingStarted());
+        vm.prank(alice);
+        assertEq(issuer.claim(alice), issuer.cumulativeScheduledRewards(2));
+
+        source.setActive(true);
+        source.admit(alice, 3, 100_000 ether);
+        source.setFactor(alice, 3, 10_000);
+        vm.warp(START_TIME + 4 * PERIOD_SECONDS + 60);
+        issuer.distribute();
+        assertEq(issuer.currentRewardDenominator(), 0);
+        assertEq(issuer.currentRewardWeight(alice), 0);
+        assertEq(_claimService(alice, 3), 0);
+        assertEq(token.totalSupply(), issuer.cumulativeScheduledRewards(2));
+    }
+
+    function testOnlyMissedInactiveLaunchCanBeAbortedPermissionlessly() public {
+        IssuerServiceSourceMock source = _configureService(0);
+        source.setActive(false);
+        vm.expectRevert(ZkSysIssuer.ServiceLaunchCannotAbort.selector);
+        issuer.abortMissedServiceActivation();
+        vm.warp(START_TIME);
+        source.setActive(true);
+        vm.expectRevert(ZkSysIssuer.ServiceLaunchCannotAbort.selector);
+        issuer.abortMissedServiceActivation();
+        source.setActive(false);
+        vm.prank(bob);
+        issuer.abortMissedServiceActivation();
+        assertTrue(issuer.serviceLaunchAborted());
+        assertEq(issuer.currentRewardDenominator(), 0);
+        vm.expectRevert(ZkSysIssuer.ServiceLaunchCannotAbort.selector);
+        issuer.abortMissedServiceActivation();
+    }
+
+    function testServiceActivationPreservesLegacyAccrualAndSeparatesBudgets() public {
+        IssuerServiceSourceMock source = _configureService(2);
+        _addSenior(alice, 135_000 ether);
+        _addSenior(bob, 135_000 ether);
+        source.admit(alice, 2, 35_000 ether);
+        source.setFactor(alice, 2, 10_000);
+        vm.warp(START_TIME + 3 * PERIOD_SECONDS + 60);
+        issuer.distribute();
+        uint256 legacy = issuer.cumulativeScheduledRewards(2);
+        assertEq(issuer.legacyRewardBudget(), legacy);
+        assertEq(issuer.serviceRewardBudget(), issuer.cumulativeScheduledRewards(3) - legacy);
+        uint256 index = issuer.servicePeriodRewardIndex(2);
+        uint256 passive = 100_000 ether * index / issuer.REWARD_PRECISION();
+        uint256 legacyShare = 135_000 ether * issuer.serviceStartRewardIndex() / issuer.REWARD_PRECISION();
+        assertEq(issuer.pendingRewards(alice), legacyShare + passive);
+        assertEq(issuer.pendingRewards(bob), legacyShare + passive);
+        vm.prank(alice);
+        issuer.claim(alice);
+        vm.prank(bob);
+        issuer.claim(bob);
+        _claimService(alice, 2);
+        assertEq(issuer.legacyRewardBudget(), legacy - 2 * legacyShare);
+        assertLe(token.totalSupply(), issuer.totalScheduledRewards());
+        assertEq(issuer.scheduledUnclaimedRewards(), issuer.legacyRewardBudget() + issuer.serviceRewardBudget());
+    }
+
+    function testLegacyChurnDustCannotSpendTheNewServiceBudget() public {
+        _configureService(7);
+        address carol = address(0xCA20);
+        address dave = address(0xDA7E);
+        _prepareClaimDustOverAllocation(carol, dave);
+        uint256 legacyBudget = issuer.legacyRewardBudget();
+        vm.warp(START_TIME + 8 * PERIOD_SECONDS);
+        uint256 emitted = issuer.distribute();
+        uint256 index = issuer.servicePeriodRewardIndex(7);
+        uint256 passiveTotal = (271 ether * index / issuer.REWARD_PRECISION())
+            + (189 ether * index / issuer.REWARD_PRECISION()) + (116 ether * index / issuer.REWARD_PRECISION())
+            + (422 ether * index / issuer.REWARD_PRECISION());
+        vm.prank(dave);
+        issuer.claim(dave);
+        vm.prank(carol);
+        issuer.claim(carol);
+        vm.prank(bob);
+        issuer.claim(bob);
+        vm.prank(alice);
+        issuer.claim(alice);
+        assertEq(issuer.legacyRewardBudget(), 0);
+        assertEq(token.totalSupply(), legacyBudget + passiveTotal);
+        assertEq(issuer.serviceRewardBudget(), emitted - passiveTotal);
+    }
+
+    function testFuzzServiceMintBudgetPreservesEveryUnearnedQuota(
+        uint96 aliceStake,
+        uint96 bobStake,
+        uint16 aliceFactor,
+        uint16 bobFactor,
+        bool admitBob,
+        bool serviceFirst
+    ) public {
+        IssuerServiceSourceMock source = _configureService(0);
+        _addSenior(alice, 135_000 ether);
+        _addSenior(bob, 200_000 ether);
+        _depositStake(alice, bound(uint256(aliceStake), 1, 1_000_000 ether));
+        _depositStake(bob, bound(uint256(bobStake), 1, 1_000_000 ether));
+        uint256 aFactor = bound(uint256(aliceFactor), 0, 10_000);
+        uint256 bFactor = bound(uint256(bobFactor), 0, 10_000);
+        source.admit(alice, 0, 35_000 ether);
+        if (admitBob) {
+            source.admit(bob, 0, 100_000 ether);
+        }
+        source.setFactor(alice, 0, aFactor);
+        source.setFactor(bob, 0, bFactor);
+        vm.warp(START_TIME + PERIOD_SECONDS + 60);
+        uint256 emitted = issuer.distribute();
+        uint256 aService = issuer.pendingServiceRewards(alice, 0);
+        uint256 bService = issuer.pendingServiceRewards(bob, 0);
+        uint256 aPassive = issuer.pendingRewards(alice);
+        uint256 bPassive = issuer.pendingRewards(bob);
+        if (serviceFirst) {
+            assertEq(_claimService(alice, 0), aService);
+            assertEq(_claimService(bob, 0), bService);
+        }
+        vm.prank(alice);
+        assertEq(issuer.claim(alice), aPassive);
+        vm.prank(bob);
+        assertEq(issuer.claim(bob), bPassive);
+        if (!serviceFirst) {
+            assertEq(_claimService(alice, 0), aService);
+            assertEq(_claimService(bob, 0), bService);
+        }
+        uint256 index = issuer.servicePeriodRewardIndex(0);
+        uint256 aQuota = 35_000 ether * index / issuer.REWARD_PRECISION();
+        uint256 bQuota = admitBob ? 100_000 ether * index / issuer.REWARD_PRECISION() : 0;
+        assertLe(token.totalSupply(), emitted);
+        assertGe(emitted - token.totalSupply(), aQuota - aService + bQuota - bService);
+        assertEq(token.totalSupply() + issuer.serviceRewardBudget(), emitted);
+    }
+
+    function _configureService(uint256 activationPeriod) private returns (IssuerServiceSourceMock source) {
+        source = new IssuerServiceSourceMock(issuer, activationPeriod);
+        vm.prank(admin);
+        issuer.configureServiceAccounting(IZkSysProverServiceSource(address(source)), activationPeriod);
+    }
+
+    function _addSenior(address account, uint128 weight) private {
+        _applyL1Update(account, 1_000, weight);
+        _activateStake(account);
+    }
+
+    function _claimService(address account, uint256 period) private returns (uint256) {
+        uint256[] memory periods = new uint256[](1);
+        periods[0] = period;
+        vm.prank(account);
+        return issuer.claimServiceRewards(periods, account);
+    }
+
     function yearOneEmission() private view returns (uint256) {
         return token.maxSupply() * 2_000 / 10_000;
     }
@@ -690,7 +1122,11 @@ contract ZkSysIssuerTest is Test {
         davePending = issuer.pendingRewards(dave);
         uint256 scheduledUnclaimed = issuer.scheduledUnclaimedRewards();
 
-        assertEq(alicePending + bobPending + carolPending + davePending, scheduledUnclaimed + 1);
+        if (issuer.serviceAccountingStarted() && issuer.serviceStartRewardIndex() == 0) {
+            assertLe(alicePending + bobPending + carolPending + davePending, scheduledUnclaimed);
+        } else {
+            assertEq(alicePending + bobPending + carolPending + davePending, scheduledUnclaimed + 1);
+        }
     }
 
     function _depositStake(address account, uint256 amount) private {
@@ -717,12 +1153,10 @@ contract ZkSysIssuerTest is Test {
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
-            account: account,
-            sentryNodeCollateralHeight: sentryNodeCollateralHeight,
-            sentryNodeWeight: sentryNodeWeight
+            account: account, sentryNodeCollateralHeight: sentryNodeCollateralHeight, sentryNodeWeight: sentryNodeWeight
         });
         vm.prank(membershipRegistry.aliasedL1RegistryBridge());
-        membershipRegistry.applyL1SentryNodeUpdates(updates);
+        membershipRegistry.applyL1SentryNodeUpdates(updates, ++observationHeight, uint64(block.timestamp));
     }
 
     function _deployToken() private returns (SyscoinZKSYSToken) {

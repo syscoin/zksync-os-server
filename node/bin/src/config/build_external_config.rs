@@ -4,7 +4,7 @@ use crate::config::{
     GatewaySenderConfig, GeneralConfig, GenesisConfig, InteropFeeUpdaterConfig, L1SenderConfig,
     L1WatcherConfig, MempoolConfig, MempoolTxValidatorConfig, NetworkConfig, ObservabilityConfig,
     ProverApiConfig, ProviderConfig, ReplayArchiveConfig, RpcConfig, SequencerConfig,
-    StatusServerConfig,
+    ServicePublicationConfig, StatusServerConfig,
 };
 use smart_config::{ConfigRepository, ConfigSources, Json, Yaml};
 use std::fs;
@@ -116,6 +116,12 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .parse()
         .expect("Failed to parse prover api config");
 
+    let service_publication_config = repo
+        .single::<ServicePublicationConfig>()
+        .expect("Failed to load service publication config")
+        .parse()
+        .expect("Failed to parse service publication config");
+
     let status_server_config = repo
         .single::<StatusServerConfig>()
         .expect("Failed to load status server config")
@@ -193,6 +199,7 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         l1_watcher_config,
         batcher_config,
         prover_api_config,
+        service_publication_config,
         status_server_config,
         observability_config,
         gas_adjuster_config,

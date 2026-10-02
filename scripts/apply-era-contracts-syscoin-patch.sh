@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1437333"
-EXPECTED_PATCH_SHA256="9cba2e553e8604c6b64f4c4de633bec741539915ee719146c75eeadfa2a6f3e0"
-EXPECTED_PATCH_PATH_COUNT="67"
-EXPECTED_PATCH_PATHS_SHA256="5422444f3057f29fd1dcfaa275d0d04a16e014818ae1b7e21acc572325ae2d09"
+EXPECTED_PATCH_SIZE="1443360"
+EXPECTED_PATCH_SHA256="0cac53c803b502e67c4a14ccf8eef4f0f576a0430fa0ee007276becbf124e2c6"
+EXPECTED_PATCH_PATH_COUNT="69"
+EXPECTED_PATCH_PATHS_SHA256="4afed5f77d26310c59716977f377a5b6dc5a47752ab1670c41d11ca183523327"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="3eefa0f127d1deff365ebffcf489b183cde0e756"
+EXPECTED_PATCHED_TREE="264d98e758c3a032942dfb08ee7d87a3f46288b4"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -166,7 +166,7 @@ verify_postimage_manifest() {
     manifest_paths+="${relative_path}"$'\n'
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
-160049 ad1fff778e64d8b81338ada6365a526f7c28223dd9dc89ae9b8b01d12b90ca99 AllContractsHashes.json
+160049 eb903648d3472a013c7980c4fd7faa2954e866a41775e6b5854c0f7153385e05 AllContractsHashes.json
 557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
@@ -181,6 +181,7 @@ verify_postimage_manifest() {
 4350 46879b879bee93b99f2d1c549e64b304da215fe2da1281f54a658fb97d0ea98e l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
 25974 b8afdf177f76cb229a5a98c3367775d3def34e7d7868b567bd08efb742d0698e l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 49179 54751bc0aa7880c6c9182219aa418728986ae03eaca9abe98a14df1108316c8a l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
+12329 dcb558cecf683fc47232e9d141429965c9fcfe4869c77da21dc403c8e072a436 l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
 2643 b9c43c8e79f715eb7b57eeaf17e3e9ae2f3157bc6f8496d9972b457c7afe8e97 l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
 3211 e5d289cbcb0bbd9f77b7a89f01fba3cc6bcb07f847754517c56d60b2f6c194bd l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
 8312 6825ecb5c046f7bcf1875c9b2045790dc96c67816b1fea2b0efaf6d20af1fec6 l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
@@ -204,7 +205,7 @@ verify_postimage_manifest() {
 23029 aff6be7d88b5426e117626bfbb717d292ca0531a7a5488620d5c4dfecd8ed27b l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
 11325 50276f9a9c4f059305b67471943159f0c195cc6c901968d6c2c1f9382db02754 l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 858 9a6796cad5a4b8955ed797df04c19cdfc3d95494693f64bb818b1dc991635387 l1-contracts/script-config/syscoin-edge-da-relay-v1.json
-2307892 38835a67728d55ef2f15abd46cbf0fd4f050486a59d6e859427f236d905100cb l1-contracts/selectors
+2308748 28a05b287d08418e1a1cb0d51a0d20d82685e560ef3a5460af3a60d490221207 l1-contracts/selectors
 1276 8a4ff3fb4014d7c4d2d3fa6213b755ae554a9546776984281580a3baf09a9a02 l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
 18811 881846d3c06c9c660c8ee451ae5eb95d1fe324b65126a1a848ebe298cb93bf84 l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 17959 27e8c3a9f751b94e17a9c47b2303240cb5b375d0c09c1dbafda9b3039a1757a8 l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
@@ -221,6 +222,7 @@ verify_postimage_manifest() {
 37262 e6cb6d802f989a56ac8904a2b7d941a7203f664e8e2dbb8a3bf56f6dab74c069 l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 7994 ee66867257ad8f7856ddcd660f44c36db9aea6c33c1c1ff8c75bde2221d03887 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
 4368 cac4d80e69aed56f6732cb6024706e5286b01fb3d2868917716081da5f6d9c3b l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
+2581 92124a76d6a7c6cce50ddc06dca8140a8bd5d28d49c61020b52bb59ac0969621 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol
 4147 72dc6373a6093ea18a8d71522dda3836d66d9b3056660787c00ced1499a24967 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 3454 9cc8e015664c0fe9b5bfca6e12a29120cf611775df6dbbd7d00d45e90dc74ea8 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
 18331 8600ed5a07fa68e2cb180674320406523a98660c0b6f78a538568ef935ec140e l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
@@ -280,6 +282,21 @@ verify_semantics() {
   done <<< "${PATCH_PATHS}"
 
   # The most security-sensitive application-bound ABI restrictions are tagged in place.
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol" \
+    "function getPriorityTransactionTimestamp(uint256 _index) external view returns (uint256)"
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol" \
+    "_index >= s.priorityTree.startIndex && _index < s.priorityTree.getTotalPriorityTxs()"
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol" \
+    "return s.priorityOpsRequestTimestamp[_index];"
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol" \
+    "function getPriorityTreeHeight() external view returns (uint256)"
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol" \
+    "return s.priorityTree.tree._sides.length - 1;"
   require_text \
     "l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol" \
     "SYSCOIN: Carry the opening and root separately so final settlement can revalidate Gateway relay data."

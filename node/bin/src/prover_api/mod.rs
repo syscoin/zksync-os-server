@@ -8,6 +8,7 @@ mod metrics;
 pub mod proof_storage;
 mod prover_job_map;
 pub mod prover_server;
+pub(crate) mod service_publication;
 pub mod snark_job_manager;
 // SYSCOIN: Verify real wrapper proofs against one canonical settlement-layer snapshot before any
 // durable local acceptance or job consumption.

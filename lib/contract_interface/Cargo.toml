@@ -23,5 +23,6 @@ structdiff.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 # SYSCOIN: Gateway settlement-identity regressions exercise the async mocked RPC provider.
 tokio.workspace = true

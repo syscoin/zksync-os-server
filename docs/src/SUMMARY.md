@@ -23,6 +23,7 @@
   - [RPC](design/rpc.md)
   - [devp2p / zks protocol](design/devp2p.md)
   - [Prover API](design/prover_api.md)
+  - [Senior prover service V1](design/prover_service_v1.md)
   - [Database Layout](design/db.md)
   - [State Model](design/state.md)
   - [Merkle Tree Structure](design/tree.md)
