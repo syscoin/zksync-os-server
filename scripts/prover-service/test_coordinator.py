@@ -301,9 +301,14 @@ class CoordinatorTests(unittest.TestCase):
                 self.native, self.now = td.Network(), 1000
                 self.controller_reload()
                 identifier = self.controller.reserve()
-                target = "write_new" if leftover == "authority" else "atomic_json"
-                module = c.sentry.job if leftover == "authority" else c.sentry
-                with patch.object(module, target, side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
+                publish_authority = c.sentry.atomic_json
+                def interrupted_authority(path, value):
+                    if leftover == "authority":
+                        self.assertEqual(path.name, "authority.json")
+                        publish_authority(path, value)
+                    raise KeyboardInterrupt()
+                with patch.object(c.sentry, "atomic_json", side_effect=interrupted_authority), \
+                        self.assertRaises(KeyboardInterrupt):
                     self.controller.acquire(identifier, True)
                 original = copy.deepcopy(self.controller.state)
                 lease = self.controller.directory(identifier) / original["operations"][identifier]["lease"]
