@@ -10,7 +10,7 @@ A ConsensusNode proposes blocks while it is leader and follows canonized
 blocks while it is a replica. An ExternalNode only replays canonized blocks.
 
 > **Canonical v32.0/V8 fixture regeneration is required.** Historical v32.0
-> local-chain state was removed, and launch remains fail-closed while
+> local-chain state was removed, and fixture-based launch remains fail-closed while
 > `local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists. Runnable
 > multi-node commands are intentionally withheld so the old contracts, state,
 > and verifying key cannot be presented as the canonical V8 deployment.
@@ -19,6 +19,9 @@ The runnable guide must be restored only after the v32.0 fixture is regenerated
 atomically from the final patched zksync-os v0.4 source, canonical Syscoin Era
 contracts, and final V8 verifier artifacts. Removing or bypassing the marker is
 not a supported setup procedure.
+This fixture restriction does not block fresh deployments using the completed
+app-bound V8 key and exact verifier sources. Live deployment identity and
+deployed-verifier checks still apply independently.
 
 The batcher pipeline (proof generation and L1 submission) is not yet highly
 available. Once the canonical fixture is available, exactly one consensus node

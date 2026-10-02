@@ -670,7 +670,6 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::ops::RangeInclusive;
-    use std::path::PathBuf;
     use std::str::FromStr;
     use std::sync::Arc;
     use std::time::Duration;
@@ -681,7 +680,7 @@ mod tests {
     use zksync_os_contract_interface::models::{BatchDaInputMode, StoredBatchInfo};
     use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
     use zksync_os_contract_interface::{Bridgehub, IExecutor, ZkChain};
-    use zksync_os_genesis::{FileGenesisInputSource, GenesisState, build_genesis};
+    use zksync_os_genesis::GenesisState;
     use zksync_os_interface::tracing::{NopTracer, NopValidator};
     use zksync_os_interface::traits::{NoopTxCallback, PreimageSource, ReadStorage, TxListSource};
     use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper, TreeBatchOutput, TreeEntry};
@@ -693,6 +692,8 @@ mod tests {
         BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion, PubdataMode,
         SystemTxEnvelope, ZkTransaction, ZksyncOsEncode, block_output_hash, state_commitment_hash,
     };
+
+    mod witness_export;
 
     const CHAIN_ID: u64 = 270;
     const SL_CHAIN_ID: u64 = 9;
@@ -1409,8 +1410,7 @@ mod tests {
         );
         assert!(
             run(&wrong_output, &tree)
-                .err()
-                .expect("canonical output drift must fail")
+                .expect_err("canonical output drift must fail")
                 .to_string()
                 .contains("output mismatch")
         );
@@ -1418,8 +1418,7 @@ mod tests {
         let mut missing_tree = genesis_tree(&genesis_state, missing_dir.path());
         assert!(
             run(&tree_block.output, &missing_tree)
-                .err()
-                .expect("missing final tree must fail")
+                .expect_err("missing final tree must fail")
                 .to_string()
                 .contains("missing canonical Merkle tree")
         );
@@ -1431,78 +1430,10 @@ mod tests {
             .unwrap();
         assert!(
             run(&tree_block.output, &missing_tree)
-                .err()
-                .expect("wrong final tree must fail")
+                .expect_err("wrong final tree must fail")
                 .to_string()
                 .contains("final state commitment mismatch")
         );
-    }
-
-    /// Utility (not a real test): runs the V8 native batch PIG for the simplest possible batch
-    /// (a single empty block at canonical protocol v32.0) and dumps the resulting prover input in the
-    /// formats the `zksync-airbender` CLI understands, so it can be proven/verified on CPU
-    /// elsewhere (e.g. `cli prove --bin multiblock_batch.bin --input-file <hex> --backend cpu`).
-    ///
-    /// Run with:
-    ///   V8_PROVER_INPUT_OUT=/tmp/v8-prover-input \
-    ///   cargo test -p zksync_os_batch_verification dump_v8_simplest_batch_prover_input \
-    ///     -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore = "utility: dumps the V8 simplest-batch prover input to files"]
-    async fn dump_v8_simplest_batch_prover_input() {
-        let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
-        let genesis_state = build_genesis_state_for_test(&protocol_version).await;
-        let read_state = MemoryStateHistory::from_genesis_state(&genesis_state);
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let tree = genesis_tree(&genesis_state, temp_dir.path());
-        let tree_block =
-            executed_tree_block(&tree, &read_state, &genesis_state, protocol_version.clone());
-
-        let native_batch_run = generate_batch_run(
-            &[NativeBatchBlock {
-                replay_record: &tree_block.record,
-                tree_data: &tree_block.tree,
-                block_output: &tree_block.output,
-            }],
-            &read_state,
-            tree.clone(),
-            PubdataMode::Blobs,
-            Address::ZERO,
-        )
-        .expect("V8 native batch run failed");
-
-        let words = native_batch_run.prover_input;
-
-        let out_dir = std::env::var("V8_PROVER_INPUT_OUT")
-            .expect("set V8_PROVER_INPUT_OUT to the output directory for the dumped files");
-        std::fs::create_dir_all(&out_dir).unwrap();
-
-        // `--input-type hex` (the CLI default): each u32 word as 8 lowercase hex chars, concatenated.
-        let hex: String = words.iter().map(|w| format!("{w:08x}")).collect();
-        let hex_path = format!("{out_dir}/v8_simplest_prover_input.hex");
-        std::fs::write(&hex_path, &hex).unwrap();
-
-        // Raw little-endian words (useful for other tooling / re-encoding as base64 prover-input-json).
-        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let bin_path = format!("{out_dir}/v8_simplest_prover_input.le.bin");
-        std::fs::write(&bin_path, &bytes).unwrap();
-
-        println!("=== V8 simplest-batch prover input ===");
-        println!("protocol_version: v32.0  proving_version: V8  pubdata_mode: Blobs");
-        println!(
-            "prover_input words: {}  ({} bytes)",
-            words.len(),
-            bytes.len()
-        );
-        println!("first words: {:?}", &words[..words.len().min(8)]);
-        println!(
-            "new_state_commitment: {:?}",
-            native_batch_run.new_state_commitment
-        );
-        println!("da_commitment:        {:?}", native_batch_run.da_commitment);
-        println!("wrote hex : {hex_path}");
-        println!("wrote bin : {bin_path}");
     }
 
     fn v8_batch_for_signing<ReadState: ReadStateHistory>(
@@ -1562,15 +1493,31 @@ mod tests {
         genesis_state: &GenesisState,
         protocol_version: ProtocolSemanticVersion,
     ) -> TreeBlock {
-        let (root_hash, leaf_count) = tree.root_info(0).unwrap().unwrap();
+        executed_tree_block_from_record(
+            tree,
+            read_state,
+            genesis_state,
+            empty_replay_record(protocol_version),
+        )
+    }
+
+    fn executed_tree_block_from_record(
+        tree: &MerkleTree<RocksDBWrapper>,
+        read_state: &MemoryStateHistory,
+        genesis_state: &GenesisState,
+        mut record: ReplayRecord,
+    ) -> TreeBlock {
+        let parent_version = record.block_context.block_number.checked_sub(1).unwrap();
+        let (root_hash, leaf_count) = tree.root_info(parent_version).unwrap().unwrap();
         let tree_output = TreeBatchOutput {
             root_hash,
             leaf_count,
         };
 
-        let mut record = empty_replay_record(protocol_version);
-        record.block_context.block_hashes =
-            BlockHashes::default().push(genesis_state.header.hash());
+        if parent_version == 0 {
+            record.block_context.block_hashes =
+                BlockHashes::default().push(genesis_state.header.hash());
+        }
         let output = zksync_os_multivm::run_block(
             record.block_context,
             read_state.view.clone(),
@@ -1688,17 +1635,6 @@ mod tests {
             settlement_layer_address: Address::ZERO,
             settlement_layer_intervals: SettlementLayerIntervals::direct_l1(diamond_proxy_l1),
         }
-    }
-
-    async fn build_genesis_state_for_test(
-        protocol_version: &ProtocolSemanticVersion,
-    ) -> GenesisState {
-        let genesis_path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../local-chains/v32.0/genesis.json");
-        let source = FileGenesisInputSource::new(genesis_path);
-        build_genesis(&source, CHAIN_ID, protocol_version)
-            .await
-            .unwrap()
     }
 
     // SYSCOIN: Test-only minimal genesis for CPU forward/witness consistency. It is never written

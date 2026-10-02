@@ -40,13 +40,15 @@ fi
 # SYSCOIN: Migrations target the single canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION
+: "${L1_RPC_URL:?L1_RPC_URL is required}"
+gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
+gl_validate_l1_network_pair
+gl_normalize_canonical_deployment_inputs
 gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
 gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
-: "${L1_RPC_URL:?L1_RPC_URL is required}"
-gl_require L1_CHAIN_ID
-gl_require L1_NETWORK
 cd "${GATEWAY_DIR}"
 
 : "${GATEWAY_CHAIN_NAME:=gateway}"
@@ -54,9 +56,6 @@ cd "${GATEWAY_DIR}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME:=BlobsZKsyncOS}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE:=4}"
-gl_normalize_canonical_deployment_inputs
-gl_validate_l1_network_pair
-
 gateway_governor_signer() {
   # SYSCOIN: fresh zkstack deployments generate a distinct Gateway governor
   # and persist it in the authenticated edge wallet. Use that signer unless an

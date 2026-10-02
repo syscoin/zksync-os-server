@@ -9,8 +9,8 @@ use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
 use serde_json::{Value, json};
 use smart_config::value::SecretString;
 use std::time::Duration;
-// SYSCOIN: Bitcoin-DA Gateway coverage stays on the V32 production topology until V8 exposes the
-// compact edge-DA inputs required by our settlement contract.
+// SYSCOIN: Gateway-settled children use compact relayed DA; the supporting Gateway
+// uses Blobs for its direct Root settlement.
 use zksync_os_integration_tests::CURRENT_TO_GATEWAY;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
 use zksync_os_server::config::BitcoinDaFinalityMode;
@@ -40,21 +40,80 @@ fn blob_data_response(req: &HttpMockRequest) -> HttpMockResponse {
     HttpMockResponse::builder()
         .status(200)
         .header("content-type", "application/json")
-        .body(
-            json!({
-                "result": {
-                    "versionhash": request["params"][0],
-                    "txid": "abc123",
-                    "mtp": 12345,
-                    "datasize": 32,
-                    "height": 100
-                },
-                "error": null,
-                "id": request["id"]
-            })
-            .to_string(),
-        )
+        .body(blob_data_rpc_response(&request).to_string())
         .build()
+}
+
+fn blob_data_rpc_response(request: &Value) -> Value {
+    let respond = |call: &Value| {
+        assert_eq!(call["method"], "getnevmblobdata");
+        let params = call["params"]
+            .as_array()
+            .expect("blob RPC params must be an array");
+        assert!(
+            params.len() == 1 || (params.len() == 2 && params[1] == false),
+            "expected finality lookup or getdata=false availability lookup"
+        );
+        let version_hash = params[0]
+            .as_str()
+            .expect("blob version hash must be a string");
+        assert!(!call["id"].is_null(), "blob RPC call must have an id");
+        json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "versionhash": version_hash,
+                "txid": "abc123",
+                "mtp": 12345,
+                "datasize": 32,
+                "height": 100
+            },
+            "error": null,
+            "id": call["id"]
+        })
+    };
+
+    // Finality uses a single call, while Gateway compact-edge admission batches availability
+    // calls. Preserve the JSON-RPC envelope and every ID for the latter instead of returning a map.
+    match request {
+        Value::Array(calls) => {
+            assert!(!calls.is_empty(), "blob RPC batch must not be empty");
+            Value::Array(calls.iter().map(respond).collect())
+        }
+        _ => respond(request),
+    }
+}
+
+#[test]
+fn blob_data_mock_preserves_single_and_batch_envelopes() {
+    let single = json!({"id": 5, "method": "getnevmblobdata", "params": ["first"]});
+    let response = blob_data_rpc_response(&single);
+    assert_eq!(response["id"], 5);
+    assert_eq!(response["result"]["versionhash"], "first");
+    assert_eq!(response["result"]["height"], 100);
+
+    let batch = json!([
+        {"id": 7, "method": "getnevmblobdata", "params": ["first", false]},
+        {"id": 8, "method": "getnevmblobdata", "params": ["second", false]}
+    ]);
+    let responses = blob_data_rpc_response(&batch);
+    let responses = responses
+        .as_array()
+        .expect("batch must have an array response");
+    assert_eq!(responses.len(), 2);
+    for (request, response) in batch.as_array().unwrap().iter().zip(responses) {
+        assert_eq!(response["id"], request["id"]);
+        assert_eq!(response["result"]["versionhash"], request["params"][0]);
+        assert_eq!(response["result"]["height"], 100);
+        assert!(response["error"].is_null());
+    }
+}
+
+#[test]
+#[should_panic(expected = "expected finality lookup or getdata=false availability lookup")]
+fn blob_data_mock_does_not_fabricate_blob_bytes() {
+    blob_data_rpc_response(&json!({
+        "id": 9, "method": "getnevmblobdata", "params": ["first", true]
+    }));
 }
 
 #[tokio::test]
@@ -126,7 +185,7 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
     let env = CURRENT_TO_GATEWAY.environment().await?;
     let mut config = env.default_config().await?;
     config.sequencer_config.block_time = Duration::from_millis(50);
-    config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+    config.l1_sender_config.pubdata_mode = Some(PubdataMode::RelayedL2Calldata);
     config.batcher_config.batch_timeout = Duration::from_millis(100);
     config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
     config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
@@ -281,7 +340,7 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
     let block_count_calls_before_child = get_block_count.calls_async().await;
     let mut config = env.default_config().await?;
     config.sequencer_config.block_time = Duration::from_millis(50);
-    config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+    config.l1_sender_config.pubdata_mode = Some(PubdataMode::RelayedL2Calldata);
     config.batcher_config.batch_timeout = Duration::from_millis(100);
     config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
     config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));

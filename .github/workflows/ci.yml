@@ -33,7 +33,9 @@ jobs:
   #       Build server       #
   ############################
   build:
-    runs-on: matterlabs-ci-runner-high-performance
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: '2'
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -54,13 +56,29 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # Component-only fixture smoke uses the same ConfigValidate and server::run,
+      # with the existing integration-test BitcoinDaMock, never production DA.
+      - name: Build explicit component bootstrap
+        env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: bash scripts/cargo-with-patched-zksync-os.sh ci-build -- build --locked --release -p zksync_os_integration_tests --bin anvil-component-bootstrap
+
+      - name: Upload component bootstrap
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: anvil-component-bootstrap-${{ github.sha }}
+          path: ${{ github.workspace }}/target/release/anvil-component-bootstrap
+          if-no-files-found: error
+          retention-days: 1
+
 
   ############################
   #     Format and lint      #
   ############################
   format-and-lint:
-    runs-on: matterlabs-ci-runner-high-performance
+    runs-on: ubuntu-24.04
     env:
+      CARGO_BUILD_JOBS: '2'
       ZKSYNC_USE_CUDA_STUBS: true
     steps:
       - name: Checkout code
@@ -72,12 +90,28 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Test current component fixture boundary
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/component-policy-python"
+          "${RUNNER_TEMP}/component-policy-python/bin/python" -m pip install 'PyYAML==6.0.1'
+          export PATH="${RUNNER_TEMP}/component-policy-python/bin:${PATH}"
+          echo "${RUNNER_TEMP}/component-policy-python/bin" >> "${GITHUB_PATH}"
+          PYTHONDONTWRITEBYTECODE=1 "${RUNNER_TEMP}/component-policy-python/bin/python" -m unittest scripts.tests.test_v32_component_fixture scripts.tests.test_v32_component_generator -v
+
       - name: Test patched zksync-os workspace tooling
-        run: >-
-          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest
-          scripts.tests.test_local_patched_zksync_os
-          scripts.tests.test_gateway_settlement_fee_payer
-          -v
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
+            scripts.tests.test_local_patched_zksync_os \
+            scripts.tests.test_gateway_settlement_fee_payer \
+            scripts.tests.test_era_generated_release \
+            scripts.tests.test_v32_keygen_end_params \
+            scripts.tests.test_v32_keygen_inventory_closure \
+            scripts.tests.test_v32_keygen_cpu_crs \
+            -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s scripts/keygen/gateway-identity -p test_check_identity.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s scripts/releases/era-v32 -p test_release_overlay.py -v
 
       - name: Run clippy
         env:
@@ -89,7 +123,9 @@ jobs:
   #      Run unit and core integration tests      #
   #################################################
   test:
-    runs-on: matterlabs-ci-runner-high-performance
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: '2'
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -100,7 +136,14 @@ jobs:
       - name: Run tests
         env:
           GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-        run: bash scripts/cargo-with-patched-zksync-os.sh ci-test -- nextest run --locked --release --workspace ${NEXTEST_ITERATIONS}
+        run: |
+          test_status=0
+          bash scripts/cargo-with-patched-zksync-os.sh ci-test -- nextest run --locked --release --workspace ${NEXTEST_ITERATIONS} || test_status=$?
+          # Nextest stores reports relative to its disposable workspace, not CARGO_TARGET_DIR.
+          report="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/ci-test/target/nextest/default/${TEST_RESULTS_XML}"
+          mkdir -p "${GITHUB_WORKSPACE}/target/nextest/default"
+          cp -- "${report}" "${GITHUB_WORKSPACE}/target/nextest/default/${TEST_RESULTS_XML}"
+          exit "${test_status}"
 
       - name: Upload test results
         if: always() && !cancelled()
@@ -108,6 +151,7 @@ jobs:
         with:
           check_name: 'Test results'
           files: ${{ github.workspace }}/target/nextest/default/${{ env.TEST_RESULTS_XML }}
+          large_files: true
           action_fail_on_inconclusive: true
           compare_to_earlier_commit: false # Do not compare with `main` due to different number of iterations
 
@@ -289,11 +333,19 @@ jobs:
           name: zksync-os-server-${{ github.sha }}
           path: .
 
+      - name: Download explicit component bootstrap
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: anvil-component-bootstrap-${{ github.sha }}
+          path: .
+
       - name: Run config smoke test
         env:
           LOG_USE_COLOR: false
           SERVER_LOGFILE: server.log
-        run: ./.github/scripts/test-configs.sh
+        # Genuine V32/V8 component package required; this is not the canonical
+        # Syscoin five-role release fixture. No test filter/skip is added.
+        run: ./.github/scripts/test-configs.sh --anvil-component-only
 
 
   ###############################

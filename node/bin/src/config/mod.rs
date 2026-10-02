@@ -2061,7 +2061,12 @@ pub struct FakeSnarkProversConfig {
     #[config(default_t = false)]
     pub enabled: bool,
 
-    /// Only pick up jobs that are this time old.
+    /// Minimum queued age before the fake worker may consume any FRI input, including fake ones.
+    /// Zero preserves immediate fake-FRI completion; tests can delay wrapping while commits advance.
+    #[config(default_t = Duration::ZERO)]
+    pub min_age: Duration,
+
+    /// Age after which the fake worker may also consume real FRI inputs.
     #[config(default_t = Duration::from_secs(10))]
     pub max_batch_age: Duration,
 }
@@ -2238,6 +2243,10 @@ pub struct ObservabilityConfig {
 #[derive(Debug, Clone, PartialEq, DescribeConfig, DeserializeConfig)]
 #[config(derive(Default))]
 pub struct PrometheusConfig {
+    /// SYSCOIN: Explicit bind address for private metrics listeners.
+    #[config(default_t = IpAddr::V4(Ipv4Addr::UNSPECIFIED))]
+    pub bind_address: IpAddr,
+
     /// Port to expose Prometheus metrics on.
     #[config(default_t = 3312)]
     pub port: u16,
@@ -2999,6 +3008,37 @@ mod tests {
         "0x1111111111111111111111111111111111111111111111111111111111111111";
     const TEST_BOOT_NODE: &str = "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@localhost:30303?discport=30301";
 
+    #[test]
+    fn prometheus_bind_defaults_and_explicit_loopback() {
+        let schema = ConfigSchema::new(&PrometheusConfig::DESCRIPTION, "prometheus");
+        let defaults = ConfigRepository::new(&schema)
+            .single::<PrometheusConfig>()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(defaults.bind_address, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(defaults.port, 3312);
+        for address in ["127.0.0.1", "::1"] {
+            let repo = ConfigRepository::new(&schema).with(Environment::from_iter(
+                "",
+                [("PROMETHEUS_BIND_ADDRESS", address)],
+            ));
+            let config = repo.single::<PrometheusConfig>().unwrap().parse().unwrap();
+            assert_eq!(config.bind_address, address.parse::<IpAddr>().unwrap());
+        }
+        let invalid = ConfigRepository::new(&schema).with(Environment::from_iter(
+            "",
+            [("PROMETHEUS_BIND_ADDRESS", "localhost:3312")],
+        ));
+        assert!(
+            invalid
+                .single::<PrometheusConfig>()
+                .unwrap()
+                .parse()
+                .is_err()
+        );
+    }
+
     fn loopback_interface() -> &'static str {
         ["lo", "lo0"]
             .into_iter()
@@ -3527,6 +3567,10 @@ mod tests {
     async fn prover_api_snark_defaults_support_cpu_wrapper() {
         let config = base_config(NodeRole::MainNode);
 
+        assert_eq!(
+            config.prover_api_config.fake_snark_provers.min_age,
+            Duration::ZERO
+        );
         assert_eq!(
             config.prover_api_config.snark_job_timeout,
             Duration::from_secs(7200)

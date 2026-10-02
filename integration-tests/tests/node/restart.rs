@@ -211,7 +211,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     );
     assert_eq!(
         committed_state.last_proved_batch, initial_state.last_proved_batch,
-        "fake SNARK provers are disabled, so the proved frontier must not advance"
+        "fake SNARK proving is delayed, so the proved frontier must not advance"
     );
 
     let safe_before_revert = wait_for_block_number_by_id(
@@ -239,6 +239,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
         .last_block_number()
     };
 
+    let pre_restart_tip = tester.l2_provider.get_block_number().await?;
     let stopped = tester.stop().await?;
     revert_batches_on_l1(
         stopped.chain_layout(),
@@ -276,6 +277,15 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     restarted_config.batcher_config.enabled = true;
     make_full_pipeline_config(&mut restarted_config);
     let restarted = restarted.restart_with_config(restarted_config).await?;
+    // SYSCOIN: RPC startup precedes WAL replay completion. Restore the preserved wallet state
+    // before checking funding or filling the nonce of the post-revert transaction.
+    wait_for_block_number_by_id(
+        &restarted,
+        "startup replay to reach the pre-revert tip",
+        BlockId::latest(),
+        |block_number| block_number >= pre_restart_tip,
+    )
+    .await?;
     // SYSCOIN: A priority operation created by this test can be removed by the L1 revert. Wait
     // for it to be re-included before sending transactions after the pipeline is re-enabled.
     restarted.wait_for_initial_deposit().await?;
@@ -322,8 +332,8 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
 ///
 /// Flow:
 ///   1. Launch a commit-only main node and commit a batch (so there is something to revert).
-///   2. Restart the main node with the batcher disabled.
-///   3. Launch an external node and wait for it to sync the committed batch's block.
+///   2. Launch and fund an external node while the main node can still produce, then sync it.
+///   3. Restart the main node with the batcher disabled and restart the external node against it.
 ///   4. Revert all committed batches on L1 while both nodes are running.
 ///   5. Both nodes stop with `L1WatcherError::L1Reverted`.
 ///   6. Restart the EN, re-enable the main-node batcher, and confirm the EN re-syncs fresh blocks.
@@ -360,20 +370,47 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
         "batch execution is disabled, so the executed frontier must not advance"
     );
 
+    // SYSCOIN: A fresh EN may request funding while replaying the historical fixture. Keep the
+    // main node producing until that startup finishes; replay-only main nodes cannot include a
+    // new deposit. Preserve the EN database for the live-revert window below.
+    let en = main_node.launch_external_node().await?;
+    wait_for_block_number_by_id(
+        &en,
+        "the external node to sync the committed transaction",
+        BlockId::latest(),
+        |block_number| block_number >= tx_block,
+    )
+    .await?;
+    let stopped_en = en.stop().await?;
+    let pre_restart_tip = main_node.l2_provider.get_block_number().await?;
+
     // Disable batching so the rollback frontier cannot race fresh submissions.
     let mut main_node = main_node
         .restart_with_overrides(|config| config.batcher_config.enabled = false)
         .await?;
+    wait_for_block_number_by_id(
+        &main_node,
+        "the replay-only main node to recover its preserved tip",
+        BlockId::latest(),
+        |block_number| block_number >= pre_restart_tip,
+    )
+    .await?;
 
-    // Launch the external node *after* the commit, so its revert watcher initializes its startup
-    // SL block below the block that will carry the revert event.
-    let mut en = main_node.launch_external_node().await?;
-    // Make sure the EN is live and has synced the committed batch's block before reverting.
-    en.l2_zk_provider.wait_for_block(tx_block).await?;
+    // Restart after the commit and refresh the main-node endpoints. Both watchers now have a
+    // startup SL block below the revert event, without requesting funding from a replay-only node.
+    let mut en = main_node.restart_external_node(stopped_en).await?;
+    wait_for_block_number_by_id(
+        &en,
+        "the restarted external node to sync the preserved tip",
+        BlockId::latest(),
+        |block_number| block_number >= pre_restart_tip,
+    )
+    .await?;
 
     // Revert all committed batches on L1 (down to the executed frontier) while the EN is running.
     let chain_layout = ChainLayout::Default {
         protocol_version: CURRENT_TO_L1.protocol_version,
+        fixture_scope: CURRENT_TO_L1.fixture_scope,
     };
     revert_batches_on_l1(
         chain_layout,
@@ -413,6 +450,13 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     let main_node = main_node
         .restart_with_overrides(|config| config.batcher_config.enabled = true)
         .await?;
+    wait_for_block_number_by_id(
+        &main_node,
+        "the main node to replay its preserved tip after the live revert",
+        BlockId::latest(),
+        |block_number| block_number >= pre_restart_tip,
+    )
+    .await?;
     let en = main_node.restart_external_node(stopped_en).await?;
 
     let receipt = main_node

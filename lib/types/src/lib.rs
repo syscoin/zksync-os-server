@@ -4,7 +4,7 @@ use alloy::primitives::{Address, B256, U256, address, b256, keccak256};
 /// transactions. A runtime deployment must match this address before it can collect or verify
 /// compact edge references.
 pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET: Address =
-    address!("0xca38dbb6ea5f740cc8252f1450def4dcede94478");
+    address!("0xabb69e8e899c06e51414efde62d4423de4f35004");
 
 /// SYSCOIN: Exact deployed EVM runtime identity of
 /// [`SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET`]. Both length and hash are attested so a partial or

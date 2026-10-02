@@ -270,17 +270,22 @@ mod v8_verifier {
     /// continued through, so it must match the prover's `PROVING_SECURITY_LEVEL`.
     const SECURITY: SecurityModel = SecurityModel::Security100;
 
-    /// SYSCOIN: Exact reviewed guest source awaiting the reproducible app rebuild. These
-    /// sentinels are replaced together from Airbender `end_params` output before keygen is
-    /// authorized; no prior app identity is valid for this tree.
-    pub(super) const V8_APP_IDENTITY_SOURCE_TREE: &str = "ae0d7d3a2aeec5866a45d99e2de957bd2cc4d752";
-    pub(super) const V8_APP_BIN_MD5: &str = "00000000000000000000000000000000";
-    pub(super) const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = true;
+    /// SYSCOIN: Reproduced guest identity; independently derived end parameters and
+    /// Security100 continuation must agree with the registered app-bound key.
+    pub(super) const V8_APP_IDENTITY_SOURCE_TREE: &str = "6935489bdbc7b1ed31e608677d1b2418b10691b5";
+    pub(super) const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";
+    pub(super) const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = false;
 
     /// `end_params` is derived from the app binary alone. The Security100 chain continues those
     /// params through the pinned unrolled and unified recursion artifacts.
-    pub(super) const V8_APP_END_PARAMS: [u32; 8] = [0; 8];
-    pub(super) const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [0; 8];
+    pub(super) const V8_APP_END_PARAMS: [u32; 8] = [
+        3009942935, 2266051515, 747570558, 2762947172, 1354863053, 3205993576, 4096623771,
+        3765215681,
+    ];
+    pub(super) const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [
+        467704222, 2976569635, 1593588786, 175442682, 1232043748, 3415504018, 1844231507,
+        2666440308,
+    ];
 
     pub(super) struct UnifiedLevelData {
         setup: UnrolledProgramSetup,

@@ -6,7 +6,7 @@ index 7e1d9037d..71702e655 100644
 +# SYSCOIN: track the exact V32 compact Edge-DA relay deployment manifest.
 +!l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd18..7ddffe91f 100644
+index a0200fd18..37794f6dc 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
@@ -178,6 +178,30 @@ index a0200fd18..7ddffe91f 100644
 -    "evmDeployedBytecodeBlakeHash": "0xe428482a798aaf82ac7bf3e98c37586a468a80f5f9ea81123916451646313db1",
 +    "evmDeployedBytecodeHash": "0xbd5afad19061d86e55e20a45a0a9bf5e2a75b956bfc7293ee98d06fc1fbe8145",
 +    "evmDeployedBytecodeBlakeHash": "0x7b194165ad7abfe67e34b898be4a89cb225e9edce4c6694e48c464eb445eaaf1",
+@@ -1124 +1124 @@
+-    "zkBytecodeHash": "0x010009bf6dae531d1ba77a34c6bdda076befb2c39b7874aac789f3e88a47c630",
++    "zkBytecodeHash": "0x010009bff9cf24120171909534c3332d892a16ebc936aa8c4c77460422776012",
+@@ -1126 +1126 @@
+-    "evmBytecodeHash": "0x82b9f3bbd09d3f7d81ade3e4aa2298e881534111449c319171dd7e124e18e23a",
++    "evmBytecodeHash": "0xfd787391da3ff0089a4b7f56788ef80908bd19bbe48ce967e4cca52fbdb31619",
+@@ -1128,2 +1128,2 @@
+-    "evmDeployedBytecodeHash": "0xfb5ff9d1d08b90edbb992dbb9c40ac02a8b0befbd0d9a609094d6a8ef99245c2",
+-    "evmDeployedBytecodeBlakeHash": "0xc9e0e25df7ca159252ce4924bc745cce362a40fb0b06eace0f07b209cd40c9ca",
++    "evmDeployedBytecodeHash": "0x8a5a5fc284140225a6c6221cc393930e057f242fb09ab1a22505f892b1cffa19",
++    "evmDeployedBytecodeBlakeHash": "0x762c716478324beb613892f66fe3d17aef644fb673b58a203f79b34d28651ff3",
+@@ -1134 +1134 @@
+-    "zkBytecodeHash": "0x01000dbb85171a0a3195c20fdb9d58e820efe39dbe647178538b61228d0f6b0a",
++    "zkBytecodeHash": "0x01000dbbffb4df87eead795cc622ed344fb8e2e355054a84de84b9c2f106ce4c",
+@@ -1136 +1136 @@
+-    "evmBytecodeHash": "0x561be3deb3c0c6a7e6c84419aab8c662d1619152f826ead808a4a6d22b94f104",
++    "evmBytecodeHash": "0xc7b2d2424523f2b32cdf5e9d108801463612b1b22a609749734072393750397f",
+@@ -1138,3 +1138,3 @@
+-    "evmDeployedBytecodeHash": "0x584e21aef10d061a7abc7b302c380d11fb08d6f8e45d3a4be91fc47d815f3da2",
+-    "evmDeployedBytecodeBlakeHash": "0x229c7950d40dd20ad72ebb9a2ad906a89e896b64b92e775f0f2b976860a8b9e0",
+-    "evmDeployedBytecodeLength": 17226
++    "evmDeployedBytecodeHash": "0x1506f1d686173ccb71668245d920c49750485dc6163c3217dc76b7a75f64bf8c",
++    "evmDeployedBytecodeBlakeHash": "0x801d56c5befc55b9e73ae0ed4af86f6995abb0704c654f8551a91385e100f49f",
++    "evmDeployedBytecodeLength": 17228
 @@ -1144 +1144 @@
 -    "zkBytecodeHash": "0x010004153ee2504432fafeb9835520d26c6b2851162547824aa32af9550094e4",
 +    "zkBytecodeHash": "0x010004193d3e8d73f7568fa1943f8e1d68b4d7ee75411bc991452f127864a904",
@@ -2368,7 +2392,7 @@ index 440479469..c71e07ef6 100644
 -        config.validatorType = DAValidatorType(daValidatorType);
 -
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-index e00f6b595..c9769041f 100644
+index e00f6b595..9c03d56c5 100644
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 @@ -17,0 +18,2 @@ import {RollupDAManager} from "contracts/state-transition/data-availability/Roll
@@ -2382,15 +2406,18 @@ index e00f6b595..c9769041f 100644
 @@ -130,0 +132,2 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 +        // SYSCOIN: this release deliberately rejects the generic Era deployment branch.
 +        require(config.isZKsyncOS, "Only the canonical Syscoin ZKsync OS deployment is supported");
-@@ -224,0 +228 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -137,0 +141,2 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
++        // Fresh CTMs must preserve the root Bridgehub capacity in L2 force-deployment data.
++        config.contracts.maxNumberOfChains = L1Bridgehub(bridgehub).MAX_NUMBER_OF_ZK_CHAINS();
+@@ -224,0 +230 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 +        // SYSCOIN: preserve pinned-upstream FFLONK deployment compatibility; proof routing remains PLONK-only.
-@@ -231,0 +236,2 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -231,0 +238,2 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 +        // SYSCOIN: Fresh V32 verifier ownership is assigned directly to governance so an
 +        // unaccepted Ownable2Step handoff cannot leave the canonical verifier ownerless.
-@@ -236 +242 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -236 +244 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 -            config.ownerAddress,
 +            ctmAddresses.admin.governance,
-@@ -253,0 +260,8 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -253,0 +262,8 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 +        require(config.isZKsyncOS, "Syscoin compact DA requires ZKsync OS");
 +
 +        // SYSCOIN: fresh deployments have exactly one fail-closed compact DA lane.
@@ -2399,10 +2426,10 @@ index e00f6b595..c9769041f 100644
 +            "SyscoinL1DAValidatorZKsyncOS",
 +            false
 +        );
-@@ -255 +269 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -255 +271 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 -            "RollupDAManager",
 +            "SyscoinRollupDAManager",
-@@ -261,17 +274,0 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -261,17 +276,0 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 -        // This contract is located in the `da-contracts` folder, we output it the same way for consistency/ease of use.
 -        ctmAddresses.daAddresses.daContracts.rollupSLDAValidator = deploySimpleContract("RollupL1DAValidator", false);
 -        if (config.isZKsyncOS) {
@@ -2420,10 +2447,10 @@ index e00f6b595..c9769041f 100644
 -        } else {
 -            ctmAddresses.daAddresses.availL1DAValidator = config.contracts.availL1DAValidator;
 -        }
-@@ -282 +279 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -282 +281 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 -            getRollupL2DACommitmentScheme(),
 +            SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME,
-@@ -285,7 +281,0 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -285,7 +283,0 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 -        if (config.isZKsyncOS) {
 -            rollupDAManager.updateDAPair(
 -                ctmAddresses.daAddresses.l1BlobsDAValidatorZKsyncOS,
@@ -2431,12 +2458,12 @@ index e00f6b595..c9769041f 100644
 -                true
 -            );
 -        }
-@@ -321 +311 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -321 +313 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 -        // Called as library (not through vms) to preserve msg.sender
 +        // SYSCOIN: this is now a fail-closed ownership postcondition, not a two-step mutation.
-@@ -395,0 +386 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -395,0 +388 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 +        // SYSCOIN: only the canonical manager/validator pair is deployed; legacy schema slots stay zero.
-@@ -406,17 +397,4 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+@@ -406,17 +399,4 @@ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 -        vm.serializeAddress(
 -            "deployed_addresses",
 -            "no_da_validium_l1_validator_addr",
@@ -3146,6 +3173,43 @@ index 35a078048..0b1b2bdda 100644
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
+diff --git a/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol b/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
+new file mode 100644
+index 000000000..59585e1f8
+--- /dev/null
++++ b/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.28;
++
++import {L1ContractDeployer} from "./_SharedL1ContractDeployer.t.sol";
++import {FixedForceDeploymentsData} from "contracts/state-transition/l2-deps/IL2GenesisUpgrade.sol";
++
++contract DeployCTMCapacityTest is L1ContractDeployer {
++    function test_freshCTMUsesBridgehubCapacity() public {
++        // SYSCOIN: execute the real root and CTM deployment flow. Do not populate the CTM
++        // capacity in a test override: that would hide a missing Bridgehub read.
++        _deployL1Contracts();
++
++        uint256 rootCapacity = addresses.bridgehub.MAX_NUMBER_OF_ZK_CHAINS();
++        assertGt(rootCapacity, 0, "root test configuration must have nonzero capacity");
++        assertEq(
++            ecosystemConfig.contracts.maxNumberOfChains,
++            rootCapacity,
++            "fresh CTM config did not inherit root Bridgehub capacity"
++        );
++
++        FixedForceDeploymentsData memory forceDeploymentsData = abi.decode(
++            ctmScript.getForceDeploymentsData(),
++            (FixedForceDeploymentsData)
++        );
++        assertEq(
++            forceDeploymentsData.maxNumberOfZKChains,
++            rootCapacity,
++            "fresh CTM force-deployment data did not inherit root Bridgehub capacity"
++        );
++    }
++}
 diff --git a/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol b/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 index 768ae92ec..f7441a616 100644
 --- a/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
@@ -3327,6 +3391,16 @@ index d85c74f2a..322451c92 100644
 -        vm.serializeUint("chain", "validium_mode", validiumMode);
 +        // SYSCOIN: Keep generated fixture input explicitly fail-closed to validium mode.
 +        vm.serializeUint("chain", "validium_mode", 0);
+diff --git a/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol b/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
+index 06e675359..bf8f1701e 100644
+--- a/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
++++ b/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
+@@ -17,0 +18,5 @@ contract DeployCTMIntegrationScript is Script, DeployCTMScript {
++    // SYSCOIN: expose the real generated payload for fresh CTM capacity regression checks.
++    function getForceDeploymentsData() public view returns (bytes memory) {
++        return generatedData.forceDeploymentsData;
++    }
++
 diff --git a/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml b/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 index 4448fe81f..9330a54af 100644
 --- a/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
@@ -5401,6 +5475,122 @@ index 000000000..1af7f7cbb
 +        new GatewayCTMDeployerDA(_config());
 +    }
 +}
+diff --git a/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json b/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
+index c649ae4b5..06969faec 100644
+--- a/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
++++ b/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
+@@ -131,0 +132,53 @@
++  {
++    "type": "function",
++    "name": "adminL1L2TxViaGateway",
++    "inputs": [
++      {
++        "name": "_bridgehub",
++        "type": "address",
++        "internalType": "address"
++      },
++      {
++        "name": "_l1GasPrice",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "_adminChainId",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "_gatewayChainId",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "_to",
++        "type": "address",
++        "internalType": "address"
++      },
++      {
++        "name": "_value",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "_data",
++        "type": "bytes",
++        "internalType": "bytes"
++      },
++      {
++        "name": "_refundRecipient",
++        "type": "address",
++        "internalType": "address"
++      },
++      {
++        "name": "_shouldSend",
++        "type": "bool",
++        "internalType": "bool"
++      }
++    ],
++    "outputs": [],
++    "stateMutability": "nonpayable"
++  },
+diff --git a/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json b/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json
+index 5873bd029..c5c339deb 100644
+--- a/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json
++++ b/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json
+@@ -102,0 +103,53 @@
++        "internalType": "bytes"
++      },
++      {
++        "name": "refundRecipient",
++        "type": "address",
++        "internalType": "address"
++      },
++      {
++        "name": "shouldSend",
++        "type": "bool",
++        "internalType": "bool"
++      }
++    ],
++    "outputs": [],
++    "stateMutability": "nonpayable"
++  },
++  {
++    "type": "function",
++    "name": "adminL1L2TxViaGateway",
++    "inputs": [
++      {
++        "name": "bridgehub",
++        "type": "address",
++        "internalType": "address"
++      },
++      {
++        "name": "l1GasPrice",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "adminChainId",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "gatewayChainId",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "to",
++        "type": "address",
++        "internalType": "address"
++      },
++      {
++        "name": "value",
++        "type": "uint256",
++        "internalType": "uint256"
++      },
++      {
++        "name": "data",
++        "type": "bytes",
 diff --git a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json b/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
 index db8384ac8..19848634e 100644
 --- a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
@@ -5411,6 +5601,146 @@ index db8384ac8..19848634e 100644
 -                "type": "address",
 -                "internalType": "address"
 -              },
+diff --git a/tools/verifier-gen/data/plonk_verifier_contract_template.txt b/tools/verifier-gen/data/plonk_verifier_contract_template.txt
+index 54da1a5df50a4643c4b74cd656f4831f9af062a9..c4d631ef85c5d703e5badbece85c9d03d8d5d969 100644
+--- a/tools/verifier-gen/data/plonk_verifier_contract_template.txt
++++ b/tools/verifier-gen/data/plonk_verifier_contract_template.txt
+@@ -236,2 +236,2 @@ contract {{contract_name}}VerifierPlonk is IVerifier {
+-    uint256 internal constant OMEGA = 0x1951441010b2b95a6e47a6075066a50a036f5ba978c050f2821df86636c0facb;
+-    uint256 internal constant DOMAIN_SIZE = 0x1000000; // 2^24
++    uint256 internal constant OMEGA = {{omega}};
++    uint256 internal constant DOMAIN_SIZE = {{domain_size}}; // 2^{{domain_size_log}}
+diff --git a/tools/verifier-gen/src/plonk.rs b/tools/verifier-gen/src/plonk.rs
+index 962b1305c9e72435118425185d6c1fa9ef8caead..2e0cf567f789706e538a9a49ab701c2008c8ce91 100644
+--- a/tools/verifier-gen/src/plonk.rs
++++ b/tools/verifier-gen/src/plonk.rs
+@@ -0,0 +1,4 @@
++use circuit_definitions::snark_wrapper::franklin_crypto::bellman::pairing::bn256::Fr;
++use circuit_definitions::snark_wrapper::franklin_crypto::bellman::pairing::ff::{
++    Field, PrimeField, PrimeFieldRepr,
++};
+@@ -80,0 +85,4 @@ pub fn insert_residue_elements_and_commitments(
++    let (domain_size, domain_size_log, omega) = domain_parameters(vk)?;
++    let mut omega_bytes = Vec::new();
++    omega.into_repr().write_be(&mut omega_bytes)?;
++    let omega_hex = hex::encode(omega_bytes);
+@@ -96,0 +105,3 @@ pub fn insert_residue_elements_and_commitments(
++                        "omega": format!("0x{}", omega_hex.trim_start_matches('0')),
++                        "domain_size": format!("0x{:x}", domain_size),
++                        "domain_size_log": domain_size_log,
+@@ -100,0 +112,23 @@ pub fn insert_residue_elements_and_commitments(
++// SYSCOIN: the PLONK key stores n = domain_size - 1. Security100 uses 2^25,
++// so the verifier must derive its domain from the key instead of assuming 2^24.
++fn domain_parameters(vk: &HashMap<String, Value>) -> Result<(u64, u32, Fr), Box<dyn Error>> {
++    let n = vk
++        .get("n")
++        .and_then(Value::as_u64)
++        .ok_or("PLONK VK n must be an unsigned integer")?;
++    let domain_size = n.checked_add(1).ok_or("PLONK VK n overflows domain size")?;
++    if domain_size < 2 || !domain_size.is_power_of_two() {
++        return Err("PLONK VK n + 1 must be a power of two greater than one".into());
++    }
++    let domain_size_log = domain_size.trailing_zeros();
++    if domain_size_log > Fr::S {
++        return Err("PLONK VK domain exceeds the scalar field two-adicity".into());
++    }
++    // Match the pinned native verifier's radix-two domain construction.
++    let mut omega = Fr::root_of_unity();
++    for _ in domain_size_log..Fr::S {
++        omega.square();
++    }
++    Ok((domain_size, domain_size_log, omega))
++}
++
+@@ -246,0 +281,88 @@ fn generate_residue_g2_elements(vk: &HashMap<String, Value>) -> String {
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn key(n: Value) -> HashMap<String, Value> {
++        HashMap::from([("n".to_string(), n)])
++    }
++
++    fn omega_hex(omega: Fr) -> String {
++        let mut bytes = Vec::new();
++        omega.into_repr().write_be(&mut bytes).unwrap();
++        format!("0x{}", hex::encode(bytes).trim_start_matches('0'))
++    }
++
++    #[test]
++    fn legacy_2p24_domain_is_unchanged() {
++        let (size, log, omega) = domain_parameters(&key(json!((1u64 << 24) - 1))).unwrap();
++        assert_eq!((size, log), (1 << 24, 24));
++        assert_eq!(
++            omega_hex(omega),
++            "0x1951441010b2b95a6e47a6075066a50a036f5ba978c050f2821df86636c0facb"
++        );
++        let template = include_str!("../data/plonk_verifier_contract_template.txt");
++        let mut vk: HashMap<String, Value> =
++            serde_json::from_str(include_str!("../data/ZKsyncOS_plonk_scheduler_key.json"))
++                .unwrap();
++        vk.insert("n".to_string(), json!((1u64 << 24) - 1));
++        let legacy_template = template
++            .replace(
++                "{{omega}}",
++                "0x1951441010b2b95a6e47a6075066a50a036f5ba978c050f2821df86636c0facb",
++            )
++            .replace("{{domain_size}}", "0x1000000")
++            .replace("{{domain_size_log}}", "24");
++        assert_eq!(
++            insert_residue_elements_and_commitments(template, &vk, "test-hash", "ZKsyncOS")
++                .unwrap(),
++            insert_residue_elements_and_commitments(&legacy_template, &vk, "test-hash", "ZKsyncOS")
++                .unwrap()
++        );
++    }
++
++    #[test]
++    fn security100_2p25_domain_matches_native_field() {
++        let (size, log, omega) = domain_parameters(&key(json!((1u64 << 25) - 1))).unwrap();
++        assert_eq!((size, log), (1 << 25, 25));
++        // Independently: 7^((r-1)/2^25) mod the BN256 scalar field modulus.
++        assert_eq!(
++            omega_hex(omega),
++            "0xd94d63997367c97a8ed16c17adaae39262b9af83acb9e003f94c217303dd160"
++        );
++        assert_eq!(omega.pow(&[size]), Fr::one());
++        assert_ne!(omega.pow(&[size / 2]), Fr::one());
++    }
++
++    #[test]
++    fn invalid_domain_sizes_are_rejected() {
++        for n in [
++            json!(0),
++            json!(2),
++            json!(u64::MAX),
++            json!((1u64 << (Fr::S + 1)) - 1),
++            json!(-1),
++            json!(3.5),
++            json!(true),
++            json!("16777215"),
++            Value::Null,
++        ] {
++            assert!(
++                domain_parameters(&key(n.clone())).is_err(),
++                "accepted invalid n: {}",
++                n
++            );
++        }
++        assert!(domain_parameters(&HashMap::new()).is_err());
++    }
++
++    #[test]
++    fn scalar_field_boundary_domain_is_valid() {
++        let size = 1u64 << Fr::S;
++        let (_, log, omega) = domain_parameters(&key(json!(size - 1))).unwrap();
++        assert_eq!(log, Fr::S);
++        assert_eq!(omega, Fr::root_of_unity());
++        assert_eq!(omega.pow(&[size]), Fr::one());
++        assert_ne!(omega.pow(&[size / 2]), Fr::one());
++    }
++}
 diff --git a/tools/zksync-os-genesis-gen/src/consts.rs b/tools/zksync-os-genesis-gen/src/consts.rs
 index 3d6e12e1e..c25a57e4e 100644
 --- a/tools/zksync-os-genesis-gen/src/consts.rs

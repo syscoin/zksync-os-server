@@ -1,4 +1,4 @@
-use crate::config::{ChainLayout, load_chain_config};
+use crate::config::{ChainLayout, FixtureScope, load_chain_config};
 use crate::node_log::NodeLogState;
 use crate::prover_tester::ProverTester;
 use crate::provider::ZksyncTestingProvider;
@@ -43,6 +43,8 @@ use zksync_os_types::{
 };
 
 pub mod assert_traits;
+mod component_fee_payer;
+pub mod component_replay;
 pub mod config;
 pub mod contracts;
 pub mod l1_helpers;
@@ -70,6 +72,7 @@ pub use zksync_os_integration_tests_macros::test_multisetup;
 pub struct TestCase {
     pub protocol_version: &'static str,
     pub settlement_layer: SettlementLayer,
+    pub fixture_scope: FixtureScope,
 }
 
 impl TestCase {
@@ -77,6 +80,7 @@ impl TestCase {
         Self {
             protocol_version: PROTOCOL_VERSION,
             settlement_layer: SettlementLayer::L1,
+            fixture_scope: FixtureScope::integration_default(),
         }
     }
 
@@ -84,6 +88,7 @@ impl TestCase {
         Self {
             protocol_version: PROTOCOL_VERSION,
             settlement_layer: SettlementLayer::Gateway,
+            fixture_scope: FixtureScope::integration_default(),
         }
     }
     pub async fn environment(self) -> anyhow::Result<TestEnvironment> {
@@ -162,6 +167,7 @@ impl TestEnvironment {
             SettlementLayer::L1 => {
                 let chain_layout = ChainLayout::Default {
                     protocol_version: case.protocol_version,
+                    fixture_scope: case.fixture_scope,
                 };
                 let l1 = AnvilL1::start(chain_layout).await?;
                 let prepared_runtime = PreparedRuntime::new().await?;
@@ -174,21 +180,33 @@ impl TestEnvironment {
             }
             SettlementLayer::Gateway => {
                 let protocol_version = case.protocol_version;
+                let fixture_scope = case.fixture_scope;
                 let chain_layout = ChainLayout::GatewayChain {
                     protocol_version,
+                    fixture_scope,
                     chain_index: 0,
                 };
-                let l1 = AnvilL1::start(ChainLayout::Gateway { protocol_version }).await?;
+                let l1 = AnvilL1::start(ChainLayout::Gateway {
+                    protocol_version,
+                    fixture_scope,
+                })
+                .await?;
                 let mut gateway_config = build_node_config(
                     &l1,
-                    ChainLayout::Gateway { protocol_version },
+                    ChainLayout::Gateway {
+                        protocol_version,
+                        fixture_scope,
+                    },
                     cfg!(feature = "prover-tests"),
                 )
                 .await?;
                 configure_gateway(&mut gateway_config);
                 let gateway = Tester::launch_with_new_runtime(
                     l1.clone(),
-                    ChainLayout::Gateway { protocol_version },
+                    ChainLayout::Gateway {
+                        protocol_version,
+                        fixture_scope,
+                    },
                     gateway_config,
                 )
                 .await?;
@@ -685,7 +703,18 @@ impl Tester {
     }
 
     fn bind_runtime_config(l1: &AnvilL1, tempdir: &TempDir, config: &mut Config) {
-        config.general_config.rocks_db_path = tempdir.path().join("rocksdb");
+        config.general_config.rocks_db_path = tempdir
+            .path()
+            .canonicalize()
+            .expect("test temporary directory must exist")
+            .join("rocksdb");
+        if let zksync_os_server::config::ReplayArchiveConfig::FileSystem { root_path, .. } =
+            &mut config.replay_archive_config
+        {
+            // Runtime writers never publish into the immutable fixture package.
+            // Retain any test-specific encryption, including the age recovery test.
+            *root_path = tempdir.path().join("replay_archive");
+        }
         config.l1_provider_config.rpc_url = l1.address.clone();
         config.rpc_config.address = "0.0.0.0:0".to_string();
         config.prover_api_config.address = "0.0.0.0:0".to_string();
@@ -708,6 +737,26 @@ impl Tester {
         wait_for_initial_deposit: bool,
         bitcoin_da_mock: Option<BitcoinDaMock>,
     ) -> anyhow::Result<Self> {
+        // Restarts retain their current DB; only a new component main node is
+        // seeded from the reviewed fixture's newly generated canonical WAL.
+        if log_state.is_none()
+            && config.general_config.node_role.is_main()
+            && chain_layout.fixture_scope() == FixtureScope::AnvilComponentOnly
+        {
+            anyhow::ensure!(
+                config.general_config.ephemeral_state.is_none(),
+                "component replay seed cannot be combined with a database snapshot"
+            );
+            component_replay::recover_registered(
+                &chain_layout.protocol_dir(),
+                config
+                    .genesis_config
+                    .chain_id
+                    .context("component chain ID")?,
+                &config.general_config.rocks_db_path,
+            )
+            .await?;
+        }
         // In-process fake provers use job managers directly; keep the HTTP API only for tests
         // that can hand jobs to external prover workers.
         if config.prover_api_config.fake_fri_provers.enabled
@@ -1195,6 +1244,7 @@ impl GatewayTester {
 
 pub struct GatewayTesterBuilder {
     protocol_version: &'static str,
+    fixture_scope: FixtureScope,
     num_chains: Option<usize>,
     deployment_filter: Option<DeploymentFilterConfig>,
     policy_service: Option<PolicyServiceConfig>,
@@ -1204,6 +1254,7 @@ impl Default for GatewayTesterBuilder {
     fn default() -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION_V32_0,
+            fixture_scope: FixtureScope::integration_default(),
             num_chains: None,
             deployment_filter: None,
             policy_service: None,
@@ -1212,6 +1263,12 @@ impl Default for GatewayTesterBuilder {
 }
 
 impl GatewayTesterBuilder {
+    /// An explicit purpose, never an alternate protocol or a trusted-hash override.
+    pub fn fixture_scope(mut self, fixture_scope: FixtureScope) -> Self {
+        self.fixture_scope = fixture_scope;
+        self
+    }
+
     pub fn protocol_version(mut self, protocol_version: &'static str) -> Self {
         self.protocol_version = protocol_version;
         self
@@ -1238,12 +1295,27 @@ impl GatewayTesterBuilder {
         let num_chains = self.num_chains.unwrap_or(2);
 
         let protocol_version = self.protocol_version;
-        let l1 = AnvilL1::start(ChainLayout::Gateway { protocol_version }).await?;
-        let gateway_config =
-            build_node_config(&l1, ChainLayout::Gateway { protocol_version }, false).await?;
+        let fixture_scope = self.fixture_scope;
+        let l1 = AnvilL1::start(ChainLayout::Gateway {
+            protocol_version,
+            fixture_scope,
+        })
+        .await?;
+        let gateway_config = build_node_config(
+            &l1,
+            ChainLayout::Gateway {
+                protocol_version,
+                fixture_scope,
+            },
+            false,
+        )
+        .await?;
         let gateway = Tester::launch_with_new_runtime(
             l1.clone(),
-            ChainLayout::Gateway { protocol_version },
+            ChainLayout::Gateway {
+                protocol_version,
+                fixture_scope,
+            },
             gateway_config,
         )
         .await?;
@@ -1253,6 +1325,7 @@ impl GatewayTesterBuilder {
         for i in 0..num_chains {
             let chain_layout = ChainLayout::GatewayChain {
                 protocol_version,
+                fixture_scope,
                 chain_index: i,
             };
             let chain_config = load_chain_config(chain_layout).await;
@@ -1278,6 +1351,10 @@ impl GatewayTesterBuilder {
             }
             if let Some(policy_service) = policy_service {
                 tester_config.sequencer_config.tx_validator.policy_service = policy_service;
+            }
+
+            if fixture_scope == FixtureScope::AnvilComponentOnly {
+                component_fee_payer::prepare(gateway.l2_rpc_url(), &tester_config).await?;
             }
 
             let tester =
@@ -1354,14 +1431,18 @@ pub struct AnvilL1 {
 impl AnvilL1 {
     async fn start(chain_layout: ChainLayout<'_>) -> anyhow::Result<Self> {
         let tempdir = tempfile::tempdir()?;
-        let l1_state: serde_json::Value = serde_json::from_slice(&chain_layout.l1_state())?;
+        let l1_state = chain_layout.l1_state();
         let l1_timestamp = l1_state_timestamp(&l1_state)?;
         let wall_clock_timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let timestamp_offset_seconds =
             i64::try_from(l1_timestamp)?.saturating_sub(i64::try_from(wall_clock_timestamp)?);
         let l1_state_path = tempdir.path().join("l1-state.json");
-        std::fs::write(&l1_state_path, serde_json::to_vec(&l1_state)?)
+        // Preserve the authenticated dump, including historical states, verbatim. Only
+        // timestamp metadata is needed here; materializing the whole dump as a JSON
+        // value and serializing it again multiplies fixture-loading memory usage.
+        std::fs::write(&l1_state_path, &l1_state)
             .context("failed to write L1 state to temporary state file")?;
+        drop(l1_state);
 
         // Under CI load a freshly started Anvil can wedge (stop answering RPC for 60+s)
         // right after passing the readiness check; retrying against it is hopeless, so
@@ -1374,6 +1455,9 @@ impl AnvilL1 {
             let provider =
                 ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| {
                     anvil
+                        // The authenticated historical dump is nearly 1 GiB; its startup
+                        // load can exceed Alloy's 10-second default on shared CI CPUs.
+                        .timeout(60_000)
                         .chain_id(L1_CHAIN_ID)
                         .arg("--block-time")
                         .arg("0.25")
@@ -1456,10 +1540,51 @@ impl AnvilL1 {
     }
 }
 
-fn l1_state_timestamp(state: &serde_json::Value) -> anyhow::Result<u64> {
-    let timestamp = state["block"]["timestamp"]
-        .as_str()
-        .context("L1 state is missing the block timestamp")?;
+fn l1_state_timestamp(state: &[u8]) -> anyhow::Result<u64> {
+    #[derive(serde::Deserialize)]
+    struct StateMetadata {
+        #[serde(deserialize_with = "deserialize_object")]
+        block: BlockMetadata,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct BlockMetadata {
+        timestamp: String,
+    }
+
+    // Derived struct deserializers also accept JSON arrays. Preserve the existing
+    // requirement that both the state and its block metadata are JSON objects.
+    fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: serde::Deserialize<'de>,
+    {
+        struct ObjectVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for ObjectVisitor<T> {
+            type Value = T;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+                T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(std::marker::PhantomData))
+    }
+
+    // Unknown fields are deliberately ignored rather than allocated: account state,
+    // historical snapshots, blocks and receipts remain in the original dump.
+    let mut deserializer = serde_json::Deserializer::from_slice(state);
+    let metadata: StateMetadata =
+        deserialize_object(&mut deserializer).context("invalid L1 state timestamp metadata")?;
+    deserializer
+        .end()
+        .context("invalid trailing L1 state data")?;
+    let timestamp = metadata.block.timestamp;
     timestamp.strip_prefix("0x").map_or_else(
         || {
             timestamp
@@ -1546,4 +1671,62 @@ async fn spawn_prover_service(
         tracing::info!("prover service finished running");
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod l1_state_timestamp_tests {
+    use super::l1_state_timestamp;
+
+    #[test]
+    fn accepts_hexadecimal_timestamp() {
+        assert_eq!(
+            l1_state_timestamp(br#"{"block":{"timestamp":"0x6553f100"}}"#).unwrap(),
+            1_700_000_000
+        );
+    }
+
+    #[test]
+    fn accepts_decimal_timestamp() {
+        assert_eq!(
+            l1_state_timestamp(br#"{"block":{"timestamp":"1700000000"}}"#).unwrap(),
+            1_700_000_000
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_timestamp_metadata() {
+        for state in [
+            "null",
+            "{}",
+            r#"[{"timestamp":"1"}]"#,
+            r#"{"block":null}"#,
+            r#"{"block":[]}"#,
+            r#"{"block":["1"]}"#,
+            r#"{"block":{}}"#,
+            r#"{"block":{"timestamp":null}}"#,
+            r#"{"block":{"timestamp":1700000000}}"#,
+            r#"{"block":{"timestamp":""}}"#,
+            r#"{"block":{"timestamp":"0x"}}"#,
+            r#"{"block":{"timestamp":"0xgg"}}"#,
+            r#"{"block":{"timestamp":"-1"}}"#,
+            r#"{"block":{"timestamp":"18446744073709551616"}}"#,
+            r#"{"block":{"timestamp":"0x10000000000000000"}}"#,
+            r#"{"block":{"timestamp":"1"}} trailing"#,
+            r#"{"block":{"timestamp":"1"},"historical_states":[}"#,
+        ] {
+            assert!(l1_state_timestamp(state.as_bytes()).is_err(), "{state}");
+        }
+    }
+
+    #[test]
+    fn ignores_historical_and_other_non_metadata_fields() {
+        let state = br#"{
+            "accounts":{"0x1":{"balance":"0x1","storage":{"0x0":"0x1"}}},
+            "historical_states":[{"block_hash":"0x1","accounts":[null,{"code":"0x00"}]}],
+            "blocks":[{"header":{"timestamp":"0x0"}}],
+            "transactions":[{"receipt":{"logs":[]}}],
+            "block":{"number":"0x2","timestamp":"1700000000","basefee":"0x0"}
+        }"#;
+        assert_eq!(l1_state_timestamp(state).unwrap(), 1_700_000_000);
+    }
 }

@@ -21,6 +21,7 @@ use zksync_os_provider::NodeProvider;
 use zksync_os_rpc_api::types::LogProofTarget;
 use zksync_os_types::{
     L1PriorityTxType, L1TxType, L2_INTEROP_CENTER_ADDRESS, REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
+    SYSCOIN_MAX_TX_GAS_LIMIT,
 };
 
 const L2_INTEROP_HANDLER_ADDRESS: Address = address!("000000000000000000000000000000000001000e");
@@ -712,18 +713,32 @@ async fn test_interop_bundle_send() -> Result<()> {
     // Execute bundle on chain B
     let interop_handler = IInteropHandler::new(L2_INTEROP_HANDLER_ADDRESS, &chain_b.l2_provider);
 
-    let execute_call =
-        interop_handler.executeBundle(bundle.clone(), message_inclusion_proof.clone());
-
-    // Send executeBundle with high gas limit
-    let _execute_receipt = execute_call
-        .gas(50_000_000)
+    let execute_call = interop_handler
+        .executeBundle(bundle.clone(), message_inclusion_proof.clone())
+        .from(sender)
+        .max_fee_per_gas(1_000_000_000)
+        .max_priority_fee_per_gas(0);
+    let execute_gas = execute_call
+        .estimate_gas()
+        .await
+        .context("estimate executeBundle gas on chain B")?;
+    // The V32 transaction ceiling applies even when the block gas limit is larger.
+    anyhow::ensure!(
+        execute_gas > 0 && execute_gas <= SYSCOIN_MAX_TX_GAS_LIMIT,
+        "executeBundle estimate {execute_gas} exceeds the V32 transaction gas bound"
+    );
+    let execute_receipt = execute_call
+        .gas(execute_gas)
         .send()
         .await
         .context("Failed to send executeBundle transaction")?
         .expect_successful_receipt()
         .await
         .context("executeBundle on chain B")?;
+    anyhow::ensure!(
+        execute_receipt.gas_used <= execute_gas,
+        "executeBundle used more gas than its estimate"
+    );
 
     // Verify token balance on chain B
     let vault_b = IL2NativeTokenVault::new(L2_NATIVE_TOKEN_VAULT_ADDRESS, &chain_b.l2_provider);

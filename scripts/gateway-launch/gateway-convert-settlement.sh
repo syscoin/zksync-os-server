@@ -11,6 +11,8 @@ gl_require L1_NETWORK
 # SYSCOIN: Convert settlement only for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION
+gl_validate_l1_network_pair
+gl_normalize_canonical_deployment_inputs
 gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
 gl_ensure_zkstack_cli_release_current
@@ -27,8 +29,6 @@ cd "${GATEWAY_DIR}"
 
 # SYSCOIN: Keep direct conversion on the reviewed Gateway/L1 pair; both
 # zkstack subcommands below can broadcast irreversible settlement changes.
-gl_validate_l1_network_pair
-gl_normalize_canonical_deployment_inputs
 gl_bind_gateway_launch_context
 gl_assert_gateway_chain_config_matches_expected
 gl_l1_broadcast_preflight

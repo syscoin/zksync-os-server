@@ -48,6 +48,7 @@ httpmock.workspace = true
 backon.workspace = true
 futures.workspace = true
 serde.workspace = true
+sha2.workspace = true
 regex = "1.11.1"
 smart-config.workspace = true
 serde_yaml.workspace = true
@@ -59,7 +60,11 @@ blake2.workspace = true
 
 [build-dependencies]
 flate2.workspace = true
+zstd = "=0.13.3"
+tempfile.workspace = true
 sha2 = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 test-log = { workspace = true, default-features = false, features = ["trace", "color"] }

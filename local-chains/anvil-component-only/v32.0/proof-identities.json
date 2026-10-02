@@ -1,0 +1,8 @@
+{
+  "execution_version": 7,
+  "proving_version": 8,
+  "real_proof_qualification": false,
+  "scope": "AnvilComponentOnly",
+  "security_bits": 100,
+  "vk_hash": "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe"
+}

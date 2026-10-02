@@ -1,0 +1,27 @@
+{
+  "config": {
+    "aliasedGovernanceAddress": "0x8e741ab177342c99d3a925703d985d2de3fc0f09",
+    "isZKsyncOS": true,
+    "salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+    "testnetVerifier": false
+  },
+  "deployed": false,
+  "factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+  "l1_governance": "0x7d631ab177342c99d3a925703d985d2de3fbfdf8",
+  "namespace": "syscoin-v32-real-proofs-tanenbaum-5700-20260928",
+  "outer_salt": "0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0",
+  "plan_sha256": "015bd934cb0527bbff29fd77b2f1d986967644e9aab43f453d249c2073f5838c",
+  "relay_salt": "0xa49b7b84324cb11e91bd37e7466900ac4d4deb3209f0c467928d4f5f7cce7183",
+  "root_governance_constructor": {
+    "admin": "0x622a54ea3a123127ca5fe8b98de90e957471093a",
+    "min_delay_seconds": 0,
+    "security_council": "0x622a54ea3a123127ca5fe8b98de90e957471093a"
+  },
+  "schema": "syscoin-v32-offline-identity-input-v1",
+  "scope": "critical-subtree",
+  "source_bindings": {
+    "era_base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
+    "era_source_patched_tree": "3eefa0f127d1deff365ebffcf489b183cde0e756",
+    "zksync_os_patched_tree": "6935489bdbc7b1ed31e608677d1b2418b10691b5"
+  }
+}

@@ -3,6 +3,9 @@ use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use anyhow::Context as _;
+use std::collections::BTreeSet;
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, ReceiptAssert};
@@ -22,6 +25,60 @@ const REPLAY_ARCHIVE_RECIPIENT: &str =
 const REPLAY_ARCHIVE_IDENTITY_FILE: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/replay-archive.key");
 const TRANSACTIONS_BEFORE_RECOVERY: usize = 3;
+const DATABASE_IDENTITY_FILE: &str = "database_identity.json";
+const MAX_DATABASE_IDENTITY_BYTES: u64 = 16 * 1024;
+
+fn read_runtime_database_identity(path: &Path) -> anyhow::Result<Vec<u8>> {
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && (1..=MAX_DATABASE_IDENTITY_BYTES).contains(&metadata.len()),
+        "runtime database identity must be a bounded regular file"
+    );
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_DATABASE_IDENTITY_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() as u64 == metadata.len(),
+        "runtime database identity changed while reading"
+    );
+    Ok(bytes)
+}
+
+fn restore_runtime_database_identity(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn has_published_prefix(
+    keys: impl IntoIterator<Item = (u64, B256)>,
+    tip: u64,
+    tip_hash: B256,
+) -> bool {
+    let mut published = BTreeSet::new();
+    for (number, hash) in keys {
+        if number > tip {
+            continue;
+        }
+        if number == tip && hash != tip_hash {
+            return false;
+        }
+        published.insert(number);
+    }
+    // Distinct heights bounded by `tip` must cover genesis through the tip, not merely
+    // contain a high object that happened to finish before lower concurrent writes.
+    Some(published.len() as u64) == tip.checked_add(1)
+}
 
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
@@ -57,13 +114,42 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
     };
     let chain_id = tester.l2_provider.get_chain_id().await?;
     let rocks_db_path = tester.config().general_config.rocks_db_path.clone();
+    let observed_tip = tester.l2_provider.get_block_number().await?;
+    let observed_tip_hash = tester
+        .l2_provider
+        .get_block_by_number(observed_tip.into())
+        .await?
+        .context("pre-shutdown RPC tip should exist")?
+        .header
+        .hash;
+    // Startup backfill only enqueues historical records. Let this new encrypted archive
+    // publish the entire observed frontier before shutdown can interrupt its writer.
+    let reader = FileSystemReplayArchiveReader::new(archive_root.clone());
+    let publication_deadline = Instant::now() + DEFAULT_TIMEOUT;
+    loop {
+        let page = reader.list_keys_page(None).await?;
+        if has_published_prefix(
+            page.keys
+                .iter()
+                .map(|key| (key.block_number, key.block_hash)),
+            observed_tip,
+            observed_tip_hash,
+        ) {
+            break;
+        }
+        anyhow::ensure!(
+            Instant::now() < publication_deadline,
+            "encrypted archive did not publish the complete prefix through RPC tip #{observed_tip}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let stopped = tester.stop().await?;
     tokio::task::spawn_blocking(zksync_os_rocksdb::RocksDB::<()>::await_rocksdb_termination)
         .await
         .context("failed to join RocksDB shutdown wait")?;
 
     // Stopping a node can flush a partially accumulated batch and archive blocks beyond the last
-    // RPC tip observed before shutdown. Recover from the writer-drained archive head so the
+    // RPC tip observed before shutdown. Recover from the published archive head after shutdown so the
     // restored WAL cannot lag that newly committed batch.
     let archive_page = FileSystemReplayArchiveReader::new(archive_root.clone())
         .list_keys_page(None)
@@ -75,6 +161,10 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
         .context("replay archive should contain a canonical recovery anchor")?;
     let latest_block_number = archive_head.block_number;
     let latest_block_hash = archive_head.block_hash;
+    // The WAL archive is not a deployment identity. Retain the actual stopped
+    // node's marker so unchanged startup can authenticate the recovered database.
+    let identity_path = rocks_db_path.join(DATABASE_IDENTITY_FILE);
+    let original_identity = read_runtime_database_identity(&identity_path)?;
 
     tokio::fs::remove_dir_all(&rocks_db_path)
         .await
@@ -87,6 +177,7 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
         latest_block_hash,
     )
     .await?;
+    restore_runtime_database_identity(&identity_path, &original_identity)?;
     // SYSCOIN: Recovery writes a fresh RocksDB and drops it asynchronously. Ensure that handle is
     // fully gone before the in-process restart opens the same path, otherwise it can observe the
     // pre-recovery fixture handle and replay only its older tip.
@@ -227,4 +318,68 @@ fn replay_archive_root(rocks_db_path: &Path) -> anyhow::Result<PathBuf> {
         .parent()
         .context("rocks DB path should have a parent")?
         .join("replay_archive"))
+}
+
+#[test]
+fn runtime_database_identity_recovery_preserves_bytes_and_rejects_unsafe_inputs() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source.json");
+    let bytes = b"unit-only original identity bytes\n";
+    std::fs::write(&source, bytes).unwrap();
+    let retained = read_runtime_database_identity(&source).unwrap();
+    let output = root.path().join(DATABASE_IDENTITY_FILE);
+    restore_runtime_database_identity(&output, &retained).unwrap();
+    assert_eq!(std::fs::read(&output).unwrap(), bytes);
+    assert_eq!(
+        std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(restore_runtime_database_identity(&output, b"replacement").is_err());
+    assert_eq!(std::fs::read(&output).unwrap(), bytes);
+    let link = root.path().join("link");
+    symlink(&source, &link).unwrap();
+    assert!(read_runtime_database_identity(&link).is_err());
+    assert!(read_runtime_database_identity(root.path()).is_err());
+    std::fs::write(
+        &source,
+        vec![b'x'; MAX_DATABASE_IDENTITY_BYTES as usize + 1],
+    )
+    .unwrap();
+    assert!(read_runtime_database_identity(&source).is_err());
+}
+
+#[test]
+fn published_prefix_requires_all_distinct_heights_and_the_canonical_tip() {
+    let hash = B256::repeat_byte(1);
+    let wrong_hash = B256::repeat_byte(2);
+    assert!(has_published_prefix([(0, hash)], 0, hash));
+    assert!(has_published_prefix(
+        [(2, hash), (0, hash), (1, hash)],
+        2,
+        hash
+    ));
+    assert!(has_published_prefix(
+        [(3, wrong_hash), (2, hash), (0, hash), (1, hash)],
+        2,
+        hash
+    ));
+    assert!(!has_published_prefix([(1, hash), (2, hash)], 2, hash));
+    assert!(!has_published_prefix([(0, hash), (2, hash)], 2, hash));
+    assert!(!has_published_prefix(
+        [(0, hash), (0, hash), (2, hash)],
+        2,
+        hash
+    ));
+    assert!(!has_published_prefix(
+        [(0, hash), (1, hash), (2, wrong_hash)],
+        2,
+        hash
+    ));
+    assert!(!has_published_prefix(
+        [(0, hash), (1, hash), (2, hash), (2, wrong_hash)],
+        2,
+        hash
+    ));
 }

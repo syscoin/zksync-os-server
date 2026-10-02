@@ -210,6 +210,7 @@ async fn async_main() {
     // ======= Run tasks ===========
     let prometheus_config = config.observability_config.prometheus.clone();
     let prometheus_port = prometheus_config.port;
+    let prometheus_bind_address = prometheus_config.bind_address;
 
     // SYSCOIN: Poll one signal-owner future across bootstrap and steady state. Gateway target
     // discovery may intentionally wait forever, so installing handlers only after `run` returns
@@ -227,7 +228,7 @@ async fn async_main() {
     } else {
         runtime.spawn_critical_with_graceful_shutdown_signal("prometheus", |shutdown| async move {
             let prometheus: PrometheusExporterConfig =
-                PrometheusExporterConfig::pull(prometheus_port);
+                PrometheusExporterConfig::pull_at(prometheus_bind_address, prometheus_port);
             prometheus.run(shutdown).await.expect("prometheus failed");
         });
         spawn_prometheus_push_exporter(&runtime, &prometheus_config)

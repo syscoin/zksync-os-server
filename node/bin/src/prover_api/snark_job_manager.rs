@@ -711,22 +711,26 @@ impl SnarkJobManager {
 
     /// Consumes fake FRI proofs from the head of the queue and turns them into fake SNARKs.
     async fn process_pending_fake_fri_proofs(&self) -> anyhow::Result<()> {
-        self.process_pending_fake_or_timed_out_fri_proofs(None)
+        self.process_pending_fake_or_timed_out_fri_proofs(None, Duration::ZERO)
             .await
     }
 
     /// Consumes FRI proofs from the head of the queue that satisfy the following conditions:
     /// * FRI proof is fake
     /// * if `timeout_for_real_fris` is Some, then also jobs that are older than `timeout_for_real_fris`
+    ///
+    /// In either case, the input must also have reached `min_age` before it can be leased.
     async fn process_pending_fake_or_timed_out_fri_proofs(
         &self,
         timeout_for_real_fris: Option<Duration>,
+        min_age: Duration,
     ) -> anyhow::Result<()> {
         loop {
             let is_fake_or_timed_out = |job: &JobEntry<FriProof>| {
-                job.batch_envelope.data.is_fake()
-                    || timeout_for_real_fris
-                        .is_some_and(|timeout| job.metadata.added_at.elapsed() >= timeout)
+                let age = job.metadata.added_at.elapsed();
+                age >= min_age
+                    && (job.batch_envelope.data.is_fake()
+                        || timeout_for_real_fris.is_some_and(|timeout| age >= timeout))
             };
             if !self.jobs.has_assignable_job(is_fake_or_timed_out).await {
                 return Ok(());
@@ -840,14 +844,20 @@ pub struct FakeSnarkProver {
 
     // config
     max_batch_age: Duration,
+    min_age: Duration,
     polling_interval: Duration,
 }
 
 impl FakeSnarkProver {
-    pub fn new(job_manager: Arc<SnarkJobManager>, max_batch_age: Duration) -> Self {
+    pub fn new(
+        job_manager: Arc<SnarkJobManager>,
+        max_batch_age: Duration,
+        min_age: Duration,
+    ) -> Self {
         Self {
             job_manager,
             max_batch_age,
+            min_age,
             polling_interval: Duration::from_millis(POLL_INTERVAL_MS),
         }
     }
@@ -857,7 +867,10 @@ impl FakeSnarkProver {
             tokio::time::sleep(self.polling_interval).await;
             if let Err(err) = self
                 .job_manager
-                .process_pending_fake_or_timed_out_fri_proofs(Some(self.max_batch_age))
+                .process_pending_fake_or_timed_out_fri_proofs(
+                    Some(self.max_batch_age),
+                    self.min_age,
+                )
                 .await
             {
                 tracing::info!("`FakeSnarkProver` iteration failed: {err}");
@@ -2254,6 +2267,57 @@ mod tests {
             .expect("stale fake aggregate must preserve the fresh real lease");
         real_submission.release().await;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn fake_snark_min_age_preserves_timeout_and_default_behavior() {
+        let hour = Duration::from_secs(3600);
+        let cases = [
+            (FriProof::Fake, Duration::ZERO, hour, Duration::ZERO, false),
+            (FriProof::Fake, hour * 2, hour, hour * 3, true),
+            (
+                FriProof::Fake,
+                Duration::ZERO,
+                Duration::ZERO,
+                hour * 3,
+                true,
+            ),
+            (real_fri_proof(), hour, Duration::ZERO, hour * 2, false),
+            (real_fri_proof(), hour * 3, hour, hour * 2, true),
+            (real_fri_proof(), hour, hour * 2, Duration::ZERO, false),
+        ];
+        for (proof, age, min_age, real_timeout, expected_completion) in cases {
+            let (sender, mut receiver) = mpsc::channel(1);
+            let manager = SnarkJobManager::new(sender, 2, 2, hour * 4, hour, 100);
+            let input = create_test_batch_envelope_with_data(
+                1,
+                ProtocolSemanticVersion::new(0, 32, 0),
+                proof,
+            );
+            assert_eq!(
+                manager.add_rehydrated_job(input, age).await.unwrap(),
+                SnarkJobAdmission::Inserted
+            );
+            manager
+                .process_pending_fake_or_timed_out_fri_proofs(Some(real_timeout), min_age)
+                .await
+                .unwrap();
+            if expected_completion {
+                let command = receiver.try_recv().expect("eligible job must complete");
+                assert_eq!(command.as_ref()[0].batch_number(), 1);
+                assert!(manager.jobs.status().await.is_empty());
+            } else {
+                assert!(receiver.try_recv().is_err(), "young job must not complete");
+                let status = manager.jobs.status().await;
+                assert_eq!(status.len(), 1);
+                assert_eq!(status[0].assigned_to_prover_id, None);
+                assert_eq!(status[0].current_attempt, 0);
+            }
+            assert!(
+                receiver.try_recv().is_err(),
+                "job must complete at most once"
+            );
+        }
     }
 
     #[tokio::test]
