@@ -1455,6 +1455,9 @@ impl AnvilL1 {
             let provider =
                 ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| {
                     anvil
+                        // The authenticated historical dump is nearly 1 GiB; its startup
+                        // load can exceed Alloy's 10-second default on shared CI CPUs.
+                        .timeout(60_000)
                         .chain_id(L1_CHAIN_ID)
                         .arg("--block-time")
                         .arg("0.25")
