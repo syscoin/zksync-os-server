@@ -129,7 +129,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     }
 
     let canonical_pubdata = native_batch_run.pubdata.clone();
-    let batch_prover_input = ProverInput::Real(native_batch_run.prover_input);
+    let batch_prover_input = ProverInput::Real(native_batch_run.prover_input.into());
     record_batch_pig_telemetry(BatchPigTelemetry {
         batch_number,
         chain_id,

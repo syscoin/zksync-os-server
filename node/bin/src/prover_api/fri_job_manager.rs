@@ -977,6 +977,159 @@ mod tests {
             })
     }
 
+    fn shared_input_batch_for_test(batch_number: u64) -> SignedBatchEnvelope<ProverInput> {
+        dummy_input_batch(batch_number).with_data(ProverInput::Real(vec![3, 5].into()))
+    }
+
+    #[tokio::test]
+    async fn shared_witness_pick_and_peek_retain_the_original_allocation() -> anyhow::Result<()> {
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, _downstream_rx) = mpsc::channel(1);
+        let manager = manager_for_test(downstream_tx, proof_storage, Duration::from_secs(60), 16);
+        let batch = shared_input_batch_for_test(1);
+        let original_pointer = batch.data.unwrap_real().as_ptr();
+        manager.add_job(batch).await;
+
+        let picked = manager
+            .pick_next_job(Duration::ZERO, "prover-1".to_owned(), None, usize::MAX)
+            .await
+            .expect("shared witness must be assigned");
+        let (_, peeked) = manager
+            .peek_batch_data(1)
+            .await
+            .expect("assigned witness must remain available to peek");
+        assert_eq!(picked.data.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(peeked.unwrap_real().as_ptr(), original_pointer);
+
+        drop(manager);
+        drop(picked);
+        assert_eq!(peeked.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(peeked.unwrap_real(), [3, 5]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_witness_unloadable_handoff_restores_the_original_allocation()
+    -> anyhow::Result<()> {
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, mut downstream_rx) = mpsc::channel(1);
+        let (manager, forwarder) = FriJobManager::new(
+            downstream_tx,
+            proof_storage.clone(),
+            Duration::from_secs(60),
+            16,
+        );
+        let forwarder = tokio::spawn(forwarder);
+        let batch = shared_input_batch_for_test(1);
+        let original_pointer = batch.data.unwrap_real().as_ptr();
+        manager.add_job(batch).await;
+
+        // Synthetic durable proofs exercise the already-verified ownership transaction, not
+        // native generation or cryptographic acceptance.
+        let pending_key = proof_storage
+            .save_pending_batch_with_proof(&StoredBatch(
+                dummy_input_batch(1).with_data(FriProof::Fake),
+            ))
+            .await?;
+        proof_storage
+            .release_pending_batch_with_proof(&pending_key)
+            .await;
+        let reserved_job = completed_reserved_job_for_test(&manager, 1, "prover-1").await;
+        assert!(manager.status().await.is_empty());
+        manager
+            .accepted_proof_sender
+            .send(AcceptedProof {
+                batch_number: 1,
+                proof_key: pending_key,
+                reserved_job,
+                queue_permit: accepted_proof_permit_for_test(&manager),
+            })
+            .await?;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while manager.status().await.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        let (_, restored) = manager
+            .peek_batch_data(1)
+            .await
+            .expect("rollback must restore the original shared witness");
+        assert_eq!(restored.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(restored.unwrap_real(), [3, 5]);
+        assert!(matches!(
+            downstream_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(manager);
+        forwarder.abort();
+        let _ = forwarder.await;
+        assert_eq!(restored.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(restored.unwrap_real(), [3, 5]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_witness_pick_response_outlives_downstream_commit() -> anyhow::Result<()> {
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, mut downstream_rx) = mpsc::channel(1);
+        let (manager, forwarder) = FriJobManager::new(
+            downstream_tx,
+            proof_storage.clone(),
+            Duration::from_secs(60),
+            16,
+        );
+        let forwarder = tokio::spawn(forwarder);
+        let batch = shared_input_batch_for_test(1);
+        let original_pointer = batch.data.unwrap_real().as_ptr();
+        manager.add_job(batch).await;
+        let picked = manager
+            .pick_next_job(Duration::ZERO, "prover-1".to_owned(), None, usize::MAX)
+            .await
+            .expect("shared witness must be assigned");
+        assert_eq!(picked.data.unwrap_real().as_ptr(), original_pointer);
+        let submission = manager
+            .jobs
+            .begin_submission(1, 1, &picked.lease_token)
+            .await
+            .expect("response capability must be admitted");
+        manager
+            .persist_and_enqueue_accepted_proof(
+                StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake)),
+                "prover-1".to_owned(),
+                submission,
+                accepted_proof_permit_for_test(&manager),
+            )
+            .await??;
+        let proven = tokio::time::timeout(Duration::from_secs(1), downstream_rx.recv())
+            .await?
+            .expect("accepted proof must reach downstream");
+        assert_eq!(proven.batch.batch_number(), 1);
+
+        // Distant admission cannot pass the original endpoint fence until the handoff commits.
+        // The still-live pick response must independently retain that same witness allocation.
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.add_job(dummy_input_batch(100)),
+        )
+        .await?;
+        assert!(manager.peek_batch_data(1).await.is_none());
+        drop(manager);
+        forwarder.abort();
+        let _ = forwarder.await;
+        assert_eq!(picked.data.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(picked.data.unwrap_real(), [3, 5]);
+
+        let pending_key = proven
+            .pending_proof_key
+            .expect("forwarded proof must retain its durable pending key");
+        proof_storage
+            .release_pending_batch_with_proof(&pending_key)
+            .await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn service_nonempty_filter_does_not_lease_empty_work_or_change_ordinary_picks()
     -> anyhow::Result<()> {
@@ -1023,7 +1176,7 @@ mod tests {
         let (downstream_tx, _downstream_rx) = mpsc::channel(1);
         let manager = manager_for_test(downstream_tx, proof_storage, Duration::from_secs(60), 16);
         let mut oversized = dummy_input_batch(1);
-        oversized.data = ProverInput::Real(vec![0]);
+        oversized.data = ProverInput::Real(vec![0].into());
         manager.add_job(oversized).await;
         manager.add_job(dummy_input_batch(2)).await;
 

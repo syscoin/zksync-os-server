@@ -15106,6 +15106,7 @@ version = "0.23.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "bincode 2.0.1",
  "blake2",
  "serde",
  "serde_json",

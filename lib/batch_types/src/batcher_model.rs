@@ -1,4 +1,4 @@
-use crate::{BatchSignatureSet, PendingBatchInfo};
+use crate::{BatchSignatureSet, PendingBatchInfo, WitnessInput};
 use alloy::primitives::{Address, B256, Bytes, address, keccak256};
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
@@ -240,7 +240,7 @@ impl<E, S> BatchEnvelope<E, S> {
 /// Used for tests and testnets where the expensive RiscV witness computation is unnecessary.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProverInput {
-    Real(Vec<u32>),
+    Real(WitnessInput),
     Fake,
 }
 

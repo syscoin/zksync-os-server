@@ -130,6 +130,19 @@ a complete next 100-FRI aggregate, and at least 56 batches of headroom while dis
 waits for workers to free capacity. Deployments with more concurrent SNARK workers must size the
 RAM bound for their active leases and operating headroom, not for every proof retained on disk.
 
+### Shared native witness inputs
+
+Native witness generation moves its completed `Vec<u32>` into an immutable, reference-counted
+input. Pipeline owners, the FRI job map, and pick/peek readers share that backing allocation
+instead of cloning the complete vector. A reader remains valid after proof handoff removes the
+job; the buffer is freed when its last owner is dropped. Failed handoff retains the same input
+for rollback. JSON and binary serialization retain the existing vector and enum representation.
+
+This changes ownership, not admission policy: there is no additional witness byte quota or
+generation-cap gate. The existing batch span, execution/batch limits, FRI response capacities,
+disk staging limits, and FRI-to-SNARK grouping rules remain unchanged. Native generation, proof
+verification, and each HTTP response's encoding still need their own memory headroom.
+
 <!-- SYSCOIN: Durable capacity is the multi-worker queue's bounded-recovery overflow invariant. -->
 Generated production configs set `prover_api.proof_storage.batch_with_proof_capacity` to 8 GiB.
 The API accepts proof request bodies up to 10 MiB, while the canonical on-disk JSON hex encoding
