@@ -926,7 +926,7 @@ server {{
         # SYSCOIN: Let every bounded prover response spool completely while a remote reader is slow.
         # This drains the node side and releases any response slot independently of client pace.
         proxy_buffering on;
-        proxy_max_temp_file_size 384m;
+        proxy_max_temp_file_size 512m;
         proxy_ignore_headers X-Accel-Buffering;
         # SYSCOIN: The prover client has a 600-second request backstop. Keep the public proxy
         # alive slightly longer so native FRI verification / SNARK preflight, not nginx's

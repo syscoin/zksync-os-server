@@ -6472,7 +6472,7 @@ gl_checkpoint_assert_fingerprint_matches
         # SYSCOIN: The complete bounded response must drain from the node into nginx even if an
         # authenticated remote prover stops reading, releasing the node's scarce pick permit.
         self.assertIn("proxy_buffering on;", generator)
-        self.assertIn("proxy_max_temp_file_size 384m;", generator)
+        self.assertIn("proxy_max_temp_file_size 512m;", generator)
         self.assertIn("proxy_ignore_headers X-Accel-Buffering;", generator)
         self.assertIn(
             "location ~ ^/prover-jobs/v1/(?:FRI/[^/]+/(?:peek|failed)|SNARK/[^/]+/[^/]+/peek)/?$",

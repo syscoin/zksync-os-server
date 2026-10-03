@@ -18,7 +18,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use zksync_os_batch_types::batcher_model::{FriProof, ProverInput};
 
 use crate::prover_api::fri_job_manager::SubmitError;
-use crate::prover_api::snark_job_manager::SnarkSubmitError;
+use crate::prover_api::snark_job_manager::{MAX_SNARK_PICK_RESPONSE_BYTES, SnarkSubmitError};
 use crate::prover_api::{
     MAX_FRI_PEEK_RESPONSE_BYTES, fri_input_fits_response_contract,
     metrics::{PROVER_API_METRICS, PickJobResult, ProverStage},
@@ -445,17 +445,16 @@ pub(super) async fn pick_snark_job(
         query.id
     );
     let supported_proving_versions = query.supported_proving_versions();
-    let picked = if let Some(range) = requested_range {
-        state
-            .snark_job_manager
-            .pick_real_job_in_range(query.id, supported_proving_versions.as_deref(), range)
-            .await
-    } else {
-        state
-            .snark_job_manager
-            .pick_real_job(query.id, supported_proving_versions.as_deref())
-            .await
-    };
+    let response_capacity = query.snark_pick_response_capacity(MAX_SNARK_PICK_RESPONSE_BYTES);
+    let picked = state
+        .snark_job_manager
+        .pick_real_job_with_limits(
+            query.id,
+            supported_proving_versions.as_deref(),
+            response_capacity,
+            requested_range,
+        )
+        .await;
     match picked {
         Ok(Some(leased_job)) => {
             // SYSCOIN: One pick-only token authorizes precisely this returned aggregate.
