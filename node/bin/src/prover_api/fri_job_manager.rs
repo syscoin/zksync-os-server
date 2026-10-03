@@ -836,9 +836,12 @@ mod tests {
     use super::*;
     use crate::config::ProofStorageConfig;
     use alloy::primitives::{Address, B256, keccak256};
+    use std::future::poll_fn;
+    use std::pin::Pin;
+    use std::task::Poll;
     use tempfile::TempDir;
-    use zksync_os_batch_types::PendingBatchInfo;
     use zksync_os_batch_types::batcher_model::{BatchSignatureData, ProverInput};
+    use zksync_os_batch_types::{PendingBatchInfo, WitnessInput, WitnessMemoryBudget};
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
     };
@@ -977,6 +980,263 @@ mod tests {
             })
     }
 
+    const RETAINED_TEST_WITNESS_BYTES: usize = 2 * std::mem::size_of::<u32>();
+
+    async fn budgeted_input_batch_for_test(
+        batch_number: u64,
+        budget: &Arc<WitnessMemoryBudget>,
+    ) -> anyhow::Result<SignedBatchEnvelope<ProverInput>> {
+        let reservation = budget.reserve(RETAINED_TEST_WITNESS_BYTES).await?;
+        let input = WitnessInput::with_reservation(vec![3, 5], reservation)?;
+        Ok(dummy_input_batch(batch_number).with_data(ProverInput::Real(input)))
+    }
+
+    async fn assert_witness_budget_waiting<F: Future>(mut future: Pin<&mut F>) {
+        poll_fn(|context| {
+            assert!(future.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn witness_budget_pick_and_peek_share_the_retained_allocation() -> anyhow::Result<()> {
+        let budget = WitnessMemoryBudget::new(RETAINED_TEST_WITNESS_BYTES)?;
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, _downstream_rx) = mpsc::channel(1);
+        let manager = manager_for_test(downstream_tx, proof_storage, Duration::from_secs(60), 16);
+        let batch = budgeted_input_batch_for_test(1, &budget).await?;
+        let original_pointer = batch.data.unwrap_real().as_ptr();
+        manager.add_job(batch).await;
+
+        let picked = manager
+            .pick_next_job(Duration::ZERO, "prover-1".to_owned(), None, usize::MAX)
+            .await
+            .expect("budgeted witness must be assigned");
+        let (_, peeked) = manager
+            .peek_batch_data(1)
+            .await
+            .expect("assigned witness must remain available to peek");
+        assert_eq!(picked.data.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(peeked.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(budget.used_bytes(), RETAINED_TEST_WITNESS_BYTES);
+
+        let mut waiting = Box::pin(budget.reserve(RETAINED_TEST_WITNESS_BYTES));
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+        drop(manager);
+        drop(picked);
+        assert_eq!(budget.used_bytes(), RETAINED_TEST_WITNESS_BYTES);
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+        drop(peeked);
+        let next = tokio::time::timeout(Duration::from_secs(1), waiting).await??;
+        drop(next);
+        assert_eq!(budget.used_bytes(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn witness_budget_wait_does_not_block_accepted_proof_forwarding() -> anyhow::Result<()> {
+        let budget = WitnessMemoryBudget::new(RETAINED_TEST_WITNESS_BYTES)?;
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, mut downstream_rx) = mpsc::channel(1);
+        downstream_tx
+            .send(ProvenBatch::new(
+                dummy_input_batch(99).with_data(FriProof::Fake),
+            ))
+            .await?;
+        let (manager, forwarder) = FriJobManager::new(
+            downstream_tx,
+            proof_storage.clone(),
+            Duration::from_secs(60),
+            16,
+        );
+        manager
+            .add_job(budgeted_input_batch_for_test(1, &budget).await?)
+            .await;
+        let submission = begin_test_submission(&manager, 1, "prover-1").await;
+
+        // Synthetic durable proofs exercise the already-verified ownership transaction, not
+        // native generation or cryptographic acceptance. No pick/peek clone masks early refunds.
+        let handoff = manager.persist_and_enqueue_accepted_proof(
+            StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake)),
+            "prover-1".to_owned(),
+            submission,
+            accepted_proof_permit_for_test(&manager),
+        );
+        let result = tokio::time::timeout(Duration::from_secs(1), handoff).await??;
+        assert!(result.is_ok());
+        assert!(manager.status().await.is_empty());
+        assert_eq!(budget.used_bytes(), RETAINED_TEST_WITNESS_BYTES);
+        assert_eq!(
+            manager.accepted_proof_capacity.available_permits(),
+            ACCEPTED_PROOF_QUEUE_CAPACITY - 1
+        );
+        let mut waiting = Box::pin(budget.reserve(RETAINED_TEST_WITNESS_BYTES));
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+
+        let forwarder = tokio::spawn(forwarder);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while manager.accepted_proof_capacity.available_permits()
+                != ACCEPTED_PROOF_QUEUE_CAPACITY
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        // The accepted message's count permit has been released, but its rollback input is still
+        // charged while the filled downstream channel prevents terminal ownership transfer.
+        assert_eq!(budget.used_bytes(), RETAINED_TEST_WITNESS_BYTES);
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+        assert_eq!(downstream_rx.recv().await.unwrap().batch.batch_number(), 99);
+        let proven = tokio::time::timeout(Duration::from_secs(1), downstream_rx.recv())
+            .await?
+            .expect("proof forwarding must progress despite a byte-budget waiter");
+        assert_eq!(proven.batch.batch_number(), 1);
+        let next = tokio::time::timeout(Duration::from_secs(1), waiting).await??;
+        drop(next);
+        assert_eq!(budget.used_bytes(), 0);
+        let pending_key = proven
+            .pending_proof_key
+            .expect("forwarded proof must retain its durable pending key");
+        proof_storage
+            .release_pending_batch_with_proof(&pending_key)
+            .await;
+        forwarder.abort();
+        let _ = forwarder.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn witness_budget_unloadable_handoff_rolls_back_the_same_charged_input()
+    -> anyhow::Result<()> {
+        let budget = WitnessMemoryBudget::new(RETAINED_TEST_WITNESS_BYTES)?;
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, mut downstream_rx) = mpsc::channel(1);
+        let (manager, forwarder) = FriJobManager::new(
+            downstream_tx,
+            proof_storage.clone(),
+            Duration::from_secs(60),
+            16,
+        );
+        let forwarder = tokio::spawn(forwarder);
+        let batch = budgeted_input_batch_for_test(1, &budget).await?;
+        let original_pointer = batch.data.unwrap_real().as_ptr();
+        manager.add_job(batch).await;
+        let pending_key = proof_storage
+            .save_pending_batch_with_proof(&StoredBatch(
+                dummy_input_batch(1).with_data(FriProof::Fake),
+            ))
+            .await?;
+        proof_storage
+            .release_pending_batch_with_proof(&pending_key)
+            .await;
+        let reserved_job = completed_reserved_job_for_test(&manager, 1, "prover-1").await;
+        assert!(manager.status().await.is_empty());
+        assert_eq!(budget.used_bytes(), RETAINED_TEST_WITNESS_BYTES);
+        let mut waiting = Box::pin(budget.reserve(RETAINED_TEST_WITNESS_BYTES));
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+        manager
+            .accepted_proof_sender
+            .send(AcceptedProof {
+                batch_number: 1,
+                proof_key: pending_key,
+                reserved_job,
+                queue_permit: accepted_proof_permit_for_test(&manager),
+            })
+            .await?;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while manager.status().await.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(budget.used_bytes(), RETAINED_TEST_WITNESS_BYTES);
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+        let (_, restored) = manager
+            .peek_batch_data(1)
+            .await
+            .expect("rollback must restore the retained witness");
+        assert_eq!(restored.unwrap_real().as_ptr(), original_pointer);
+        assert_eq!(restored.unwrap_real(), [3, 5]);
+        assert!(matches!(
+            downstream_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(restored);
+        drop(manager);
+        forwarder.abort();
+        let _ = forwarder.await;
+        let next = tokio::time::timeout(Duration::from_secs(1), waiting).await??;
+        drop(next);
+        assert_eq!(budget.used_bytes(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn witness_budget_after_downstream_commit_waits_for_last_response_owner()
+    -> anyhow::Result<()> {
+        let budget = WitnessMemoryBudget::new(RETAINED_TEST_WITNESS_BYTES)?;
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, mut downstream_rx) = mpsc::channel(1);
+        let (manager, forwarder) = FriJobManager::new(
+            downstream_tx,
+            proof_storage.clone(),
+            Duration::from_secs(60),
+            16,
+        );
+        let forwarder = tokio::spawn(forwarder);
+        manager
+            .add_job(budgeted_input_batch_for_test(1, &budget).await?)
+            .await;
+        let picked = manager
+            .pick_next_job(Duration::ZERO, "prover-1".to_owned(), None, usize::MAX)
+            .await
+            .expect("budgeted witness must be assigned");
+        let submission = manager
+            .jobs
+            .begin_submission(1, 1, &picked.lease_token)
+            .await
+            .expect("response capability must be admitted");
+        let mut waiting = Box::pin(budget.reserve(RETAINED_TEST_WITNESS_BYTES));
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+        manager
+            .persist_and_enqueue_accepted_proof(
+                StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake)),
+                "prover-1".to_owned(),
+                submission,
+                accepted_proof_permit_for_test(&manager),
+            )
+            .await??;
+        let proven = tokio::time::timeout(Duration::from_secs(1), downstream_rx.recv())
+            .await?
+            .expect("accepted proof must reach downstream");
+
+        // This distant admission cannot pass the original endpoint fence until commit releases
+        // it. The still-live pick response independently owns the same witness allocation.
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            manager.add_job(dummy_input_batch(100)),
+        )
+        .await?;
+        assert_eq!(budget.used_bytes(), RETAINED_TEST_WITNESS_BYTES);
+        assert_eq!(picked.data.unwrap_real(), [3, 5]);
+        assert_witness_budget_waiting(waiting.as_mut()).await;
+        drop(picked);
+        let next = tokio::time::timeout(Duration::from_secs(1), waiting).await??;
+        drop(next);
+        assert_eq!(budget.used_bytes(), 0);
+        let pending_key = proven
+            .pending_proof_key
+            .expect("forwarded proof must retain its durable pending key");
+        proof_storage
+            .release_pending_batch_with_proof(&pending_key)
+            .await;
+        forwarder.abort();
+        let _ = forwarder.await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn service_nonempty_filter_does_not_lease_empty_work_or_change_ordinary_picks()
     -> anyhow::Result<()> {
@@ -1023,7 +1283,7 @@ mod tests {
         let (downstream_tx, _downstream_rx) = mpsc::channel(1);
         let manager = manager_for_test(downstream_tx, proof_storage, Duration::from_secs(60), 16);
         let mut oversized = dummy_input_batch(1);
-        oversized.data = ProverInput::Real(vec![0]);
+        oversized.data = ProverInput::Real(vec![0].into());
         manager.add_job(oversized).await;
         manager.add_job(dummy_input_batch(2)).await;
 

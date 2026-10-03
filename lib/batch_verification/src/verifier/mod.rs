@@ -425,6 +425,9 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone>
         if expected_commit_data != request.commit_data {
             return Err(BatchVerificationError::BatchDataMismatch);
         }
+        // Native verification's scratch witness is not needed for DA RPC or signing. Do not
+        // retain this independent allocation across potentially slow network operations.
+        drop(native_batch_run);
         self.verify_syscoin_da_before_signing(&availability_checks)
             .await?;
 
@@ -1481,7 +1484,7 @@ mod tests {
                 multichain_root,
                 set_sl_chain_id_migration_number: None,
             },
-            ProverInput::Real(native_batch_run.prover_input),
+            ProverInput::Real(native_batch_run.prover_input.into()),
         )
     }
 

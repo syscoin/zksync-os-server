@@ -39,7 +39,9 @@ fn verify_syscoin_source(manifest: &Path) -> anyhow::Result<()> {
         )
     })?;
 
-    // SYSCOIN: These exact files bind native execution to the audited final-v0.4 guest source.
+    // SYSCOIN: These exact files bind native execution to the audited final-v0.4 guest
+    // source. The runner/oracle alone have a separately attested host-only memory overlay;
+    // no guest/circuit file, verifier artifact, or witness format is changed by it.
     require_source_sha256(
         source_root,
         "basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs",
@@ -73,7 +75,12 @@ fn verify_syscoin_source(manifest: &Path) -> anyhow::Result<()> {
     require_source_sha256(
         source_root,
         "forward_system/src/run/mod.rs",
-        "b7980e0634eef1808edb4c804de0d598ab7baea7bec2620fc4bc2adf71d88af7",
+        "fbae5afd8101884cde9eb4e2b75aedbad5c771aad60ec7ba03baa7c0c5daac78",
+    )?;
+    require_source_sha256(
+        source_root,
+        "oracle_provider/src/lib.rs",
+        "f91692ee8f99a80fd64917e246d0744cf33059b9640a893fbfe3ec146efbbc9a",
     )?;
     Ok(())
 }

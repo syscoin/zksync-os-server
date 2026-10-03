@@ -11,14 +11,15 @@ use async_trait::async_trait;
 use bitcoin_da_client::SyscoinClient;
 use secrecy::ExposeSecret;
 use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
 use tracing;
-use zksync_os_batch_types::DiscoveredCommittedBatch;
 use zksync_os_batch_types::batcher_model::{
     BatchEnvelope, BatchForSigning, MissingSignature, ProverInput, block_contains_interop_bundle,
 };
 use zksync_os_batch_types::syscoin_blob_ids_and_chunks_from_pubdata;
+use zksync_os_batch_types::{DiscoveredCommittedBatch, WitnessMemoryBudget};
 use zksync_os_batcher_metrics::BATCHER_METRICS;
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_l1_watcher::CommittedBatchProvider;
@@ -64,6 +65,7 @@ pub struct Batcher<ReadState> {
     pub compact_edge_da_commit_target: Address,
     pub pubdata_limit_bytes: u64,
     pub batcher_config: BatcherConfig,
+    pub witness_memory_budget: Arc<WitnessMemoryBudget>,
     pub pubdata_mode: PubdataMode,
     pub committed_batch_provider: CommittedBatchProvider,
     pub read_state: ReadState,
@@ -76,6 +78,13 @@ fn is_bitcoin_da_ancestor_limit_error(err: &str) -> bool {
     BITCOIN_DA_ANCESTOR_LIMIT_ERRORS
         .iter()
         .any(|message| err.contains(message))
+}
+
+fn witness_generation_allowance(budget_bytes: usize) -> (usize, usize) {
+    let max_words = (budget_bytes / (2 * std::mem::size_of::<u32>())).min(
+        crate::prover_api::max_fri_input_words(crate::prover_api::MAX_FRI_PICK_RESPONSE_BYTES),
+    );
+    (max_words, max_words * 2 * std::mem::size_of::<u32>())
 }
 
 /// SYSCOIN: Advances the batch-boundary side of the replay-derived companion marker. A different
@@ -489,6 +498,30 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         batch_number: u64,
         pubdata_mode: PubdataMode,
     ) -> anyhow::Result<batch_builder::SealedBatch> {
+        // Reserve a whole serviceable input, including old + new buffers during a possible
+        // allocator reallocation, before PIG. Growing partial reservations could
+        // deadlock generation against its own retained buffer. Both fresh and recreated batches
+        // pass here; the guard moves into the blocking task so cancelling this await cannot
+        // refund memory while native generation is still running.
+        let (maximum_witness_words, reserved_bytes) =
+            witness_generation_allowance(self.witness_memory_budget.limit_bytes());
+        let retained_bytes = self.witness_memory_budget.used_bytes();
+        if reserved_bytes > self.witness_memory_budget.limit_bytes() - retained_bytes {
+            tracing::info!(
+                batch_number,
+                reserved_bytes,
+                retained_bytes,
+                budget_bytes = self.witness_memory_budget.limit_bytes(),
+                "native witness memory budget exhausted; waiting for retained input handoff"
+            );
+        }
+        tracing::debug!(
+            batch_number,
+            reserved_bytes,
+            retained_bytes,
+            "waiting for native witness memory reservation"
+        );
+        let witness_reservation = self.witness_memory_budget.reserve(reserved_bytes).await?;
         let chain_id = self.chain_id;
         let chain_address_sl = self.chain_address_sl;
         let sl_chain_id = self.sl_chain_id;
@@ -507,6 +540,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 compact_edge_da_commit_target,
                 &read_state,
                 &merkle_tree,
+                maximum_witness_words,
+                witness_reservation,
             )
         })
         .await?
@@ -772,9 +807,59 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 mod tests {
     use super::{
         interop_batch_seal_reason, is_bitcoin_da_ancestor_limit_error,
-        next_interop_companion_batch_state,
+        next_interop_companion_batch_state, witness_generation_allowance,
     };
     use zksync_os_types::ProvingVersion;
+
+    #[test]
+    fn witness_generation_allowance_bounds_reallocation_and_transport() {
+        let transport_words =
+            crate::prover_api::max_fri_input_words(crate::prover_api::MAX_FRI_PICK_RESPONSE_BYTES);
+        assert_eq!(witness_generation_allowance(8), (1, 8));
+        assert_eq!(witness_generation_allowance(19), (2, 16));
+        for budget in [8, 19, 4 * 1024 * 1024 * 1024, usize::MAX] {
+            let (words, reserved) = witness_generation_allowance(budget);
+            assert!(reserved <= budget);
+            assert!(words <= transport_words);
+            assert_eq!(reserved, words * 2 * std::mem::size_of::<u32>());
+            assert!(crate::prover_api::fri_input_words_fit_response_contract(
+                words,
+                crate::prover_api::MAX_FRI_PICK_RESPONSE_BYTES,
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_generation_await_retains_quota_until_blocking_task_finishes() {
+        let budget = zksync_os_batch_types::WitnessMemoryBudget::new(8).unwrap();
+        let reservation = budget.reserve(8).await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let generation = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                let _reservation = reservation;
+                started_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        generation.abort();
+        assert!(generation.await.unwrap_err().is_cancelled());
+        assert_eq!(budget.used_bytes(), 8);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), budget.reserve(8))
+                .await
+                .is_err()
+        );
+        finish_tx.send(()).unwrap();
+        let next = tokio::time::timeout(std::time::Duration::from_secs(1), budget.reserve(8))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(next);
+        assert_eq!(budget.used_bytes(), 0);
+    }
 
     #[test]
     fn detects_bitcoin_da_ancestor_limit_errors() {

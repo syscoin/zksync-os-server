@@ -1,0 +1,552 @@
+diff --git a/forward_system/src/run/mod.rs b/forward_system/src/run/mod.rs
+index 6d6e667..0dc4d57 100644
+--- a/forward_system/src/run/mod.rs
++++ b/forward_system/src/run/mod.rs
+@@ -146,0 +147,18 @@ pub struct BatchRunOutput {
++/// SYSCOIN: Host-only capture failures are distinct from native execution failures.
++#[derive(Debug)]
++pub enum BoundedBatchRunError {
++    WitnessCapacity(oracle_provider::WitnessCapacityError),
++    Native(ForwardSubsystemError),
++}
++
++impl std::fmt::Display for BoundedBatchRunError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::WitnessCapacity(error) => error.fmt(f),
++            Self::Native(error) => write!(f, "native batch execution failed: {error:?}"),
++        }
++    }
++}
++
++impl std::error::Error for BoundedBatchRunError {}
++
+@@ -401,0 +420,45 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
++    generate_batch_proof_input_impl(
++        initial_proof_data,
++        batch_state,
++        blocks,
++        da_commitment_scheme,
++        chain_config,
++        None,
++    )
++    .map_err(|error| match error {
++        BoundedBatchRunError::Native(error) => error,
++        BoundedBatchRunError::WitnessCapacity(_) => {
++            unreachable!("unbounded native capture has no word allowance")
++        }
++    })
++}
++
++/// SYSCOIN: Capture at most `max_words` allocated u32 words, including the batch
++/// prefix and disconnect. The caller must reserve this allowance before executing.
++/// Oversize capture fails immediately; it never waits or evicts existing witnesses.
++pub fn generate_batch_proof_input_with_max_words<BS: BatchState, TS: TxSource>(
++    initial_proof_data: ProofData<StorageCommitment>,
++    batch_state: BS,
++    blocks: Vec<BatchBlockInput<TS>>,
++    da_commitment_scheme: DACommitmentScheme,
++    chain_config: ChainConfig,
++    max_words: usize,
++) -> Result<BatchRunOutput, BoundedBatchRunError> {
++    generate_batch_proof_input_impl(
++        initial_proof_data,
++        batch_state,
++        blocks,
++        da_commitment_scheme,
++        chain_config,
++        Some(max_words),
++    )
++}
++
++fn generate_batch_proof_input_impl<BS: BatchState, TS: TxSource>(
++    initial_proof_data: ProofData<StorageCommitment>,
++    batch_state: BS,
++    blocks: Vec<BatchBlockInput<TS>>,
++    da_commitment_scheme: DACommitmentScheme,
++    chain_config: ChainConfig,
++    max_words: Option<usize>,
++) -> Result<BatchRunOutput, BoundedBatchRunError> {
+@@ -451,40 +514,56 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
+-    let mut oracle = ReadWitnessSource::new(oracle);
+-    let chain_config = ChainConfig::read_from_oracle(&mut oracle)
+-        .map_err(BootloaderSubsystemError::from)
+-        .map_err(wrap_error!())?;
+-    let mut tracer = NopTracer::default();
+-    let mut validator = NopTxValidator;
+-    let mut result_keeper = ProverInputResultKeeper::new(NoopTxCallback);
+-    let mut batch_data = basic_bootloader::bootloader::block_flow::ZKBatchDataKeeper::new();
+-    let mut block_outputs = Vec::with_capacity(batch_len);
+-
+-    for block_idx in 0..batch_len {
+-        // Re-enter the proving bootloader for the next block while preserving the
+-        // shared witness stream and the multiblock batch keeper.
+-        oracle = BatchProverInputBootloader::run_prepared::<BasicBootloaderProvingExecutionConfig>(
+-            oracle,
+-            &mut batch_data,
+-            &mut result_keeper,
+-            &mut tracer,
+-            &mut validator,
+-            chain_config,
+-        )
+-        .map_err(wrap_error!())?;
+-
+-        // `result_keeper` accumulates batch-wide pubdata across re-entries, but
+-        // `forward_running_rk` contains only the just-finished block output.
+-        let current_forward_result = std::mem::replace(
+-            &mut result_keeper.forward_running_rk,
+-            ForwardRunningResultKeeper::new(NoopTxCallback),
+-        );
+-        let block_output = current_forward_result.into();
+-
+-        if block_idx + 1 != batch_len {
+-            // Make the current block's writes and newly published preimages
+-            // visible to the next block in the batch.
+-            batch_state.apply_block_output(&block_output);
+-            let next_proof_data = batch_data
+-                .current_proof_data()
+-                .expect("batch prover input must expose next proof data");
+-            proof_data.set(next_proof_data);
+-            batch_index.advance();
++    // SYSCOIN: Prefix-first capture permits moving the vector at the end instead
++    // of allocating a second full witness. Guest input ordering is unchanged.
++    let mut oracle = match max_words {
++        Some(max_words) => ReadWitnessSource::new_bounded(oracle, max_words, batch_len as u32)
++            .map_err(BoundedBatchRunError::WitnessCapacity)?,
++        None => {
++            let source = ReadWitnessSource::new(oracle);
++            source.get_read_items().borrow_mut().push(batch_len as u32);
++            source
++        }
++    };
++    let capacity_error = oracle.get_capacity_error();
++    let result = (|| -> Result<BatchRunOutput, ForwardSubsystemError> {
++        let chain_config = ChainConfig::read_from_oracle(&mut oracle)
++            .map_err(BootloaderSubsystemError::from)
++            .map_err(wrap_error!())?;
++        let mut tracer = NopTracer::default();
++        let mut validator = NopTxValidator;
++        let mut result_keeper = ProverInputResultKeeper::new(NoopTxCallback);
++        let mut batch_data = basic_bootloader::bootloader::block_flow::ZKBatchDataKeeper::new();
++        let mut block_outputs = Vec::with_capacity(batch_len);
++
++        for block_idx in 0..batch_len {
++            // Re-enter the proving bootloader for the next block while preserving the
++            // shared witness stream and the multiblock batch keeper.
++            oracle =
++                BatchProverInputBootloader::run_prepared::<BasicBootloaderProvingExecutionConfig>(
++                    oracle,
++                    &mut batch_data,
++                    &mut result_keeper,
++                    &mut tracer,
++                    &mut validator,
++                    chain_config,
++                )
++                .map_err(wrap_error!())?;
++
++            // `result_keeper` accumulates batch-wide pubdata across re-entries, but
++            // `forward_running_rk` contains only the just-finished block output.
++            let current_forward_result = std::mem::replace(
++                &mut result_keeper.forward_running_rk,
++                ForwardRunningResultKeeper::new(NoopTxCallback),
++            );
++            let block_output = current_forward_result.into();
++
++            if block_idx + 1 != batch_len {
++                // Make the current block's writes and newly published preimages
++                // visible to the next block in the batch.
++                batch_state.apply_block_output(&block_output);
++                let next_proof_data = batch_data
++                    .current_proof_data()
++                    .expect("batch prover input must expose next proof data");
++                proof_data.set(next_proof_data);
++                batch_index.advance();
++            }
++
++            block_outputs.push(block_output);
+@@ -493 +572,25 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
+-        block_outputs.push(block_output);
++        // At this point `batch_data` contains the canonical batch PI/output, while
++        // `result_keeper.pubdata` contains the concatenated pubdata for the whole
++        // batch.
++        // SYSCOIN: Compact DA ignores the retained upstream oracle argument.
++        let (batch_public_input, batch_output) =
++            batch_data.into_public_input_and_output(NullLogger, &mut oracle);
++        // Multiblock proving cannot emit the final disconnect from the per-block
++        // post-op: only the outer runner knows when the last block has finished.
++        <DisconnectOracleQuery as SimpleOracleQuery>::get(&mut oracle, &())
++            .map_err(BootloaderSubsystemError::from)
++            .map_err(wrap_error!())?;
++        let prover_input = oracle.into_read_items();
++
++        Ok(BatchRunOutput {
++            prover_input,
++            pubdata: result_keeper.pubdata,
++            batch_public_input,
++            batch_output,
++            block_outputs,
++        })
++    })();
++    // Some execution paths attach subsystem context to oracle errors. Preserve
++    // the explicit capacity outcome even if such an error was wrapped or handled.
++    if let Some(error) = capacity_error.borrow().clone() {
++        return Err(BoundedBatchRunError::WitnessCapacity(error));
+@@ -495,22 +598 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
+-
+-    // At this point `batch_data` contains the canonical batch PI/output, while
+-    // `result_keeper.pubdata` contains the concatenated pubdata for the whole
+-    // batch.
+-    // SYSCOIN: Compact DA ignores the retained upstream oracle argument.
+-    let (batch_public_input, batch_output) =
+-        batch_data.into_public_input_and_output(NullLogger, &mut oracle);
+-    // Multiblock proving cannot emit the final disconnect from the per-block
+-    // post-op: only the outer runner knows when the last block has finished.
+-    <DisconnectOracleQuery as SimpleOracleQuery>::get(&mut oracle, &())
+-        .expect("disconnect query must not fail");
+-    let mut prover_input = Vec::with_capacity(1 + oracle.get_read_items().borrow().len());
+-    prover_input.push(batch_len as u32);
+-    prover_input.extend(oracle.get_read_items().borrow().iter().copied());
+-
+-    Ok(BatchRunOutput {
+-        prover_input,
+-        pubdata: result_keeper.pubdata,
+-        batch_public_input,
+-        batch_output,
+-        block_outputs,
+-    })
++    result.map_err(BoundedBatchRunError::Native)
+@@ -938,0 +1021,110 @@ mod tests {
++    // SYSCOIN: A native-only empty-block fixture exercises real bootloader capture,
++    // including the exact-fit final disconnect, without a guest build or GPU.
++    fn empty_native_batch_fixture() -> (
++        ProofData<StorageCommitment>,
++        test_impl::InMemoryBatchState,
++        Vec<BatchBlockInput<TxListSource>>,
++    ) {
++        let tree = test_impl::InMemoryTree::empty();
++        let initial_proof_data = ProofData {
++            state_root_view: StorageCommitment {
++                root: *tree.storage_tree.root(),
++                next_free_slot: tree.storage_tree.next_free_slot,
++            },
++            last_block_timestamp: 0,
++        };
++        let state = test_impl::InMemoryBatchState {
++            tree,
++            preimage_source: test_impl::InMemoryPreimageSource::default(),
++        };
++        let block = BatchBlockInput {
++            block_context: BlockContext {
++                block_number: 1,
++                timestamp: 1,
++                gas_limit: 30_000_000,
++                pubdata_limit: 65_536,
++                native_price: ruint::aliases::U256::from(1u64),
++                ..Default::default()
++            },
++            tx_source: TxListSource {
++                transactions: Default::default(),
++            },
++        };
++        (initial_proof_data, state, vec![block])
++    }
++
++    #[test]
++    fn bounded_batch_preserves_unbounded_native_witness_at_exact_limit() {
++        std::thread::Builder::new()
++            .stack_size(64 << 20)
++            .spawn(|| {
++                let (initial, state, blocks) = empty_native_batch_fixture();
++                let unbounded = generate_batch_proof_input(
++                    initial,
++                    state,
++                    blocks,
++                    DACommitmentScheme::BlobsZKsyncOS,
++                    ChainConfig::default(),
++                )
++                .unwrap();
++                let max_words = unbounded.prover_input.len();
++                let (initial, state, blocks) = empty_native_batch_fixture();
++                let bounded = generate_batch_proof_input_with_max_words(
++                    initial,
++                    state,
++                    blocks,
++                    DACommitmentScheme::BlobsZKsyncOS,
++                    ChainConfig::default(),
++                    max_words,
++                )
++                .unwrap();
++                assert_eq!(bounded.prover_input, unbounded.prover_input);
++                assert_eq!(bounded.pubdata, unbounded.pubdata);
++                assert_eq!(
++                    bounded.batch_public_input.hash(),
++                    unbounded.batch_public_input.hash(),
++                );
++                assert!(bounded.prover_input.capacity() <= max_words);
++
++                // SYSCOIN: Independently generated with the unchanged published
++                // canonical tree 6935489bdbc7b1ed31e608677d1b2418b10691b5,
++                // not merely the two new APIs sharing this implementation.
++                use crypto::sha256::Digest;
++                let mut canonical_hash = crypto::sha256::Sha256::new();
++                for word in &bounded.prover_input {
++                    canonical_hash.update(&word.to_le_bytes());
++                }
++                assert_eq!(bounded.prover_input.len(), 3267);
++                let expected_canonical_hash = hex::decode(
++                    "5a3b7fcefcab50b14229ae0af64c5ac9d9b4d3fbf75ec4aacaa3e628419a569e",
++                )
++                .unwrap();
++                assert_eq!(
++                    &canonical_hash.finalize()[..],
++                    expected_canonical_hash.as_slice(),
++                );
++
++                let (initial, state, blocks) = empty_native_batch_fixture();
++                let result = generate_batch_proof_input_with_max_words(
++                    initial,
++                    state,
++                    blocks,
++                    DACommitmentScheme::BlobsZKsyncOS,
++                    ChainConfig::default(),
++                    max_words - 1,
++                );
++                assert!(matches!(
++                    result,
++                    Err(BoundedBatchRunError::WitnessCapacity(
++                        oracle_provider::WitnessCapacityError::LimitExceeded {
++                            requested_words,
++                            max_words: limit,
++                        }
++                    )) if requested_words == max_words && limit == max_words - 1
++                ));
++            })
++            .unwrap()
++            .join()
++            .unwrap();
++    }
++
+diff --git a/oracle_provider/src/lib.rs b/oracle_provider/src/lib.rs
+index f05b59e..c4451ef 100644
+--- a/oracle_provider/src/lib.rs
++++ b/oracle_provider/src/lib.rs
+@@ -279,0 +280,3 @@ pub struct ReadWitnessSource {
++    // SYSCOIN: Native capture policy only; the oracle words and guest remain unchanged.
++    max_words: Option<usize>,
++    capacity_error: Rc<RefCell<Option<WitnessCapacityError>>>,
+@@ -281,0 +285,36 @@ pub struct ReadWitnessSource {
++/// A native witness could not fit the allowance reserved before generation.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum WitnessCapacityError {
++    LimitExceeded {
++        requested_words: usize,
++        max_words: usize,
++    },
++    AllocationFailed {
++        requested_words: usize,
++        max_words: usize,
++    },
++}
++
++impl std::fmt::Display for WitnessCapacityError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::LimitExceeded {
++                requested_words,
++                max_words,
++            } => write!(
++                f,
++                "native witness capacity exceeded: requested {requested_words} words, maximum {max_words} words"
++            ),
++            Self::AllocationFailed {
++                requested_words,
++                max_words,
++            } => write!(
++                f,
++                "native witness allocation failed: requested {requested_words} words, maximum {max_words} words"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for WitnessCapacityError {}
++
+@@ -286,0 +326,2 @@ impl ReadWitnessSource {
++            max_words: None,
++            capacity_error: Rc::new(RefCell::new(None)),
+@@ -289,0 +331,67 @@ impl ReadWitnessSource {
++    /// SYSCOIN: Reserve/grow only within a pre-admitted native witness allowance.
++    /// The batch-count prefix is captured first so finishing needs no whole-vector copy.
++    pub fn new_bounded(
++        original_source: ZkEENonDeterminismSource,
++        max_words: usize,
++        prefix: u32,
++    ) -> Result<Self, WitnessCapacityError> {
++        let mut source = Self::new(original_source);
++        source.max_words = Some(max_words);
++        source.ensure_capture_capacity(1)?;
++        source.read_items.borrow_mut().push(prefix);
++        Ok(source)
++    }
++
++    pub fn get_capacity_error(&self) -> Rc<RefCell<Option<WitnessCapacityError>>> {
++        Rc::clone(&self.capacity_error)
++    }
++
++    /// SYSCOIN: Move the captured allocation; never clone a completed witness.
++    pub fn into_read_items(self) -> Vec<u32> {
++        std::mem::take(&mut *self.read_items.borrow_mut())
++    }
++
++    fn ensure_capture_capacity(&mut self, additional: usize) -> Result<(), WitnessCapacityError> {
++        let Some(max_words) = self.max_words else {
++            return Ok(());
++        };
++        let mut items = self.read_items.borrow_mut();
++        let required = items.len().checked_add(additional).unwrap_or(usize::MAX);
++        let error = if required > max_words || items.capacity() > max_words {
++            Some(WitnessCapacityError::LimitExceeded {
++                requested_words: required.max(items.capacity()),
++                max_words,
++            })
++        } else if required > items.capacity() {
++            // Vec's default geometric growth can exceed the byte reservation. Request
++            // an explicit capped capacity, and verify the allocator's actual result.
++            let target = items
++                .capacity()
++                .saturating_mul(2)
++                .max(8)
++                .max(required)
++                .min(max_words);
++            let reserve = target - items.len();
++            if items.try_reserve_exact(reserve).is_err() {
++                Some(WitnessCapacityError::AllocationFailed {
++                    requested_words: target,
++                    max_words,
++                })
++            } else if items.capacity() > max_words {
++                Some(WitnessCapacityError::LimitExceeded {
++                    requested_words: items.capacity(),
++                    max_words,
++                })
++            } else {
++                None
++            }
++        } else {
++            None
++        };
++        if let Some(error) = error {
++            *self.capacity_error.borrow_mut() = Some(error.clone());
++            return Err(error);
++        }
++        Ok(())
++    }
++
+@@ -296,0 +405,4 @@ impl NonDeterminismCSRSource for ReadWitnessSource {
++        // SYSCOIN: Native PIG uses fallible IOOracle queries. The infallible CSR
++        // interface must still fail explicitly, never silently exceed its allowance.
++        self.ensure_capture_capacity(1)
++            .unwrap_or_else(|error| std::panic::panic_any(error));
+@@ -326,0 +439,8 @@ impl IOOracle for ReadWitnessSource {
++        // SYSCOIN: Reject a whole response BEFORE its header or payload is captured.
++        // Never wait for more quota while owning a partially generated witness.
++        let additional = len
++            .checked_mul(2)
++            .and_then(|words| words.checked_add(1))
++            .unwrap_or(usize::MAX);
++        self.ensure_capture_capacity(additional)
++            .map_err(|_| zk_ee::internal_error!("native witness capacity exceeded"))?;
+@@ -392,0 +513,93 @@ mod tests {
++
++    fn bounded_source(max_words: usize) -> Result<ReadWitnessSource, WitnessCapacityError> {
++        let mut oracle = ZkEENonDeterminismSource::default();
++        oracle.add_external_processor(FixedResponseProcessor);
++        ReadWitnessSource::new_bounded(oracle, max_words, 9)
++    }
++
++    #[test]
++    fn bounded_capture_preserves_canonical_words_and_moves_allocation() {
++        let mut bounded = bounded_source(6).unwrap();
++        let _: Vec<_> = bounded.raw_query(TEST_QUERY_ID, &7u64).unwrap().collect();
++        let mut oracle = ZkEENonDeterminismSource::default();
++        oracle.add_external_processor(FixedResponseProcessor);
++        let mut unbounded = ReadWitnessSource::new(oracle);
++        let _: Vec<_> = unbounded.raw_query(TEST_QUERY_ID, &7u64).unwrap().collect();
++        let mut expected = vec![9];
++        expected.extend_from_slice(&unbounded.get_read_items().borrow());
++        let pointer = bounded.get_read_items().borrow().as_ptr();
++        let output = bounded.into_read_items();
++        assert_eq!(output, expected);
++        assert_eq!(output.as_ptr(), pointer);
++        assert!(output.capacity() <= 6);
++    }
++
++    #[test]
++    fn bounded_capture_rejects_whole_response_before_header_or_payload() {
++        let mut source = bounded_source(5).unwrap();
++        assert!(source.raw_query(TEST_QUERY_ID, &7u64).is_err());
++        assert_eq!(*source.get_read_items().borrow(), vec![9]);
++        assert_eq!(
++            *source.get_capacity_error().borrow(),
++            Some(WitnessCapacityError::LimitExceeded {
++                requested_words: 6,
++                max_words: 5
++            })
++        );
++    }
++
++    #[test]
++    fn bounded_capture_rejects_zero_prefix_allowance() {
++        assert!(matches!(
++            bounded_source(0),
++            Err(WitnessCapacityError::LimitExceeded {
++                requested_words: 1,
++                max_words: 0
++            })
++        ));
++    }
++
++    #[test]
++    fn bounded_capture_caps_growth_and_retains_previously_captured_words() {
++        let mut source = bounded_source(24).unwrap();
++        for _ in 0..4 {
++            let _: Vec<_> = source.raw_query(TEST_QUERY_ID, &7u64).unwrap().collect();
++            assert!(source.get_read_items().borrow().capacity() <= 24);
++        }
++        let previous = source.get_read_items().borrow().clone();
++        assert!(source.raw_query(TEST_QUERY_ID, &7u64).is_err());
++        assert_eq!(*source.get_read_items().borrow(), previous);
++        assert!(source.get_read_items().borrow().capacity() <= 24);
++    }
++
++    #[test]
++    fn bounded_capture_counts_final_disconnect_header() {
++        use zk_ee::oracle::{
++            basic_queries::DisconnectOracleQuery, simple_oracle_query::SimpleOracleQuery,
++        };
++        let mut source = bounded_source(1).unwrap();
++        assert!(DisconnectOracleQuery::get(&mut source, &()).is_err());
++        assert_eq!(*source.get_read_items().borrow(), vec![9]);
++        assert_eq!(
++            *source.get_capacity_error().borrow(),
++            Some(WitnessCapacityError::LimitExceeded {
++                requested_words: 2,
++                max_words: 1
++            })
++        );
++    }
++
++    #[test]
++    fn bounded_infallible_csr_read_has_a_typed_capacity_failure() {
++        let mut source = bounded_source(1).unwrap();
++        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.read()))
++            .expect_err("infallible CSR access must not silently exceed the allowance");
++        assert_eq!(
++            panic.downcast_ref::<WitnessCapacityError>(),
++            Some(&WitnessCapacityError::LimitExceeded {
++                requested_words: 2,
++                max_words: 1
++            })
++        );
++        assert_eq!(*source.get_read_items().borrow(), vec![9]);
++    }

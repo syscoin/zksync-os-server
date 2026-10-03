@@ -5,6 +5,8 @@
 
 # SYSCOIN: Exact source tree produced by the reviewed final-v0.4.0 downstream patch.
 SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"
+# SYSCOIN: Separately attested native-only overlay, never a replacement guest identity.
+SYSCOIN_EXPECTED_ZKSYNC_OS_NATIVE_MEMORY_TREE="6e86060d1182dc198681c40b2c6dcfc39a9b58fd"
 
 extract_zksync_os_dependency_field() {
   local dependency_alias="$1"
@@ -198,6 +200,46 @@ prepare_zksync_os_checkout() {
   [ "$(git -C "${os_path}" rev-parse "refs/tags/${os_tag}^{commit}")" = "${patched_rev}" ] || \
     gl_die "failed to bind local tag ${os_tag} to patched revision ${patched_rev}"
   printf '%s\n' "${os_path}"
+}
+
+prepare_zksync_os_native_memory_checkout() {
+  [[ $# -eq 1 ]] || gl_die "prepare_zksync_os_native_memory_checkout requires the attested canonical source"
+  local canonical_path="$1" canonical_rev native_root native_path native_tree native_rev base_date os_tag
+  canonical_rev="$(git -C "${canonical_path}" rev-parse HEAD)"
+  [[ "$(git -C "${canonical_path}" rev-parse 'HEAD^{tree}')" = "${SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE}" ]] || \
+    gl_die "native-memory source must start from the exact published canonical guest tree"
+  [[ -z "$(git -C "${canonical_path}" status --porcelain)" ]] || gl_die "canonical guest checkout is not clean before native overlay"
+  native_root="${GATEWAY_DIR}/.gateway-launch/zksync-os/${WORKSPACE_NAME}/native-memory"
+  native_path="${native_root}/${canonical_rev}"
+  if [[ -e "${native_path}" && ! -d "${native_path}/.git" ]]; then
+    gl_die "native-memory checkout path exists but is not a Git repository: ${native_path}"
+  fi
+  if [[ ! -d "${native_path}/.git" ]]; then
+    mkdir -p "${native_root}"
+    git clone --no-hardlinks "${canonical_path}" "${native_path}" >&2
+  fi
+  [[ -z "$(git -C "${native_path}" status --porcelain)" ]] || gl_die "native-memory checkout contains local changes: ${native_path}"
+  git -C "${native_path}" checkout --detach "${canonical_rev}" >/dev/null
+  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-native-memory-v0.4.0-patch.sh" "${native_path}"
+  git -C "${native_path}" add --all
+  native_tree="$(git -C "${native_path}" write-tree)"
+  [[ "${native_tree}" = "${SYSCOIN_EXPECTED_ZKSYNC_OS_NATIVE_MEMORY_TREE}" ]] || \
+    gl_die "native-memory build-boundary tree mismatch: ${native_tree}"
+  base_date="$(git -C "${canonical_path}" show -s --format=%cI HEAD)"
+  GIT_AUTHOR_DATE="${base_date}" GIT_COMMITTER_DATE="${base_date}" \
+    git -C "${native_path}" -c user.name="gateway-launch" -c user.email="gateway-launch@local" \
+    commit -m "gateway-launch native-only bounded witness capture" >/dev/null
+  [[ -z "$(git -C "${native_path}" status --porcelain)" ]] || gl_die "native-memory checkout is not clean"
+  [[ "$(git -C "${native_path}" rev-parse HEAD^)" = "${canonical_rev}" ]] || gl_die "native-memory commit is not directly based on canonical guest source"
+  [[ "$(git -C "${native_path}" rev-parse 'HEAD^{tree}')" = "${SYSCOIN_EXPECTED_ZKSYNC_OS_NATIVE_MEMORY_TREE}" ]] || gl_die "committed native-memory tree drifted before build"
+  # Canonical source is retained independently and was never modified by this overlay.
+  [[ "$(git -C "${canonical_path}" rev-parse 'HEAD^{tree}')" = "${SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE}" ]] || gl_die "canonical guest source changed during native overlay preparation"
+  [[ -z "$(git -C "${canonical_path}" status --porcelain)" ]] || gl_die "canonical guest source was modified during native overlay preparation"
+  native_rev="$(git -C "${native_path}" rev-parse HEAD)"
+  os_tag="$(extract_zksync_os_tag zk_os_forward_system)"
+  git -C "${native_path}" tag -f "${os_tag}" "${native_rev}" >/dev/null
+  [[ "$(git -C "${native_path}" rev-parse "refs/tags/${os_tag}^{commit}")" = "${native_rev}" ]] || gl_die "failed to bind the native-memory build tag"
+  printf '%s\n' "${native_path}"
 }
 
 prepare_run_workspace() {

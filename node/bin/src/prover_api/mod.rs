@@ -30,6 +30,12 @@ pub(crate) const MAX_FRI_PEEK_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 // JSON punctuation. A handler test keeps this conservative allowance above actual framing.
 pub(crate) const FRI_PICK_RESPONSE_FRAMING_BYTES: usize = 512;
 
+/// Largest raw witness serviceable by this deployment's base64 JSON response contract.
+pub(crate) fn max_fri_input_words(maximum_response_bytes: usize) -> usize {
+    maximum_response_bytes.saturating_sub(FRI_PICK_RESPONSE_FRAMING_BYTES) / 4 * 3
+        / std::mem::size_of::<u32>()
+}
+
 pub(crate) fn fri_input_words_fit_response_contract(
     word_count: usize,
     maximum_response_bytes: usize,
@@ -76,6 +82,11 @@ mod response_contract_tests {
             maximum
         ));
         assert!(!fri_input_words_fit_response_contract(usize::MAX, maximum));
+        assert_eq!(max_fri_input_words(maximum), last_fitting);
+        assert_eq!(
+            max_fri_input_words(usize::MAX),
+            (usize::MAX - FRI_PICK_RESPONSE_FRAMING_BYTES) / 4 * 3 / 4
+        );
     }
 
     #[test]

@@ -1996,6 +1996,20 @@ pub struct ProverApiConfig {
     ))]
     pub max_assigned_batch_range: usize,
 
+    /// Retained main-node native witness allocations, including generation and proof handoff.
+    /// Exhaustion pauses new generation without evicting existing inputs. This is not a limit
+    /// on whole-process memory: native scratch, proof verification and response encoding need
+    /// separate headroom. A single witness must also fit the production FRI response lane.
+    #[config(default_t = 4 * SizeUnit::GiB)]
+    #[config_validate(custom(
+        |_root: &Config, value: &ByteSize| {
+            value.0 >= (2 * std::mem::size_of::<u32>()) as u64
+                && usize::try_from(value.0).is_ok()
+        },
+        "must hold one u32 witness word plus allocation-growth headroom and fit the platform address space"
+    ))]
+    pub witness_memory_budget: ByteSize,
+
     /// SYSCOIN: Max number of FRI proofs aggregated into a single SNARK job.
     #[config(default_t = 100)]
     #[config_validate(custom(
@@ -3683,6 +3697,24 @@ mod tests {
             err.contains("`prover_api.max_assigned_batch_range` must be greater than zero"),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn prover_api_witness_memory_budget_defaults_and_validation() {
+        let mut config = base_config(NodeRole::MainNode);
+        assert_eq!(
+            config.prover_api_config.witness_memory_budget.0,
+            4 * 1024 * 1024 * 1024
+        );
+        config.validate().await.unwrap();
+
+        for bytes in 0..(2 * std::mem::size_of::<u32>()) as u64 {
+            config.prover_api_config.witness_memory_budget = ByteSize(bytes);
+            let err = config.validate().await.unwrap_err().to_string();
+            assert!(err.contains("`prover_api.witness_memory_budget`"), "{err}");
+        }
+        config.prover_api_config.witness_memory_budget = ByteSize(8);
+        config.validate().await.unwrap();
     }
 
     // SYSCOIN: The empty interop companion is delayed briefly so ready real traffic wins first.

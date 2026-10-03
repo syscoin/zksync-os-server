@@ -9,6 +9,11 @@ pub use block_merkle_tree_data::BlockMerkleTreeData;
 mod batch_info;
 pub mod batcher_model;
 
+mod witness_memory;
+pub use witness_memory::{
+    WitnessInput, WitnessMemoryBudget, WitnessMemoryError, WitnessMemoryReservation,
+};
+
 // SYSCOIN: Export the canonical compact Bitcoin DA builders and edge-reference reconstruction.
 pub use batch_info::{
     CanonicalBatchCommitData, CommittedBatchInfo, DiscoveredCommittedBatch, PendingBatchInfo,
