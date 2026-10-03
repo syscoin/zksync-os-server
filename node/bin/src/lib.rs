@@ -2990,11 +2990,6 @@ async fn run_main_node_pipeline(
             compact_edge_da_commit_target: syscoin_edge_da_commit_target,
             pubdata_limit_bytes: config.sequencer_config.block_pubdata_limit_bytes,
             batcher_config: config.batcher_config.clone(),
-            witness_memory_budget: zksync_os_batch_types::WitnessMemoryBudget::new(
-                usize::try_from(config.prover_api_config.witness_memory_budget.0)
-                    .expect("validated witness memory budget exceeds platform address space"),
-            )
-            .expect("validated witness memory budget is zero"),
             pubdata_mode,
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),

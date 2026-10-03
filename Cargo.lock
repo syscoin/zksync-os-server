@@ -15106,12 +15106,12 @@ version = "0.23.0"
 dependencies = [
  "alloy",
  "anyhow",
+ "bincode 2.0.1",
  "blake2",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
  "time",
- "tokio",
  "zksync_os_batcher_metrics",
  "zksync_os_contract_interface",
  "zksync_os_interface",

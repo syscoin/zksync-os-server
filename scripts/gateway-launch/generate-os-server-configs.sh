@@ -58,7 +58,6 @@ fi
 # hex encoding can approximately double their decoded size, so the upstream 1 GiB default
 # is too small for two 100-FRI aggregation windows plus headroom.
 : "${PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES:=8589934592}"
-: "${PROVER_WITNESS_MEMORY_BUDGET_BYTES:=4294967296}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
 : "${GATEWAY_BATCH_TIMEOUT:=1000s}"
 # SYSCOIN: Keep the generated edge limit aligned with one Syscoin DA blob and
@@ -221,7 +220,6 @@ export EDGE_PROVER_API_DOMAIN
 export PROVER_API_AUTH_USER
 export PROVER_API_AUTH_PASSWORD
 export PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES
-export PROVER_WITNESS_MEMORY_BUDGET_BYTES
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
 export GATEWAY_BATCH_TIMEOUT
 export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
@@ -823,18 +821,6 @@ if prover_mode not in {"gpu", "no-proofs"}:
     raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|no-proofs)")
 use_mock_prover = prover_mode == "no-proofs"
 try:
-    prover_witness_memory_budget_bytes = int(
-        os.environ["PROVER_WITNESS_MEMORY_BUDGET_BYTES"]
-    )
-except ValueError as err:
-    raise SystemExit(
-        "invalid PROVER_WITNESS_MEMORY_BUDGET_BYTES (expected integer bytes)"
-    ) from err
-if not 8 <= prover_witness_memory_budget_bytes <= 2**64 - 1:
-    raise SystemExit(
-        "PROVER_WITNESS_MEMORY_BUDGET_BYTES must be between 8 and 18446744073709551615"
-    )
-try:
     prover_batch_with_proof_capacity_bytes = int(
         os.environ["PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES"]
     )
@@ -1164,7 +1150,6 @@ def materialize_chain(
             # two-hour lease avoids duplicate CPU wrapping while retaining a one-hour release bound.
             "  snark_job_timeout: 2h",
             "  max_assigned_batch_range: 256",
-            f"  witness_memory_budget: {prover_witness_memory_budget_bytes} B",
             "  max_fris_per_snark: 100",
             "  target_fris_per_snark: 100",
             "  max_snark_batch_wait: 1h",

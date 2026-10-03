@@ -219,10 +219,6 @@ if uses_patched_workspace; then
   ZKSYNC_OS_LOCKED_REV="$(extract_locked_rev "${ZKSYNC_OS_SOURCE_URL}" "${ZKSYNC_OS_TAG}")"
   ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_checkout \
     "${ZKSYNC_OS_ALIAS}" "${ZKSYNC_OS_APPLICATOR}" "${ZKSYNC_OS_DEV_PATH:-}")"
-  # SYSCOIN: Keep the published guest checkout intact; only server-native builds
-  # use the separately attested, closed two-file memory-policy overlay.
-  ZKSYNC_OS_CANONICAL_GUEST_PATH="${ZKSYNC_OS_PATCHED_PATH}"
-  ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_native_memory_checkout "${ZKSYNC_OS_CANONICAL_GUEST_PATH}")"
   ZKSYNC_OS_PATCHED_REV="$(git -C "${ZKSYNC_OS_PATCHED_PATH}" rev-parse HEAD)"
 
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"

@@ -6454,30 +6454,6 @@ gl_checkpoint_assert_fingerprint_matches
             generator,
         )
 
-    def test_generated_witness_memory_budget_is_configurable_and_validated(self) -> None:
-        generator = (
-            REPO_ROOT / "scripts" / "gateway-launch" / "generate-os-server-configs.sh"
-        ).read_text(encoding="utf-8")
-        self.assertIn('PROVER_WITNESS_MEMORY_BUDGET_BYTES:=4294967296', generator)
-        self.assertIn('export PROVER_WITNESS_MEMORY_BUDGET_BYTES', generator)
-        self.assertIn('witness_memory_budget: {prover_witness_memory_budget_bytes} B', generator)
-        start = generator.index('try:\n    prover_witness_memory_budget_bytes = int(')
-        end = generator.index('try:\n    prover_batch_with_proof_capacity_bytes', start)
-        validation = compile(generator[start:end], "witness-budget-config", "exec")
-        for value in ["8", "4294967296", str(2**64 - 1)]:
-            with self.subTest(value=value), patch.dict(
-                os.environ, {"PROVER_WITNESS_MEMORY_BUDGET_BYTES": value}
-            ):
-                scope = {"os": os}
-                exec(validation, scope)
-                self.assertEqual(scope["prover_witness_memory_budget_bytes"], int(value))
-        for value in ["0", "4", "7", "-1", "invalid", str(2**64)]:
-            with self.subTest(value=value), patch.dict(
-                os.environ, {"PROVER_WITNESS_MEMORY_BUDGET_BYTES": value}
-            ):
-                with self.assertRaisesRegex(SystemExit, "PROVER_WITNESS_MEMORY_BUDGET_BYTES"):
-                    exec(validation, {"os": os})
-
     def test_generated_prover_proxy_bounds_request_and_response_buffering(self) -> None:
         generator = (
             REPO_ROOT

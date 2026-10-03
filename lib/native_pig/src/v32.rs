@@ -12,7 +12,7 @@ use zk_os_basic_system::system_implementation::flat_storage_model::FlatStorageLe
 use zk_os_forward_system::run::{
     BatchBlockInput, BatchState as ForwardBatchState, LeafProof,
     PreimageSource as ForwardPreimageSource, ReadStorage as ForwardReadStorage, ReadStorageTree,
-    StorageCommitment, generate_batch_proof_input, generate_batch_proof_input_with_max_words,
+    StorageCommitment, generate_batch_proof_input,
 };
 use zksync_os_batch_types::syscoin_edge_da_refs_for_blocks;
 use zksync_os_interface::traits::TxListSource;
@@ -52,42 +52,6 @@ pub(crate) fn generate_batch_run<ReadState: ReadStateHistory>(
     merkle_tree: MerkleTree<RocksDBWrapper>,
     pubdata_mode: PubdataMode,
     compact_edge_da_commit_target: Address,
-) -> anyhow::Result<NativeBatchRunOutput> {
-    generate_batch_run_impl(
-        blocks,
-        read_state,
-        merkle_tree,
-        pubdata_mode,
-        compact_edge_da_commit_target,
-        None,
-    )
-}
-
-pub(crate) fn generate_batch_run_with_max_words<ReadState: ReadStateHistory>(
-    blocks: &[NativeBatchBlock<'_>],
-    read_state: &ReadState,
-    merkle_tree: MerkleTree<RocksDBWrapper>,
-    pubdata_mode: PubdataMode,
-    compact_edge_da_commit_target: Address,
-    max_words: usize,
-) -> anyhow::Result<NativeBatchRunOutput> {
-    generate_batch_run_impl(
-        blocks,
-        read_state,
-        merkle_tree,
-        pubdata_mode,
-        compact_edge_da_commit_target,
-        Some(max_words),
-    )
-}
-
-fn generate_batch_run_impl<ReadState: ReadStateHistory>(
-    blocks: &[NativeBatchBlock<'_>],
-    read_state: &ReadState,
-    merkle_tree: MerkleTree<RocksDBWrapper>,
-    pubdata_mode: PubdataMode,
-    compact_edge_da_commit_target: Address,
-    max_words: Option<usize>,
 ) -> anyhow::Result<NativeBatchRunOutput> {
     anyhow::ensure!(
         !blocks.is_empty(),
@@ -166,26 +130,14 @@ fn generate_batch_run_impl<ReadState: ReadStateHistory>(
         .map(|block| batch_block_input(block.replay_record))
         .collect::<Vec<_>>();
 
-    let da_scheme = da_commitment_scheme(pubdata_mode)?;
-    let batch_run = match max_words {
-        Some(max_words) => generate_batch_proof_input_with_max_words(
-            initial_proof_data,
-            batch_state,
-            block_inputs,
-            da_scheme,
-            chain_config,
-            max_words,
-        )
-        .map_err(anyhow::Error::new)?,
-        None => generate_batch_proof_input(
-            initial_proof_data,
-            batch_state,
-            block_inputs,
-            da_scheme,
-            chain_config,
-        )
-        .map_err(|err| anyhow::anyhow!("native batch run failed: {err:?}"))?,
-    };
+    let batch_run = generate_batch_proof_input(
+        initial_proof_data,
+        batch_state,
+        block_inputs,
+        da_commitment_scheme(pubdata_mode)?,
+        chain_config,
+    )
+    .map_err(|err| anyhow::anyhow!("native batch run failed: {err:?}"))?;
 
     // SYSCOIN: HistoricalBatchState advances through canonical snapshots, not guest writes.
     // Refuse any divergent native block before accepting its witness or batch commitment.

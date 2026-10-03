@@ -162,31 +162,6 @@ pub fn generate_batch_run<ReadState: ReadStateHistory>(
     )
 }
 
-/// Generate canonical native input within a witness allocation admitted by the caller.
-///
-/// SYSCOIN: `max_words` includes the batch prefix and all oracle response headers.
-/// Oversize generation fails immediately without evicting or rebuilding retained inputs.
-/// The caller must reserve two buffer allowances during generation: reallocation can
-/// temporarily retain both old and new allocations. Refund to the returned vector's
-/// actual capacity afterward. This caps witness buffers, not the entire native process.
-pub fn generate_batch_run_with_max_words<ReadState: ReadStateHistory>(
-    blocks: &[NativeBatchBlock<'_>],
-    read_state: &ReadState,
-    merkle_tree: MerkleTree<RocksDBWrapper>,
-    pubdata_mode: PubdataMode,
-    compact_edge_da_commit_target: Address,
-    max_words: usize,
-) -> anyhow::Result<NativeBatchRunOutput> {
-    v32::generate_batch_run_with_max_words(
-        blocks,
-        read_state,
-        merkle_tree,
-        pubdata_mode,
-        compact_edge_da_commit_target,
-        max_words,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -95,10 +95,8 @@ The application prover listener is loopback-only. Generated nginx config keeps r
 enabled, ignores upstream attempts to disable it, and permits a 512 MiB temporary spool for each
 response. Each FRI worker advertises a 384 MiB complete decompressed-response capacity, the node
 clamps it to 384 MiB, and the queue filters exact base64/JSON size before creating a lease. This is
-a current deployment capacity gate, not a canonical V8 witness bound: any already-queued larger
-job remains unassigned until the worker limit, node clamp, and proxy spool are raised together.
-New batch-producer generation explicitly rejects a witness above the serviceable ceiling before retaining
-an input that no production worker can download. The tokenless
+a current deployment capacity gate, not a canonical V8 witness bound: a larger job remains
+unassigned until the worker limit, node clamp, and proxy spool are raised together. The tokenless
 FRI peek remains independently capped at 64 MiB. SNARK workers advertise
 `max_snark_pick_response_bytes`; the node defaults an absent advertisement to the legacy 256 MiB
 and clamps advertised capacity to 512 MiB before leasing. Updated clients advertise and enforce
@@ -132,39 +130,18 @@ a complete next 100-FRI aggregate, and at least 56 batches of headroom while dis
 waits for workers to free capacity. Deployments with more concurrent SNARK workers must size the
 RAM bound for their active leases and operating headroom, not for every proof retained on disk.
 
-### Retained witness memory
+### Shared native witness inputs
 
-`prover_api.witness_memory_budget` defaults to **4 GiB**. Generated Gateway/edge configs expose the
-same setting through `PROVER_WITNESS_MEMORY_BUDGET_BYTES` (default `4294967296`). This byte budget
-is independent of the 256-batch map span and the 8-GiB execution-to-batching disk staging limit;
-it does not increase either backlog limit or evict witnesses when proving slows down.
+Native witness generation moves its completed `Vec<u32>` into an immutable, reference-counted
+input. Pipeline owners, the FRI job map, and pick/peek readers share that backing allocation
+instead of cloning the complete vector. A reader remains valid after proof handoff removes the
+job; the buffer is freed when its last owner is dropped. Failed handoff retains the same input
+for rollback. JSON and binary serialization retain the existing vector and enum representation.
 
-Before either fresh or restart-recreated batch PIG starts, the batcher reserves twice the smaller
-of half the witness budget and the largest raw witness that fits the 384-MiB base64/JSON FRI pick
-lane (just under 288 MiB, with framing allowance). The extra allowance covers transient old/new
-buffers during allocator growth; the default generation reservation is just under 576 MiB.
-This conservative reservation waits for
-capacity without holding prover job-map or handoff locks. Native capture checks each full oracle
-addition before growing its buffer and returns an explicit capacity error if the input cannot fit.
-Once generation completes, unused reservation bytes are refunded; the remaining charge is based
-on allocated `Vec<u32>` **capacity**, not just the populated word count.
-
-The immutable input and its reservation share one allocation across pipeline, job-map, pick and
-peek clones. A download, lease timeout or accepted proof does not refund the original input.
-Successful downstream handoff drops that owner; failed or cancelled handoff retains it for
-rollback. Quota is refunded only after the last shared input owner frees the buffer, including any
-concurrent API reader. Memory pressure stops additional generation while proof submission,
-verification and forwarding remain able to drain existing jobs. Restart recreation remains a
-recovery mechanism, not an ordinary queue-full policy.
-
-This is **not a 4-GiB process/container memory limit**. Execution state, native oracle responses and
-scratch allocations (including the signature verifier's independent native PIG scratch witness),
-block/tree data, canonical pubdata, proof verification and bounded response
-encoding need separate headroom. Validate whole-process peak memory on the intended host before
-choosing an OS/container hard limit. A smaller budget also lowers the single-input generation
-ceiling; raise the memory and transport capacities together when supporting larger witnesses.
-The bounded native-host source overlay is separately attested and leaves the canonical guest
-patch, V32/V8 program identity and published key-generation evidence unchanged.
+This changes ownership, not admission policy: there is no additional witness byte quota or
+generation-cap gate. The existing batch span, execution/batch limits, FRI response capacities,
+disk staging limits, and FRI-to-SNARK grouping rules remain unchanged. Native generation, proof
+verification, and each HTTP response's encoding still need their own memory headroom.
 
 <!-- SYSCOIN: Durable capacity is the multi-worker queue's bounded-recovery overflow invariant. -->
 Generated production configs set `prover_api.proof_storage.batch_with_proof_capacity` to 8 GiB.

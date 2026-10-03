@@ -4,11 +4,10 @@ use std::time::Duration;
 use zksync_os_batch_types::batcher_model::{
     BatchEnvelope, BatchForSigning, BatchMetadata, ProverInput,
 };
-use zksync_os_batch_types::{WitnessInput, WitnessMemoryReservation};
 use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_contract_interface::models::{L2Log, StoredBatchInfo};
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
-use zksync_os_native_pig::{NativeBatchBlock, generate_batch_run_with_max_words};
+use zksync_os_native_pig::{NativeBatchBlock, generate_batch_run};
 use zksync_os_storage_api::{ReadStateHistory, TreeBlock, read_multichain_root};
 use zksync_os_types::{ProvingVersion, PubdataMode, SystemTxType, ZkEnvelope};
 
@@ -37,8 +36,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     compact_edge_da_commit_target: Address,
     read_state: &ReadState,
     merkle_tree: &MerkleTree<RocksDBWrapper>,
-    maximum_witness_words: usize,
-    witness_reservation: WitnessMemoryReservation,
 ) -> anyhow::Result<SealedBatch> {
     let block_number_from = blocks.first().unwrap().record.block_context.block_number;
     let block_number_to = blocks.last().unwrap().record.block_context.block_number;
@@ -64,13 +61,12 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let started_at = std::time::Instant::now();
     // SYSCOIN: The patched guest authenticates compact edge-DA calls to this fixed target.
-    let native_batch_run = generate_batch_run_with_max_words(
+    let native_batch_run = generate_batch_run(
         &native_blocks,
         read_state,
         merkle_tree.clone(),
         pubdata_mode,
         compact_edge_da_commit_target,
-        maximum_witness_words,
     )?;
     let native_pig_measurement = BatchPigMeasurement {
         prover_input_words: native_batch_run.prover_input.len(),
@@ -133,10 +129,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     }
 
     let canonical_pubdata = native_batch_run.pubdata.clone();
-    let batch_prover_input = ProverInput::Real(WitnessInput::with_reservation(
-        native_batch_run.prover_input,
-        witness_reservation,
-    )?);
+    let batch_prover_input = ProverInput::Real(native_batch_run.prover_input.into());
     record_batch_pig_telemetry(BatchPigTelemetry {
         batch_number,
         chain_id,
