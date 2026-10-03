@@ -92,17 +92,27 @@ and its total deadline cover the streamed public upload.
 
 <!-- SYSCOIN: A bounded response also needs a bounded trusted drain independent of client pace. -->
 The application prover listener is loopback-only. Generated nginx config keeps response buffering
-enabled, ignores upstream attempts to disable it, and permits a 384 MiB temporary spool for each
-response. Each FRI worker advertises that same complete decompressed-response capacity, the node
+enabled, ignores upstream attempts to disable it, and permits a 512 MiB temporary spool for each
+response. Each FRI worker advertises a 384 MiB complete decompressed-response capacity, the node
 clamps it to 384 MiB, and the queue filters exact base64/JSON size before creating a lease. This is
 a current deployment capacity gate, not a canonical V8 witness bound: a larger job remains
 unassigned until the worker limit, node clamp, and proxy spool are raised together. The tokenless
-FRI peek remains independently capped at 64 MiB; SNARK responses remain capped at 256 MiB.
+FRI peek remains independently capped at 64 MiB. SNARK workers advertise
+`max_snark_pick_response_bytes`; the node defaults an absent advertisement to the legacy 256 MiB
+and clamps advertised capacity to 512 MiB before leasing. Updated clients advertise and enforce
+512 MiB after HTTP decompression. This fits 100 roughly 2.6 MB proofs after base64 expansion,
+but is not a worst-case guarantee: the unchanged 100-proof count cap and independent 256 MiB
+durable-record cap also apply, so larger aggregates may still split. The journal stores batch
+metadata and the final wrapper with input FRI proof bytes stripped; its record cap is not a raw
+FRI-transport limit. Tokenless SNARK peeks retain their independent 256 MiB cap. A worker
+advertising insufficient capacity receives no lease and
+does not fault the shared manager; an unservable aggregate at the hard server cap remains fatal.
 
 Nginx therefore drains the node response and releases any scarce pick permit without waiting for
 the remote prover to read the buffered copy. An unbuffered tunnel or direct container-network bind
 is not a supported remote ingress; provision nginx temporary storage for all three concurrent FRI
-responses, with each per-response spool at least as large as the node clamp. The generated public
+responses (384 MiB each) and one SNARK response (512 MiB), with each per-response spool at least
+as large as its node clamp. The generated public
 vhost returns 404 for tokenless FRI/SNARK peek and failed-proof debug routes; operators may use
 those diagnostics only through the node's trusted loopback.
 

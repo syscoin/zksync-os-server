@@ -29,7 +29,9 @@ use zksync_os_types::ProvingVersion;
 
 // SYSCOIN: Bound the normal compressed/uncompressed SNARK-pick JSON below a small fraction of a
 // 64-GiB host. The fixed budget covers field names, VK/token/range values, quotes, and commas.
-pub(crate) const MAX_SNARK_PICK_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_SNARK_PICK_RESPONSE_BYTES: usize = 512 * 1024 * 1024;
+// SYSCOIN: An absent worker advertisement preserves compatibility with 256-MiB clients.
+pub(crate) const LEGACY_SNARK_PICK_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 const SNARK_PICK_FIXED_JSON_BUDGET: usize = 4 * 1024;
 
 // SYSCOIN: Base64 expands to four bytes per three-byte quantum. Include JSON quotes and one comma
@@ -38,8 +40,11 @@ fn snark_pick_proof_wire_bytes(proof: &FriProof) -> Option<usize> {
     let FriProof::Real(real) = proof else {
         return None;
     };
-    real.proof()
-        .len()
+    snark_pick_proof_wire_bytes_from_len(real.proof().len())
+}
+
+fn snark_pick_proof_wire_bytes_from_len(proof_bytes: usize) -> Option<usize> {
+    proof_bytes
         .checked_add(2)?
         .checked_div(3)?
         .checked_mul(4)?
@@ -147,6 +152,13 @@ impl SnarkManagerFatalError {
 
     fn current(&self) -> Option<Arc<str>> {
         self.sender.borrow().clone()
+    }
+
+    // SYSCOIN: Worker-advertised shortages are request-local; only the server hard cap is fatal.
+    fn latch_server_response_capacity(&self, response_limit: usize, message: &str) {
+        if response_limit == MAX_SNARK_PICK_RESPONSE_BYTES {
+            self.latch(message.to_owned());
+        }
     }
 
     async fn wait(&self) -> Arc<str> {
@@ -379,8 +391,7 @@ impl SnarkJobManager {
         .await
     }
 
-    // SYSCOIN: Keep the exact response boundary injectable for focused tests while production
-    // always supplies the hard public HTTP cap above.
+    // SYSCOIN: The public API supplies a negotiated worker bound, clamped to the hard server cap.
     async fn pick_real_job_with_response_limit(
         &self,
         prover_id: String,
@@ -391,13 +402,14 @@ impl SnarkJobManager {
             .await
     }
 
-    async fn pick_real_job_with_limits(
+    pub(super) async fn pick_real_job_with_limits(
         &self,
         prover_id: String,
         supported_proving_versions: Option<&[ProvingVersion]>,
         response_limit: usize,
         requested_range: Option<(u64, u64)>,
     ) -> anyhow::Result<Option<LeasedSnarkJob>> {
+        let response_limit = response_limit.min(MAX_SNARK_PICK_RESPONSE_BYTES);
         if let Some((from, to)) = requested_range {
             anyhow::ensure!(
                 from > 0
@@ -420,9 +432,10 @@ impl SnarkJobManager {
                 "SNARK pick response limit {response_limit} is below the fixed \
                  {SNARK_PICK_FIXED_JSON_BUDGET}-byte JSON budget"
             );
-            self.fatal_error.latch(message.clone());
+            // SYSCOIN: Worker-controlled capacity cannot poison the shared manager.
             anyhow::bail!(message);
         };
+        let mut worker_capacity_exceeded = false;
         let pick = self
             .jobs
             .pick_ready_snark_jobs_with_response_capacity(
@@ -448,18 +461,21 @@ impl SnarkJobManager {
                     else {
                         // SYSCOIN: A real proof whose base64 arithmetic overflows is permanently
                         // above every representable response cap, never merely incompatible.
+                        worker_capacity_exceeded = true;
                         return SnarkJobEligibility::ResponseCapacityExceeded {
                             required_bytes: usize::MAX,
                             max_bytes: response_limit,
                         };
                     };
                     let Some(next_total) = encoded_proof_bytes.checked_add(next_proof_bytes) else {
+                        worker_capacity_exceeded = true;
                         return SnarkJobEligibility::ResponseCapacityExceeded {
                             required_bytes: usize::MAX,
                             max_bytes: response_limit,
                         };
                     };
                     if next_total > proof_budget {
+                        worker_capacity_exceeded = true;
                         return SnarkJobEligibility::ResponseCapacityExceeded {
                             required_bytes: SNARK_PICK_FIXED_JSON_BUDGET.saturating_add(next_total),
                             max_bytes: response_limit,
@@ -509,12 +525,13 @@ impl SnarkJobManager {
                 max_bytes,
             } => {
                 // SYSCOIN: No lease exists at this point. A canonical two-FRI response that cannot
-                // cross the configured wire cap is an operator-visible terminal configuration.
+                // cross the hard server cap is terminal; a smaller worker cap is request-local.
                 let message = format!(
                     "oldest contiguous SNARK aggregate {batch_from}-{blocked_at} requires at \
-                     least {required_bytes} response bytes, above the {max_bytes}-byte hard cap"
+                     least {required_bytes} response bytes, above the {max_bytes}-byte negotiated response cap"
                 );
-                self.fatal_error.latch(message.clone());
+                self.fatal_error
+                    .latch_server_response_capacity(response_limit, &message);
                 anyhow::bail!("{message}")
             }
             SnarkJobPick::Unwrappable {
@@ -528,7 +545,10 @@ impl SnarkJobManager {
                     "planned startup SNARK range {batch_from}-{batch_to} fits only \
                      {fittable_fris} FRIs and would strand an interior singleton"
                 );
-                self.fatal_error.latch(message.clone());
+                // SYSCOIN: A small advertised cap can create this split; another worker may fit.
+                if !worker_capacity_exceeded || response_limit == MAX_SNARK_PICK_RESPONSE_BYTES {
+                    self.fatal_error.latch(message.clone());
+                }
                 anyhow::bail!("{message}")
             }
             SnarkJobPick::Empty => {
@@ -1480,6 +1500,11 @@ mod tests {
     // framing and rejects every non-real pipeline marker.
     #[test]
     fn snark_pick_wire_size_is_checked_and_exact() {
+        for (raw, encoded) in [(0, 3), (1, 7), (2, 7), (3, 7), (4, 11)] {
+            assert_eq!(snark_pick_proof_wire_bytes_from_len(raw), Some(encoded));
+        }
+        assert_eq!(snark_pick_proof_wire_bytes_from_len(usize::MAX), None);
+        assert_eq!(snark_pick_proof_wire_bytes_from_len(usize::MAX - 2), None);
         let proof = FriProof::Real(RealFriProof {
             proof: Bytes::from_static(&[1, 2, 3, 4]),
             proving_execution_version: ProvingVersion::V8 as u32,
@@ -1490,6 +1515,77 @@ mod tests {
             snark_pick_proof_wire_bytes(&FriProof::AlreadySubmittedToL1),
             None
         );
+    }
+
+    // SYSCOIN: Exercise actual pre-lease admission at both production limits without allocating
+    // hundreds of MiB: Bytes clones share one representative 2.6-MB historical-proof-sized buffer.
+    #[tokio::test]
+    async fn negotiated_capacity_admits_100_representative_proofs_and_legacy_splits()
+    -> anyhow::Result<()> {
+        let proof = Bytes::from(vec![0x5a; 2_616_092]);
+        let wire_bytes = snark_pick_proof_wire_bytes_from_len(proof.len()).unwrap();
+        let required = wire_bytes
+            .checked_mul(100)
+            .unwrap()
+            .checked_add(SNARK_PICK_FIXED_JSON_BUDGET)
+            .unwrap();
+        assert!(required > LEGACY_SNARK_PICK_RESPONSE_BYTES);
+        assert!(required <= MAX_SNARK_PICK_RESPONSE_BYTES);
+        for limit in [
+            LEGACY_SNARK_PICK_RESPONSE_BYTES,
+            MAX_SNARK_PICK_RESPONSE_BYTES,
+        ] {
+            let (sender, _receiver) = mpsc::channel(1);
+            let manager = SnarkJobManager::new(
+                sender,
+                100,
+                100,
+                Duration::from_secs(3600),
+                Duration::from_secs(60),
+                100,
+            );
+            let mut previous = None;
+            for batch_number in 1..=100 {
+                let mut batch = create_test_batch_envelope_with_data(
+                    batch_number,
+                    ProtocolSemanticVersion::new(0, 32, 0),
+                    FriProof::Real(RealFriProof {
+                        proof: proof.clone(),
+                        proving_execution_version: ProvingVersion::V8 as u32,
+                    }),
+                );
+                if let Some(previous) = previous {
+                    batch.batch.previous_stored_batch_info = previous;
+                }
+                previous = Some(batch.batch.batch_info.clone().into_stored());
+                manager.add_job(batch).await;
+            }
+            let picked = manager
+                .pick_real_job_with_response_limit(
+                    "capacity-worker".to_owned(),
+                    Some(&[ProvingVersion::V8]),
+                    limit,
+                )
+                .await?
+                .unwrap();
+            let expected = ((limit - SNARK_PICK_FIXED_JSON_BUDGET) / wire_bytes).min(100);
+            assert_eq!(picked.batches.len(), expected);
+            assert_eq!(picked.batches.first().unwrap().0.batch_number, 1);
+            assert_eq!(
+                picked.batches.last().unwrap().0.batch_number,
+                expected as u64
+            );
+            assert_eq!(
+                expected,
+                if limit == MAX_SNARK_PICK_RESPONSE_BYTES {
+                    100
+                } else {
+                    76
+                }
+            );
+            assert!(manager.fatal_error.current().is_none());
+        }
+        Ok(())
     }
 
     // SYSCOIN: Crossing the response cap after a valid two-FRI prefix is an immediate split
@@ -1564,7 +1660,7 @@ mod tests {
     }
 
     // SYSCOIN: If the mandatory two-FRI response itself cannot fit, no lease is created and the
-    // critical manager latches a deterministic operator-visible fault instead of polling forever.
+    // smaller worker cannot poison the manager for a subsequent adequately sized worker.
     #[tokio::test]
     async fn unservable_two_proof_response_fails_before_leasing() -> anyhow::Result<()> {
         let (sender, _receiver) = mpsc::channel(1);
@@ -1572,23 +1668,121 @@ mod tests {
             sender,
             100,
             100,
-            Duration::from_secs(3600),
+            Duration::ZERO,
             Duration::from_secs(60),
             100,
         );
         let _ = add_two_contiguous_real_jobs(&manager).await;
         let proof_wire_bytes = snark_pick_proof_wire_bytes(&real_fri_proof()).unwrap();
         let response_limit = SNARK_PICK_FIXED_JSON_BUDGET + proof_wire_bytes;
-        let error = manager
-            .pick_real_job_with_response_limit(
-                "capacity-fatal".to_owned(),
+        for limit in [0, response_limit] {
+            let error = manager
+                .pick_real_job_with_response_limit(
+                    "small-worker".to_owned(),
+                    Some(&[ProvingVersion::V8]),
+                    limit,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(if limit == 0 {
+                "fixed"
+            } else {
+                "response bytes"
+            }));
+            assert!(manager.fatal_error.current().is_none());
+            assert!(
+                manager
+                    .status()
+                    .await
+                    .iter()
+                    .all(|job| job.assigned_to_prover_id.is_none())
+            );
+        }
+        let picked = manager
+            .pick_real_job_with_limits(
+                "full-worker".to_owned(),
                 Some(&[ProvingVersion::V8]),
-                response_limit,
+                MAX_SNARK_PICK_RESPONSE_BYTES,
+                Some((1, 2)),
             )
+            .await?
+            .unwrap();
+        assert_eq!(picked.batches.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hard_server_response_capacity_fault_remains_terminal() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            100,
+            100,
+            Duration::ZERO,
+            Duration::from_secs(60),
+            100,
+        );
+        let message = "aggregate requires more than the hard 512 MiB response cap";
+        // Exercise the exact latch used by UnservableResponse without allocating a >512-MiB body.
+        manager
+            .fatal_error
+            .latch_server_response_capacity(LEGACY_SNARK_PICK_RESPONSE_BYTES, message);
+        assert!(manager.fatal_error.current().is_none());
+        manager
+            .fatal_error
+            .latch_server_response_capacity(MAX_SNARK_PICK_RESPONSE_BYTES, message);
+        assert_eq!(&*manager.wait_for_fatal_error().await, message);
+        let error = manager
+            .pick_real_job("full-worker".to_owned(), None)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("response bytes"));
-        assert!(manager.fatal_error.current().is_some());
+        assert!(error.to_string().contains("terminally faulted"));
+    }
+
+    #[tokio::test]
+    async fn small_worker_startup_singleton_split_does_not_poison_full_capacity_worker()
+    -> anyhow::Result<()> {
+        let (sender, _receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            100,
+            100,
+            Duration::ZERO,
+            Duration::from_secs(60),
+            100,
+        );
+        manager.seed_recovered_journal_ownership(&[(4, 5)]).await?;
+        manager
+            .install_startup_recovery_plan(StartupRecoveryPlan::build(
+                0,
+                5,
+                &[(4, 5)],
+                3,
+                100,
+                false,
+            )?)
+            .await?;
+        let mut previous = None;
+        for batch_number in 1..=3 {
+            let mut batch = create_test_batch_envelope_with_data(
+                batch_number,
+                ProtocolSemanticVersion::new(0, 32, 0),
+                real_fri_proof(),
+            );
+            if let Some(previous) = previous {
+                batch.batch.previous_stored_batch_info = previous;
+            }
+            previous = Some(batch.batch.batch_info.clone().into_stored());
+            manager.add_job(batch).await;
+        }
+        let limit = SNARK_PICK_FIXED_JSON_BUDGET
+            + 2 * snark_pick_proof_wire_bytes(&real_fri_proof()).unwrap();
+        let error = manager
+            .pick_real_job_with_response_limit("small-worker".to_owned(), None, limit)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("singleton"));
+        assert!(manager.fatal_error.current().is_none());
         assert!(
             manager
                 .status()
@@ -1596,6 +1790,11 @@ mod tests {
                 .iter()
                 .all(|job| job.assigned_to_prover_id.is_none())
         );
+        let picked = manager
+            .pick_real_job("full-worker".to_owned(), None)
+            .await?
+            .unwrap();
+        assert_eq!(picked.batches.len(), 3);
         Ok(())
     }
 

@@ -1,3 +1,4 @@
+use crate::prover_api::snark_job_manager::LEGACY_SNARK_PICK_RESPONSE_BYTES;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use zksync_os_types::ProvingVersion;
 
@@ -51,6 +52,9 @@ pub(super) struct ProverQuery {
     // it to the server / trusted-proxy envelope before the existing queue predicate creates a lease.
     #[serde(default)]
     pub max_fri_pick_response_bytes: Option<usize>,
+    // SYSCOIN: New workers opt into larger aggregates; missing declarations retain the old cap.
+    #[serde(default)]
+    pub max_snark_pick_response_bytes: Option<usize>,
     #[serde(default)]
     pub nonempty_only: bool,
     #[serde(default)]
@@ -84,6 +88,12 @@ impl ProverQuery {
     pub fn fri_pick_response_capacity(&self, server_maximum: usize) -> usize {
         self.max_fri_pick_response_bytes
             .unwrap_or(server_maximum)
+            .min(server_maximum)
+    }
+
+    pub fn snark_pick_response_capacity(&self, server_maximum: usize) -> usize {
+        self.max_snark_pick_response_bytes
+            .unwrap_or(LEGACY_SNARK_PICK_RESPONSE_BYTES)
             .min(server_maximum)
     }
 
@@ -216,6 +226,7 @@ mod tests {
             id: "test_prover".to_string(),
             supported_vk_hashes: supported_vk_hashes.map(str::to_string),
             max_fri_pick_response_bytes: None,
+            max_snark_pick_response_bytes: None,
         }
     }
 
@@ -251,6 +262,31 @@ mod tests {
         assert_eq!(query.fri_pick_response_capacity(384), 128);
         query.max_fri_pick_response_bytes = Some(512);
         assert_eq!(query.fri_pick_response_capacity(384), 384);
+    }
+
+    #[test]
+    fn snark_pick_capacity_preserves_legacy_default_and_clamps_before_assignment() {
+        use crate::prover_api::snark_job_manager::MAX_SNARK_PICK_RESPONSE_BYTES;
+        let mut query = query(None);
+        let maximum = MAX_SNARK_PICK_RESPONSE_BYTES;
+        assert_eq!(maximum, 512 * 1024 * 1024);
+        assert_eq!(
+            query.snark_pick_response_capacity(maximum),
+            256 * 1024 * 1024
+        );
+        assert_eq!(query.snark_pick_response_capacity(128), 128);
+        for capacity in [0, 128, maximum, usize::MAX] {
+            query.max_snark_pick_response_bytes = Some(capacity);
+            assert_eq!(
+                query.snark_pick_response_capacity(maximum),
+                capacity.min(maximum)
+            );
+        }
+        let decoded: ProverQuery = serde_json::from_value(serde_json::json!({
+            "id": "new-worker", "max_snark_pick_response_bytes": maximum,
+        }))
+        .unwrap();
+        assert_eq!(decoded.snark_pick_response_capacity(maximum), maximum);
     }
 
     #[test]
