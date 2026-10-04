@@ -299,10 +299,8 @@ impl BlockReceiptRepository {
 
 /// Thread-safe in-memory repository of transaction receipts, keyed by transaction hash.
 ///
-/// Retains all inserted receipts indefinitely. Internally uses a lock-free
-/// DashMap to allow concurrent inserts and lookups.
-///
-/// todo: unbounded memory use
+/// SYSCOIN: Receipts and sender/nonce lookup entries are retired together after persistence.
+/// DashMap allows concurrent access; mutations lock the primary map before the secondary map.
 #[derive(Clone, Debug)]
 struct TransactionReceiptRepository {
     /// Map from tx hash → (tx, receipt, meta).
@@ -329,8 +327,12 @@ impl TransactionReceiptRepository {
         for (tx_hash, data) in txs {
             let sender = data.tx.signer();
             let nonce = data.tx.nonce();
-            self.tx_data.insert(*tx_hash, data.clone());
+            // SYSCOIN: Keep the primary shard locked through secondary publication. Otherwise
+            // persistence can evict the payload between these writes and a late index insertion
+            // can resurrect an entry for data that is no longer retained.
+            let entry = self.tx_data.entry(*tx_hash).insert(data.clone());
             self.sender_nonce_index.insert((sender, nonce), *tx_hash);
+            drop(entry);
         }
     }
 
@@ -389,8 +391,19 @@ impl TransactionReceiptRepository {
     /// block still needs for persistence).
     pub fn remove_by_hashes(&self, tx_hashes: &[TxHash], block_number: BlockNumber) {
         for tx_hash in tx_hashes {
-            self.tx_data
-                .remove_if(tx_hash, |_, data| data.meta.block_number <= block_number);
+            self.tx_data.remove_if(tx_hash, |_, data| {
+                if data.meta.block_number > block_number {
+                    return false;
+                }
+                // SYSCOIN: Run while the primary shard is locked, before a same-hash reinsertion
+                // can publish a new owner. A different hash may have replaced this sender/nonce
+                // entry already; persisting the old transaction must leave that replacement.
+                self.sender_nonce_index
+                    .remove_if(&(data.tx.signer(), data.tx.nonce()), |_, indexed_hash| {
+                        indexed_hash == tx_hash
+                    });
+                true
+            });
         }
     }
 
@@ -490,6 +503,109 @@ mod tests {
         (block_output, vec![tx.clone()])
     }
 
+    // SYSCOIN: Bounded cache-lifecycle fixtures exercise eviction, replacement, and publication.
+    fn stored_tx(number: u64, tx: &ZkTransaction) -> Arc<StoredTxData> {
+        let (output, _) = block_with_tx(number, tx);
+        Arc::new(transaction_to_api_data(
+            &Sealed::new_unchecked(output, BlockHash::ZERO),
+            0,
+            0,
+            0,
+            tx.clone(),
+        ))
+    }
+
+    #[test]
+    fn sender_nonce_entries_retire_with_their_payloads_and_can_be_reinserted() {
+        let repository = TransactionReceiptRepository::new();
+        let tx = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(9, u64::MAX));
+        let data = stored_tx(1, &tx);
+        repository.insert([(tx.hash(), &data)]);
+        assert_eq!(
+            repository.get_transaction_hash_by_sender_nonce(tx.signer(), tx.nonce()),
+            Some(*tx.hash()),
+        );
+        repository.remove_by_hashes(&[*tx.hash()], 1);
+        assert!(repository.tx_data.is_empty());
+        assert!(repository.sender_nonce_index.is_empty());
+
+        let data = stored_tx(2, &tx);
+        repository.insert([(tx.hash(), &data)]);
+        repository.remove_by_hashes(&[*tx.hash()], 1);
+        assert_eq!(
+            repository.get_transaction_hash_by_sender_nonce(tx.signer(), tx.nonce()),
+            Some(*tx.hash()),
+        );
+        repository.remove_by_hashes(&[*tx.hash()], 2);
+        assert!(repository.tx_data.is_empty());
+        assert!(repository.sender_nonce_index.is_empty());
+    }
+
+    #[test]
+    fn retiring_old_hash_preserves_a_different_hash_with_the_same_sender_and_nonce() {
+        let repository = TransactionReceiptRepository::new();
+        let first = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(9, u64::MAX));
+        let later = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(10, u64::MAX));
+        assert_ne!(first.hash(), later.hash());
+        assert_eq!(first.signer(), later.signer());
+        assert_eq!(first.nonce(), later.nonce());
+        let first_data = stored_tx(1, &first);
+        let later_data = stored_tx(2, &later);
+        repository.insert([(first.hash(), &first_data), (later.hash(), &later_data)]);
+        repository.remove_by_hashes(&[*first.hash()], 1);
+        assert_eq!(
+            repository.get_transaction_hash_by_sender_nonce(later.signer(), later.nonce()),
+            Some(*later.hash()),
+        );
+        assert_eq!(repository.len(), 1);
+        repository.remove_by_hashes(&[*later.hash()], 2);
+        assert!(repository.sender_nonce_index.is_empty());
+    }
+
+    #[test]
+    fn index_publication_cannot_outlive_concurrent_payload_eviction() {
+        let repository = TransactionReceiptRepository::new();
+        let tx = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(9, u64::MAX));
+        let data = stored_tx(1, &tx);
+        // Block secondary publication. The inserting thread must retain the primary shard lock
+        // until this guard is released, so eviction cannot slip between the two writes.
+        let index_guard = repository
+            .sender_nonce_index
+            .entry((tx.signer(), tx.nonce()))
+            .or_insert(*tx.hash());
+        let held_primary_lock = std::thread::scope(|scope| {
+            let inserting = scope.spawn(|| repository.insert([(tx.hash(), &data)]));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let held_primary_lock = loop {
+                if repository.tx_data.try_get(tx.hash()).is_locked() {
+                    break true;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break false;
+                }
+                std::thread::yield_now();
+            };
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let repository = &repository;
+            let tx = &tx;
+            let removing = scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                repository.remove_by_hashes(&[*tx.hash()], 1);
+            });
+            started_rx.recv().unwrap();
+            drop(index_guard);
+            inserting.join().unwrap();
+            removing.join().unwrap();
+            held_primary_lock
+        });
+        assert!(
+            held_primary_lock,
+            "insertion released the primary lock before index publication"
+        );
+        assert!(repository.tx_data.is_empty());
+        assert!(repository.sender_nonce_index.is_empty());
+    }
+
     /// The same tx hash can occur in two blocks (the deterministic `SetSLChainId` placeholder
     /// is injected both on the first block of a fresh chain and on protocol upgrades). When
     /// both blocks are in memory, persisting the earlier one must not drop the tx data the
@@ -521,9 +637,22 @@ mod tests {
         repository
             .get_block_and_transactions_by_number(2)
             .expect("later block lost its tx data when the earlier block was persisted");
+        // SYSCOIN: Retiring an earlier owner must preserve the later sender/nonce mapping.
+        assert_eq!(
+            repository
+                .get_transaction_hash_by_sender_nonce(tx.signer(), tx.nonce())
+                .unwrap(),
+            Some(*tx.hash()),
+        );
 
-        // The later block's removal does drop the tx data.
+        // SYSCOIN: Retiring the actual owner must release both the data and secondary mapping.
         repository.remove_block_and_transactions(2, &later.body.transactions);
         assert!(repository.get_transaction(*tx.hash()).unwrap().is_none());
+        assert!(
+            repository
+                .get_transaction_hash_by_sender_nonce(tx.signer(), tx.nonce())
+                .unwrap()
+                .is_none()
+        );
     }
 }
