@@ -1,5 +1,5 @@
-//! Current V32/V8 Anvil component-test inventory. This is deliberately not the
-//! canonical fixture loader and cannot certify Core consensus, NEVM DA or proofs.
+//! Historical V32/V8 Anvil component-test inventory with mocked proving. This is
+//! not the canonical fixture loader and cannot certify Core, NEVM DA or proofs.
 use super::{FileIdentity, FixtureResult, ValidatedFixtureInventory, regular_file};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -11,6 +11,8 @@ pub const DESCRIPTOR_FILE: &str = "anvil-component.json";
 pub const DATABASE_IDENTITY_FILE_NAME: &str = "database_identity.json";
 const MAX_DATABASE_IDENTITY_BYTES: u64 = 16 * 1024;
 pub const GENESIS_SHA256: &str = "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95";
+// The actual frozen mock deployment retains its old key. Do not relabel it with
+// the active production key or treat passing component tests as key qualification.
 pub const VK_HASH: &str = "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe";
 /// Public, insecure Anvil development account 0, not an operator wallet output.
 pub const PUBLIC_ANVIL_REVERTER_KEY: &str =

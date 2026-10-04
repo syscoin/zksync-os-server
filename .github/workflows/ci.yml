@@ -102,6 +102,7 @@ jobs:
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
             scripts.tests.test_local_patched_zksync_os \
+            scripts.tests.test_server_airbender_security \
             scripts.tests.test_gateway_settlement_fee_payer \
             scripts.tests.test_era_generated_release \
             scripts.tests.test_v32_keygen_end_params \

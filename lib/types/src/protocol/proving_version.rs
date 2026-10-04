@@ -27,10 +27,10 @@ impl TryFrom<ProtocolSemanticVersion> for ProvingVersion {
 }
 
 impl ProvingVersion {
-    /// SYSCOIN: Security100 key generated from the reproduced Syscoin V8 guest.
-    /// The stock upstream key binds a different program and is not accepted.
+    /// SYSCOIN: Security100 key generated from the reproduced Syscoin V8 guest
+    /// and security-patched recursion circuits. Earlier and stock keys are not accepted.
     const V8_VK_HASH: &'static str =
-        "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe";
+        "0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139";
     const V8_VK_REGENERATION_REQUIRED: bool = false;
 
     pub const fn requires_vk_regeneration(&self) -> bool {
@@ -131,9 +131,10 @@ mod tests {
         assert!(!ProvingVersion::V8.requires_vk_regeneration());
         assert_eq!(
             ProvingVersion::V8.vk_hash(),
-            "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe"
+            "0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139"
         );
         for other in [
+            "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe",
             "0x0000000000000000000000000000000000000000000000000000000000000000",
             "0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a",
         ] {

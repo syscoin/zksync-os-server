@@ -3,12 +3,12 @@
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
   "reviewed_source_tree": "264d98e758c3a032942dfb08ee7d87a3f46288b4",
-  "candidate_tree": "ff5565cd22b61259d6f886e9a0130f788bbdb11c",
+  "candidate_tree": "117b5f2d1ad82de6a073142d45bd46a5218f493e",
   "source_patch_sha256": "0cac53c803b502e67c4a14ccf8eef4f0f576a0430fa0ee007276becbf124e2c6",
   "source_applicator_sha256": "503341ef094f5a5b6b7766906a53a6eda99615cdb0437f98aa563cb8b7fa029d",
-  "overlay_sha256": "8e84cb33aeaecb71b167e306ee88f6a71209cde94d268f2821059a3995e6da25",
-  "overlay_size": 120412,
-  "verification_key_hash": "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe",
+  "overlay_sha256": "76e356ccc14b4912863526e000d5ed712a59649c1d22d6cf27cee8658fb2b1ba",
+  "overlay_size": 120677,
+  "verification_key_hash": "0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139",
   "inventory_rows": 278,
   "permitted_inventory_rows": [
     "l1-contracts/ZKsyncOSVerifierPlonk",
@@ -17,19 +17,19 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "2f36b5cb3c86be90af0ea5a4dbb1bde5e7a30253dc96dcffdd0170d0b14f8dbe"
+      "sha256": "fe6060331c9ffacc1bf26d52a6e0851c09b593a0723faf1bda7a7811821ba91d"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
-      "sha256": "0eed330651721848435712751173b5d8b82d3b90fb8a84aec2c17af5b967a7de"
+      "sha256": "233a2e781431c132591431911442e3f0bccef95dfa813c57931f229d6c619efe"
     },
     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
-      "sha256": "0eed330651721848435712751173b5d8b82d3b90fb8a84aec2c17af5b967a7de"
+      "sha256": "233a2e781431c132591431911442e3f0bccef95dfa813c57931f229d6c619efe"
     },
     "tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json": {
-      "size": 8071,
-      "sha256": "7d147c3a0e8b85b9a3a05bc517c251ccab9f571c0bf3d665e9a55e4b3dca9d5a"
+      "size": 8072,
+      "sha256": "3dffa1e43ee043d708934ecc70ceedbfe4c9aff3ace3c871848de9ff61ab0379"
     }
   },
   "retained_fflonk_source_sha256": "9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48",
@@ -37,19 +37,49 @@
   "launcher_wired": false,
   "canonical_fixture_activated": false,
   "deployed": false,
-  "cancun_artifact_sha256": "e460fffcbac0e4aba61ff19e19d3c7c970b6996b08bc708eba0368082ce60e1f",
-  "cancun_creation_keccak256": "0x71bce5bbc0e436538cc293b76bf39d8dffceb47c5acbf43a32940d86c575cca3",
-  "cancun_runtime_keccak256": "0x489376a19005518c7e60943cc58060afb684d16831eed41558ec876fc2705473",
-  "cancun_archive_sha256": "ec039222c0ffd5e7dcd6906e2708e648cae355ffbe8c0ed68d0a689e30d48610",
-  "native_build_evidence_archive_sha256": "bf1bb141a0c6c54e512319de3291535dd8aaccf15f41eb402b3ed48bda0cf66a",
   "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
-  "real_serialized_proof_sha256": "ee9c95301ae9f6de0756308e318b37ea8280dcc911e097d4a3fe8abc7a24c8f7",
-  "real_evm_tests": 10,
-  "real_evm_verified_record_sha256": "7b9e216483593fbb28c6675ca4f5c6a171e38f539c9d6d772fafa0a904611d6a",
   "independent_host_reproduction": false,
-  "crypto_validation_provenance": {
+  "contract_generation_provenance": {
+    "status": "completed_contract_generation_only",
+    "result_sha256": "cbebf4ff7c9db6cd7da428784e3328f63c2b022e91b0dfb17d69976215fee1d3",
+    "runner_sha256": "e452eafa7a26cfe059c57c0e6807a5abc1f903ea770d8cf00f72d30de06be379",
+    "reference_workflow_sha256": "7f9ee422ef9d7457512f074a10e7a7991c1cfc9e587e30b2ef893efd5f444bb9",
+    "reviewed_source_tree": "264d98e758c3a032942dfb08ee7d87a3f46288b4",
+    "verification_key_hash": "0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139",
+    "keygen_result_sha256": "c17c12458443fb53681661476ace88b255c3f6dec34e4d817441290d786eccc2",
+    "source_before_sha256": "6007010f1b358e6e6802869aa5668cd096f9d11a2b93cb5798e60f324c864aeb",
+    "source_after_sha256": "eb620ebc37a238c7c0ed1c86526e5b01e5e1ce119a0b562c1b55ca742a5a25f4",
+    "overlay_manifest_sha256": "02213e7224dcbde690834d87d4fcd713f0e6d3f2a9e41f421b7043c3e4f86c04",
+    "plonk_generator_tests_passed": 4,
+    "full_contract_hash_recomputation_passed": true,
+    "contract_hash_check_passed": true,
+    "retained_fflonk_reproduced": true,
+    "genesis_regenerated_byte_identical": true,
+    "source_index_preserved": true,
+    "submodules_and_source_reverified": true,
+    "scope": "One-host generation, native PLONK generator tests, full contract inventory recomputation/check, retained FFLONK reproduction and byte-identical genesis regeneration. No new real-proof, EVM proof acceptance, deployment or independent-host qualification is asserted."
+  },
+  "proof_qualification": {
+    "status": "pending_for_new_verification_key",
+    "real_proof_verified": false,
+    "real_evm_verified": false
+  },
+  "historical_crypto_validation_provenance": {
+    "verification_key_hash": "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe",
     "reviewed_source_tree": "3eefa0f127d1deff365ebffcf489b183cde0e756",
     "candidate_tree": "9b4ff94d1ff647cc00aeb0c3b81dbb922646b946",
-    "scope": "Retained real-proof, EVM, Cancun artifact and native build archive records validate the unchanged PR323 crypto artifacts. They do not attest a real-proof run or full deployment identity for the source tree containing priority observation getters."
+    "subsequent_source_tree": "264d98e758c3a032942dfb08ee7d87a3f46288b4",
+    "subsequent_generated_tree": "ff5565cd22b61259d6f886e9a0130f788bbdb11c",
+    "plonk_source_sha256": "0eed330651721848435712751173b5d8b82d3b90fb8a84aec2c17af5b967a7de",
+    "plonk_key_sha256": "7d147c3a0e8b85b9a3a05bc517c251ccab9f571c0bf3d665e9a55e4b3dca9d5a",
+    "cancun_artifact_sha256": "e460fffcbac0e4aba61ff19e19d3c7c970b6996b08bc708eba0368082ce60e1f",
+    "cancun_creation_keccak256": "0x71bce5bbc0e436538cc293b76bf39d8dffceb47c5acbf43a32940d86c575cca3",
+    "cancun_runtime_keccak256": "0x489376a19005518c7e60943cc58060afb684d16831eed41558ec876fc2705473",
+    "cancun_archive_sha256": "ec039222c0ffd5e7dcd6906e2708e648cae355ffbe8c0ed68d0a689e30d48610",
+    "native_build_evidence_archive_sha256": "bf1bb141a0c6c54e512319de3291535dd8aaccf15f41eb402b3ed48bda0cf66a",
+    "real_serialized_proof_sha256": "ee9c95301ae9f6de0756308e318b37ea8280dcc911e097d4a3fe8abc7a24c8f7",
+    "real_evm_tests": 10,
+    "real_evm_verified_record_sha256": "7b9e216483593fbb28c6675ca4f5c6a171e38f539c9d6d772fafa0a904611d6a",
+    "scope": "Historical PR323 crypto artifacts for the old c1ab verification key only. These real-proof, EVM, Cancun artifact and native build archive records do not qualify the new d5bc key, new generated tree, or any current deployment."
   }
 }

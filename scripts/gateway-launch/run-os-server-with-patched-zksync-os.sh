@@ -73,6 +73,71 @@ runner_sha256_stdin() {
   fi
 }
 
+prebuilt_source_digest() {
+  # The Rust workspace and release/build scripts define the binary's reviewed
+  # identity. Runtime local-chain state is deliberately outside this snapshot.
+  python3 - "${ZKSYNC_OS_SERVER_PATH}" <<'PY'
+import hashlib
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+if not root.is_dir():
+    raise SystemExit(f"server source directory is missing: {root}")
+rust_roots = ("lib", "node")
+build_inputs = (
+    ".cargo/config.toml", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+    "scripts/_patched-zksync-os-workspace.sh",
+    "scripts/gateway-launch/_common.sh",
+    "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh",
+    "scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh",
+    "scripts/patches/zksync-os-syscoin-v0.4.0.patch",
+    "scripts/prepare-server-airbender.py",
+    "scripts/patches/airbender-server-security.json",
+    "scripts/patches/airbender-server-security.patch",
+    "scripts/apply-zksync-era-syscoin-patch.sh",
+    "scripts/patches/zksync-era-syscoin.patch",
+    "scripts/apply-era-contracts-syscoin-patch.sh",
+    "scripts/patches/era-contracts-syscoin.patch",
+    "scripts/apply-era-contracts-syscoin-release.py",
+    "scripts/releases/era-v32/check-release-overlay.py",
+    "scripts/releases/era-v32/generated-verifier-manifest.json",
+    "scripts/releases/era-v32/generated-verifier-overlay.patch",
+)
+excluded = {".git", "target", ".cursor", ".gateway-launch"}
+result = hashlib.sha256()
+
+
+def add_file(path):
+    if not path.is_file():
+        raise SystemExit(f"unreadable server source file: {path}")
+    relative = path.relative_to(root).as_posix().encode()
+    file_digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            file_digest.update(block)
+    result.update(relative + b"\0" + file_digest.digest())
+
+
+for name in sorted(rust_roots):
+    path = root / name
+    if not path.is_dir() or path.is_symlink():
+        raise SystemExit(f"missing or unsupported server build input: {path}")
+    for parent, dirs, files in os.walk(path):
+        dirs[:] = sorted(part for part in dirs if part not in excluded)
+        for part in dirs:
+            if (Path(parent) / part).is_symlink():
+                raise SystemExit(f"symlinked server source directory: {Path(parent) / part}")
+        for part in sorted(files):
+            if part not in excluded and Path(part).suffix in {".rs", ".toml", ".lock"}:
+                add_file(Path(parent) / part)
+for name in sorted(build_inputs):
+    add_file(root / name)
+print(result.hexdigest())
+PY
+}
+
 configure_build_context() {
   uses_patched_workspace || return 0
 
@@ -118,14 +183,15 @@ configure_build_context() {
 }
 
 prebuilt_digest() {
-  local binary="$1" binary_sha256
+  local binary="$1" source_sha256="$2" binary_sha256
   binary_sha256="$(runner_sha256_file "${binary}")"
-  printf '%s\0%s\0%s\0%s\0%s\0' \
+  printf '%s\0%s\0%s\0%s\0%s\0%s\0' \
     "${binary_sha256}" \
     "${WORKSPACE_NAME}" \
     "${PROTOCOL_VERSION}" \
     "${SYSCOIN_EDGE_DA_COMMIT_TARGET:-}" \
-    "${SYSCOIN_GAS_TANK_ADDRESS:-}" |
+    "${SYSCOIN_GAS_TANK_ADDRESS:-}" \
+    "${source_sha256}" |
     runner_sha256_stdin
 }
 
@@ -187,7 +253,8 @@ if [ "${1:-}" = "exec-prebuilt" ]; then
   IFS= read -r STAMPED_DIGEST < "${PREBUILT_STAMP}"
   [[ "${STAMPED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || \
     gl_die "prebuilt zksync-os-server build stamp is malformed: ${PREBUILT_STAMP}"
-  CURRENT_DIGEST="$(prebuilt_digest "${PREBUILT_BINARY}")"
+  CURRENT_SOURCE_DIGEST="$(prebuilt_source_digest)"
+  CURRENT_DIGEST="$(prebuilt_digest "${PREBUILT_BINARY}" "${CURRENT_SOURCE_DIGEST}")"
   [ "${CURRENT_DIGEST}" = "${STAMPED_DIGEST}" ] || \
     gl_die "prebuilt zksync-os-server binary or build context does not match its stamp; run the deployment build step first"
   exec "${PREBUILT_BINARY}" "$@"
@@ -208,7 +275,11 @@ if [ "${1:-}" = "build-prebuilt" ]; then
 fi
 
 refresh_os_server_config_credentials "$@"
+if [ "${BUILD_PREBUILT}" = true ]; then
+  PREBUILT_SOURCE_DIGEST="$(prebuilt_source_digest)"
+fi
 
+SERVER_AIRBENDER_PREPARED=false
 if uses_patched_workspace; then
   configure_build_context
   ZKSYNC_OS_ALIAS=zk_os_forward_system
@@ -231,6 +302,8 @@ if uses_patched_workspace; then
     "${RUN_PATH}" \
     "${ZKSYNC_OS_PATCHED_PATH}" "${ZKSYNC_OS_TAG}" "${ZKSYNC_OS_SOURCE_URL}" \
     "${ZKSYNC_OS_LOCKED_REV}" "${ZKSYNC_OS_PATCHED_REV}"
+  prepare_server_airbender "${RUN_PATH}"
+  SERVER_AIRBENDER_PREPARED=true
   clear_multivm_build_script_cache "${TARGET_DIR}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
@@ -243,13 +316,23 @@ else
 fi
 
 if [ "${BUILD_PREBUILT}" = true ]; then
-  cargo "$@"
+  if [ "${SERVER_AIRBENDER_PREPARED}" = true ]; then
+    run_cargo_with_verified_server_airbender "$@"
+  else
+    cargo "$@"
+  fi
   [ -x "${PREBUILT_BINARY}" ] || \
     gl_die "cargo build completed without an executable zksync-os-server binary: ${PREBUILT_BINARY}"
+  [ "$(prebuilt_source_digest)" = "${PREBUILT_SOURCE_DIGEST}" ] || \
+    gl_die "server source changed during the prebuilt build; run the deployment build step again"
   PREBUILT_STAMP_TMP="${PREBUILT_STAMP}.tmp.$$"
-  prebuilt_digest "${PREBUILT_BINARY}" > "${PREBUILT_STAMP_TMP}"
+  prebuilt_digest "${PREBUILT_BINARY}" "${PREBUILT_SOURCE_DIGEST}" > "${PREBUILT_STAMP_TMP}"
   mv "${PREBUILT_STAMP_TMP}" "${PREBUILT_STAMP}"
   exit 0
 fi
 
-cargo "$@"
+if [ "${SERVER_AIRBENDER_PREPARED}" = true ]; then
+  run_cargo_with_verified_server_airbender "$@"
+else
+  cargo "$@"
+fi

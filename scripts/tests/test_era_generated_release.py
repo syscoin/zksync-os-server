@@ -1,4 +1,4 @@
-"""Temporary-fixture tests only: no canonical activation, compilation or deployment."""
+"""Synthetic fixtures and optional read-only bundle checks; no activation or build."""
 import copy
 import hashlib
 import importlib.util
@@ -159,21 +159,100 @@ class ActivationTests(unittest.TestCase):
 class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
-        self.assertEqual(module.CANDIDATE, "ff5565cd22b61259d6f886e9a0130f788bbdb11c")
+        self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
+        self.assertEqual(module.SOURCE, "264d98e758c3a032942dfb08ee7d87a3f46288b4")
+        self.assertEqual(module.CANDIDATE, "117b5f2d1ad82de6a073142d45bd46a5218f493e")
+        self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
+        self.assertEqual(manifest["verification_key_hash"],
+                         "0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139")
         self.assertEqual(len(manifest["paths"]), 4)
+        overlay = (M.BUNDLE / "generated-verifier-overlay.patch").read_bytes()
+        self.assertEqual(len(overlay), manifest["overlay_size"])
+        self.assertEqual(sha(overlay), manifest["overlay_sha256"])
+        self.assertEqual(manifest["overlay_sha256"], module.OVERLAY_SHA)
         self.assertIsNone(M.CANONICAL_BINDING)
         self.assertEqual(sha((ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_bytes()),
                          module.SOURCE_APPLICATOR_SHA)
 
-    def test_historical_crypto_evidence_does_not_claim_current_deployment_tree(self):
+    def test_new_contract_generation_binds_actual_postimages_without_proof_claim(self):
         module, manifest = M.load_bundle()
-        evidence = manifest["crypto_validation_provenance"]
+        paths = manifest["paths"]
+        self.assertEqual(paths["AllContractsHashes.json"], {
+            "size": 160049, "sha256": "fe6060331c9ffacc1bf26d52a6e0851c09b593a0723faf1bda7a7811821ba91d"})
+        for rel in ("l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",
+                    "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol"):
+            self.assertEqual(paths[rel], {
+                "size": 95216, "sha256": "233a2e781431c132591431911442e3f0bccef95dfa813c57931f229d6c619efe"})
+        self.assertEqual(paths["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"], {
+            "size": 8072, "sha256": "3dffa1e43ee043d708934ecc70ceedbfe4c9aff3ace3c871848de9ff61ab0379"})
+        evidence = manifest["contract_generation_provenance"]
+        self.assertEqual(evidence["status"], "completed_contract_generation_only")
+        self.assertEqual(evidence["reviewed_source_tree"], module.SOURCE)
+        self.assertEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
+        self.assertEqual(evidence["result_sha256"],
+                         "cbebf4ff7c9db6cd7da428784e3328f63c2b022e91b0dfb17d69976215fee1d3")
+        self.assertEqual(evidence["keygen_result_sha256"],
+                         "c17c12458443fb53681661476ace88b255c3f6dec34e4d817441290d786eccc2")
+        self.assertEqual(evidence["plonk_generator_tests_passed"], 4)
+        self.assertEqual(manifest["proof_qualification"], {
+            "status": "pending_for_new_verification_key",
+            "real_proof_verified": False, "real_evm_verified": False})
+        self.assertFalse(manifest["independent_host_reproduction"])
+
+    def test_historical_crypto_evidence_does_not_claim_current_key_or_tree(self):
+        module, manifest = M.load_bundle()
+        evidence = manifest["historical_crypto_validation_provenance"]
+        self.assertEqual(evidence["verification_key_hash"],
+                         "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe")
+        self.assertNotEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
         self.assertEqual(evidence["reviewed_source_tree"], "3eefa0f127d1deff365ebffcf489b183cde0e756")
         self.assertEqual(evidence["candidate_tree"], "9b4ff94d1ff647cc00aeb0c3b81dbb922646b946")
         self.assertNotEqual(evidence["reviewed_source_tree"], module.SOURCE)
         self.assertNotEqual(evidence["candidate_tree"], module.CANDIDATE)
+        self.assertEqual(evidence["subsequent_generated_tree"], "ff5565cd22b61259d6f886e9a0130f788bbdb11c")
+        historical = {
+            "cancun_artifact_sha256": "e460fffcbac0e4aba61ff19e19d3c7c970b6996b08bc708eba0368082ce60e1f",
+            "cancun_creation_keccak256": "0x71bce5bbc0e436538cc293b76bf39d8dffceb47c5acbf43a32940d86c575cca3",
+            "cancun_runtime_keccak256": "0x489376a19005518c7e60943cc58060afb684d16831eed41558ec876fc2705473",
+            "cancun_archive_sha256": "ec039222c0ffd5e7dcd6906e2708e648cae355ffbe8c0ed68d0a689e30d48610",
+            "native_build_evidence_archive_sha256": "bf1bb141a0c6c54e512319de3291535dd8aaccf15f41eb402b3ed48bda0cf66a",
+            "real_serialized_proof_sha256": "ee9c95301ae9f6de0756308e318b37ea8280dcc911e097d4a3fe8abc7a24c8f7",
+            "real_evm_tests": 10,
+            "real_evm_verified_record_sha256": "7b9e216483593fbb28c6675ca4f5c6a171e38f539c9d6d772fafa0a904611d6a",
+        }
+        for key, value in historical.items():
+            self.assertNotIn(key, manifest)
+            self.assertEqual(evidence[key], value)
         self.assertFalse(manifest["canonical_fixture_activated"])
         self.assertFalse(manifest["deployed"])
+
+    @unittest.skipUnless(os.environ.get("ERA_GENERATED_RELEASE_TEST_ROOT"),
+                         "set ERA_GENERATED_RELEASE_TEST_ROOT for real read-only tree reconstruction")
+    def test_real_bundle_reconstructs_exact_new_tree_without_checkout_mutation(self):
+        module, _ = M.load_bundle()
+        era = Path(os.environ["ERA_GENERATED_RELEASE_TEST_ROOT"])
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(era), *args], env=env)
+        index = Path(git("rev-parse", "--git-path", "index").decode().strip())
+        if not index.is_absolute():
+            index = era / index
+        index_before = index.read_bytes()
+        worktree_before = git("diff", "--binary")
+        result = module.check_bundle(era,
+            ROOT / "scripts/patches/era-contracts-syscoin.patch",
+            ROOT / "scripts/apply-era-contracts-syscoin-patch.sh",
+            M.BUNDLE / "generated-verifier-overlay.patch")
+        self.assertEqual(result["status"], "exact_overlay_bundle_validated")
+        self.assertEqual(result["source_tree"], "264d98e758c3a032942dfb08ee7d87a3f46288b4")
+        self.assertEqual(result["candidate_tree"], "117b5f2d1ad82de6a073142d45bd46a5218f493e")
+        self.assertEqual(result["generated_paths"], sorted(module.PATHS))
+        self.assertFalse(result["checkout_mutated"])
+        self.assertFalse(result["canonical_fixture_activated"])
+        self.assertFalse(result["deployed"])
+        self.assertEqual(index.read_bytes(), index_before)
+        self.assertEqual(git("diff", "--binary"), worktree_before)
 
     def test_explicit_fixture_check_marker_first_and_environment_cannot_override(self):
         env = dict(os.environ, CANONICAL_BINDING="approved", PROVER_MODE="gpu")

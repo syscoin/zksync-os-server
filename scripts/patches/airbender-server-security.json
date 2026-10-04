@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "upstream_url": "https://github.com/matter-labs/zksync-airbender",
+  "upstream_commit": "03454c7a41053a4b88bb421e97fb9efe893a92f5",
+  "upstream_tree": "3af54eb50c31d8e78575434c3f0ab4386891c131",
+  "upstream_lock_source": "git+https://github.com/matter-labs/zksync-airbender?tag=v0.6.0-rc.2#03454c7a41053a4b88bb421e97fb9efe893a92f5",
+  "selected_package_count": 44,
+  "selected_closure_sha256": "2fefe8f11e55ae3a85a4656bd973dc700507db82434cc1728aa8aa3a9b605486",
+  "selected_qualified_reference_count": 57,
+  "legacy_lock_source": "git+https://github.com/matter-labs/zksync-airbender?rev=73d69b5#73d69b5346b3c2350fa104a56ec4df78840cea99",
+  "legacy_package_count": 6,
+  "legacy_closure_sha256": "30ca22d2f5c800b589c2ba2fe6912739a58e4a07e6d2cf568ce5b2a87301d56c",
+  "legacy_qualified_reference_count": 9,
+  "patch_file": "airbender-server-security.patch",
+  "patch_sha256": "b5c9e2d1cf89bcf7019bf9e822a61b95cd2d28b00f231a10d90ad7f23d4862e1",
+  "changed_files": {
+    "circuit_defs/unrolled_circuits/unified_reduced_machine/generated/circuit_layout.rs": {
+      "preimage_sha256": "e609d3119094027d03eb352b50769dad4ca441422ea4f2bdb0d30e0c843d750d",
+      "postimage_sha256": "2f43ac2abf49888c9573228ed42f51a433da0f8184a7e3951a679b0dd08cdbeb",
+      "postimage_size": 127896
+    },
+    "circuit_defs/unrolled_circuits/unified_reduced_machine/generated/layout": {
+      "preimage_sha256": "ac7c239d09717258e99ffd58aae190c2562622e4d8d456d39646d364e36a097f",
+      "postimage_sha256": "0b4f4f602554f4736c218c46b66266409d9e7417b2fe5a1902115dae9bff07b1",
+      "postimage_size": 94481
+    },
+    "circuit_defs/unrolled_circuits/unified_reduced_machine/generated/quotient.rs": {
+      "preimage_sha256": "2082a9a02f8adfec128b5b1e2599414e81a2fbcf02ce9677c4d09ce6448af28f",
+      "postimage_sha256": "1949e1395d37418a186bd636d025109a66e1454e1a058d62ec50f5b0080ba875",
+      "postimage_size": 257476
+    },
+    "circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/circuit_layout.rs": {
+      "preimage_sha256": "e609d3119094027d03eb352b50769dad4ca441422ea4f2bdb0d30e0c843d750d",
+      "postimage_sha256": "2f43ac2abf49888c9573228ed42f51a433da0f8184a7e3951a679b0dd08cdbeb",
+      "postimage_size": 127896
+    },
+    "circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/quotient.rs": {
+      "preimage_sha256": "2082a9a02f8adfec128b5b1e2599414e81a2fbcf02ce9677c4d09ce6448af28f",
+      "postimage_sha256": "1949e1395d37418a186bd636d025109a66e1454e1a058d62ec50f5b0080ba875",
+      "postimage_size": 257476
+    },
+    "cs/src/machine/machine_configurations/full_isa_no_exceptions/basic_state_transition.rs": {
+      "preimage_sha256": "fbccae0d0a3983652b7fce9cff7a91c383d913fba46945037de7712379fdea2a",
+      "postimage_sha256": "aa2c95ace9fc2be58199424283064c6ec01bcb481a0741ef548535755ddb4d71",
+      "postimage_size": 12473
+    },
+    "cs/src/machine/machine_configurations/full_isa_no_exceptions/optimized_state_transition.rs": {
+      "preimage_sha256": "7e2490062143fcb7f06f16228e370bf8cece171ebd874c803dd6ec77d3d0fde4",
+      "postimage_sha256": "221b51774d7ab47d5793f12520b050a14fae648e2010e3f6d1403ac344519413",
+      "postimage_size": 8632
+    },
+    "cs/src/machine/machine_configurations/minimal_no_exceptions/basic_state_transition.rs": {
+      "preimage_sha256": "14bbfb81086ad0154e6aae6836e1c1b942a25de8f8f00bad6b3818c2a4db0231",
+      "postimage_sha256": "fa3d24fb9b9daefedb1ebc0368c5bc1e9d040b9a5868c14d58ce8ae3cec21eb9",
+      "postimage_size": 12452
+    },
+    "cs/src/machine/machine_configurations/minimal_no_exceptions/optimized_state_transition.rs": {
+      "preimage_sha256": "22e29e7469f7c437ba44694dc5d759ebdfbab3f4519f167784e1a24a8c6a81b6",
+      "postimage_sha256": "6eafec801bcce7c6019fde65960b5ec2ad5e01fa05e8160ad1b0e0ac37adf7ef",
+      "postimage_size": 8194
+    },
+    "cs/src/machine/ops/common_impls/csr_with_delegation.rs": {
+      "preimage_sha256": "df0376dadba83db82489771706bd6e595c4204ea5aa10eb53504449b7fce02a1",
+      "postimage_sha256": "dad77ffb6ffab558db45ccd9d0d75056a8a8ff79e2da7170882a55f9c664f596",
+      "postimage_size": 4680
+    },
+    "cs/src/machine/ops/unrolled/reduced_machine_ops.rs": {
+      "preimage_sha256": "52743b635910b9d40b38548eeb39e3b453a65c8cc56f81d45906854b8e8ec287",
+      "postimage_sha256": "e8ec0a430733301fabaf0615d2aebc1b2a6e6bf4a28265ce733334f5fde639da",
+      "postimage_size": 21842
+    },
+    "execution_utils/src/lib.rs": {
+      "preimage_sha256": "0bb7ad548956ec6b2e31b79b5a2952fd6cef51bc5580432c70475e71ce31150e",
+      "postimage_sha256": "ef863d1a3e09648348e5ff6daddab7469bcb42fa74bd63172459d3a6337f3049",
+      "postimage_size": 49001
+    },
+    "execution_utils/src/setup_summaries.rs": {
+      "preimage_sha256": null,
+      "postimage_sha256": "f88bc6142088e6255b1356e70d031d6557445560984debe2d329d70042ab2b02",
+      "postimage_size": 10432
+    },
+    "execution_utils/src/unrolled_gpu.rs": {
+      "preimage_sha256": "5eb60930c22bc4878bdbf4c72c79e4f49d285ecd787c47015a1261257cf53b6d",
+      "postimage_sha256": "13ae69259a2791b8e8a9343da975ba04eb6e0535b4c11143c929a768307a3110",
+      "postimage_size": 24813
+    },
+    "gpu_prover/src/execution/cpu_worker.rs": {
+      "preimage_sha256": "7123c26e5df2b1cb3f286fb605ec4b04e295084da85430d927eba3bda864afd7",
+      "postimage_sha256": "9d6a3b83f1148f1bf60394a6c98d713e84733a362cfab3e9b97c49d13165dbbd",
+      "postimage_size": 14119
+    },
+    "gpu_prover/src/execution/empty_inits_and_teardowns.rs": {
+      "preimage_sha256": null,
+      "postimage_sha256": "412f5d778cef22834c845aa72628e5822ce350fa47fa23816567e3fc88d9003c",
+      "postimage_size": 6644
+    },
+    "gpu_prover/src/execution/gpu_worker.rs": {
+      "preimage_sha256": "8791e121106596623eaeedde6c863da1fd8f9533dd13a69d01f49c59bdcff255",
+      "postimage_sha256": "3a809535fd15cf2b6a456881c0b9a4dddec606ae0d95ce17c928987dd76aca84",
+      "postimage_size": 15148
+    },
+    "gpu_prover/src/execution/simulation_runner.rs": {
+      "preimage_sha256": "0c0f917cd9e2672ff3e62d2cf49c3a1b4b49a72b83ce2a6d8e15c4539d19d3de",
+      "postimage_sha256": "1d792692fd0f585753b8865dfba68043ba66690066fad2ac6f23620e9105ebc0",
+      "postimage_size": 15554
+    },
+    "tools/cli/src/prover_utils.rs": {
+      "preimage_sha256": "7d8b0d96a840bcd7772142878149db161fef8df1c755b4d81ee8e4b1586c0608",
+      "postimage_sha256": "8aa93a6fb387d298076012989b1b73069c5883b5b2d1dd2e0014fe563a42e2d8",
+      "postimage_size": 83432
+    },
+    "tools/generator/src/unrolled_layouts.rs": {
+      "preimage_sha256": "3aacbfd7c4a7a0e2ad07dca3ae04a13feffd208d7b404ba1fe240a6507a49b7a",
+      "postimage_sha256": "5af701cbe766aa95e56bf37b8c72775f34cec935b48ef376f51e33b40f0f2248",
+      "postimage_size": 6700
+    },
+    "tools/pow_config_generator/src/main.rs": {
+      "preimage_sha256": "04840d75738fe9c8562f613a0199a5ebfb35c4418759bf7e242580ecc4fa89d4",
+      "postimage_sha256": "be477ce7a0d244ad0c1bd4512f16b74e9fb679fa32dfc117d002f840f918db21",
+      "postimage_size": 33943
+    },
+    "tools/verifier/recursion_in_unified_layer.bin": {
+      "preimage_sha256": "760d31c694980249b4985823488e41e6ff1699a91d54c71f1b662439805b7454",
+      "postimage_sha256": "1d3332cb5eacf23481059f5da89f8ef770504940991215a10f10690621ae956e",
+      "postimage_size": 1270392
+    },
+    "tools/verifier/recursion_in_unified_layer.text": {
+      "preimage_sha256": "9dccf6c4cec380eeb2c95ae5a467a3ff00d6182669f0ac284e151e5cc8f8bf7b",
+      "postimage_sha256": "cf910692e784399ef39a8d8c380d82fbb3dd724454b816188a22a0b39ec11f7a",
+      "postimage_size": 1238504
+    },
+    "tools/verifier/recursion_in_unified_layer_security_100_bits.bin": {
+      "preimage_sha256": "20d40ba936d428019be8e9ecfee1a237e7bf68f942bce8be0d0183ece4e6ff80",
+      "postimage_sha256": "5615f2fe288acb291800b8fe833aa238068d5cf308e6cab9f2f71c1f72bcba2c",
+      "postimage_size": 1273824
+    },
+    "tools/verifier/recursion_in_unified_layer_security_100_bits.text": {
+      "preimage_sha256": "3ef1dc44c5361f4a5f2811d56487c6e6434e153baa5a246aaf39f7541fee3060",
+      "postimage_sha256": "d84b96f9354e02d1ecbaa6d7d47644295f019320c435de0b08c0718507a42ddc",
+      "postimage_size": 1241932
+    },
+    "tools/verifier/recursion_in_unrolled_layer.bin": {
+      "preimage_sha256": "d585910ac92ec48a5805d7008b6997b22a32034e652c1aed373d281fec088a41",
+      "postimage_sha256": "aab5db0a262c583d43ad63e9ab220377be9a23341f31804cd60c7a9b8fd0f835",
+      "postimage_size": 2308092
+    },
+    "tools/verifier/recursion_in_unrolled_layer.text": {
+      "preimage_sha256": "9ca046126812999d9ce0373575fd95ddf610df32817b844962f4032a8196c859",
+      "postimage_sha256": "dbba37f5b7f2d20b114d62eb76d4b7165ab83088fda43fc4e0cab85f75f0b39c",
+      "postimage_size": 2267628
+    },
+    "tools/verifier/recursion_in_unrolled_layer_security_100_bits.bin": {
+      "preimage_sha256": "bd9fc269381964d9ef5aa9ce88ee9e078445cd4483093a759508025e5a5b9bd2",
+      "postimage_sha256": "5d431fa8d14d15087d92c8fd17e8fb2f365ddc9b9a8948a7c459951d1ce6281e",
+      "postimage_size": 2314544
+    },
+    "tools/verifier/recursion_in_unrolled_layer_security_100_bits.text": {
+      "preimage_sha256": "63fddaddb77f57f802548e46ffe15a0a90d7fa6537c14ca3cda023e0959b1a03",
+      "postimage_sha256": "98d612e4b873c954e02bc1c7238d7661b047622557cb58f4665d7e90bd835c94",
+      "postimage_size": 2274080
+    },
+    "verifier_common/src/lib.rs": {
+      "preimage_sha256": "b518de19c03a8072f3bb86029e55888f3c639ff9618edb1dd5cb2919ced243c6",
+      "postimage_sha256": "7c971b7766c9baaf043708e6614148cd36cecef7ce4df3ec95c3afaa1d1850df",
+      "postimage_size": 11276
+    },
+    "verifier_common/src/pow_config_worst_constants.rs": {
+      "preimage_sha256": "3f5ef76155d8352b950c4f89fd019470634e12a970162cfc1d13ed7c1445d0c7",
+      "postimage_sha256": "53c16102292ff5ce100cf546146aaf029aef7205cc28a335337c953f5d5ac06b",
+      "postimage_size": 3091
+    }
+  },
+  "patched_tree": "e30d9332b55cbc6a5ea4cae71824e6a5a0858394",
+  "purpose": "Use the exact cumulative reviewed Airbender source and regenerated recursive artifacts in the server native verifier. Rewrite only the server's 44-package v0.6.0-rc.2 graph and 57 qualified references; preserve the separate six-package rev=73d69b5 graph and its nine qualified references. This source identity is not a proving-key, proof, deployment or release attestation."
+}

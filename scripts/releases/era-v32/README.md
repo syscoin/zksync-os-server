@@ -1,25 +1,42 @@
 # Generated Era sources and separate canonical fixture certification
 
-The overlay, manifest and read-only checker bind the reviewed domain-corrected
-crypto bundle to the source tree containing the native priority observation getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`,
-reviewed source tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
-`ff5565cd22b61259d6f886e9a0130f788bbdb11c`. Only four exact paths are overlaid;
-all 278 identities and retained FFLONK remain unchanged. The manifest binds the
-pre-reviewed proof/EVM artifacts but is not a live fixture/deployment certificate.
+The overlay, manifest and read-only checker bind the newly generated Security100
+verifier to the reviewed source tree containing the native priority observation
+getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source
+tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
+`117b5f2d1ad82de6a073142d45bd46a5218f493e`. Only four exact paths are overlaid.
+All 278 inventory identities and retained FFLONK remain unchanged; only the hash
+and length fields of the PLONK verifier and its Gateway deployer may change.
+The manifest binds completed contract generation separately from historical
+proof/EVM evidence. Fresh proof qualification for the new key is pending; the
+bundle is not a live fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
 bytes and absence of the generated source copy; the manifest binds
 all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
-## Completed crypto sources are not a packaged fixture
+## New contract generation is not fresh proof or fixture qualification
 
-The server now registers the reproduced Syscoin guest tree
-`6935489bdbc7b1ed31e608677d1b2418b10691b5` and its Security100 key
-`0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe`.
-The identities have been exercised by genuine private service proofs and native
-verification with real DA and settlement. This does not qualify the remaining
-edge/bridge, sustained performance, five-role snapshot/restore or public rollout
-gates. No fixture descriptor or successful restore is manufactured by this PR.
+The candidate preserves the reproduced Syscoin guest tree
+`6935489bdbc7b1ed31e608677d1b2418b10691b5` and binds the rebuilt proving circuits'
+Security100 key
+`0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139`.
+Both generated PLONK copies have SHA-256
+`233a2e781431c132591431911442e3f0bccef95dfa813c57931f229d6c619efe`;
+the scheduler key has SHA-256
+`3dffa1e43ee043d708934ecc70ceedbfe4c9aff3ace3c871848de9ff61ab0379`.
+
+The actual contract-generation result, SHA-256
+`cbebf4ff7c9db6cd7da428784e3328f63c2b022e91b0dfb17d69976215fee1d3`,
+records four passing native PLONK generator tests, generation from this new key,
+the full `recompute_hashes.sh` build/recomputation, successful
+`calculate-hashes:check`, byte-identical retained FFLONK reproduction and
+byte-identical genesis regeneration. The source/index and submodule identities
+were rechecked after generation. This is contracts-only qualification on one
+host. It does not assert a fresh FRI/SNARK proof, EVM proof acceptance, real DA or
+settlement run, edge/bridge qualification, sustained performance, five-role
+snapshot/restore, deployment or public rollout for the new key. No fixture
+descriptor or successful restore is manufactured by this change.
 
 Key generation used one host under the explicitly approved validation constraint.
 It is not two-independent-host reproduction. The existing production workflow's
@@ -92,23 +109,34 @@ are required. No automatic repair, reset or retry is performed after a partial
 failure. The real Git index is not changed. Existing ignored build outputs are
 not artifact attestation; normal artifact/build gates remain necessary.
 
-Focused tests use synthetic temporary repositories/fixtures only; the real
-bundle reconstruction is read-only. No build, deployment, signing, original
-checkout mutation or fixture registry activation is part of this implementation.
+Focused tests use synthetic temporary repositories/fixtures, with an optional
+read-only real-bundle reconstruction using `ERA_GENERATED_RELEASE_TEST_ROOT`.
+That check reconstructs both exact trees without modifying the real index or
+worktree; it does not compile or qualify a proof. No deployment, signing,
+original-checkout mutation or fixture registry activation is part of this
+source-materialization implementation.
 
 ## Priority observation source integration
 
-The service source adds only the concrete Getters facet's priority transaction
-timestamp and tree-height observations, their selectors, generated inventory row,
-and regression test. The shared IGetters interface, genesis predeploys, real VK,
-generated PLONK/key bytes, and guest application identity are unchanged. The
-source-only inventory and the generated overlay are re-attested as distinct exact
-trees; the overlay still changes only its two permitted verifier inventory rows.
+The reviewed service source already contains the concrete Getters facet's
+priority transaction timestamp and tree-height observations, their selectors,
+generated inventory row, and regression test. That source patch is unchanged by
+this key regeneration. The shared IGetters interface, genesis predeploys and
+guest application identity also remain unchanged; the new VK and generated
+PLONK/key bytes are the explicit changes in the separate generated overlay.
+The source-only inventory and generated overlay remain distinct exact trees;
+the overlay still changes only its two permitted verifier inventory rows.
 
-`crypto_validation_provenance` retains the original PR323 source/generated trees
-for the existing real-proof, EVM, Cancun and native-build archive records. Their
-unchanged hashes are historical crypto evidence, not a claim that a real proof
-or deployment was rerun for the service source tree. The published offline
+`historical_crypto_validation_provenance` retains the original PR323
+source/generated trees and old
+`0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe`
+key for the existing real-proof, EVM, Cancun and native-build archive records.
+Every old proof/artifact hash is nested there, not presented as current evidence.
+Those records concern the old key and unchanged crypto bytes subsequently carried
+by generated tree `ff5565cd22b61259d6f886e9a0130f788bbdb11c`; they do not qualify
+the new key or generated tree. `contract_generation_provenance` records only the
+new completed generation checks, and `proof_qualification` explicitly remains
+pending. The published offline
 critical Gateway input/helper/result under `scripts/keygen/gateway-identity` is
 also preserved byte-for-byte at its historical source tree. It is not consumed
 as current deployment authorization. Before a fresh service deployment, rebuild

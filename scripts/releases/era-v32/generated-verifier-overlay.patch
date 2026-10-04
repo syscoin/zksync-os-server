@@ -1,38 +1,38 @@
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index b5de446..90eadfe 100644
+index b5de446cd065cbddb6b617e798712f4dee415c20..063d3d3468133060fa4b4cb512c64f93cfb0a7b6 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -1244 +1244 @@
 -    "zkBytecodeHash": "0x01000089527c6142ad3fdb9921cba03b6a3f069bff32f6a7212e84f78f126c62",
-+    "zkBytecodeHash": "0x01000089d5754658219e628b25ee17224bf1309a33937b348a2ca73589d44ca0",
++    "zkBytecodeHash": "0x010000893923f92016d816a01625d311e7eebb415e8fe63fe2717cc69a1ac620",
 @@ -1246 +1246 @@
 -    "evmBytecodeHash": "0x1d3e7416de833d89cec36b590b39db303e9f1f88df6db08f179b3bbd0d3eb55f",
-+    "evmBytecodeHash": "0xf5f7f703ae9fec90677ca586111345bbb299d8b2c4670db73210a175f518db43",
++    "evmBytecodeHash": "0xa29ba9df6677424a928ff71809c16e2e15a972e32d4b261a7e4321ebcd3dc1cf",
 @@ -1248,2 +1248,2 @@
 -    "evmDeployedBytecodeHash": "0xcbe0b15e7e23b1280ee64351247a578c930118c2d1b694c3decb9f43562a5227",
 -    "evmDeployedBytecodeBlakeHash": "0xfa335cb72a18b3bf8d16623e64063d76340ead1053dbc6b19bcd8044b0d2089f",
-+    "evmDeployedBytecodeHash": "0x2bf9bce0e5b95a77e0ca84defd5dab8f6b5252aed47e28c705e6cae3ce0f6c28",
-+    "evmDeployedBytecodeBlakeHash": "0x1485a7aef655c7c9c557dcea3c6c8f8091cdcb14dd74011110054869b5fbe834",
++    "evmDeployedBytecodeHash": "0x62c70d23d0ecf33e13b3e074a533a830352db7675defe55c404317f792c18065",
++    "evmDeployedBytecodeBlakeHash": "0x5191f3d24d757bb69ca20bd35884f68cb691cc6a7d8895c9e817c7660e000860",
 @@ -2344 +2344 @@
 -    "zkBytecodeHash": "0x01000dbb95b8ace87a9bb8e257f8933d47fa92d2ad47942faf7ee12de3be4e13",
-+    "zkBytecodeHash": "0x01000dbd1946cdbbe623f1eec716df6395f4e54d40b90a19c2ca5051712ea33a",
++    "zkBytecodeHash": "0x01000dbdc1b227b546dac234070dff43a5528447d616538b9286cff67147fb18",
 @@ -2346 +2346 @@
 -    "evmBytecodeHash": "0x83bc32c9bc448b455e3fe9996ce44db3f05e3b56ccfb317c3e1244abb51e1140",
-+    "evmBytecodeHash": "0xfb9ac92cc9fc37967456e167a790b170a626f9c7ae895e7498ecbb0b7a6696b4",
++    "evmBytecodeHash": "0x25824e8da26975e792db4bf2186a3a11f57c9ce44eb3bb25f44fb76d8845fab7",
 @@ -2348,3 +2348,3 @@
 -    "evmDeployedBytecodeHash": "0xad45a559d4537f7fac21ee7a7da1cb652daca3e0965389bdb00eff9fa1ed68af",
 -    "evmDeployedBytecodeBlakeHash": "0x0b24778667f4f30e6cf88b55cb5054b7bffefbfba252defc5dfa89c24c0993d9",
 -    "evmDeployedBytecodeLength": 17226
-+    "evmDeployedBytecodeHash": "0x578a0bb9e608dd6943edcc7f7b6f72819741ef1795d2cdc1cfe85067150f7b3b",
-+    "evmDeployedBytecodeBlakeHash": "0x330ee5d48483a4d0831a4eebbf2be0b1d24c20dfea13927b29ba057581f60fc9",
++    "evmDeployedBytecodeHash": "0x62d8d7a4704cd800fa82a436966eaf82d847ccd42a5b32fd57ce443d91a26cdf",
++    "evmDeployedBytecodeBlakeHash": "0x35313acbfe4cb054a62c5b80aea00d9ede7f82e5633a61130efa7ff0eb5d8f6d",
 +    "evmDeployedBytecodeLength": 17229
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
-index 199e366..4c66819 100644
+index 199e366fd759a2597ee13f9b1d6bcbb284a92f09..13a6c257b089322d6ee3587ad38e423c2f90ef5f 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 @@ -12 +12 @@ import {IVerifier} from "../chain-interfaces/IVerifier.sol";
 -/// @dev Contract was generated from a verification key with a hash of 0x23156cf220288cd1e436dccfc09aa4883ea8288da61aa69e2c7251b0c0c44ccd
-+/// @dev Contract was generated from a verification key with a hash of 0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe
++/// @dev Contract was generated from a verification key with a hash of 0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139
 @@ -236,2 +236,2 @@ contract ZKsyncOSVerifierPlonk is IVerifier {
 -    uint256 internal constant OMEGA = 0x1951441010b2b95a6e47a6075066a50a036f5ba978c050f2821df86636c0facb;
 -    uint256 internal constant DOMAIN_SIZE = 0x1000000; // 2^24
@@ -55,8 +55,8 @@ index 199e366..4c66819 100644
 -            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x0a88d11473a3727652261721595b61340af2d5775bd6c77b105f6a2b8e2289a8)
 -            mstore(VK_GATE_SETUP_7_X_SLOT, 0x1affeacdceb1b6f018bbb6762bb5aebcd54c3e24801ce01d06146d1bf0938b2c)
 -            mstore(VK_GATE_SETUP_7_Y_SLOT, 0x19a277dd9eaac40538f3177e3390ec21d097f88afb04158dd59e963a327fe9da)
-+            mstore(VK_GATE_SETUP_0_X_SLOT, 0x2f97ea9418db51890049858165fd86ddc70a8d4cab20cb44a0704b1187ac3cc6)
-+            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x0b501a246558f74bf632d3ef8e5c31f806596637967212a85b2a10698db1739d)
++            mstore(VK_GATE_SETUP_0_X_SLOT, 0x0c846975c014b59a8cf082be59e312a27cec48feff5b3715b095e98c63855998)
++            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x03179dab2c5739499c0e0513f91feb1453e0f2f442c09758538b9cdc2b1d54c4)
 +            mstore(VK_GATE_SETUP_1_X_SLOT, 0x17dee98ffc02ab9a04001790e91a67c188fe6baf19deec16d37462f17db61b17)
 +            mstore(VK_GATE_SETUP_1_Y_SLOT, 0x28b2c9f186af07fdcd3d446380353ce7626942b3245231dbfac7519e36961b5f)
 +            mstore(VK_GATE_SETUP_2_X_SLOT, 0x0466885f865aab569107226c2eff7ef29ed035a6f7e3f59ed3ed2fadf3f3de31)
@@ -67,8 +67,8 @@ index 199e366..4c66819 100644
 +            mstore(VK_GATE_SETUP_4_Y_SLOT, 0x033b147bfb4f9b8f0782dbbe33cc1f1cd6db9501a65dade4d97f6bf34cafeeed)
 +            mstore(VK_GATE_SETUP_5_X_SLOT, 0x2d6ad41a8329279f0da199c18fd3855dc122c7713cf9d53ba8c2eab55ec5951b)
 +            mstore(VK_GATE_SETUP_5_Y_SLOT, 0x13b7eb6fc69ad7ebdc53ecffa7e8ba800fb6c4323fc28b9ae3369dc4fa1c9a06)
-+            mstore(VK_GATE_SETUP_6_X_SLOT, 0x09065d8089fc8814b25daa6f96c2805fabc6c88b3fb590b9023e25036234beac)
-+            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x2c6c54d9f913fa4b45337105cacce31b114739cdb7688e08e43e19e3a5f4dab7)
++            mstore(VK_GATE_SETUP_6_X_SLOT, 0x109f3bbcec7ea2ebe5b7d355c3d0834c820f7f2c8cf27484057c5b41a6ba50fb)
++            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x2422cec6c256c15f1df81592ece15e58259039276a134aa07e554af16cc2950c)
 +            mstore(VK_GATE_SETUP_7_X_SLOT, 0x06cfd662ca0b6796832d79487c6a9061f2b7f46107dd81995f188808bb98dcfb)
 +            mstore(VK_GATE_SETUP_7_Y_SLOT, 0x2ed82bdf1a68e29180cf20a7b4d0ccd071a4ef3fbf03fdee6ff9f874497f1dd9)
 @@ -305,4 +305,4 @@ contract ZKsyncOSVerifierPlonk is IVerifier {
@@ -126,7 +126,7 @@ index 199e366..4c66819 100644
 +            mstore(VK_LOOKUP_TABLE_TYPE_Y_SLOT, 0x13bb0030538c26129235e03d777e9b58610508067a5d28b3904baf42b583d9e4)
 diff --git a/tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol b/tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol
 new file mode 100644
-index 0000000..4c66819
+index 0000000000000000000000000000000000000000..13a6c257b089322d6ee3587ad38e423c2f90ef5f
 --- /dev/null
 +++ b/tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol
 @@ -0,0 +1,1709 @@
@@ -141,7 +141,7 @@ index 0000000..4c66819
 +/// @notice Modified version of the Permutations over Lagrange-bases for Oecumenical Noninteractive arguments of
 +/// Knowledge (PLONK) verifier.
 +/// Modifications have been made to optimize the proof system for ZK chain circuits.
-+/// @dev Contract was generated from a verification key with a hash of 0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe
++/// @dev Contract was generated from a verification key with a hash of 0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139
 +/// @dev It uses a custom memory layout inside the inline assembly block. Each reserved memory cell is declared in the
 +/// constants below.
 +/// @dev For a better understanding of the verifier algorithm please refer to the following papers:
@@ -416,8 +416,8 @@ index 0000000..4c66819
 +    function _loadVerificationKey() internal pure virtual {
 +        assembly {
 +            // gate setup commitments
-+            mstore(VK_GATE_SETUP_0_X_SLOT, 0x2f97ea9418db51890049858165fd86ddc70a8d4cab20cb44a0704b1187ac3cc6)
-+            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x0b501a246558f74bf632d3ef8e5c31f806596637967212a85b2a10698db1739d)
++            mstore(VK_GATE_SETUP_0_X_SLOT, 0x0c846975c014b59a8cf082be59e312a27cec48feff5b3715b095e98c63855998)
++            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x03179dab2c5739499c0e0513f91feb1453e0f2f442c09758538b9cdc2b1d54c4)
 +            mstore(VK_GATE_SETUP_1_X_SLOT, 0x17dee98ffc02ab9a04001790e91a67c188fe6baf19deec16d37462f17db61b17)
 +            mstore(VK_GATE_SETUP_1_Y_SLOT, 0x28b2c9f186af07fdcd3d446380353ce7626942b3245231dbfac7519e36961b5f)
 +            mstore(VK_GATE_SETUP_2_X_SLOT, 0x0466885f865aab569107226c2eff7ef29ed035a6f7e3f59ed3ed2fadf3f3de31)
@@ -428,8 +428,8 @@ index 0000000..4c66819
 +            mstore(VK_GATE_SETUP_4_Y_SLOT, 0x033b147bfb4f9b8f0782dbbe33cc1f1cd6db9501a65dade4d97f6bf34cafeeed)
 +            mstore(VK_GATE_SETUP_5_X_SLOT, 0x2d6ad41a8329279f0da199c18fd3855dc122c7713cf9d53ba8c2eab55ec5951b)
 +            mstore(VK_GATE_SETUP_5_Y_SLOT, 0x13b7eb6fc69ad7ebdc53ecffa7e8ba800fb6c4323fc28b9ae3369dc4fa1c9a06)
-+            mstore(VK_GATE_SETUP_6_X_SLOT, 0x09065d8089fc8814b25daa6f96c2805fabc6c88b3fb590b9023e25036234beac)
-+            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x2c6c54d9f913fa4b45337105cacce31b114739cdb7688e08e43e19e3a5f4dab7)
++            mstore(VK_GATE_SETUP_6_X_SLOT, 0x109f3bbcec7ea2ebe5b7d355c3d0834c820f7f2c8cf27484057c5b41a6ba50fb)
++            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x2422cec6c256c15f1df81592ece15e58259039276a134aa07e554af16cc2950c)
 +            mstore(VK_GATE_SETUP_7_X_SLOT, 0x06cfd662ca0b6796832d79487c6a9061f2b7f46107dd81995f188808bb98dcfb)
 +            mstore(VK_GATE_SETUP_7_Y_SLOT, 0x2ed82bdf1a68e29180cf20a7b4d0ccd071a4ef3fbf03fdee6ff9f874497f1dd9)
 +
@@ -1840,7 +1840,7 @@ index 0000000..4c66819
 +    }
 +}
 diff --git a/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json b/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json
-index d442c78..23d0a17 100644
+index d442c78eda38fe98d3ec1ef83d07e0ee66533fc1..f9f8a88eb67e07a321c49e2acfacc43ef9cb9c5f 100644
 --- a/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json
 +++ b/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json
 @@ -2 +2 @@
@@ -1851,19 +1851,19 @@ index d442c78..23d0a17 100644
 -        14471423996490288158,
 -        5225950598292101952,
 -        1228487007723799555
-+        11560822782122802374,
-+        14342431323742849860,
-+        20694464108267229,
-+        3429467563059007881
++        12724333111379581336,
++        9001650015249839893,
++        10155760913783919266,
++        901961779835614618
 @@ -15,4 +15,4 @@
 -        8520728407555862345,
 -        11212192803778776518,
 -        1988917732523207549,
 -        227643856272740304
-+        6569081052008117149,
-+        457509226088108712,
-+        17740474908004856312,
-+        815180276175533899
++        6020077796340880580,
++        6044097830837065560,
++        11244930902932843284,
++        222820065087011145
 @@ -24,4 +24,4 @@
 -        10190127436395050645,
 -        10006052029296770243,
@@ -1959,19 +1959,19 @@ index d442c78..23d0a17 100644
 -        2007278130147797026,
 -        6876666556121916741,
 -        2048660560198245458
-+        161607333094669996,
-+        12377801126269259961,
-+        12852616307832684639,
-+        650310002853840916
++        395291204829991163,
++        9371849178901279876,
++        16552931320734450508,
++        1197741708511453931
 @@ -105,4 +105,4 @@
 -        1179778362695125416,
 -        788927593361885051,
 -        5919444192225616180,
 -        759086422981571190
-+        16446611354736188087,
-+        1245027377699393032,
-+        4986453482120471323,
-+        3201026730317052491
++        9103264622571590924,
++        2706726217495825056,
++        2159499742107754072,
++        2603870887632879967
 @@ -114,4 +114,4 @@
 -        438095030529526572,
 -        15369727954797781021,

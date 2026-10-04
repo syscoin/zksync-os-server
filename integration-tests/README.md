@@ -16,10 +16,11 @@ Known limitations:
 ### Run
 
 The ordinary node/RPC/transaction tests use an explicit **AnvilComponentOnly**
-V32/V8 fixture at `local-chains/anvil-component-only/v32.0`. Protocol identity is
-still V32, Execution7 / Proving8 / Security100 and the unchanged app-bound VK;
-this is not Syscoin Core/NEVM consensus, live Bitcoin DA or real-proof release
-qualification. All original ordinary cases remain selected. Enabling
+V32/V8 fixture at `local-chains/anvil-component-only/v32.0`. Its actual historical
+mock deployment retains V32, Execution7 / Proving8 and the old `c1ab3d65…b7388fe`
+key. Both fake prover pools are enabled; this does not qualify the regenerated
+Security100 circuits, active production key, Syscoin Core/NEVM consensus, live
+Bitcoin DA or real proofs. All original ordinary cases remain selected. Enabling
 `prover-tests` selects the canonical fixture purpose instead, so the real prover
 test cannot silently inherit the component lane.
 
@@ -44,7 +45,11 @@ current consumers before this change qualifies ordinary CI. The canonical
 `local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` and the five-role release
 fixture gate remain unchanged.
 
-#### Regenerating the component fixture
+#### Recorded historical component generation recipe
+
+The following recipe describes the checked-in old-key component package. It is
+not an instruction to relabel that deployment with the new production key. A
+new-key fixture requires genuine regeneration and separate source/artifact review.
 
 1. In a disposable isolated workspace, bind the current server, exact reviewed
    Syscoin-patched zkstack postimage and Era generated-verifier overlay. The stock
