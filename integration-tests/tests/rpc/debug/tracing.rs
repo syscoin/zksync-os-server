@@ -135,11 +135,15 @@ async fn setup_pubdata_exhaustion_token(env: TestEnvironment) -> anyhow::Result<
     // RPC can serve an earlier state while startup replay is still restoring the deployment.
     tokio::time::timeout(
         DEFAULT_TIMEOUT,
-        tester.l2_zk_provider.wait_for_block(deployment_block_number),
+        tester
+            .l2_zk_provider
+            .wait_for_block(deployment_block_number),
     )
     .await
     .with_context(|| {
-        format!("timed out waiting for token deployment block {deployment_block_number} after restart")
+        format!(
+            "timed out waiting for token deployment block {deployment_block_number} after restart"
+        )
     })?
     .with_context(|| {
         format!("failed to wait for token deployment block {deployment_block_number} after restart")
