@@ -14,7 +14,7 @@ use bitcoin_da_client::SyscoinClient;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
@@ -44,6 +44,22 @@ const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES: usize = 8192;
 /// JSON-RPC error code used by EIP-7966 to signal a sync-send timeout.
 const EIP_7966_TIMEOUT_CODE: i64 = 4;
 
+/// SYSCOIN: Reserve synchronously so contention cannot create an unbounded waiting
+/// queue. The blocking worker owns its permit even if the RPC future is dropped.
+fn spawn_policy_simulation<R: Send + 'static>(
+    budget: &Arc<Semaphore>,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> Result<tokio::task::JoinHandle<R>, EthSendRawTransactionError> {
+    let permit = budget
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| EthSendRawTransactionError::PolicySimulationBusy)?;
+    Ok(tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    }))
+}
+
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
     config: RpcConfig,
@@ -58,6 +74,8 @@ pub struct TxHandler<RpcStorage, Mempool> {
     /// clients a `pending → no receipt` poll loop on a stable deny.
     /// Block-build remains authoritative.
     policy_client: Option<PolicyClient>,
+    /// SYSCOIN: Same process-wide work budget used by heavy blocking RPC methods.
+    blocking_rpcs_semaphore: Arc<Semaphore>,
     /// Latest block context constructed by the sequencer. `None` until
     /// the sequencer has built at least one block; in that startup
     /// window we synthesize a pending block context from current state.
@@ -74,6 +92,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         acceptance_state: watch::Receiver<TransactionAcceptanceState>,
         tx_forwarder: Option<TxForwarder>,
         policy_client: Option<PolicyClient>,
+        blocking_rpcs_semaphore: Arc<Semaphore>,
         last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     ) -> Self {
         Self {
@@ -85,6 +104,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             tx_forwarder,
             edge_da_unavailable_ref_cache: Arc::new(Mutex::new(HashMap::new())),
             policy_client,
+            blocking_rpcs_semaphore,
             last_constructed_block_context,
         }
     }
@@ -113,14 +133,15 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         if self.config.l2_signer_blacklist.contains(&l2_tx.signer()) {
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
-        // SYSCOIN: run local mempool validation before non-local admission checks, but only for
-        // compact-edge-DA commit candidates. Ordinary txs keep the single validation performed by
-        // insertion below.
-        let compact_edge_da_refs = if self.is_compact_edge_da_admission_candidate(&l2_tx) {
+        // SYSCOIN: Cheap duplicate / local admission checks precede optional VM work.
+        let compact_edge_da_candidate = self.is_compact_edge_da_admission_candidate(&l2_tx);
+        if compact_edge_da_candidate || self.policy_client.is_some() {
             if self.mempool.contains(&hash) {
                 return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported).into());
             }
             self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
+        }
+        let compact_edge_da_refs = if compact_edge_da_candidate {
             self.compact_edge_da_refs_after_cache_check(&l2_tx)?
         } else {
             None
@@ -147,7 +168,8 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // https://github.com/matter-labs/zksync-era/blob/main/core/lib/vm_executor/src/oneshot/mod.rs
             // To be worth implementing it would also need to cover `eth_call` and
             // `eth_estimateGas`, which currently run under `#[method(blocking)]`.
-            let sim = tokio::task::spawn_blocking(move || {
+            // SYSCOIN: Keep the shared admission permit with the worker through caller cancellation.
+            let sim = spawn_policy_simulation(&self.blocking_rpcs_semaphore, move || {
                 let block_context = match last_block_ctx {
                     Some(block_context) => block_context,
                     None => build_pending_block_context(
@@ -167,7 +189,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                     &mut tracer,
                     &mut policy_session,
                 )
-            })
+            })?
             .await
             .map_err(|err| EthSendRawTransactionError::JudgeSimFailed(err.into()))?
             .map_err(EthSendRawTransactionError::JudgeSimFailed)?;
@@ -666,6 +688,9 @@ pub enum EthSendRawTransactionError {
     /// Policy service rejected the transaction.
     #[error("transaction denied by policy service")]
     PolicyDenied,
+    /// SYSCOIN: Retriable local capacity outcome; no policy worker has been queued.
+    #[error("policy simulation service is busy")]
+    PolicySimulationBusy,
     /// Local simulation for the RPC-side judge call failed for an internal
     /// reason (storage error, etc.). Clean tx rejections fall through and
     /// surface via the mempool / block-build paths instead.
@@ -689,6 +714,8 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             },
             EthSendRawTransactionError::PoolError(pool_err) => Self::from(&pool_err.kind),
             EthSendRawTransactionError::PolicyDenied => Self::PolicyDenied,
+            // SYSCOIN: Local capacity contention is not a policy rejection verdict.
+            EthSendRawTransactionError::PolicySimulationBusy => Self::PoolOther,
             EthSendRawTransactionError::JudgeSimFailed(_) => Self::JudgeSimFailed,
         }
     }
@@ -1085,5 +1112,80 @@ mod tests {
         let null_response = TxForwardError::Rpc(RpcError::<TransportErrorKind>::NullResp);
 
         assert!(forwarding_error_should_rollback_local_tx(&null_response));
+    }
+
+    #[tokio::test]
+    async fn policy_worker_owns_shared_permit_after_caller_drop() {
+        // SYSCOIN: Caller cancellation cannot release a running worker's budget.
+        let budget = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let worker = spawn_policy_simulation(&budget, move || {
+            started_tx.send(()).unwrap();
+            finish_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        })
+        .unwrap();
+        started_rx.await.unwrap();
+        drop(worker); // RPC cancellation detaches an already-running worker.
+        assert_eq!(budget.available_permits(), 0);
+        assert!(matches!(
+            spawn_policy_simulation(&budget, || ()),
+            Err(EthSendRawTransactionError::PolicySimulationBusy)
+        ));
+        let waiting = budget.clone().acquire_owned();
+        finish_tx.send(()).unwrap();
+        let returned = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(returned);
+        let worker = spawn_policy_simulation(&budget, || 7).unwrap();
+        assert_eq!(worker.await.unwrap(), 7);
+        assert_eq!(budget.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn policy_worker_panic_releases_shared_permit() {
+        // SYSCOIN: Unwinding releases the reservation just like ordinary completion.
+        let budget = Arc::new(Semaphore::new(1));
+        let worker = spawn_policy_simulation(&budget, || panic!("bounded test worker")).unwrap();
+        assert!(worker.await.unwrap_err().is_panic());
+        assert_eq!(budget.available_permits(), 1);
+    }
+
+    #[test]
+    fn queued_policy_worker_keeps_its_reservation_when_caller_drops() {
+        // SYSCOIN: Even a queued blocking worker retains its bounded reservation.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+            started_rx.await.unwrap();
+            let budget = Arc::new(Semaphore::new(1));
+            let worker = spawn_policy_simulation(&budget, || ()).unwrap();
+            drop(worker);
+            assert_eq!(budget.available_permits(), 0);
+            assert!(matches!(
+                spawn_policy_simulation(&budget, || ()),
+                Err(EthSendRawTransactionError::PolicySimulationBusy)
+            ));
+            release_tx.send(()).unwrap();
+            blocker.await.unwrap();
+            let returned =
+                tokio::time::timeout(Duration::from_secs(5), budget.clone().acquire_owned())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            drop(returned);
+            assert_eq!(budget.available_permits(), 1);
+        });
     }
 }

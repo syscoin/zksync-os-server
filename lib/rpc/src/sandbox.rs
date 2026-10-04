@@ -12,12 +12,35 @@ use zksync_os_interface::traits::{NoopTxCallback, TxListSource};
 use zksync_os_interface::types::{ExecutionResult, TxOutput};
 use zksync_os_multivm::{run_block, simulate_tx};
 use zksync_os_storage_api::{BlockContext, ViewState};
+use zksync_os_tx_validators::trace_budget::{TraceBudget, TraceLimits};
 use zksync_os_types::{ZkTransaction, ZksyncOsEncode};
 
 /// EVM max stack size.
 pub const STACK_SIZE: usize = 1024;
 /// zksync-os ergs per gas.
 pub const ERGS_PER_GAS: u64 = 256;
+
+/// SYSCOIN: Local capture limits do not change transaction execution or validity.
+#[derive(Clone, Copy, Debug)]
+pub struct CallTracerLimits(pub TraceLimits);
+
+impl Default for CallTracerLimits {
+    fn default() -> Self {
+        Self(TraceLimits {
+            max_bytes: 64 * 1024 * 1024,
+            max_frames: 100_000,
+        })
+    }
+}
+
+impl CallTracerLimits {
+    pub fn from_config(config: &crate::config::RpcConfig) -> Self {
+        Self(TraceLimits {
+            max_bytes: config.call_tracer_max_capture_bytes,
+            max_frames: config.call_tracer_max_frames,
+        })
+    }
+}
 
 /// Error message used when the VM terminates a transaction due to resource exhaustion
 /// (out of native resources or pubdata limit exceeded).
@@ -67,17 +90,21 @@ pub fn execute_with<T: AnyTracer, V: AnyTxValidator>(
     )
 }
 
+// SYSCOIN: Capacity failures must propagate instead of returning partial simulated traces.
 pub fn call_trace_simulate(
     tx: ZkTransaction,
     mut block_context: BlockContext,
     state_view: impl ViewState,
     call_config: CallConfig,
+    limits: CallTracerLimits,
 ) -> anyhow::Result<CallFrame> {
-    let mut tracer = CallTracer::new_with_config(
+    let mut tracer = CallTracer::new_with_limits(
         vec![tx.clone()],
         call_config.with_log.unwrap_or_default(),
         call_config.only_top_call.unwrap_or_default(),
+        limits,
     );
+    tracer.capture_budget.ensure_within_limit()?;
     let encoded_tx = tx.encode();
 
     block_context.eip1559_basefee = U256::from(0);
@@ -91,6 +118,8 @@ pub fn call_trace_simulate(
         &mut NopValidator,
     )?;
 
+    tracer.capture_budget.ensure_within_limit()?;
+
     let frame = tracer
         .transactions
         .last_mut()
@@ -101,23 +130,32 @@ pub fn call_trace_simulate(
         .copied()
         .unwrap_or(false);
     if let Ok(tx_output) = tx_result {
-        reconcile_trace_with_output(frame, &tx_output, top_level_execution_succeeded);
+        reconcile_trace_with_output(
+            frame,
+            &tx_output,
+            top_level_execution_succeeded,
+            &mut tracer.capture_budget,
+        )?;
     }
 
     Ok(std::mem::take(frame))
 }
 
+// SYSCOIN: One capture budget covers the full request, including replayed prefixes.
 pub fn call_trace(
     txs: Vec<ZkTransaction>,
     block_context: BlockContext,
     state_view: impl ViewState,
     call_config: CallConfig,
+    limits: CallTracerLimits,
 ) -> anyhow::Result<Vec<CallFrame>> {
-    let mut tracer = CallTracer::new_with_config(
+    let mut tracer = CallTracer::new_with_limits(
         txs.clone(),
         call_config.with_log.unwrap_or_default(),
         call_config.only_top_call.unwrap_or_default(),
+        limits,
     );
+    tracer.capture_budget.ensure_within_limit()?;
 
     let tx_source = TxListSource {
         transactions: txs.into_iter().map(|tx| tx.encode()).collect(),
@@ -131,6 +169,8 @@ pub fn call_trace(
         &mut tracer,
         &mut NopValidator,
     )?;
+
+    tracer.capture_budget.ensure_within_limit()?;
 
     anyhow::ensure!(
         tracer.transactions.len() == block_output.tx_results.len(),
@@ -151,7 +191,12 @@ pub fn call_trace(
         .zip(tracer.top_level_execution_succeeded.iter().copied())
     {
         if let Ok(tx_output) = tx_result {
-            reconcile_trace_with_output(frame, tx_output, top_level_execution_succeeded);
+            reconcile_trace_with_output(
+                frame,
+                tx_output,
+                top_level_execution_succeeded,
+                &mut tracer.capture_budget,
+            )?;
         }
     }
 
@@ -171,10 +216,14 @@ fn reconcile_trace_with_output(
     frame: &mut CallFrame,
     tx_output: &TxOutput,
     top_level_execution_succeeded: bool,
-) {
+    capture_budget: &mut TraceBudget,
+) -> anyhow::Result<()> {
     if top_level_execution_succeeded
         && let ExecutionResult::Revert(revert_bytes) = &tx_output.execution_result
     {
+        // SYSCOIN: Post-execution output copies share the capture budget with VM hook data.
+        capture_budget.reserve(revert_bytes.len(), 0)?;
+        capture_budget.reserve(POST_EXECUTION_PUBDATA_ERROR.len(), 0)?;
         frame.gas_used = U256::from(tx_output.gas_used);
         frame.error = Some(POST_EXECUTION_PUBDATA_ERROR.to_string());
         frame.output = Some(Bytes::copy_from_slice(revert_bytes));
@@ -183,9 +232,9 @@ fn reconcile_trace_with_output(
             frame.to = None;
         }
     }
+    Ok(())
 }
 
-#[derive(Default)]
 pub struct CallTracer {
     input_transactions: Vec<ZkTransaction>,
     transactions: Vec<CallFrame>,
@@ -197,7 +246,16 @@ pub struct CallTracer {
     collect_logs: bool,
     only_top_call: bool,
 
+    // SYSCOIN: Cumulative across every transaction in a block/prefix request, including ignored roots.
+    capture_budget: TraceBudget,
+
     create_operation_requested: Option<CreateType>,
+}
+
+impl Default for CallTracer {
+    fn default() -> Self {
+        Self::new_with_config(vec![], false, false)
+    }
 }
 
 #[derive(Debug)]
@@ -212,6 +270,21 @@ impl CallTracer {
         collect_logs: bool,
         only_top_call: bool,
     ) -> Self {
+        Self::new_with_limits(
+            input_transactions,
+            collect_logs,
+            only_top_call,
+            CallTracerLimits::default(),
+        )
+    }
+
+    pub fn new_with_limits(
+        input_transactions: Vec<ZkTransaction>,
+        collect_logs: bool,
+        only_top_call: bool,
+        limits: CallTracerLimits,
+    ) -> Self {
+        // SYSCOIN: Capture capacity belongs to the tracer instance, never to an individual tx.
         Self {
             input_transactions,
             transactions: vec![],
@@ -222,11 +295,45 @@ impl CallTracer {
             current_tx_top_level_execution_succeeded: false,
             collect_logs,
             only_top_call,
+            capture_budget: TraceBudget::new(limits.0),
             create_operation_requested: None,
         }
     }
 
-    fn failed_before_execution_frame(&self) -> Option<CallFrame> {
+    fn reserve_capture(&mut self, sizes: &[usize], frames: usize) -> bool {
+        let result = self.capture_budget.reserve(0, frames).and_then(|()| {
+            for &size in sizes {
+                self.capture_budget.reserve(size, 0)?;
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            // SYSCOIN: No partial trace may escape after exhaustion; later hooks allocate nothing.
+            self.transactions.clear();
+            self.top_level_execution_succeeded.clear();
+            self.unfinished_calls.clear();
+            self.finished_calls.clear();
+            self.create_operation_requested = None;
+            false
+        } else {
+            true
+        }
+    }
+
+    fn capturing(&self) -> bool {
+        self.capture_budget.ensure_within_limit().is_ok()
+    }
+
+    fn failed_before_execution_frame(&mut self) -> Option<CallFrame> {
+        // SYSCOIN: Pre-execution failures copy input too, so reserve before constructing them.
+        let input_len = self
+            .input_transactions
+            .get(self.transactions.len())?
+            .input()
+            .len();
+        if !self.reserve_capture(&[std::mem::size_of::<CallFrame>(), input_len, 64], 1) {
+            return None;
+        }
         let tx = self.input_transactions.get(self.transactions.len())?;
 
         Some(CallFrame {
@@ -263,11 +370,22 @@ impl AnyTracer for CallTracer {
     }
 }
 
+// SYSCOIN: Every retaining hook reserves first and honors the same latched capture failure.
 impl EvmTracer for CallTracer {
     fn on_new_execution_frame(&mut self, request: impl EvmRequest) {
         self.current_call_depth += 1;
 
+        if !self.capturing() {
+            return;
+        }
+
         if !self.only_top_call || self.current_call_depth == 1 {
+            if !self.reserve_capture(
+                &[std::mem::size_of::<CallFrame>(), request.input().len(), 16],
+                1,
+            ) {
+                return;
+            }
             // Top-level deployment (initiated by EOA) won't trigger `on_create_request` hook
             // This is always a CREATE
             if self.current_call_depth == 1 && request.modifier() == CallModifier::Constructor {
@@ -327,6 +445,11 @@ impl EvmTracer for CallTracer {
 
     fn after_execution_frame_completed(&mut self, result: Option<(EvmResources, CallResult)>) {
         assert_ne!(self.current_call_depth, 0);
+        if !self.capturing() {
+            self.current_call_depth -= 1;
+            self.create_operation_requested = None;
+            return;
+        }
         let is_top_level_frame = self.current_call_depth == 1;
         let top_level_execution_succeeded =
             matches!(&result, Some((_, CallResult::Successful { .. })));
@@ -342,6 +465,13 @@ impl EvmTracer for CallTracer {
 
                     match result {
                         CallResult::Failed { returndata } => {
+                            // SYSCOIN: Revert decoding can retain a string the size of returndata;
+                            // the fixed allowance covers a formatted Solidity panic reason.
+                            if !self.reserve_capture(&[returndata.len(), returndata.len(), 128], 0)
+                            {
+                                self.current_call_depth -= 1;
+                                return;
+                            }
                             finished_call.revert_reason = maybe_revert_reason(returndata);
                             finished_call.output = Some(Bytes::copy_from_slice(returndata));
                             if finished_call.typ == "CREATE" || finished_call.typ == "CREATE2" {
@@ -353,6 +483,10 @@ impl EvmTracer for CallTracer {
                             if finished_call.typ == "CREATE" || finished_call.typ == "CREATE2" {
                                 // output should be already populated in `on_bytecode_change` hook
                             } else {
+                                if !self.reserve_capture(&[returndata.len()], 0) {
+                                    self.current_call_depth -= 1;
+                                    return;
+                                }
                                 finished_call.output = Some(Bytes::copy_from_slice(returndata));
                             }
                         }
@@ -370,6 +504,10 @@ impl EvmTracer for CallTracer {
                     }
 
                     if self.current_call_depth == 1 {
+                        if !self.reserve_capture(&[RESOURCE_EXHAUSTION_ERROR.len()], 0) {
+                            self.current_call_depth -= 1;
+                            return;
+                        }
                         // Add error info to the top-level call
 
                         // Note: we can't distinguish runtime resources exhaustion from fatal internal errors here.
@@ -407,6 +545,9 @@ impl EvmTracer for CallTracer {
     }
 
     fn finish_tx(&mut self) {
+        if !self.capturing() {
+            return;
+        }
         assert_eq!(self.current_call_depth, 0);
         assert!(self.unfinished_calls.is_empty());
 
@@ -440,11 +581,24 @@ impl EvmTracer for CallTracer {
     }
 
     fn on_event(&mut self, address: Address, topics: Vec<B256>, data: &[u8]) {
+        if !self.capturing() {
+            return;
+        }
         if self.only_top_call && self.current_call_depth > 1 {
             return;
         }
 
         if self.collect_logs {
+            if !self.reserve_capture(
+                &[
+                    std::mem::size_of::<CallLogFrame>(),
+                    std::mem::size_of_val(topics.as_slice()),
+                    data.len(),
+                ],
+                0,
+            ) {
+                return;
+            }
             let call = self.unfinished_calls.last_mut().expect("Should exist");
             call.logs.push(CallLogFrame {
                 address: if address == Address::ZERO {
@@ -494,17 +648,24 @@ impl EvmTracer for CallTracer {
         _new_internal_bytecode_hash: B256,
         new_observable_bytecode_length: u32,
     ) {
+        if !self.capturing() {
+            return;
+        }
         if self.only_top_call && self.current_call_depth > 1 {
             return;
         }
 
-        let call = self.unfinished_calls.last_mut().expect("Should exist");
-
+        let call = self.unfinished_calls.last().expect("Should exist");
         if call.typ == "CREATE" || call.typ == "CREATE2" {
             assert_eq!(address, call.to.expect("Should exist"));
             let deployed_raw_bytecode = new_raw_bytecode.expect("Should be present");
 
             assert!(deployed_raw_bytecode.len() >= new_observable_bytecode_length as usize);
+
+            if !self.reserve_capture(&[new_observable_bytecode_length as usize], 0) {
+                return;
+            }
+            let call = self.unfinished_calls.last_mut().expect("Should exist");
 
             // raw bytecode may include internal artifacts (jumptable), so we need to trim it
             call.output = Some(Bytes::copy_from_slice(
@@ -533,6 +694,9 @@ impl EvmTracer for CallTracer {
 
     /// Opcode failed for some reason. Note: call frame ends immediately
     fn on_opcode_error(&mut self, error: &EvmError, _frame_state: impl EvmFrameInterface) {
+        if !self.capturing() {
+            return;
+        }
         if self.only_top_call
             && (self.current_call_depth > 1 || self.create_operation_requested.is_some())
         {
@@ -543,6 +707,9 @@ impl EvmTracer for CallTracer {
             return;
         }
 
+        if !self.reserve_capture(&[256], 0) {
+            return;
+        }
         let current_call = self.unfinished_calls.last_mut().expect("Should exist");
         current_call.error = Some(fmt_error_msg(error));
 
@@ -555,6 +722,9 @@ impl EvmTracer for CallTracer {
     /// Special cases, when error happens in frame before any opcode is executed (unfortunately we can't provide access to state)
     /// Note: call frame ends immediately
     fn on_call_error(&mut self, error: &EvmError) {
+        if !self.capturing() {
+            return;
+        }
         if self.only_top_call
             && (self.current_call_depth > 1 || self.create_operation_requested.is_some())
         {
@@ -565,6 +735,9 @@ impl EvmTracer for CallTracer {
             return;
         }
 
+        if !self.reserve_capture(&[256], 0) {
+            return;
+        }
         let current_call = self.unfinished_calls.last_mut().expect("Should exist");
         current_call.error = Some(fmt_error_msg(error));
 
@@ -580,7 +753,14 @@ impl EvmTracer for CallTracer {
         token_value: U256,
         frame_state: impl EvmFrameInterface,
     ) {
+        if !self.capturing() {
+            return;
+        }
         if self.only_top_call && self.current_call_depth > 1 {
+            return;
+        }
+
+        if !self.reserve_capture(&[std::mem::size_of::<CallFrame>(), 16], 1) {
             return;
         }
 
@@ -615,6 +795,9 @@ impl EvmTracer for CallTracer {
     }
 
     fn on_create_request(&mut self, is_create2: bool) {
+        if !self.capturing() {
+            return;
+        }
         // Can't be some - `on_new_execution_frame` or `on_opcode_error` should reset flag
         assert!(self.create_operation_requested.is_none());
 
@@ -688,6 +871,59 @@ mod tests {
     use alloy::sol_types::{Revert, SolError};
     use zksync_os_interface::tracing::EvmTracer;
     use zksync_os_interface::types::ExecutionOutput;
+
+    // SYSCOIN: Small deterministic fixtures exercise capture boundaries without VM workloads.
+    struct TestRequest<'a> {
+        input: &'a [u8],
+        modifier: CallModifier,
+    }
+
+    impl EvmRequest for TestRequest<'_> {
+        fn resources(&self) -> EvmResources {
+            EvmResources {
+                ergs: 100 * ERGS_PER_GAS,
+                native: 0,
+            }
+        }
+
+        fn caller(&self) -> Address {
+            Address::from([0x10; 20])
+        }
+        fn callee(&self) -> Address {
+            Address::from([0x11; 20])
+        }
+        fn modifier(&self) -> CallModifier {
+            self.modifier
+        }
+        fn input(&self) -> &[u8] {
+            self.input
+        }
+        fn nominal_token_value(&self) -> U256 {
+            U256::ZERO
+        }
+    }
+
+    fn limited_tracer(max_bytes: usize, max_frames: usize) -> CallTracer {
+        CallTracer::new_with_limits(
+            vec![],
+            true,
+            false,
+            CallTracerLimits(TraceLimits {
+                max_bytes,
+                max_frames,
+            }),
+        )
+    }
+
+    fn reconcile_with_default_budget(frame: &mut CallFrame, output: &TxOutput, succeeded: bool) {
+        reconcile_trace_with_output(
+            frame,
+            output,
+            succeeded,
+            &mut TraceBudget::new(CallTracerLimits::default().0),
+        )
+        .unwrap();
+    }
 
     #[derive(Default)]
     struct TestStack;
@@ -816,7 +1052,7 @@ mod tests {
         ));
         let mut frame = make_empty_call_frame();
 
-        reconcile_trace_with_output(&mut frame, &tx_output, true);
+        reconcile_with_default_budget(&mut frame, &tx_output, true);
 
         let error = frame.error.expect("missing patched error");
         assert_eq!(error, POST_EXECUTION_PUBDATA_ERROR);
@@ -837,7 +1073,7 @@ mod tests {
         frame.error = Some("execution reverted".to_string());
         frame.output = Some(Bytes::new());
 
-        reconcile_trace_with_output(&mut frame, &tx_output, false);
+        reconcile_with_default_budget(&mut frame, &tx_output, false);
 
         let error = frame.error.expect("missing preserved error");
         assert_eq!(error, "execution reverted");
@@ -854,7 +1090,7 @@ mod tests {
         let mut frame = make_empty_call_frame();
         let original_output = frame.output.clone();
 
-        reconcile_trace_with_output(&mut frame, &tx_output, true);
+        reconcile_with_default_budget(&mut frame, &tx_output, true);
 
         assert!(frame.error.is_none());
         assert_eq!(frame.output, original_output);
@@ -867,7 +1103,7 @@ mod tests {
         let mut frame = make_empty_call_frame();
         frame.error = Some("execution reverted".to_string());
 
-        reconcile_trace_with_output(&mut frame, &tx_output, false);
+        reconcile_with_default_budget(&mut frame, &tx_output, false);
 
         assert_eq!(frame.error.as_deref(), Some("execution reverted"));
         assert_eq!(frame.output, Some(Bytes::from(vec![0xaa, 0xbb])));
@@ -879,7 +1115,7 @@ mod tests {
         let tx_output = make_tx_output(ExecutionResult::Revert(vec![]));
         let mut frame = make_create_call_frame();
 
-        reconcile_trace_with_output(&mut frame, &tx_output, true);
+        reconcile_with_default_budget(&mut frame, &tx_output, true);
 
         assert_eq!(frame.error.as_deref(), Some(POST_EXECUTION_PUBDATA_ERROR));
         assert!(frame.to.is_none());
@@ -1004,5 +1240,153 @@ mod tests {
 
         assert!(tracer.unfinished_calls[0].error.is_none());
         assert!(tracer.create_operation_requested.is_none());
+    }
+
+    // SYSCOIN: Bounded capacity controls also preserve ordinary native trace output.
+    #[test]
+    fn native_capture_preserves_complete_ordinary_trace() {
+        let mut tracer = limited_tracer(4096, 4);
+        tracer.begin_tx(&[]);
+        tracer.on_new_execution_frame(TestRequest {
+            input: &[1, 2],
+            modifier: CallModifier::NoModifier,
+        });
+        tracer.on_new_execution_frame(TestRequest {
+            input: &[3],
+            modifier: CallModifier::Static,
+        });
+        tracer.on_event(Address::from([0x11; 20]), vec![B256::ZERO], &[4]);
+        tracer.after_execution_frame_completed(Some((
+            EvmResources::default(),
+            CallResult::Successful { returndata: &[5] },
+        )));
+        tracer.after_execution_frame_completed(Some((
+            EvmResources::default(),
+            CallResult::Successful { returndata: &[6] },
+        )));
+        tracer.finish_tx();
+        assert!(tracer.capture_budget.ensure_within_limit().is_ok());
+        let root = &tracer.transactions[0];
+        assert_eq!(root.input.as_ref(), &[1, 2]);
+        assert_eq!(root.output.as_ref().unwrap().as_ref(), &[6]);
+        assert_eq!(root.calls[0].typ, "STATICCALL");
+        assert_eq!(root.calls[0].output.as_ref().unwrap().as_ref(), &[5]);
+        assert_eq!(root.calls[0].logs[0].data.as_ref().unwrap().as_ref(), &[4]);
+    }
+
+    #[test]
+    fn native_capture_checks_before_input_copy_and_latches_failure() {
+        let mut tracer = limited_tracer(std::mem::size_of::<CallFrame>() + 16 + 3, 2);
+        tracer.begin_tx(&[]);
+        tracer.on_new_execution_frame(TestRequest {
+            input: &[1, 2, 3, 4],
+            modifier: CallModifier::NoModifier,
+        });
+        assert!(tracer.capture_budget.ensure_within_limit().is_err());
+        assert!(tracer.unfinished_calls.is_empty());
+        tracer.on_event(Address::ZERO, vec![], &[1]);
+        tracer.on_opcode_error(&EvmError::OutOfGas, TestFrame::default());
+        tracer.after_execution_frame_completed(None);
+        tracer.finish_tx();
+        assert!(tracer.transactions.is_empty());
+        assert_eq!(tracer.current_call_depth, 0);
+    }
+
+    #[test]
+    fn native_frame_budget_is_shared_across_transactions() {
+        let mut tracer = limited_tracer(4096, 2);
+        for _ in 0..2 {
+            tracer.begin_tx(&[]);
+            tracer.on_new_execution_frame(TestRequest {
+                input: &[],
+                modifier: CallModifier::NoModifier,
+            });
+            tracer.after_execution_frame_completed(Some((
+                EvmResources::default(),
+                CallResult::Successful { returndata: &[] },
+            )));
+            tracer.finish_tx();
+        }
+        assert_eq!(tracer.transactions.len(), 2);
+        tracer.begin_tx(&[]);
+        tracer.on_new_execution_frame(TestRequest {
+            input: &[],
+            modifier: CallModifier::NoModifier,
+        });
+        tracer.after_execution_frame_completed(None);
+        tracer.finish_tx();
+        assert!(tracer.capture_budget.ensure_within_limit().is_err());
+        assert!(
+            tracer.transactions.is_empty(),
+            "partial prefix must not escape"
+        );
+    }
+
+    #[test]
+    fn native_output_and_revert_decode_are_reserved_before_copying() {
+        for failed in [false, true] {
+            let mut tracer = limited_tracer(std::mem::size_of::<CallFrame>() + 16 + 3, 2);
+            tracer.begin_tx(&[]);
+            tracer.on_new_execution_frame(TestRequest {
+                input: &[],
+                modifier: CallModifier::NoModifier,
+            });
+            let result = if failed {
+                CallResult::Failed {
+                    returndata: &[1, 2, 3, 4],
+                }
+            } else {
+                CallResult::Successful {
+                    returndata: &[1, 2, 3, 4],
+                }
+            };
+            tracer.after_execution_frame_completed(Some((EvmResources::default(), result)));
+            tracer.finish_tx();
+            assert!(tracer.capture_budget.ensure_within_limit().is_err());
+            assert!(tracer.transactions.is_empty());
+        }
+    }
+
+    #[test]
+    fn native_logs_bytecode_and_errors_share_capture_capacity() {
+        let root_bytes = std::mem::size_of::<CallFrame>() + 16;
+        let mut logs = limited_tracer(root_bytes + std::mem::size_of::<CallLogFrame>(), 2);
+        logs.on_new_execution_frame(TestRequest {
+            input: &[],
+            modifier: CallModifier::NoModifier,
+        });
+        logs.on_event(Address::ZERO, vec![], &[1]);
+        assert!(logs.capture_budget.ensure_within_limit().is_err());
+        assert!(logs.unfinished_calls.is_empty());
+
+        let mut create = limited_tracer(root_bytes, 2);
+        create.on_new_execution_frame(TestRequest {
+            input: &[],
+            modifier: CallModifier::Constructor,
+        });
+        create.on_bytecode_change(Address::from([0x11; 20]), Some(&[1]), B256::ZERO, 1);
+        assert!(create.capture_budget.ensure_within_limit().is_err());
+
+        let mut error = limited_tracer(root_bytes, 2);
+        error.on_new_execution_frame(TestRequest {
+            input: &[],
+            modifier: CallModifier::NoModifier,
+        });
+        error.on_call_error(&EvmError::OutOfGas);
+        assert!(error.capture_budget.ensure_within_limit().is_err());
+    }
+
+    #[test]
+    fn post_execution_reconciliation_checks_capacity_before_replacing_output() {
+        let output = make_tx_output(ExecutionResult::Revert(vec![1, 2, 3, 4]));
+        let mut frame = make_empty_call_frame();
+        let original_output = frame.output.clone();
+        let mut budget = TraceBudget::new(TraceLimits {
+            max_bytes: 3,
+            max_frames: 1,
+        });
+        assert!(reconcile_trace_with_output(&mut frame, &output, true, &mut budget).is_err());
+        assert_eq!(frame.output, original_output);
+        assert!(frame.error.is_none());
     }
 }

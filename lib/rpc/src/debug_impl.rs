@@ -13,6 +13,16 @@ use jsonrpsee::core::RpcResult;
 use std::ops::Range;
 use zksync_os_rpc_api::debug::DebugApiServer;
 use zksync_os_storage_api::{RepositoryError, StateError};
+use zksync_os_tx_validators::trace_budget::TraceBudgetError;
+
+fn ensure_tracer_allowed(tracer: &GethDebugTracerType, custom_js_enabled: bool) -> DebugResult<()> {
+    // SYSCOIN: Native debug access must not implicitly authorize arbitrary tracer code.
+    if matches!(tracer, GethDebugTracerType::JsTracer(_)) {
+        crate::js_tracer::tracer::ensure_custom_js_tracers_enabled(custom_js_enabled)
+            .map_err(EthCallError::CallTracerError)?;
+    }
+    Ok(())
+}
 
 pub struct DebugNamespace<RpcStorage> {
     storage: RpcStorage,
@@ -37,6 +47,11 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
         let Some(tracer) = opts.tracer else {
             return Err(DebugError::UnsupportedDefaultTracer);
         };
+        // SYSCOIN: Debug access alone does not authorize arbitrary JS execution.
+        ensure_tracer_allowed(
+            &tracer,
+            self.eth_call_handler.config.enable_custom_js_tracers,
+        )?;
 
         let Some(block) = self.storage.get_block_by_id(block_id)? else {
             return Err(DebugError::BlockNotFound);
@@ -81,7 +96,10 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                     .into_call_config()
                     .map_err(|_| DebugError::InvalidTracerConfig)?;
 
-                match sandbox::call_trace(txs, block_context, prev_state_view, call_config) {
+                // SYSCOIN: Block and transaction-prefix replay share one request-wide capacity.
+                let limits = sandbox::CallTracerLimits::from_config(&self.eth_call_handler.config);
+                match sandbox::call_trace(txs, block_context, prev_state_view, call_config, limits)
+                {
                     Ok(calls) => Ok(calls
                         .into_iter()
                         .zip(&block.body.transactions)
@@ -90,6 +108,10 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                         })
                         .collect()),
                     Err(err) => {
+                        // SYSCOIN: Capacity rejection is explicit, never a successful partial trace.
+                        if err.is::<TraceBudgetError>() {
+                            return Err(EthCallError::CallTracerError(err).into());
+                        }
                         tracing::error!(?err, "Failed to trace transaction");
                         Err(DebugError::InternalError)
                     }
@@ -184,6 +206,11 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
         let Some(tracer) = tracing_options.tracer else {
             return Err(DebugError::UnsupportedDefaultTracer);
         };
+        // SYSCOIN: Apply the same trusted-JS boundary to call and replay entry points.
+        ensure_tracer_allowed(
+            &tracer,
+            self.eth_call_handler.config.enable_custom_js_tracers,
+        )?;
         match (tracer, state_overrides, block_overrides) {
             (
                 GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer),
@@ -341,4 +368,24 @@ pub enum DebugError {
     State(#[from] StateError),
     #[error(transparent)]
     Call(#[from] EthCallError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // SYSCOIN: The opt-in applies to both source representations while preserving native debug.
+    #[test]
+    fn custom_js_requires_separate_opt_in_but_native_call_tracer_does_not() {
+        for source in [
+            "({result: function() { return {}; }})",
+            r#"{"code":"({})"}"#,
+        ] {
+            let tracer = GethDebugTracerType::JsTracer(source.to_string());
+            assert!(ensure_tracer_allowed(&tracer, false).is_err());
+            assert!(ensure_tracer_allowed(&tracer, true).is_ok());
+        }
+        let native = GethDebugTracerType::BuiltInTracer(GethDebugBuiltInTracerType::CallTracer);
+        assert!(ensure_tracer_allowed(&native, false).is_ok());
+    }
 }

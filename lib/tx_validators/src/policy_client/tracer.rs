@@ -4,6 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::trace_budget::{TraceBudget, TraceBudgetError, TraceLimits};
 use alloy::primitives::{Address, B256, U256};
 use serde::Serialize;
 use zksync_os_evm_errors::EvmError;
@@ -55,15 +56,40 @@ pub struct CapturedFrame {
 
 /// Mutable trace state shared between the tracer (writer) and the consuming
 /// `PolicyClient::finish_tx` (reader).
-#[derive(Default)]
 pub(super) struct TraceState {
     /// Stack of open (not yet completed) frames, innermost last.
     frame_stack: Vec<CapturedFrame>,
     /// The single root frame, set when the outermost frame completes.
     root: Option<CapturedFrame>,
+    // SYSCOIN: Per-transaction capture state; trusted exemptions need no capture.
+    limits: TraceLimits,
+    budget: TraceBudget,
+    capture_enabled: bool,
 }
 
 impl TraceState {
+    fn new(limits: TraceLimits) -> Self {
+        Self {
+            frame_stack: Vec::new(),
+            root: None,
+            limits,
+            budget: TraceBudget::new(limits),
+            capture_enabled: true,
+        }
+    }
+
+    pub(super) fn set_capture_enabled(&mut self, enabled: bool) {
+        self.capture_enabled = enabled;
+    }
+
+    pub(super) fn take_trace(&mut self) -> Result<Option<CapturedFrame>, TraceBudgetError> {
+        // SYSCOIN: Capacity failure is latched and must not become an empty allowed trace.
+        if self.capture_enabled {
+            self.budget.ensure_within_limit()?;
+        }
+        Ok(self.take_root())
+    }
+
     pub(super) fn take_root(&mut self) -> Option<CapturedFrame> {
         self.frame_stack.clear();
         std::mem::take(&mut self.root)
@@ -72,8 +98,13 @@ impl TraceState {
 
 pub(super) type TraceSlot = Arc<Mutex<TraceState>>;
 
+#[cfg(test)]
 pub(super) fn new_slot() -> TraceSlot {
-    Arc::new(Mutex::new(TraceState::default()))
+    new_slot_with_limits(super::DEFAULT_POLICY_TRACE_LIMITS)
+}
+
+pub(super) fn new_slot_with_limits(limits: TraceLimits) -> TraceSlot {
+    Arc::new(Mutex::new(TraceState::new(limits)))
 }
 
 /// Captures `(caller, callee, value, calldata, deploys, call_kind)` per
@@ -103,6 +134,27 @@ impl AnyTracer for Tracer {
 
 impl EvmTracer for Tracer {
     fn on_new_execution_frame(&mut self, request: impl EvmRequest) {
+        // SYSCOIN: Failed / exempt traces cannot allocate another captured frame.
+        let mut state = self.lock();
+        if !state.capture_enabled || state.budget.ensure_within_limit().is_err() {
+            return;
+        }
+        // SYSCOIN: Charge the frame and input before either allocation. Frame count also
+        // bounds the child / deploy vectors' structural overhead.
+        if state
+            .budget
+            .reserve(request.input().len(), 1)
+            .and_then(|_| {
+                state
+                    .budget
+                    .reserve(std::mem::size_of::<CapturedFrame>(), 0)
+            })
+            .is_err()
+        {
+            state.frame_stack.clear();
+            state.root = None;
+            return;
+        }
         let caller = request.caller();
         let callee = request.callee();
         let modifier = request.modifier();
@@ -116,7 +168,6 @@ impl EvmTracer for Tracer {
         };
         let calldata = request.input().to_vec();
 
-        let mut state = self.lock();
         if modifier == CallModifier::Constructor {
             // Record the deployed address on the parent frame. Top-level
             // deployments have no parent; the recipient sees them as a
@@ -138,6 +189,10 @@ impl EvmTracer for Tracer {
 
     fn after_execution_frame_completed(&mut self, _result: Option<(EvmResources, CallResult)>) {
         let mut state = self.lock();
+        // SYSCOIN: Completion cannot reconstruct a discarded or exempt capture tree.
+        if !state.capture_enabled || state.budget.ensure_within_limit().is_err() {
+            return;
+        }
         if let Some(completed) = state.frame_stack.pop() {
             if let Some(parent) = state.frame_stack.last_mut() {
                 parent.children.push(completed);
@@ -156,6 +211,8 @@ impl EvmTracer for Tracer {
         let mut state = self.lock();
         state.frame_stack.clear();
         state.root = None;
+        // SYSCOIN: Only a new transaction replenishes policy capture capacity.
+        state.budget = TraceBudget::new(state.limits);
     }
 
     fn finish_tx(&mut self) {
@@ -241,6 +298,35 @@ mod tests {
     fn pair() -> (Tracer, TraceSlot) {
         let slot = new_slot();
         (Tracer::new(slot.clone()), slot)
+    }
+
+    #[test]
+    fn capture_reserves_before_copying_and_latches_failure() {
+        // SYSCOIN: Bounded frame failure discards partial capture until the next tx.
+        let slot = new_slot_with_limits(TraceLimits {
+            max_bytes: 1024,
+            max_frames: 1,
+        });
+        let mut tracer = Tracer::new(slot.clone());
+        tracer.begin_tx(&[]);
+        tracer.on_new_execution_frame(&frame(A, B, CallModifier::NoModifier, &[1], 0));
+        tracer.after_execution_frame_completed(None);
+        assert_eq!(slot.lock().unwrap().budget.used_frames(), 1);
+        // Failure discards the prior tree and never captures the second input.
+        tracer.on_new_execution_frame(&frame(B, C, CallModifier::NoModifier, &[2, 3], 0));
+        assert!(slot.lock().unwrap().take_trace().is_err());
+        assert!(slot.lock().unwrap().root.is_none());
+        tracer.after_execution_frame_completed(None);
+        tracer.finish_tx();
+        assert!(slot.lock().unwrap().take_trace().is_err());
+        // A new transaction gets its own budget; ordinary capture is unchanged.
+        tracer.begin_tx(&[]);
+        tracer.on_new_execution_frame(&frame(A, B, CallModifier::NoModifier, &[4], 0));
+        tracer.after_execution_frame_completed(None);
+        assert_eq!(
+            slot.lock().unwrap().take_trace().unwrap().unwrap().calldata,
+            vec![4]
+        );
     }
 
     #[test]

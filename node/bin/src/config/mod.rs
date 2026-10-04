@@ -1209,6 +1209,14 @@ pub struct PolicyServiceConfig {
     ])]
     pub bypass_from: Vec<Address>,
 
+    /// SYSCOIN: Maximum logical bytes retained for one optional policy call trace. Exceeding fails closed.
+    #[config(default_t = 8 * SizeUnit::MiB)]
+    pub max_trace_bytes: ByteSize,
+
+    /// SYSCOIN: Maximum frames retained for one optional policy call trace. Zero rejects capture.
+    #[config(default_t = 16_384)]
+    pub max_trace_frames: usize,
+
     /// Bearer token sent as `Authorization: Bearer <token>` on every request.
     /// Required for `http://` transports. Ignored for `unix://` transports,
     /// where socket-path filesystem permissions are the access control.
@@ -1236,6 +1244,20 @@ pub struct RpcConfig {
     /// per-thread allocation counters. Set to `0` to disable the check.
     #[config(default_t = 512 * SizeUnit::MiB)]
     pub js_tracer_max_memory: ByteSize,
+
+    /// SYSCOIN: Enable arbitrary JavaScript tracers only for trusted callers. This is not a hard sandbox;
+    /// native debug tracers do not require this flag.
+    #[config(default)]
+    pub enable_custom_js_tracers: bool,
+
+    /// SYSCOIN: Aggregate logical native call-trace capture bytes per request, including replay prefixes.
+    /// This is not a resident-memory limit. Zero rejects capture.
+    #[config(default_t = 64 * SizeUnit::MiB)]
+    pub call_tracer_max_capture_bytes: ByteSize,
+
+    /// SYSCOIN: Aggregate native call-trace frames per request. Zero rejects capture.
+    #[config(default_t = 100_000)]
+    pub call_tracer_max_frames: usize,
 
     /// Maximum block gas limit accepted for an `eth_simulateV1` block override.
     #[config(default_t = 100_000_000)]
@@ -1292,6 +1314,15 @@ pub struct RpcConfig {
     /// Maximum number of logs that can be returned in a response
     #[config(default_t = 10_000)]
     pub max_logs_per_response: usize,
+
+    /// SYSCOIN: Shared maximum number of retained log, block, and pending-transaction filters.
+    #[config(default_t = NonZeroU32::new(4096).unwrap())]
+    pub max_active_filters: NonZeroU32,
+
+    /// SYSCOIN: Maximum total address and topic alternatives retained by one installed log filter.
+    /// This installation limit does not change stateless eth_getLogs queries.
+    #[config(default_t = NonZeroU32::new(1024).unwrap())]
+    pub max_filter_terms: NonZeroU32,
 
     /// Duration since the last filter poll, after which the filter is considered stale
     #[config(default_t = 15 * TimeUnit::Minutes)]
@@ -2616,6 +2647,10 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             block_timestamp_offset_seconds: 0,
             js_tracer_timeout: c.js_tracer_timeout,
             js_tracer_max_memory_bytes: c.js_tracer_max_memory.0 as usize,
+            // SYSCOIN: Preserve operator capture limits and separate JS authorization at runtime.
+            enable_custom_js_tracers: c.enable_custom_js_tracers,
+            call_tracer_max_capture_bytes: c.call_tracer_max_capture_bytes.0 as usize,
+            call_tracer_max_frames: c.call_tracer_max_frames,
             eth_simulate_block_gas_limit: c.eth_simulate_block_gas_limit,
             // SYSCOIN: Keep the request budget independent from the per-block compatibility cap.
             eth_simulate_gas_limit: c.eth_simulate_gas_limit,
@@ -2629,6 +2664,9 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             parallel_batches: c.parallel_batches,
             max_blocks_per_filter: c.max_blocks_per_filter,
             max_logs_per_response: c.max_logs_per_response,
+            // SYSCOIN: Namespace clones must use the configured retained-filter capacities.
+            max_active_filters: c.max_active_filters,
+            max_filter_terms: c.max_filter_terms,
             l2_signer_blacklist: c.l2_signer_blacklist,
             l2_tx_blacklist: c.l2_tx_blacklist,
             stale_filter_ttl: c.stale_filter_ttl,
@@ -2691,6 +2729,11 @@ impl PolicyServiceConfig {
                     protocol_version: self.protocol_version.clone(),
                     expected_protocol_version: self.expected_protocol_version.clone(),
                     bypass_from: self.bypass_from.iter().copied().collect(),
+                    // SYSCOIN: Optional policy capture is bounded independently of native debug.
+                    trace_limits: zksync_os_tx_validators::trace_budget::TraceLimits {
+                        max_bytes: self.max_trace_bytes.0 as usize,
+                        max_frames: self.max_trace_frames,
+                    },
                     auth_token: self.auth_token.clone(),
                 },
             )
@@ -3037,6 +3080,82 @@ mod tests {
     const TEST_SECRET_KEY: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
     const TEST_BOOT_NODE: &str = "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@localhost:30303?discport=30301";
+
+    // SYSCOIN: Capacity controls must survive configuration deserialization and runtime conversion.
+    #[test]
+    fn installed_filter_limits_have_nonzero_defaults_and_configurable_runtime_bindings() {
+        let schema = ConfigSchema::new(&RpcConfig::DESCRIPTION, "rpc");
+        let defaults = ConfigRepository::new(&schema)
+            .single::<RpcConfig>()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(defaults.max_active_filters.get(), 4096);
+        assert_eq!(defaults.max_filter_terms.get(), 1024);
+
+        let configured = ConfigRepository::new(&schema).with(Environment::from_iter(
+            "",
+            [
+                ("RPC_MAX_ACTIVE_FILTERS", "16"),
+                ("RPC_MAX_FILTER_TERMS", "8"),
+            ],
+        ));
+        let runtime = zksync_os_rpc::RpcConfig::from(
+            configured.single::<RpcConfig>().unwrap().parse().unwrap(),
+        );
+        assert_eq!(runtime.max_active_filters.get(), 16);
+        assert_eq!(runtime.max_filter_terms.get(), 8);
+
+        for name in ["RPC_MAX_ACTIVE_FILTERS", "RPC_MAX_FILTER_TERMS"] {
+            let invalid =
+                ConfigRepository::new(&schema).with(Environment::from_iter("", [(name, "0")]));
+            assert!(invalid.single::<RpcConfig>().unwrap().parse().is_err());
+        }
+    }
+
+    // SYSCOIN: Debug access must not implicitly enable arbitrary JavaScript.
+    #[test]
+    fn trace_capacities_and_custom_js_opt_in_reach_runtime_config() {
+        let schema = ConfigSchema::new(&RpcConfig::DESCRIPTION, "rpc");
+        let defaults = ConfigRepository::new(&schema)
+            .single::<RpcConfig>()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let defaults = zksync_os_rpc::RpcConfig::from(defaults);
+        assert!(!defaults.enable_custom_js_tracers);
+        assert_eq!(defaults.call_tracer_max_capture_bytes, 64 * 1024 * 1024);
+        assert_eq!(defaults.call_tracer_max_frames, 100_000);
+        let configured = ConfigRepository::new(&schema).with(Environment::from_iter(
+            "",
+            [
+                ("RPC_ENABLE_CUSTOM_JS_TRACERS", "true"),
+                ("RPC_CALL_TRACER_MAX_CAPTURE_BYTES", "1024 B"),
+                ("RPC_CALL_TRACER_MAX_FRAMES", "8"),
+            ],
+        ));
+        let runtime = zksync_os_rpc::RpcConfig::from(
+            configured.single::<RpcConfig>().unwrap().parse().unwrap(),
+        );
+        assert!(runtime.enable_custom_js_tracers);
+        assert_eq!(runtime.call_tracer_max_capture_bytes, 1024);
+        assert_eq!(runtime.call_tracer_max_frames, 8);
+    }
+
+    // SYSCOIN: Optional policy capture limits are explicit operator configuration.
+    #[test]
+    fn policy_trace_capacities_have_defaults_and_can_be_tuned() {
+        let defaults = parse_policy_service_config([]).unwrap();
+        assert_eq!(defaults.max_trace_bytes.0, 8 * 1024 * 1024);
+        assert_eq!(defaults.max_trace_frames, 16_384);
+        let configured = parse_policy_service_config([
+            ("POLICY_SERVICE_MAX_TRACE_BYTES", "1024 B"),
+            ("POLICY_SERVICE_MAX_TRACE_FRAMES", "8"),
+        ])
+        .unwrap();
+        assert_eq!(configured.max_trace_bytes.0, 1024);
+        assert_eq!(configured.max_trace_frames, 8);
+    }
 
     #[test]
     fn prometheus_bind_defaults_and_explicit_loopback() {

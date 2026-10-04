@@ -113,6 +113,10 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     metrics::register_task_monitor();
 
     let mut rpc = RpcModule::new(());
+    // SYSCOIN: All optional policy VM workers and heavy RPC handlers share this budget.
+    let blocking_rpcs_semaphore = Arc::new(Semaphore::new(
+        config.max_concurrent_blocking_rpcs.max(1) as usize,
+    ));
     let eth_call_handler = EthCallHandler::new(
         config.clone(),
         storage.clone(),
@@ -130,6 +134,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             acceptance_state,
             tx_forwarder,
             policy_client,
+            blocking_rpcs_semaphore.clone(),
             last_constructed_block_context,
         )
         .into_rpc(),
@@ -195,11 +200,6 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     // SYSCOIN: MethodFiltering now decomposes batches to enforce filtered notifications,
     // so it needs the same response-size limit as jsonrpsee's batch builder.
     let max_response_size_bytes_usize = max_response_size_bytes as usize;
-    // SYSCOIN: create one process-wide heavy blocking RPC budget outside
-    // `layer_fn`, which jsonrpsee runs per connection.
-    let blocking_rpcs_semaphore = Arc::new(Semaphore::new(
-        config.max_concurrent_blocking_rpcs.max(1) as usize,
-    ));
     // SYSCOIN: The bounded HTTP transport releases its raw-body permits at Alloy's owned
     // `ResponsePacket` boundary. Keep the only provider response route that can approach that cap
     // to 8 end-to-end handlers (<=1 GiB retained at once), while still allowing parallel proofs.

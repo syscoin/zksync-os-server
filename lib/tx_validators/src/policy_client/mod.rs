@@ -26,6 +26,14 @@ use self::tracer::TraceSlot;
 pub use self::tracer::{CallKind, CapturedFrame, Tracer};
 use self::transport::{Transport, TransportConfig, TransportError};
 use self::wire::{AdmitRequest, JudgeRequest};
+use crate::trace_budget::TraceLimits;
+
+/// SYSCOIN: Default local policy capture capacity. Operators may raise it for legitimate
+/// workloads; this is not a new protocol / consensus transaction limit.
+pub const DEFAULT_POLICY_TRACE_LIMITS: TraceLimits = TraceLimits {
+    max_bytes: 8 * 1024 * 1024,
+    max_frames: 16_384,
+};
 
 /// Caller intent forwarded with each request. `Read` is for read-only
 /// simulations (`eth_call`); `Write` is for everything else, including
@@ -54,6 +62,9 @@ pub struct Config {
     /// protocol-internal senders (bootloader, force-deployer) the chain
     /// cannot let an external service refuse without bricking startup.
     pub bypass_from: HashSet<Address>,
+    /// SYSCOIN: Aggregate trace allocation capacity, checked before capture allocations.
+    /// Exhaustion fails closed without submitting a partial trace to `/judge`.
+    pub trace_limits: TraceLimits,
     /// Bearer token sent as `Authorization: Bearer <token>` on every request.
     /// Required for `http://`; ignored (with a warning) for `unix://` where
     /// socket-path permissions are the access control.
@@ -68,6 +79,7 @@ struct PolicyClientInner {
     protocol_version: String,
     expected_protocol_version: Option<String>,
     bypass_from: HashSet<Address>,
+    trace_limits: TraceLimits,
 }
 
 /// Call [`Self::session`] to get a per-transaction [`PolicySession`].
@@ -108,19 +120,31 @@ impl PolicyClient {
             protocol_version: config.protocol_version,
             expected_protocol_version: config.expected_protocol_version,
             bypass_from: config.bypass_from,
+            trace_limits: config.trace_limits,
         })))
     }
 
-    /// Creates a per-transaction [`PolicySession`] with its own trace slot
-    /// and pending-sender state. Use a separate session for each concurrent
-    /// RPC simulation so their `begin_tx` / `finish_tx` hooks don't trample
-    /// each other's captured frames.
+    /// SYSCOIN: Creates a per-transaction [`PolicySession`] with its own trace slot
+    /// and pending-sender state for authenticated transactions / block execution.
+    /// For unsigned RPC requests use [`Self::public_simulation_session`].
     pub fn session(&self, access_type: AccessType) -> PolicySession {
+        self.new_session(access_type, true)
+    }
+
+    /// SYSCOIN: Unsigned public simulations cannot authenticate their supplied `from`.
+    /// They must not inherit protocol sender exemptions used by real execution.
+    pub fn public_simulation_session(&self, access_type: AccessType) -> PolicySession {
+        self.new_session(access_type, false)
+    }
+
+    fn new_session(&self, access_type: AccessType, allow_sender_bypass: bool) -> PolicySession {
+        // SYSCOIN: Bind capture capacity and exemption provenance to this session.
         PolicySession {
             client: Arc::clone(&self.0),
-            slot: tracer::new_slot(),
+            slot: tracer::new_slot_with_limits(self.0.trace_limits),
             pending_tx_from: None,
             access_type,
+            allow_sender_bypass,
         }
     }
 }
@@ -132,6 +156,7 @@ pub struct PolicySession {
     slot: TraceSlot,
     pending_tx_from: Option<Address>,
     access_type: AccessType,
+    allow_sender_bypass: bool,
 }
 
 impl PolicySession {
@@ -146,9 +171,14 @@ impl PolicySession {
         &POLICY_CLIENT_METRICS[&self.client.component]
     }
 
+    fn sender_bypasses(&self, from: Address) -> bool {
+        // SYSCOIN: A caller-supplied address alone cannot authenticate an exemption.
+        self.allow_sender_bypass && self.client.bypass_from.contains(&from)
+    }
+
     async fn admit(&self, ctx: &BeginTxContext<'_>) -> TxValidationResult {
         let metrics = self.metrics();
-        if self.client.bypass_from.contains(&ctx.from) {
+        if self.sender_bypasses(ctx.from) {
             metrics.admit_bypassed.inc();
             return Ok(());
         }
@@ -180,7 +210,7 @@ impl PolicySession {
     ) -> TxValidationResult {
         let metrics = self.metrics();
         if let Some(from) = from
-            && self.client.bypass_from.contains(&from)
+            && self.sender_bypasses(from)
         {
             metrics.judge_bypassed.inc();
             return Ok(());
@@ -283,19 +313,32 @@ impl AnyTxValidator for PolicySession {
 
 impl TxValidator for PolicySession {
     fn begin_tx(&mut self, ctx: &BeginTxContext<'_>) -> TxValidationResult {
-        // Stash `from` so `finish_tx` can apply the same `bypass_from`
-        // short-circuit.
+        // SYSCOIN: Stash the sender and the call site's provenance; an unsigned public
+        // `from` must never activate protocol execution exemptions.
         self.pending_tx_from = Some(ctx.from);
+        self.slot
+            .lock()
+            .expect("policy tracer slot mutex poisoned")
+            .set_capture_enabled(!self.sender_bypasses(ctx.from));
         tokio::runtime::Handle::current().block_on(self.admit(ctx))
     }
 
     fn finish_tx(&mut self) -> TxValidationResult {
+        // SYSCOIN: Reject exhausted capture before a partial trace can reach /judge.
         let root = self
             .slot
             .lock()
             .expect("policy tracer slot mutex poisoned")
-            .take_root();
+            .take_trace();
         let from = self.pending_tx_from.take();
+        // SYSCOIN: Keep local capacity rejection visible without logging any captured secrets.
+        let root = root.map_err(|error| {
+            tracing::warn!(
+                ?error,
+                "policy trace capture capacity exceeded; rejecting without judge"
+            );
+            InvalidTransaction::FilteredByValidator
+        })?;
         tokio::runtime::Handle::current().block_on(self.judge(from, root))
     }
 }

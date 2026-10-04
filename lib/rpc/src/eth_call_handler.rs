@@ -4,7 +4,7 @@ use crate::js_tracer;
 use crate::metrics::API_METRICS;
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
-use crate::sandbox::{call_trace_simulate, execute, execute_with};
+use crate::sandbox::{CallTracerLimits, call_trace_simulate, execute, execute_with};
 use alloy::consensus::transaction::Recovered;
 use alloy::consensus::{SignableTransaction, Transaction, TxEip1559, TxEip2930, TxLegacy, TxType};
 use alloy::eips::BlockId;
@@ -330,6 +330,8 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         apply_call_gas_budget(&mut request, self.config.eth_call_gas as u64)?;
         let block_context = self.resolve_block_context(block)?;
         let transaction = self.create_tx_from_request(request, &block_context, false)?;
+        // SYSCOIN: Unsigned protocol-shaped requests cannot skip configured policy.
+        ensure_public_policy_type_supported(self.policy_client.is_some(), transaction.tx_type())?;
 
         Ok(ExecutionEnv {
             transaction,
@@ -355,14 +357,12 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             state_overrides.unwrap_or_default(),
         );
 
-        let tx_type = execution_env.transaction.tx_type();
-        // New session per call so concurrent simulations don't share captured
-        // frames. Read intent because `eth_call` is read-only.
+        // SYSCOIN: Isolate concurrent traces and never trust an unsigned sender exemption.
+        // Read intent because `eth_call` is read-only.
         let mut policy_session = self
             .policy_client
             .as_ref()
-            .filter(|_| tx_type_runs_policy(tx_type))
-            .map(|client| client.session(AccessType::Read));
+            .map(|client| client.public_simulation_session(AccessType::Read));
         let res = simulate_with_optional_policy(
             execution_env.transaction,
             execution_env.block_context,
@@ -401,22 +401,31 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             .storage
             .state_at_block_number_or_latest(execution_env.block_context.block_number)?;
 
+        // SYSCOIN: Both override paths apply the same request-wide capture capacity.
         match state_overrides {
             Some(overrides) => call_trace_simulate(
                 execution_env.transaction,
                 execution_env.block_context,
                 OverriddenStateView::with_state_overrides(storage_view, overrides),
                 call_config,
+                CallTracerLimits::from_config(&self.config),
             ),
             None => call_trace_simulate(
                 execution_env.transaction,
                 execution_env.block_context,
                 storage_view,
                 call_config,
+                CallTracerLimits::from_config(&self.config),
             ),
         }
         .map(GethTrace::CallTracer)
-        .map_err(|err| EthCallError::ForwardSubsystemError(anyhow::anyhow!(err)))
+        .map_err(|err| {
+            if err.is::<zksync_os_tx_validators::trace_budget::TraceBudgetError>() {
+                EthCallError::CallTracerError(err)
+            } else {
+                EthCallError::ForwardSubsystemError(err)
+            }
+        })
     }
 
     pub fn call_js_tracer_impl(
@@ -427,6 +436,9 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         state_overrides: Option<StateOverride>,
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> Result<JsonValue, EthCallError> {
+        // SYSCOIN: Reject untrusted JS before preparing or constructing its interpreter.
+        js_tracer::tracer::ensure_custom_js_tracers_enabled(self.config.enable_custom_js_tracers)
+            .map_err(EthCallError::CallTracerError)?;
         let execution_env = self.prepare_execution_env(request, block, block_overrides)?;
         // SYSCOIN: JS tracing also uses `NopValidator`, so apply the same policy-bypass guard.
         self.ensure_unvalidated_policy_path_allowed(&execution_env.transaction)?;
@@ -568,6 +580,8 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         tracing::trace!("Estimating gas with block context {block_context:?}");
 
         let tx = self.build_estimate_tx(request, &block_context, &mut storage_view)?;
+        // SYSCOIN: Reject unsupported policy VM paths before the first estimate probe.
+        ensure_public_policy_type_supported(self.policy_client.is_some(), tx.tx_type())?;
 
         let run_at = |gas_limit: u64| {
             let mut attempt = tx.clone();
@@ -576,8 +590,11 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 .map_err(EthCallError::ForwardSubsystemError)
         };
 
-        // Execute the transaction with the highest possible gas limit.
-        let res = run_at(tx.gas_limit())?.map_err(EthCallError::InvalidTransaction)?;
+        // SYSCOIN: The initial probe can return revert data before the final policy run.
+        // Validate this execution too; otherwise failed estimates bypass unsigned-call policy.
+        let res = initial_estimate_probe(self.policy_client.as_ref(), |policy| {
+            simulate_with_optional_policy(tx.clone(), block_context, storage_view.clone(), policy)
+        })?;
         tracing::trace!(
             "Executed tx in eth_estimateGas with gas limit: {:?}, result {res:?}",
             Probe::Highest(tx.gas_limit())
@@ -623,17 +640,16 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         }
         tracing::trace!("Estimated gas limit: {}", range.highest);
 
-        // Re-execute the resolved gas limit once with the validator wired in.
-        // The binary search runs without the validator (one round-trip per
-        // iteration would be 30+ calls). `Write` intent: gas is
+        // SYSCOIN: Revalidate the resolved gas limit; gas-sensitive execution can differ
+        // from the initial validated probe. Intermediate binary-search probes omit the
+        // validator (one round-trip per iteration would be 30+ calls). `Write` intent: gas is
         // state-dependent, so a read-only caller estimating gas would
         // sidechannel state.
-        if let Some(policy_client) = &self.policy_client
-            && tx_type_runs_policy(tx.tx_type())
-        {
+        if let Some(policy_client) = &self.policy_client {
+            // SYSCOIN: Estimation supplies no authenticated exemption provenance either.
             let mut judged_tx = tx.clone();
             set_gas_limit(&mut judged_tx, range.highest);
-            let mut policy_session = policy_client.session(AccessType::Write);
+            let mut policy_session = policy_client.public_simulation_session(AccessType::Write);
             simulate_with_optional_policy(
                 judged_tx,
                 block_context,
@@ -657,11 +673,11 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
 
     pub(crate) fn ensure_unvalidated_policy_path_allowed(
         &self,
-        tx: &ZkTransaction,
+        _tx: &ZkTransaction,
     ) -> Result<(), EthCallError> {
         // SYSCOIN: debug/simulate paths below still execute with `NopValidator`; when a policy
         // service is configured, do not expose equivalent read/write observations without it.
-        if self.policy_client_configured() && tx_type_runs_policy(tx.tx_type()) {
+        if self.policy_client_configured() {
             return Err(EthCallError::PolicyDenied);
         }
         Ok(())
@@ -767,6 +783,17 @@ fn simulate_with_optional_policy<V: ViewState>(
     }
 }
 
+// SYSCOIN: Bind the highest estimate probe to public provenance before any VM outcome escapes.
+fn initial_estimate_probe(
+    client: Option<&PolicyClient>,
+    run: impl FnOnce(Option<&mut PolicySession>) -> anyhow::Result<Result<TxOutput, InvalidTransaction>>,
+) -> Result<TxOutput, EthCallError> {
+    let mut session = client.map(|client| client.public_simulation_session(AccessType::Write));
+    run(session.as_mut())
+        .map_err(EthCallError::ForwardSubsystemError)?
+        .map_err(map_simulate_invalid_to_call_error)
+}
+
 /// Surface validator denials as `PolicyDenied` so the rpc layer maps them
 /// to `TransactionRejected` rather than a generic invalid-transaction error.
 fn map_simulate_invalid_to_call_error(err: InvalidTransaction) -> EthCallError {
@@ -776,10 +803,20 @@ fn map_simulate_invalid_to_call_error(err: InvalidTransaction) -> EthCallError {
     }
 }
 
-/// L1 priority and upgrade txs bypass the validator end-to-end (block-build
-/// doesn't fire it on them either). Exhaustive match (no `_` arm) so a
-/// future `ZkTxType` variant can't silently bypass the policy.
-pub(crate) fn tx_type_runs_policy(tx_type: ZkTxType) -> bool {
+/// SYSCOIN: VM validator support, not evidence of an authenticated protocol transaction.
+/// Public callers can supply an L1 transaction type but the L1 VM path does not
+/// run policy hooks. Preserve that path only when no policy is configured.
+fn ensure_public_policy_type_supported(
+    policy_configured: bool,
+    tx_type: ZkTxType,
+) -> Result<(), EthCallError> {
+    if policy_configured && !tx_type_runs_policy(tx_type) {
+        return Err(EthCallError::PolicyDenied);
+    }
+    Ok(())
+}
+
+fn tx_type_runs_policy(tx_type: ZkTxType) -> bool {
     match tx_type {
         ZkTxType::L2(_) => true,
         ZkTxType::L1 | ZkTxType::Upgrade | ZkTxType::System => false,
@@ -1028,6 +1065,87 @@ pub enum EthCallError {
 mod tests {
     use super::*;
 
+    // SYSCOIN: Exercise the first-probe policy boundary with a closed local transport, not VM work.
+    #[tokio::test]
+    async fn initial_estimate_probe_enforces_public_policy_before_a_failure_result() {
+        use zksync_os_interface::tracing::{BeginTxContext, TxValidator};
+        use zksync_os_tx_validators::policy_client::{
+            Component, Config, DEFAULT_POLICY_TRACE_LIMITS,
+        };
+
+        let from = Address::from([0x11; 20]);
+        let socket =
+            std::env::temp_dir().join(format!("estimate-policy-{}.sock", std::process::id()));
+        assert!(!socket.exists());
+        let client = PolicyClient::new(Config {
+            url: format!("unix://{}", socket.display()),
+            component: Component::Rpc,
+            request_timeout: std::time::Duration::from_millis(50),
+            protocol_version: "1".into(),
+            expected_protocol_version: None,
+            bypass_from: std::collections::HashSet::from([from]),
+            trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
+            auth_token: None,
+        })
+        .unwrap();
+        let error = tokio::task::spawn_blocking(move || {
+            initial_estimate_probe(Some(&client), |session| {
+                let session = session.expect("initial probes must wire configured policy");
+                let context = BeginTxContext {
+                    from,
+                    to: Some(Address::ZERO),
+                    value: U256::ZERO,
+                    calldata: &[],
+                    gas_limit: 21_000,
+                };
+                Ok(session.begin_tx(&context).map(|()| {
+                    panic!("an unsigned caller unexpectedly inherited a sender exemption")
+                }))
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(error, EthCallError::PolicyDenied));
+    }
+
+    // SYSCOIN: With no policy configured, ordinary execution outcomes are unchanged.
+    #[test]
+    fn initial_estimate_probe_preserves_unprotected_execution_outcomes() {
+        for execution_result in [
+            ExecutionResult::Success(ExecutionOutput::Call(vec![])),
+            ExecutionResult::Revert(vec![1, 2]),
+        ] {
+            let expected = execution_result.clone();
+            let output = initial_estimate_probe(None, |session| {
+                assert!(session.is_none());
+                Ok(Ok(TxOutput {
+                    execution_result,
+                    gas_used: 21_000,
+                    gas_refunded: 0,
+                    computational_native_used: 0,
+                    native_used: 0,
+                    pubdata_used: 0,
+                    contract_address: None,
+                    logs: vec![],
+                    l2_to_l1_logs: vec![],
+                    storage_writes: vec![],
+                }))
+            })
+            .unwrap();
+            match (output.execution_result, expected) {
+                (
+                    ExecutionResult::Success(ExecutionOutput::Call(actual)),
+                    ExecutionResult::Success(ExecutionOutput::Call(expected)),
+                )
+                | (ExecutionResult::Revert(actual), ExecutionResult::Revert(expected)) => {
+                    assert_eq!(actual, expected);
+                }
+                _ => panic!("initial probe changed its execution outcome"),
+            }
+        }
+    }
+
     // SYSCOIN: Both ordinary and service calls pass this admission boundary before construction.
     #[test]
     fn call_gas_budget_preserves_defaults_and_rejects_excess() {
@@ -1072,6 +1190,21 @@ mod tests {
         assert!(!tx_type_runs_policy(ZkTxType::L1));
         assert!(!tx_type_runs_policy(ZkTxType::Upgrade));
         assert!(!tx_type_runs_policy(ZkTxType::System));
+    }
+
+    #[test]
+    fn public_policy_simulations_fail_closed_for_unsupported_vm_types() {
+        // SYSCOIN: Preserve no-policy controls while rejecting unsupported public policy paths.
+        assert!(
+            ensure_public_policy_type_supported(true, ZkTxType::L2(TxType::Legacy.into())).is_ok()
+        );
+        for ty in [ZkTxType::L1, ZkTxType::Upgrade, ZkTxType::System] {
+            assert!(matches!(
+                ensure_public_policy_type_supported(true, ty),
+                Err(EthCallError::PolicyDenied)
+            ));
+            assert!(ensure_public_policy_type_supported(false, ty).is_ok());
+        }
     }
 
     #[test]

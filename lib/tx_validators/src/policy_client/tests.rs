@@ -17,7 +17,10 @@ use zksync_os_interface::tracing::{
     BeginTxContext, CallModifier, EvmRequest, EvmResources, EvmTracer, TxValidator,
 };
 
-use super::{AccessType, Component, Config, PolicyClient, PolicySession, Tracer};
+use super::{
+    AccessType, Component, Config, DEFAULT_POLICY_TRACE_LIMITS, PolicyClient, PolicySession, Tracer,
+};
+use crate::trace_budget::TraceLimits;
 
 const FROM: Address = address!("0x1111111111111111111111111111111111111111");
 const TO: Address = address!("0x2222222222222222222222222222222222222222");
@@ -41,6 +44,7 @@ fn base_config(server: &MockServer) -> Config {
         protocol_version: "1".into(),
         expected_protocol_version: None,
         bypass_from: Default::default(),
+        trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
         auth_token: Some("test-token".into()),
     }
 }
@@ -142,6 +146,7 @@ async fn connection_refused_fails_closed() {
         protocol_version: "1".into(),
         expected_protocol_version: None,
         bypass_from: Default::default(),
+        trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
     })
     .unwrap();
     let res = run_begin_tx(client.session(AccessType::Write), test_context()).await;
@@ -266,6 +271,7 @@ fn unsupported_scheme_rejected_at_construction() {
             protocol_version: "1".into(),
             expected_protocol_version: None,
             bypass_from: Default::default(),
+            trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
         })
         .is_err()
     );
@@ -282,6 +288,7 @@ fn invalid_url_rejected_at_construction() {
             protocol_version: "1".into(),
             expected_protocol_version: None,
             bypass_from: Default::default(),
+            trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
         })
         .is_err()
     );
@@ -297,6 +304,7 @@ fn http_url_accepted_at_construction() {
         protocol_version: "1".into(),
         expected_protocol_version: None,
         bypass_from: Default::default(),
+        trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
     };
     cfg.auth_token = Some("token".into());
     assert!(PolicyClient::new(cfg).is_ok());
@@ -313,6 +321,7 @@ fn invalid_http_auth_token_rejected_at_construction() {
         protocol_version: "1".into(),
         expected_protocol_version: None,
         bypass_from: Default::default(),
+        trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
     })
     .unwrap_err()
     .to_string();
@@ -334,6 +343,7 @@ fn https_url_rejected_at_construction() {
             protocol_version: "1".into(),
             expected_protocol_version: None,
             bypass_from: Default::default(),
+            trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
         })
         .is_err()
     );
@@ -359,6 +369,27 @@ async fn bypass_from_skips_admit_call() {
         0,
         "bypass must not reach the policy service"
     );
+}
+
+#[tokio::test]
+async fn unsigned_public_sender_cannot_claim_admit_exemption() {
+    // SYSCOIN: Read and write simulations must consult admit even for an exempt address.
+    let server = MockServer::start();
+    let admit = server.mock(|when, then| {
+        when.method(Method::POST).path("/admit");
+        then.status(200).json_body(json!({"allow": false}));
+    });
+    let mut cfg = base_config(&server);
+    cfg.bypass_from.insert(FROM);
+    let client = PolicyClient::new(cfg).unwrap();
+    for access in [AccessType::Read, AccessType::Write] {
+        let result = run_begin_tx(client.public_simulation_session(access), test_context()).await;
+        assert!(matches!(
+            result,
+            Err(InvalidTransaction::FilteredByValidator)
+        ));
+    }
+    assert_eq!(admit.calls(), 2);
 }
 
 // ---------- Judge path ----------
@@ -449,6 +480,121 @@ async fn run_full_tx(
     })
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn unsigned_public_sender_cannot_claim_judge_exemption() {
+    // SYSCOIN: A successful admit must not restore an unsigned sender's judge exemption.
+    let server = MockServer::start();
+    let admit = server.mock(|when, then| {
+        when.method(Method::POST).path("/admit");
+        then.status(200).json_body(json!({"allow": true}));
+    });
+    let judge = server.mock(|when, then| {
+        when.method(Method::POST).path("/judge");
+        then.status(200).json_body(json!({"allow": false}));
+    });
+    let mut cfg = base_config(&server);
+    cfg.bypass_from.insert(FROM);
+    let client = PolicyClient::new(cfg).unwrap();
+    for access in [AccessType::Read, AccessType::Write] {
+        let session = client.public_simulation_session(access);
+        let tracer = session.paired_tracer();
+        let result = run_full_tx(session, tracer, test_context(), one_frame()).await;
+        assert!(matches!(
+            result,
+            Err(InvalidTransaction::FilteredByValidator)
+        ));
+    }
+    assert_eq!(admit.calls(), 2);
+    assert_eq!(judge.calls(), 2);
+}
+
+#[tokio::test]
+async fn capture_capacity_rejects_without_sending_partial_trace() {
+    // SYSCOIN: Bounded byte / frame failures reject locally; exact-capacity capture remains valid.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(Method::POST).path("/admit");
+        then.status(200).json_body(json!({"allow": true}));
+    });
+    let judge = server.mock(|when, then| {
+        when.method(Method::POST).path("/judge");
+        then.status(200).json_body(json!({"allow": true}));
+    });
+    let frame_bytes = std::mem::size_of::<super::CapturedFrame>() + CALLDATA.len();
+    // Separately exercise aggregate copied bytes and captured-frame count.
+    for limits in [
+        TraceLimits {
+            max_bytes: frame_bytes,
+            max_frames: 8,
+        },
+        TraceLimits {
+            max_bytes: 4096,
+            max_frames: 1,
+        },
+    ] {
+        let mut cfg = base_config(&server);
+        cfg.trace_limits = limits;
+        let client = PolicyClient::new(cfg).unwrap();
+        let session = client.public_simulation_session(AccessType::Read);
+        let tracer = session.paired_tracer();
+        let mut scripts = one_frame();
+        scripts[0].children = one_frame();
+        let result = run_full_tx(session, tracer, test_context(), scripts).await;
+        assert!(matches!(
+            result,
+            Err(InvalidTransaction::FilteredByValidator)
+        ));
+        assert_eq!(judge.calls(), 0, "a partial tree must never reach /judge");
+    }
+    // An ordinary trace exactly at the capacity still reaches /judge.
+    let mut cfg = base_config(&server);
+    cfg.trace_limits = TraceLimits {
+        max_bytes: frame_bytes,
+        max_frames: 1,
+    };
+    let client = PolicyClient::new(cfg).unwrap();
+    let session = client.public_simulation_session(AccessType::Read);
+    let tracer = session.paired_tracer();
+    assert!(
+        run_full_tx(session, tracer, test_context(), one_frame())
+            .await
+            .is_ok()
+    );
+    assert_eq!(judge.calls(), 1);
+}
+
+#[tokio::test]
+async fn authenticated_protocol_exemption_does_not_capture_or_consult_policy() {
+    // SYSCOIN: Authenticated protocol execution preserves its no-policy/no-capture exemption.
+    let server = MockServer::start();
+    let admit = server.mock(|when, then| {
+        when.method(Method::POST).path("/admit");
+        then.status(200).json_body(json!({"allow": false}));
+    });
+    let judge = server.mock(|when, then| {
+        when.method(Method::POST).path("/judge");
+        then.status(200).json_body(json!({"allow": false}));
+    });
+    let mut cfg = base_config(&server);
+    cfg.bypass_from.insert(FROM);
+    cfg.trace_limits = TraceLimits {
+        max_bytes: 0,
+        max_frames: 0,
+    };
+    let client = PolicyClient::new(cfg).unwrap();
+    let session = client.session(AccessType::Write);
+    let slot = session.slot.clone();
+    let tracer = session.paired_tracer();
+    assert!(
+        run_full_tx(session, tracer, test_context(), one_frame())
+            .await
+            .is_ok()
+    );
+    assert!(slot.lock().unwrap().take_root().is_none());
+    assert_eq!(admit.calls(), 0);
+    assert_eq!(judge.calls(), 0);
 }
 
 fn one_frame() -> Vec<TraceScript> {

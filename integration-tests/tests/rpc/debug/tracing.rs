@@ -628,8 +628,36 @@ async fn call_trace_block(tester: Tester) -> anyhow::Result<()> {
     }
 }
 
+async fn trusted_js_tester(env: TestEnvironment) -> anyhow::Result<Tester> {
+    let mut config = env.default_config().await?;
+    // SYSCOIN: These fixtures execute checked-in tracer code, not untrusted public RPC input.
+    config.rpc_config.enable_custom_js_tracers = true;
+    env.launch(config).await
+}
+
 #[test_multisetup([CURRENT_TO_L1])]
-async fn debug_trace_call_js_tracer(tester: Tester) -> anyhow::Result<()> {
+async fn debug_trace_call_js_requires_separate_opt_in(env: TestEnvironment) -> anyhow::Result<()> {
+    // SYSCOIN: A debug-enabled endpoint must still reject JS without the trusted-author opt-in.
+    let mut config = env.default_config().await?;
+    config.rpc_config.enable_custom_js_tracers = false;
+    let tester = env.launch(config).await?;
+    let mut opts = GethDebugTracingCallOptions::default();
+    opts.tracing_options.tracer = Some(GethDebugTracerType::JsTracer(
+        "({result: function() { return {}; }})".to_string(),
+    ));
+    let error = tester
+        .l2_provider
+        .debug_trace_call(TransactionRequest::default(), BlockId::latest(), opts)
+        .await
+        .expect_err("debug access must not implicitly enable custom JS");
+    assert!(error.to_string().contains("custom JS tracers are disabled"));
+    Ok(())
+}
+
+#[test_multisetup([CURRENT_TO_L1])]
+async fn debug_trace_call_js_tracer(env: TestEnvironment) -> anyhow::Result<()> {
+    // SYSCOIN: Retain the checked-in trusted-JS compatibility control with explicit authorization.
+    let tester = trusted_js_tester(env).await?;
     let secondary_data = U256::from(7);
     let calculate_value = U256::from(3);
     let secondary_contract =
@@ -686,7 +714,9 @@ async fn debug_trace_call_js_tracer(tester: Tester) -> anyhow::Result<()> {
 }
 
 #[test_multisetup([CURRENT_TO_L1])]
-async fn debug_trace_call_js_tracer_with_db(tester: Tester) -> anyhow::Result<()> {
+async fn debug_trace_call_js_tracer_with_db(env: TestEnvironment) -> anyhow::Result<()> {
+    // SYSCOIN: Retain the checked-in trusted-JS storage control with explicit authorization.
+    let tester = trusted_js_tester(env).await?;
     let secondary_data = U256::from(7);
     let calculate_value = U256::from(3);
     let secondary_contract =
@@ -745,7 +775,9 @@ async fn debug_trace_call_js_tracer_with_db(tester: Tester) -> anyhow::Result<()
 }
 
 #[test_multisetup([CURRENT_TO_L1])]
-async fn debug_trace_call_stack(tester: Tester) -> anyhow::Result<()> {
+async fn debug_trace_call_stack(env: TestEnvironment) -> anyhow::Result<()> {
+    // SYSCOIN: Retain the checked-in trusted-JS stack control with explicit authorization.
+    let tester = trusted_js_tester(env).await?;
     let secondary_data = U256::from(7);
     let calculate_value = U256::from(3);
     let secondary_contract =

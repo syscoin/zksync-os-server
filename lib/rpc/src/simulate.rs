@@ -1,4 +1,4 @@
-use crate::eth_call_handler::{EthCallError, EthCallHandler, tx_type_runs_policy};
+use crate::eth_call_handler::{EthCallError, EthCallHandler};
 use crate::eth_impl::{build_api_log, build_api_tx};
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
@@ -164,11 +164,9 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 !validation,
             )?;
             // SYSCOIN: `eth_simulateV1` executes a whole synthetic block with `NopValidator`.
-            // Until policy validation is wired through multi-tx simulation, reject covered txs
-            // instead of letting callers bypass the policy service.
-            if self.policy_client_configured()
-                && txs.iter().any(|tx| tx_type_runs_policy(tx.tx_type()))
-            {
+            // Caller-supplied protocol types are not authenticated; reject every nonempty
+            // synthetic block instead of letting callers bypass the policy service.
+            if self.policy_client_configured() && !txs.is_empty() {
                 return Err(EthCallError::PolicyDenied);
             }
             let tx_source = TxListSource {

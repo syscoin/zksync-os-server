@@ -37,15 +37,23 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterNamespace<RpcStora
                 config.max_logs_per_response,
             ),
             mempool,
-            registry: FilterRegistry::new(config.stale_filter_ttl),
+            // SYSCOIN: Namespace clones share one bounded retained-filter registry.
+            registry: FilterRegistry::new(
+                config.stale_filter_ttl,
+                config.max_active_filters,
+                config.max_filter_terms,
+            ),
         }
     }
 }
 
 impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterNamespace<RpcStorage, Mempool> {
-    fn install_filter(&self, kind: FilterKind) -> RpcResult<FilterId> {
+    fn install_filter(&self, make_kind: impl FnOnce() -> FilterKind) -> RpcResult<FilterId> {
         let latest_block = self.storage.repository().get_latest_block();
-        Ok(self.registry.install(kind, latest_block))
+        // SYSCOIN: The kind factory runs only after the shared reservation succeeds.
+        self.registry
+            .install_with(make_kind, latest_block)
+            .to_rpc_result()
     }
 
     fn filter_changes_impl(
@@ -172,18 +180,20 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterApiServer
     for EthFilterNamespace<RpcStorage, Mempool>
 {
     fn new_filter(&self, filter: Filter) -> RpcResult<FilterId> {
-        self.install_filter(FilterKind::Log(Box::new(filter)))
+        // SYSCOIN: Bound installed criteria without changing stateless eth_getLogs queries.
+        let filter = self.registry.bounded_log_filter(filter).to_rpc_result()?;
+        self.install_filter(|| FilterKind::Log(Box::new(filter)))
     }
 
     fn new_block_filter(&self) -> RpcResult<FilterId> {
-        self.install_filter(FilterKind::Block)
+        self.install_filter(|| FilterKind::Block)
     }
 
     fn new_pending_transaction_filter(
         &self,
         kind: Option<PendingTransactionFilterKind>,
     ) -> RpcResult<FilterId> {
-        let transaction_kind = match kind.unwrap_or_default() {
+        self.install_filter(|| match kind.unwrap_or_default() {
             PendingTransactionFilterKind::Hashes => {
                 let receiver = self.mempool.pending_transactions_listener();
                 let pending_txs_receiver = PendingTransactionsReceiver::new(receiver);
@@ -196,9 +206,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterApiServer
                     full_txs_receiver,
                 ))
             }
-        };
-
-        self.install_filter(transaction_kind)
+        })
     }
 
     fn filter_changes(&self, id: FilterId) -> RpcResult<FilterChanges<Transaction<L2Envelope>>> {
@@ -229,6 +237,12 @@ pub enum EthFilterError {
     /// Filter not found.
     #[error("filter not found")]
     FilterNotFound(FilterId),
+    /// SYSCOIN: The shared installed-filter registry is full.
+    #[error("installed filter capacity reached ({max_filters}); uninstall a filter or retry later")]
+    FilterCapacityReached { max_filters: u32 },
+    /// SYSCOIN: Installed log filters cannot retain arbitrarily large address/topic sets.
+    #[error("installed filter exceeds maximum total address/topic terms ({max_terms})")]
+    FilterCriteriaTooLarge { max_terms: u32 },
     /// Query scope is too broad.
     #[error("query exceeds max block range {0}")]
     QueryExceedsMaxBlocks(u64),

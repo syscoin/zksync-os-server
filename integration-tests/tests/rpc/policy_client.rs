@@ -25,6 +25,9 @@ fn policy_service(server: &MockServer) -> PolicyServiceConfig {
         expected_protocol_version: None,
         bypass_from: vec![BOOTLOADER_FORMAL_ADDRESS, FORCE_DEPLOYER_ADDRESS],
         auth_token: Some("test-token".into()),
+        // SYSCOIN: Tests use the bounded defaults configured for local policy capture.
+        max_trace_bytes: (8_u64 * 1024 * 1024).into(),
+        max_trace_frames: 16_384,
     }
 }
 
@@ -522,16 +525,11 @@ async fn rpc_judge_deny_blocks_eth_call_at_callee() -> Result<()> {
     Ok(())
 }
 
-// ---------- L1 priority + upgrade requests bypass policy entirely ----------
-//
-// Block-build never fires the validator for L1 priority or upgrade txs
-// (the bootloader's `process_l1_transaction` doesn't call begin/finish
-// hooks); the RPC layer must skip too for consistency. `eth_call` with
-// `transaction_type=0x7f` (L1 priority) is the canonical way to hit the
-// non-L2 simulation path.
+// SYSCOIN: Real protocol L1 execution remains exempt. Unsigned RPC requests cannot
+// authenticate that provenance; reject unsupported policy VM paths locally.
 
 #[test_log::test(tokio::test)]
-async fn l1_priority_eth_call_skips_admit_and_judge() -> Result<()> {
+async fn public_l1_priority_eth_call_fails_closed_with_policy() -> Result<()> {
     let server = MockServer::start_async().await;
     let [admit_mock, judge_mock] = allow_admit_and_judge(&server).await;
 
@@ -544,9 +542,13 @@ async fn l1_priority_eth_call_skips_admit_and_judge() -> Result<()> {
     let req = TransactionRequest::default()
         .with_to(Address::random())
         .transaction_type(0x7f); // L1PriorityTxType::TX_TYPE
-    // We don't care whether simulation succeeds — only that admit/judge
-    // weren't consulted.
-    let _ = mc.chain(0).l2_provider.call(req).await;
+    let err = mc
+        .chain(0)
+        .l2_provider
+        .call(req)
+        .await
+        .expect_err("public L1-shaped calls cannot bypass configured policy");
+    assert!(err.to_string().contains("policy service"));
 
     assert_eq!(
         admit_mock.calls_async().await,

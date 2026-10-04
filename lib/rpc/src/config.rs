@@ -100,6 +100,16 @@ pub struct RpcConfig {
     /// jemalloc per-thread allocation counters; `0` disables the check
     pub js_tracer_max_memory_bytes: usize,
 
+    /// SYSCOIN: Arbitrary JavaScript tracers are trusted operator functionality, not a hard sandbox.
+    /// Native tracers remain available without this opt-in.
+    pub enable_custom_js_tracers: bool,
+
+    /// SYSCOIN: Aggregate logical bytes captured by one native call-trace request, including replay prefixes.
+    pub call_tracer_max_capture_bytes: usize,
+
+    /// SYSCOIN: Aggregate frames captured by one native call-trace request. Zero rejects capture.
+    pub call_tracer_max_frames: usize,
+
     /// Maximum block gas limit accepted for an `eth_simulateV1` block override. Applies only
     /// when the caller explicitly overrides `blockOverrides.gasLimit`; unset overrides fall
     /// back to the executing block's own gas limit.
@@ -145,6 +155,12 @@ pub struct RpcConfig {
 
     /// Maximum number of logs that can be returned in a response
     pub max_logs_per_response: usize,
+
+    /// SYSCOIN: Shared maximum number of retained log, block, and pending-transaction filters.
+    pub max_active_filters: NonZeroU32,
+
+    /// SYSCOIN: Maximum total address and topic alternatives retained by one installed log filter.
+    pub max_filter_terms: NonZeroU32,
 
     /// Duration since the last filter poll, after which the filter is considered stale
     pub stale_filter_ttl: Duration,
