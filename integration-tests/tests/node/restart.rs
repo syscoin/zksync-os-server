@@ -11,7 +11,7 @@ use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, POLL_INTERVAL, ReceiptAssert};
 use zksync_os_integration_tests::config::{ChainLayout, load_chain_config};
-use zksync_os_integration_tests::l1_helpers::{fetch_l1_state, wait_for_l1_state};
+use zksync_os_integration_tests::l1_helpers::{wait_for_commit_only_baseline, wait_for_l1_state};
 use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::rpc_recorder::RpcRecordConfig;
 use zksync_os_integration_tests::test_config::{
@@ -185,7 +185,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     let tester = env.launch(config).await?;
     // Snapshot the initial settlement frontiers so commit-only assertions cover only work
     // produced by this test, regardless of setup transactions finalized during launch.
-    let initial_state = fetch_l1_state(&tester).await?;
+    let initial_state = wait_for_commit_only_baseline(&tester).await?;
     let initial_safe = block_number_by_id(&tester, BlockId::Number(BlockNumberOrTag::Safe)).await?;
     let initial_finalized =
         block_number_by_id(&tester, BlockId::Number(BlockNumberOrTag::Finalized)).await?;
@@ -207,7 +207,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     .await?;
     assert_eq!(
         committed_state.last_executed_batch, initial_state.last_executed_batch,
-        "batch execution is disabled, so the executed frontier must not advance"
+        "after fixture execution drains, the executed frontier must not advance"
     );
     assert_eq!(
         committed_state.last_proved_batch, initial_state.last_proved_batch,
@@ -344,7 +344,7 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     make_commit_only_config(&mut config);
     let main_node = env.launch(config).await?;
     // SYSCOIN: Compare against the seeded V32 L1 frontier rather than empty-genesis batch zero.
-    let initial_state = fetch_l1_state(&main_node).await?;
+    let initial_state = wait_for_commit_only_baseline(&main_node).await?;
 
     // Drive a batch onto L1 so there is a committed batch to revert.
     let receipt = main_node
@@ -367,7 +367,7 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     .await?;
     assert_eq!(
         committed_state.last_executed_batch, initial_state.last_executed_batch,
-        "batch execution is disabled, so the executed frontier must not advance"
+        "after fixture execution drains, the executed frontier must not advance"
     );
 
     // SYSCOIN: A fresh EN may request funding while replaying the historical fixture. Keep the

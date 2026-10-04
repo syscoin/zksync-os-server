@@ -9,11 +9,13 @@ use alloy::rpc::types::trace::geth::{
     GethDebugTracingOptions, GethTrace,
 };
 use alloy::sol_types::{Revert, SolCall, SolError};
+use anyhow::Context as _;
 use std::collections::HashMap;
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, ReceiptAssert, ReceiptsAssert};
 use zksync_os_integration_tests::contracts::{
     EventEmitter, TestERC20, TracingPrimary, TracingSecondary,
 };
+use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, Tester, test_multisetup};
 use zksync_os_provider::NodeProvider;
 use zksync_os_server::config::FeeConfig;
@@ -118,12 +120,41 @@ async fn setup_pubdata_exhaustion_token(env: TestEnvironment) -> anyhow::Result<
     let address = receipt
         .contract_address()
         .expect("successful deployment must return a contract address");
+    let deployment_block_number = receipt
+        .block_number()
+        .context("successful token deployment must have a block number")?;
+    let deployment_block_hash = receipt
+        .block_hash()
+        .context("successful token deployment must have a block hash")?;
     let deployed_code = tester.l2_provider.get_code_at(address).await?;
     assert!(!deployed_code.is_empty(), "deployed token code must exist");
 
     let tester = tester
         .restart_with_overrides(|config| config.fee_config = pubdata_exhaustion_fee_config())
         .await?;
+    // RPC can serve an earlier state while startup replay is still restoring the deployment.
+    tokio::time::timeout(
+        DEFAULT_TIMEOUT,
+        tester.l2_zk_provider.wait_for_block(deployment_block_number),
+    )
+    .await
+    .with_context(|| {
+        format!("timed out waiting for token deployment block {deployment_block_number} after restart")
+    })?
+    .with_context(|| {
+        format!("failed to wait for token deployment block {deployment_block_number} after restart")
+    })?;
+    let restored_block = tester
+        .l2_provider
+        .get_block_by_number(deployment_block_number.into())
+        .await?
+        .with_context(|| {
+            format!("token deployment block {deployment_block_number} is missing after restart")
+        })?;
+    assert_eq!(
+        restored_block.header.hash, deployment_block_hash,
+        "token deployment block hash must survive the fee-only restart"
+    );
     assert_eq!(
         tester.l2_provider.get_code_at(address).await?,
         deployed_code,
