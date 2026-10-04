@@ -194,10 +194,29 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(evidence["keygen_result_sha256"],
                          "c17c12458443fb53681661476ace88b255c3f6dec34e4d817441290d786eccc2")
         self.assertEqual(evidence["plonk_generator_tests_passed"], 4)
-        self.assertEqual(manifest["proof_qualification"], {
-            "status": "pending_for_new_verification_key",
-            "real_proof_verified": False, "real_evm_verified": False})
         self.assertFalse(manifest["independent_host_reproduction"])
+
+    def test_offline_proof_evidence_binds_current_verifier_without_activation(self):
+        _, manifest = M.load_bundle()
+        evidence = manifest["proof_qualification"]
+        self.assertEqual(evidence["status"], "completed_offline_proof_and_evm_qualification")
+        self.assertEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
+        self.assertEqual(evidence["plonk_source_sha256"], manifest["paths"][
+            "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol"]["sha256"])
+        self.assertTrue(evidence["real_proof_verified"])
+        self.assertTrue(evidence["real_evm_verified"])
+        self.assertEqual(evidence["native_wrapper_stages_verified"], 3)
+        self.assertEqual(evidence["real_evm_controls_passed"], 10)
+        self.assertEqual(set(evidence["result_sha256"]),
+                         {"fri20", "fri21", "combine", "snark", "export", "evm"})
+        self.assertEqual(evidence["native_server_boundary"]["owning_tests_passed"], 17)
+        self.assertTrue(evidence["native_server_boundary"]["wrong_batch_and_trailing_bytes_rejected"])
+        self.assertFalse(evidence["native_server_boundary"]["server_http_endpoint_exercised"])
+        for flag in ("live_submission_used", "deployment_attested", "release_promoted"):
+            self.assertFalse(evidence[flag])
+        self.assertFalse(evidence["cross_host_guest_byte_reproduction"]["passed"])
+        self.assertEqual(evidence["cross_host_guest_byte_reproduction"]["remaining_guest_pairs_not_compared"], 3)
+        self.assertIsNone(M.CANONICAL_BINDING)
 
     def test_historical_crypto_evidence_does_not_claim_current_key_or_tree(self):
         module, manifest = M.load_bundle()

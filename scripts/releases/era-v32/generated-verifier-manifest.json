@@ -60,9 +60,45 @@
     "scope": "One-host generation, native PLONK generator tests, full contract inventory recomputation/check, retained FFLONK reproduction and byte-identical genesis regeneration. No new real-proof, EVM proof acceptance, deployment or independent-host qualification is asserted."
   },
   "proof_qualification": {
-    "status": "pending_for_new_verification_key",
-    "real_proof_verified": false,
-    "real_evm_verified": false
+    "status": "completed_offline_proof_and_evm_qualification",
+    "verification_key_hash": "0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139",
+    "program_commitment": "0x05c969ad8fcf8870cbb064c2947101ae27a5152c64467dcd7641f880485131de",
+    "prover_source_archive_sha256": "f2ec03b2966d2f35e2882a4aaf232aeaf997ae8003dafe1c172a236d839151a5",
+    "standard_v2_inputs_sha256": "78995d8500aa7fd5d1fb954603bc65538e6ede09f7a7418930d87cb73df2f36d",
+    "result_sha256": {
+      "fri20": "30461d38339e276ca90c7d8faa0e827381ace9bf04443dfbf2a796ca1f040db4",
+      "fri21": "783d72b167c1e51004155324fe55dd2311bea63844afa742877b45a9f32c8e04",
+      "combine": "b947e32de0a3cbb890ba079cf7b8758f618eef124a2807925d2bfdaf92d71b4c",
+      "snark": "ad50fc6ab3a561d4c4e7bac69006fe0fb68fa5d9b39fb7f47ab06903e91465c3",
+      "export": "13ba884e448aa9ed7777000fadfd7635069136e2371e252a25dda3ad838b51b0",
+      "evm": "fa145b03938d7e220c96919384be58813e31db9c2be62b67ca69cc4086604bbf"
+    },
+    "real_proof_verified": true,
+    "native_wrapper_stages_verified": 3,
+    "real_evm_verified": true,
+    "real_evm_controls_passed": 10,
+    "plonk_source_sha256": "233a2e781431c132591431911442e3f0bccef95dfa813c57931f229d6c619efe",
+    "measured_proof_json_sha256": "2ecf1b5fc50af2c616e9a09e0b3378abf3cfe986afa41f0479e22aeb3980f371",
+    "evm_run_inputs_sha256": "be38f11ae3b8287abb44c61dae75994b8fae5025b6ca5a151945e4a230c662f5",
+    "evm_controls_stdout_sha256": "556be3e20c3709e7d2dcab5c6966919eda523b30ebfdd048c02f9b717aae0994",
+    "native_server_boundary": {
+      "result_sha256": "3d9e7e110867364862e21713fa76ef2eb0686f9c0757f3b7ffd1a842a9472838",
+      "source_archive_sha256": "bbbbca4f04c820f93487e3a3d5a4730467d36a09fdfd5ffb1584f3aa200ef9b2",
+      "owning_tests_passed": 17,
+      "wrong_batch_and_trailing_bytes_rejected": true,
+      "server_http_endpoint_exercised": false
+    },
+    "original_native_witnesses_reused": true,
+    "live_submission_used": false,
+    "deployment_attested": false,
+    "release_promoted": false,
+    "cross_host_guest_byte_reproduction": {
+      "passed": false,
+      "result_sha256": "3d7b29767fe7438943a4aa45d94d2ad730fa709523519adcffd3a8f0d5c2917e",
+      "first_mismatched_guest": "recursion_in_unrolled_layer_security_100_bits.bin",
+      "remaining_guest_pairs_not_compared": 3
+    },
+    "scope": "Fresh offline FRI20/FRI21, combination, native RISC/compression/SNARK verification, actual serialization, ten production EVM controls, and seventeen server/type boundary tests using the pinned guest bytes and retained real witnesses. The server archive authenticates the tested runtime bytes before this evidence-metadata update. Cross-host guest byte reproduction failed at its first comparison; live HTTP, service/DA/settlement acceptance, deployment and canonical fixture acceptance are not attested."
   },
   "historical_crypto_validation_provenance": {
     "verification_key_hash": "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe",

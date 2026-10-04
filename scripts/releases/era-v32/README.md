@@ -7,15 +7,15 @@ tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
 `117b5f2d1ad82de6a073142d45bd46a5218f493e`. Only four exact paths are overlaid.
 All 278 inventory identities and retained FFLONK remain unchanged; only the hash
 and length fields of the PLONK verifier and its Gateway deployer may change.
-The manifest binds completed contract generation separately from historical
-proof/EVM evidence. Fresh proof qualification for the new key is pending; the
-bundle is not a live fixture/deployment certificate.
+The manifest binds completed contract generation and fresh offline proof/EVM
+qualification separately from historical evidence. The bundle is not a live
+fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
 bytes and absence of the generated source copy; the manifest binds
 all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
-## New contract generation is not fresh proof or fixture qualification
+## Contract generation and offline proof qualification
 
 The candidate preserves the reproduced Syscoin guest tree
 `6935489bdbc7b1ed31e608677d1b2418b10691b5` and binds the rebuilt proving circuits'
@@ -37,6 +37,23 @@ host. It does not assert a fresh FRI/SNARK proof, EVM proof acceptance, real DA 
 settlement run, edge/bridge qualification, sustained performance, five-role
 snapshot/restore, deployment or public rollout for the new key. No fixture
 descriptor or successful restore is manufactured by this change.
+
+The separate `proof_qualification` records fresh GPU FRI proofs from retained real
+batch 20/21 witnesses, their combination, native verification of the RISC,
+compression and SNARK proofs, actual EVM serialization, and ten passing controls
+using the generated production verifier. Seventeen owning server/type tests also
+passed, including fresh-proof boundary verification and rejection of wrong batch
+inputs and trailing bytes. Their source archive authenticates the tested runtime
+bytes; only evidence metadata, documentation, the manifest digest pin and its
+focused test were updated afterward.
+
+Those checks used the pinned recursive guest bytes. An additional Linux rebuild
+did not reproduce the macOS bytes for
+`recursion_in_unrolled_layer_security_100_bits.bin` and its `.text`; the cause is
+unresolved and the other three guest pairs were not compared after that failure.
+The manifest retains the failed reproduction receipt. Live HTTP submission,
+service/DA/settlement acceptance, deployment and canonical fixture acceptance
+remain unqualified.
 
 Key generation used one host under the explicitly approved validation constraint.
 It is not two-independent-host reproduction. The existing production workflow's
@@ -135,8 +152,8 @@ Every old proof/artifact hash is nested there, not presented as current evidence
 Those records concern the old key and unchanged crypto bytes subsequently carried
 by generated tree `ff5565cd22b61259d6f886e9a0130f788bbdb11c`; they do not qualify
 the new key or generated tree. `contract_generation_provenance` records only the
-new completed generation checks, and `proof_qualification` explicitly remains
-pending. The published offline
+new completed generation checks, and `proof_qualification` records the separate
+fresh offline results and their limits. The published offline
 critical Gateway input/helper/result under `scripts/keygen/gateway-identity` is
 also preserved byte-for-byte at its historical source tree. It is not consumed
 as current deployment authorization. Before a fresh service deployment, rebuild
