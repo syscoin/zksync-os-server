@@ -36,7 +36,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual((pins["selected_package_count"], pins["selected_qualified_reference_count"],
                           pins["legacy_package_count"], pins["legacy_qualified_reference_count"]),
                          (44, 57, 6, 9))
-        self.assertEqual(len(pins["changed_files"]), 31)
+        self.assertEqual(len(pins["changed_files"]), 29)
 
     def test_real_graph_rewrites_only_exact_sources_and_references(self):
         # The already-completed OS rewrite must survive byte-for-byte.

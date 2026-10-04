@@ -12,7 +12,7 @@
   "legacy_closure_sha256": "30ca22d2f5c800b589c2ba2fe6912739a58e4a07e6d2cf568ce5b2a87301d56c",
   "legacy_qualified_reference_count": 9,
   "patch_file": "airbender-server-security.patch",
-  "patch_sha256": "b5c9e2d1cf89bcf7019bf9e822a61b95cd2d28b00f231a10d90ad7f23d4862e1",
+  "patch_sha256": "aa05f0fe4d22bcb60fd8dc4f45558e7d9d771e592a66634765cb6757040d3b25",
   "changed_files": {
     "circuit_defs/unrolled_circuits/unified_reduced_machine/generated/circuit_layout.rs": {
       "preimage_sha256": "e609d3119094027d03eb352b50769dad4ca441422ea4f2bdb0d30e0c843d750d",
@@ -121,42 +121,32 @@
     },
     "tools/verifier/recursion_in_unified_layer.bin": {
       "preimage_sha256": "760d31c694980249b4985823488e41e6ff1699a91d54c71f1b662439805b7454",
-      "postimage_sha256": "1d3332cb5eacf23481059f5da89f8ef770504940991215a10f10690621ae956e",
+      "postimage_sha256": "4be37135593f27d0fa9d10180f192937731ffab70621e8e1065b1642403068b0",
       "postimage_size": 1270392
     },
     "tools/verifier/recursion_in_unified_layer.text": {
       "preimage_sha256": "9dccf6c4cec380eeb2c95ae5a467a3ff00d6182669f0ac284e151e5cc8f8bf7b",
-      "postimage_sha256": "cf910692e784399ef39a8d8c380d82fbb3dd724454b816188a22a0b39ec11f7a",
+      "postimage_sha256": "552bb955506a6e13507b54635fb0ba344a7f581933257d79eb2a0ebce410a3d4",
       "postimage_size": 1238504
     },
     "tools/verifier/recursion_in_unified_layer_security_100_bits.bin": {
       "preimage_sha256": "20d40ba936d428019be8e9ecfee1a237e7bf68f942bce8be0d0183ece4e6ff80",
-      "postimage_sha256": "5615f2fe288acb291800b8fe833aa238068d5cf308e6cab9f2f71c1f72bcba2c",
+      "postimage_sha256": "8fd324daf3e4bb1ebe0452ecb3897b0d222e28b44969db362a2a16c7ea23fdd1",
       "postimage_size": 1273824
     },
     "tools/verifier/recursion_in_unified_layer_security_100_bits.text": {
       "preimage_sha256": "3ef1dc44c5361f4a5f2811d56487c6e6434e153baa5a246aaf39f7541fee3060",
-      "postimage_sha256": "d84b96f9354e02d1ecbaa6d7d47644295f019320c435de0b08c0718507a42ddc",
+      "postimage_sha256": "ff4477bbf731084207f46b847c76366628f3fc912f11f6b3374ae3e0e5884ef1",
       "postimage_size": 1241932
-    },
-    "tools/verifier/recursion_in_unrolled_layer.bin": {
-      "preimage_sha256": "d585910ac92ec48a5805d7008b6997b22a32034e652c1aed373d281fec088a41",
-      "postimage_sha256": "aab5db0a262c583d43ad63e9ab220377be9a23341f31804cd60c7a9b8fd0f835",
-      "postimage_size": 2308092
-    },
-    "tools/verifier/recursion_in_unrolled_layer.text": {
-      "preimage_sha256": "9ca046126812999d9ce0373575fd95ddf610df32817b844962f4032a8196c859",
-      "postimage_sha256": "dbba37f5b7f2d20b114d62eb76d4b7165ab83088fda43fc4e0cab85f75f0b39c",
-      "postimage_size": 2267628
     },
     "tools/verifier/recursion_in_unrolled_layer_security_100_bits.bin": {
       "preimage_sha256": "bd9fc269381964d9ef5aa9ce88ee9e078445cd4483093a759508025e5a5b9bd2",
-      "postimage_sha256": "5d431fa8d14d15087d92c8fd17e8fb2f365ddc9b9a8948a7c459951d1ce6281e",
+      "postimage_sha256": "1ee4c49901ffb1fdce540e778c7224b8c78718bc1a26788cd9876477a1b86a12",
       "postimage_size": 2314544
     },
     "tools/verifier/recursion_in_unrolled_layer_security_100_bits.text": {
       "preimage_sha256": "63fddaddb77f57f802548e46ffe15a0a90d7fa6537c14ca3cda023e0959b1a03",
-      "postimage_sha256": "98d612e4b873c954e02bc1c7238d7661b047622557cb58f4665d7e90bd835c94",
+      "postimage_sha256": "9fbd823842541150daa1837ad4cad1a06e43793acfe02567b3594c50e090a17a",
       "postimage_size": 2274080
     },
     "verifier_common/src/lib.rs": {
@@ -170,6 +160,6 @@
       "postimage_size": 3091
     }
   },
-  "patched_tree": "e30d9332b55cbc6a5ea4cae71824e6a5a0858394",
-  "purpose": "Use the exact cumulative reviewed Airbender source and regenerated recursive artifacts in the server native verifier. Rewrite only the server's 44-package v0.6.0-rc.2 graph and 57 qualified references; preserve the separate six-package rev=73d69b5 graph and its nine qualified references. This source identity is not a proving-key, proof, deployment or release attestation."
+  "patched_tree": "98a3e82a726bca322340ec675263a4533857250a",
+  "purpose": "Use the exact cumulative reviewed Airbender source and canonical recursive guests reproduced with the unchanged Linux/amd64 Docker recipe in the server native verifier. Rewrite only the server's 44-package v0.6.0-rc.2 graph and 57 qualified references; preserve the separate six-package rev=73d69b5 graph and its nine qualified references. This source identity is not a proving-key, proof, deployment or release attestation."
 }

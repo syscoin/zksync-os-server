@@ -4,30 +4,36 @@ The overlay, manifest and read-only checker bind the newly generated Security100
 verifier to the reviewed source tree containing the native priority observation
 getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source
 tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
-`117b5f2d1ad82de6a073142d45bd46a5218f493e`. Only four exact paths are overlaid.
+`76af1dc7837a5c1cb1d1098ee75bb3c03a65ffae`. Only four exact paths are overlaid.
 All 278 inventory identities and retained FFLONK remain unchanged; only the hash
 and length fields of the PLONK verifier and its Gateway deployer may change.
-The manifest binds completed contract generation and fresh offline proof/EVM
-qualification separately from historical evidence. The bundle is not a live
-fixture/deployment certificate.
+The manifest binds completed current contract generation separately from the
+pending current proof/EVM qualification and explicitly historical evidence.
+The bundle is not a live fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
 bytes and absence of the generated source copy; the manifest binds
 all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
-## Contract generation and offline proof qualification
+## Current contract generation; proof qualification pending
 
 The candidate preserves the reproduced Syscoin guest tree
 `6935489bdbc7b1ed31e608677d1b2418b10691b5` and binds the rebuilt proving circuits'
 Security100 key
-`0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139`.
+`0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90`.
+The recursive guests are the literal canonical-recipe postimages of patched
+Airbender tree `98a3e82a726bca322340ec675263a4533857250a`; their new program
+commitment is
+`0x08e47e4531d0dc3409c5ae1db30b45bfec4b61893c8444f45f80e5c254d5bd94`.
 Both generated PLONK copies have SHA-256
-`233a2e781431c132591431911442e3f0bccef95dfa813c57931f229d6c619efe`;
+`265ff76ec295d3aea569e937ff54d793179d2e44576f842c588969d38f813856`;
 the scheduler key has SHA-256
-`3dffa1e43ee043d708934ecc70ceedbfe4c9aff3ace3c871848de9ff61ab0379`.
+`c3cec62f1b8d47ad23773bcf4906b1779ac1a2be58f9b7ce01f69956c0924a23`.
+The generated overlay has SHA-256
+`1dd60c89994b54dd1dcd1482d048958864a151a83bb8f9a0ef6fde85ad541af6`.
 
 The actual contract-generation result, SHA-256
-`cbebf4ff7c9db6cd7da428784e3328f63c2b022e91b0dfb17d69976215fee1d3`,
+`2973ac60ac2d18d3c3aa9f55d43af3b8c89b8ea8118657d0a6bb9701559bd828`,
 records four passing native PLONK generator tests, generation from this new key,
 the full `recompute_hashes.sh` build/recomputation, successful
 `calculate-hashes:check`, byte-identical retained FFLONK reproduction and
@@ -36,24 +42,34 @@ were rechecked after generation. This is contracts-only qualification on one
 host. It does not assert a fresh FRI/SNARK proof, EVM proof acceptance, real DA or
 settlement run, edge/bridge qualification, sustained performance, five-role
 snapshot/restore, deployment or public rollout for the new key. No fixture
-descriptor or successful restore is manufactured by this change.
+descriptor or successful restore is manufactured by this change. The generation
+receipt binds the fresh keygen result SHA-256
+`7020f0c8447da54b15b65e319f958182e319e59df859fac1c04581b8370ae204`.
 
-The separate `proof_qualification` records fresh GPU FRI proofs from retained real
-batch 20/21 witnesses, their combination, native verification of the RISC,
-compression and SNARK proofs, actual EVM serialization, and ten passing controls
-using the generated production verifier. Seventeen owning server/type tests also
-passed, including fresh-proof boundary verification and rejection of wrong batch
-inputs and trailing bytes. Their source archive authenticates the tested runtime
-bytes; only evidence metadata, documentation, the manifest digest pin and its
-focused test were updated afterward.
+The current `proof_qualification` is explicitly
+`pending_fresh_canonical_proof_qualification`: its result map is empty, proof/EVM
+verification flags are false, and verified-stage/control counts are zero. Fresh
+normal GPU FRI proofs for retained batch 20/21, combination, CPU standard wrapper
+and SNARK, all three native verifications, genuine serialization, production EVM
+controls and owning server verification must succeed for this exact new key
+before current proof qualification can be recorded. No old result is relabeled.
 
-Those checks used the pinned recursive guest bytes. An additional Linux rebuild
-did not reproduce the macOS bytes for
+`historical_d5bc_contract_generation_provenance` and
+`historical_d5bc_proof_qualification` retain the previous d5bc key's generation
+and offline proof evidence unchanged. The latter records batch 20/21 FRI proofs,
+combination, three native wrapper verifications, genuine serialization, ten EVM
+controls and seventeen owning server/type tests for that previous candidate.
+Its historical source archive authenticates those tested runtime bytes, not the
+current key or auxiliary commitment.
+
+That previous candidate's additional Linux rebuild did not reproduce its macOS
+bytes for
 `recursion_in_unrolled_layer_security_100_bits.bin` and its `.text`; the cause is
-unresolved and the other three guest pairs were not compared after that failure.
-The manifest retains the failed reproduction receipt. Live HTTP submission,
-service/DA/settlement acceptance, deployment and canonical fixture acceptance
-remain unqualified.
+unresolved in that historical receipt and the other three guest pairs were not
+compared after that failure. The failed receipt remains historical; it is not a
+claim about the current canonical-recipe bytes or a substitute for their own
+cross-host check. Current live HTTP submission, service/DA/settlement acceptance,
+deployment and canonical fixture acceptance remain unqualified.
 
 Key generation used one host under the explicitly approved validation constraint.
 It is not two-independent-host reproduction. The existing production workflow's
@@ -152,8 +168,10 @@ Every old proof/artifact hash is nested there, not presented as current evidence
 Those records concern the old key and unchanged crypto bytes subsequently carried
 by generated tree `ff5565cd22b61259d6f886e9a0130f788bbdb11c`; they do not qualify
 the new key or generated tree. `contract_generation_provenance` records only the
-new completed generation checks, and `proof_qualification` records the separate
-fresh offline results and their limits. The published offline
+new completed generation checks, while `proof_qualification` remains pending
+for fresh current-key results. The distinct historical d5bc records preserve
+their previous results and limits without qualifying the current candidate.
+The published offline
 critical Gateway input/helper/result under `scripts/keygen/gateway-identity` is
 also preserved byte-for-byte at its historical source tree. It is not consumed
 as current deployment authorization. Before a fresh service deployment, rebuild
