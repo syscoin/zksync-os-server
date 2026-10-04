@@ -183,6 +183,8 @@ jobs:
             echo "❌ Missing hash or transactions array is empty in the first block."
             echo "${FIRST_BLOCK}"
             cat "${SERVER_LOGFILE}"
+            # SYSCOIN: Diagnostic output must not turn a failed release smoke check green.
+            exit 1
           fi
 
       - name: Slack notification

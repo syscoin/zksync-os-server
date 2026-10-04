@@ -111,7 +111,13 @@ if [[ -z "${GATEWAY_LAUNCH_IN_SCRIPT:-}" && ( ! -t 0 || ! -t 1 ) ]]; then
 fi
 
 : "${GATEWAY_LAUNCH_LOG:=${HOME}/gateway-launch.log}"
-exec > >(tee "${GATEWAY_LAUNCH_LOG}") 2>&1
+# SYSCOIN: Refuse unsafe existing logs before redirecting any secret-bearing launcher output.
+if [ -z "${GATEWAY_LAUNCH_LOG_FD:-}" ]; then
+  exec python3 "${SCRIPT_DIR}/_private_log.py" "${GATEWAY_LAUNCH_LOG}" \
+    "${BASH}" "${BASH_SOURCE[0]}" "${ORIG_ARGS[@]}"
+fi
+# SYSCOIN: Keep the validated inode open; reopening its pathname would lose that guarantee.
+exec > >(python3 "${SCRIPT_DIR}/_private_log.py" --tee "${GATEWAY_LAUNCH_LOG_FD}") 2>&1
 echo "=== gateway-launch log: ${GATEWAY_LAUNCH_LOG} ==="
 echo "gateway-launch: PROVER_MODE=${PROVER_MODE}"
 
@@ -208,7 +214,8 @@ wait_for_rpc() {
     fi
     sleep 1
   done
-  gl_die "L1 RPC not responding: ${L1_RPC_URL}"
+  # SYSCOIN: RPC URLs can contain credentials in userinfo, query strings, or paths.
+  gl_die "L1 RPC not responding (check L1_RPC_URL and connectivity)"
 }
 
 
