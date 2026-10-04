@@ -66,9 +66,16 @@ That previous candidate's additional Linux rebuild did not reproduce its macOS
 bytes for
 `recursion_in_unrolled_layer_security_100_bits.bin` and its `.text`; the cause is
 unresolved in that historical receipt and the other three guest pairs were not
-compared after that failure. The failed receipt remains historical; it is not a
-claim about the current canonical-recipe bytes or a substitute for their own
-cross-host check. Current live HTTP submission, service/DA/settlement acceptance,
+compared after that failure. The failed receipt remains historical.
+
+The current canonical-recipe guests passed their separate cross-host check:
+all twelve `.bin`/`.text`/`.elf` outputs matched byte-for-byte between the Mac
+Docker build and an independent Linux Docker host. The old-source control also
+reproduced all eight checked `.bin`/`.text` outputs. The successful receipt has
+SHA-256 `89935b6c988dc36827060ea33b5fc01fa5123839aba562ad787010d7e916713a`.
+This establishes cross-host guest-byte reproduction, not independent-host
+key generation or whole-stack qualification.
+Current live HTTP submission, service/DA/settlement acceptance,
 deployment and canonical fixture acceptance remain unqualified.
 
 Key generation used one host under the explicitly approved validation constraint.
