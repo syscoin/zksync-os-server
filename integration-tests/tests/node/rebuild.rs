@@ -13,7 +13,9 @@ use std::time::Duration;
 use std::time::Instant;
 use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, ReceiptAssert};
-use zksync_os_integration_tests::l1_helpers::{fetch_l1_state, wait_for_l1_state};
+use zksync_os_integration_tests::l1_helpers::{
+    fetch_l1_state, wait_for_commit_only_baseline, wait_for_l1_state,
+};
 use zksync_os_integration_tests::rpc_recorder::RpcRecordConfig;
 use zksync_os_integration_tests::test_config::{
     make_commit_only_config, make_full_pipeline_config,
@@ -484,7 +486,7 @@ async fn rebuild_after_l1_revert_starts_successfully(env: TestEnvironment) -> an
     let tester = env.launch(config).await?;
     // Snapshot the executed frontier and exercise the revert/rebuild flow only on batches
     // created by this test.
-    let initial_state = fetch_l1_state(&tester).await?;
+    let initial_state = wait_for_commit_only_baseline(&tester).await?;
 
     // Unlike `rebuild_panics_if_from_block_is_already_committed` which uses a fast 50ms block
     // time, this test uses the default block time, so we send a transaction to give the batcher
@@ -495,10 +497,10 @@ async fn rebuild_after_l1_revert_starts_successfully(env: TestEnvironment) -> an
         state.last_committed_batch > initial_state.last_committed_batch
     })
     .await?;
-    // Batch execution is disabled, so nothing should ever be executed.
+    // Already-proved fixture batches have drained; new commit-only batches must stay unexecuted.
     assert_eq!(
         committed_state.last_executed_batch, initial_state.last_executed_batch,
-        "batch execution is disabled, so the executed frontier must not advance"
+        "after fixture execution drains, the executed frontier must not advance"
     );
 
     let first_new_batch = initial_state.last_committed_batch + 1;
@@ -563,7 +565,7 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     let tester = env.launch(config).await?;
     // SYSCOIN: Preserve the pinned V32 fixture's executed baseline and rebuild only the first
     // newly committed batch.
-    let initial_state = fetch_l1_state(&tester).await?;
+    let initial_state = wait_for_commit_only_baseline(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
 
@@ -573,7 +575,7 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     .await?;
     assert_eq!(
         committed_state.last_executed_batch, initial_state.last_executed_batch,
-        "batch execution is disabled, so the executed frontier must not advance"
+        "after fixture execution drains, the executed frontier must not advance"
     );
 
     let first_new_batch = initial_state.last_committed_batch + 1;
@@ -653,7 +655,7 @@ async fn revert_l1_commits_without_rebuild_leaves_local_blocks_intact(
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
     // SYSCOIN: Standalone L1 revert must preserve the pinned V32 executed baseline.
-    let initial_state = fetch_l1_state(&tester).await?;
+    let initial_state = wait_for_commit_only_baseline(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
 
@@ -663,7 +665,7 @@ async fn revert_l1_commits_without_rebuild_leaves_local_blocks_intact(
     .await?;
     assert_eq!(
         committed_state.last_executed_batch, initial_state.last_executed_batch,
-        "batch execution is disabled, so the executed frontier must not advance"
+        "after fixture execution drains, the executed frontier must not advance"
     );
 
     // Snapshot the current tip hash; it must survive the standalone L1 revert unchanged.
@@ -723,7 +725,7 @@ async fn revert_l1_commits_without_rebuild_is_idempotent_on_restart(
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
     // SYSCOIN: Revert only batches created above the pinned V32 executed baseline.
-    let initial_state = fetch_l1_state(&tester).await?;
+    let initial_state = wait_for_commit_only_baseline(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
 
@@ -733,7 +735,7 @@ async fn revert_l1_commits_without_rebuild_is_idempotent_on_restart(
     .await?;
     assert_eq!(
         committed_state.last_executed_batch, initial_state.last_executed_batch,
-        "batch execution is disabled, so the executed frontier must not advance"
+        "after fixture execution drains, the executed frontier must not advance"
     );
 
     let first_new_batch = initial_state.last_committed_batch + 1;
@@ -803,7 +805,7 @@ async fn danger_block_rebuild_with_l1_revert_from_mid_batch(
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
     // Select non-last batches created above the initial executed frontier.
-    let initial_state = fetch_l1_state(&tester).await?;
+    let initial_state = wait_for_commit_only_baseline(&tester).await?;
     let containing_batch = initial_state.last_committed_batch + 2;
     let target_committed_batch = containing_batch + 1;
 
@@ -815,7 +817,7 @@ async fn danger_block_rebuild_with_l1_revert_from_mid_batch(
         .await?;
     assert_eq!(
         committed_state.last_executed_batch, initial_state.last_executed_batch,
-        "batch execution is disabled, so the executed frontier must not advance"
+        "after fixture execution drains, the executed frontier must not advance"
     );
 
     // Place `from_block_number` strictly inside the middle new batch when possible.
