@@ -6,13 +6,12 @@ use crate::rpc_recorder::{HttpRpcRecorder, RpcRecordConfig};
 use crate::test_config::{
     BitcoinDaMock, TEST_PROVIDER_POLL_INTERVAL, build_node_config, maybe_start_bitcoin_da_mock,
 };
-use alloy::network::EthereumWallet;
+use alloy::network::{EthereumWallet, ReceiptResponse};
 use alloy::primitives::U256;
 use alloy::providers::utils::Eip1559Estimator;
 use alloy::providers::{
     DynProvider, Identity, PendingTransactionBuilder, Provider, ProviderBuilder, WalletProvider,
 };
-use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::{LocalSigner, PrivateKeySigner};
 use anyhow::Context;
 use backon::ConstantBuilder;
@@ -38,9 +37,7 @@ use zksync_os_server::config::{Config, ProviderConfig};
 pub use zksync_os_server::config::{DeploymentFilterConfig, PolicyServiceConfig};
 use zksync_os_server::default_protocol_version::{PROTOCOL_VERSION, PROTOCOL_VERSION_V32_0};
 use zksync_os_status_server::StatusResponse;
-use zksync_os_types::{
-    L1PriorityTxType, L1TxType, NodeRole, REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
-};
+use zksync_os_types::{NodeRole, REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE};
 
 pub mod assert_traits;
 mod component_fee_payer;
@@ -1145,15 +1142,10 @@ async fn ensure_test_wallet_funded(
         }))
         .await?;
     let max_fee_per_gas = base_l1_fees.max_fee_per_gas + max_priority_fee_per_gas;
-    let gas_limit = l2_provider
-        .estimate_gas(
-            TransactionRequest::default()
-                .transaction_type(L1PriorityTxType::TX_TYPE)
-                .from(beneficiary)
-                .to(beneficiary)
-                .value(amount),
-        )
-        .await?;
+    // SYSCOIN: Bootstrap is an empty-calldata wallet deposit, using the same bounded
+    // gas limit as generate-deposit. Public L1-shaped estimates intentionally fail
+    // closed with policy enabled; funding must use authenticated L1 execution instead.
+    let gas_limit = 500_000;
     let tx_base_cost = bridgehub
         .l2_transaction_base_cost(
             max_fee_per_gas + max_priority_fee_per_gas,
@@ -1183,6 +1175,8 @@ async fn ensure_test_wallet_funded(
         .await?
         .get_receipt()
         .await?;
+    // SYSCOIN: A bounded bootstrap deposit must succeed on both settlement and L2.
+    anyhow::ensure!(receipt.status(), "L1 wallet funding transaction reverted");
     let l1_to_l2_tx_log = receipt
         .logs()
         .iter()
@@ -1191,9 +1185,13 @@ async fn ensure_test_wallet_funded(
         .expect("no L1->L2 logs produced by funding tx");
     let l2_tx_hash = l1_to_l2_tx_log.inner.txHash;
 
-    PendingTransactionBuilder::new(l2_zk_provider.root().clone(), l2_tx_hash)
+    let l2_receipt = PendingTransactionBuilder::new(l2_zk_provider.root().clone(), l2_tx_hash)
         .get_receipt()
         .await?;
+    anyhow::ensure!(
+        l2_receipt.status(),
+        "L2 wallet funding transaction reverted"
+    );
 
     (|| async {
         let balance = l2_provider.get_balance(beneficiary).await?;

@@ -88,15 +88,10 @@ async fn allow_response_lets_tx_through() -> Result<()> {
     Ok(())
 }
 
-/// The test wallet is pre-funded via an L1 priority tx and drives every
-/// RPC-admit call the setup phase makes. We can't deny those calls without
-/// breaking node bring-up, so the deny tests install an allow-mock first,
-/// let setup finish, then swap the mock to deny for the test payload only.
-///
-/// The target address is the unambiguous signal: setup's `estimate_gas`
-/// self-targets the wallet (beneficiary → beneficiary), while the test
-/// payload targets this sentinel. That keeps any future setup-side admit
-/// requests passing.
+/// SYSCOIN: Setup funds the wallet through an authenticated L1 deposit with a
+/// fixed gas budget, not a public L1-shaped simulation. Keep setup allow-mocks
+/// for other startup activity, then deny only payloads targeting this sentinel
+/// so unrelated setup or block-build requests cannot satisfy the assertions.
 const TEST_DENY_TARGET: Address =
     alloy::primitives::address!("00000000000000000000000000000000deadbeef");
 
@@ -529,13 +524,14 @@ async fn rpc_judge_deny_blocks_eth_call_at_callee() -> Result<()> {
 // authenticate that provenance; reject unsupported policy VM paths locally.
 
 #[test_log::test(tokio::test)]
-async fn public_l1_priority_eth_call_fails_closed_with_policy() -> Result<()> {
+async fn public_l1_priority_call_and_estimate_fail_closed_with_policy() -> Result<()> {
     let server = MockServer::start_async().await;
     let [admit_mock, judge_mock] = allow_admit_and_judge(&server).await;
 
     let mc = setup(&server).await?;
 
-    // Snapshot post-setup call counts; the test call must not increment.
+    // SYSCOIN: Successful funding must not require relaxing either public RPC guard.
+    // Snapshot post-setup call counts; neither public simulation may increment them.
     let admit_before = admit_mock.calls_async().await;
     let judge_before = judge_mock.calls_async().await;
 
@@ -545,9 +541,17 @@ async fn public_l1_priority_eth_call_fails_closed_with_policy() -> Result<()> {
     let err = mc
         .chain(0)
         .l2_provider
-        .call(req)
+        .call(req.clone())
         .await
         .expect_err("public L1-shaped calls cannot bypass configured policy");
+    assert!(err.to_string().contains("policy service"));
+
+    let err = mc
+        .chain(0)
+        .l2_provider
+        .estimate_gas(req)
+        .await
+        .expect_err("public L1-shaped estimates cannot bypass configured policy");
     assert!(err.to_string().contains("policy service"));
 
     assert_eq!(
