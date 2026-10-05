@@ -161,6 +161,11 @@ impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTr
                 None,
             ),
             EthSendRawTransactionError::JudgeSimFailed(_) => internal_rpc_err(err.to_string()),
+            // SYSCOIN: Local policy contention is retriable, not an internal VM failure.
+            EthSendRawTransactionError::PolicySimulationBusy => rpc_error_with_code(
+                jsonrpsee::types::error::SERVER_IS_BUSY_CODE,
+                "Policy simulation service is busy",
+            ),
         })
     }
 }
@@ -168,13 +173,19 @@ impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTr
 impl<Ok> ToRpcResult<Ok, EthFilterError> for Result<Ok, EthFilterError> {
     fn to_rpc_result(self) -> RpcResult<Ok> {
         self.map_err(|err| match err {
+            // SYSCOIN: Oversized installed criteria are a client error, not an internal failure.
             EthFilterError::BlockNotFound(_)
             | EthFilterError::FilterNotFound(_)
+            | EthFilterError::FilterCriteriaTooLarge { .. }
             | EthFilterError::QueryExceedsMaxBlocks(_)
             | EthFilterError::QueryExceedsMaxResults { .. } => {
                 invalid_params_rpc_err(err.to_string())
             }
             EthFilterError::RepositoryError(_) => internal_rpc_err(err.to_string()),
+            // SYSCOIN: EIP-1474 "Limit exceeded" is a capacity outcome, not an internal failure.
+            EthFilterError::FilterCapacityReached { .. } => {
+                rpc_error_with_code(-32005, err.to_string())
+            }
         })
     }
 }
@@ -402,6 +413,24 @@ impl fmt::Display for RevertError {
 mod tests {
     use super::*;
     use zksync_os_rpc_api::types::LogProofTarget;
+
+    // SYSCOIN: Resource contention must stay distinct from malformed installed criteria.
+    #[test]
+    fn installed_filter_limits_are_capacity_and_client_errors() {
+        let capacity =
+            Result::<(), _>::Err(EthFilterError::FilterCapacityReached { max_filters: 4096 })
+                .to_rpc_result()
+                .unwrap_err();
+        assert_eq!(capacity.code(), -32005);
+        let criteria =
+            Result::<(), _>::Err(EthFilterError::FilterCriteriaTooLarge { max_terms: 1024 })
+                .to_rpc_result()
+                .unwrap_err();
+        assert_eq!(
+            criteria.code(),
+            jsonrpsee::types::error::INVALID_PARAMS_CODE
+        );
+    }
 
     // SYSCOIN: A request-wide simulation ceiling must not be reported as a block or VM failure.
     #[test]

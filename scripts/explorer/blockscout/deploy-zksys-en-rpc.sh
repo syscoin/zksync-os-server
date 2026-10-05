@@ -585,6 +585,7 @@ import os
 import secrets
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -605,13 +606,29 @@ def parse_rate_limits(value: str) -> dict[str, int]:
     return out
 
 
+# SYSCOIN: Limit this permission boundary to each instance, not the shared deployment base.
+def private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(descriptor).st_uid != os.getuid():
+            raise SystemExit("secret directory must be owned by the deployment user")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
+
+
 def write_secret(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(path)
-    path.chmod(0o600)
+    private_directory(path.parent)
+    # SYSCOIN: mkstemp creates mode 0600 before the first byte; retain its descriptor while writing.
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(text)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def write_text(path: Path, text: str) -> None:
@@ -623,7 +640,18 @@ def write_text(path: Path, text: str) -> None:
 
 def read_or_create_key(path: Path) -> str:
     if path.exists():
-        key = path.read_text(encoding="utf-8").strip()
+        # SYSCOIN: Reuse only a private owned inode, not a symlink or previously exposed key file.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+            info = os.fstat(source.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_nlink != 1
+                or info.st_mode & 0o077
+            ):
+                raise SystemExit("existing network secret must be a private, owned regular file")
+            key = source.read().strip()
         if key:
             return key
     key = "0x" + secrets.token_hex(32)
@@ -728,7 +756,7 @@ debug = {
 
 for instance in (public, debug):
     out_dir = base_dir / instance["name"]
-    out_dir.mkdir(parents=True, exist_ok=True)
+    private_directory(out_dir)
     db_dir = out_dir / "db"
     secret_key = read_or_create_key(out_dir / "network.secret")
     config_path = out_dir / "config.yaml"

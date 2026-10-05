@@ -3,7 +3,9 @@ use alloy::eips::BlockId;
 use alloy::network::{Ethereum, Network, ReceiptResponse};
 use alloy::primitives::B256;
 use alloy::providers::ext::DebugApi;
-use alloy::providers::{EthCall, PendingTransaction, PendingTransactionBuilder, Provider};
+use alloy::providers::{
+    EthCall, PendingTransaction, PendingTransactionBuilder, Provider, RootProvider,
+};
 use alloy::rpc::json_rpc::RpcRecv;
 use alloy::rpc::types::TransactionReceipt;
 use alloy::rpc::types::trace::geth::{CallConfig, CallFrame, GethDebugTracingOptions};
@@ -12,6 +14,29 @@ use std::time::Duration;
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(180);
 pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+// SYSCOIN: A failed receipt cannot become a success because optional diagnostics are unavailable.
+async fn require_successful_receipt<N: Network>(
+    receipt: N::ReceiptResponse,
+    provider: &RootProvider<N>,
+) -> anyhow::Result<N::ReceiptResponse> {
+    if !receipt.status() {
+        tracing::error!(?receipt, "Transaction failed");
+        // SYSCOIN: Diagnostics are optional; receipt status remains authoritative.
+        if let Ok(trace) = provider
+            .debug_trace_transaction(
+                receipt.transaction_hash(),
+                GethDebugTracingOptions::call_tracer(CallConfig::default()),
+            )
+            .await
+            && let Ok(call_frame) = trace.try_into_call_frame()
+        {
+            tracing::error!(?call_frame, "Failed call frame");
+        }
+        anyhow::bail!("transaction failed when it was expected to succeed");
+    }
+    Ok(receipt)
+}
 
 #[allow(async_fn_in_trait)]
 pub trait EthCallAssert {
@@ -45,26 +70,7 @@ impl<N: Network> ReceiptAssert<N> for PendingTransactionBuilder<N> {
             .with_timeout(Some(DEFAULT_TIMEOUT))
             .get_receipt()
             .await?;
-        if !receipt.status() {
-            tracing::error!(?receipt, "Transaction failed");
-            // Ignore error if `deubg_traceTransaction` is not implemented (which is currently the
-            // case for zksync-os node).
-            if let Ok(trace) = provider
-                .debug_trace_transaction(
-                    receipt.transaction_hash(),
-                    GethDebugTracingOptions::call_tracer(CallConfig::default()),
-                )
-                .await
-            {
-                let call_frame = trace
-                    .try_into_call_frame()
-                    .expect("failed to convert call frame; should never happen");
-                tracing::error!(?call_frame, "Failed call frame");
-                anyhow::bail!("transaction failed when it was expected to succeed");
-            }
-        }
-
-        Ok(receipt)
+        require_successful_receipt(receipt, &provider).await
     }
 
     async fn expect_register(self) -> anyhow::Result<PendingTransaction> {
@@ -169,5 +175,67 @@ impl<P: Provider<Ethereum>> ProviderAssert for P {
             }
         }
         Err(anyhow::anyhow!("interop root not included on time"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // SYSCOIN: Bounded receipt-status controls do not depend on a live chain or debug namespace.
+    use super::*;
+    use alloy::providers::ProviderBuilder;
+    use alloy::transports::mock::Asserter;
+
+    fn receipt(success: bool) -> TransactionReceipt {
+        serde_json::from_value(serde_json::json!({
+            "transactionHash": B256::ZERO,
+            "from": alloy::primitives::Address::ZERO,
+            "gasUsed": "0x5208",
+            "effectiveGasPrice": "0x0",
+            "cumulativeGasUsed": "0x5208",
+            "logs": [],
+            "logsBloom": format!("0x{}", "00".repeat(256)),
+            "status": if success { "0x1" } else { "0x0" },
+            "type": "0x0"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn failed_receipt_still_fails_when_trace_rpc_is_unavailable() {
+        let responses = Asserter::new();
+        responses.push_failure_msg("debug namespace disabled");
+        let provider = ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .connect_mocked_client(responses);
+        let error = require_successful_receipt::<Ethereum>(receipt(false), &provider)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("transaction failed"));
+    }
+
+    #[tokio::test]
+    async fn failed_receipt_still_fails_when_optional_trace_is_not_a_call_frame() {
+        let responses = Asserter::new();
+        responses.push_success(&serde_json::json!({"notACallFrame": true}));
+        let provider = ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .connect_mocked_client(responses);
+        assert!(
+            require_successful_receipt::<Ethereum>(receipt(false), &provider)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_receipt_does_not_require_debug_rpc() {
+        let responses = Asserter::new();
+        let provider = ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .connect_mocked_client(responses);
+        let receipt = require_successful_receipt::<Ethereum>(receipt(true), &provider)
+            .await
+            .unwrap();
+        assert!(receipt.status());
     }
 }

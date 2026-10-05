@@ -23,7 +23,8 @@ use alloy::serde::JsonStorageKey;
 use async_trait::async_trait;
 use jsonrpsee::core::RpcResult;
 use ruint::aliases::B160;
-use tokio::sync::watch;
+use std::sync::Arc;
+use tokio::sync::{Semaphore, watch};
 use zk_ee::common_structs::derive_flat_storage_key;
 use zk_os_api::helpers::get_code;
 use zksync_os_interface::traits::ReadStorage;
@@ -63,8 +64,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         acceptance_state: watch::Receiver<TransactionAcceptanceState>,
         tx_forwarder: Option<TxForwarder>,
         policy_client: Option<PolicyClient>,
+        blocking_rpcs_semaphore: Arc<Semaphore>,
         last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     ) -> Self {
+        // SYSCOIN: Submission simulations share the middleware's process-wide budget.
         let tx_handler = TxHandler::new(
             config.clone(),
             storage.clone(),
@@ -73,6 +76,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
             acceptance_state,
             tx_forwarder,
             policy_client,
+            blocking_rpcs_semaphore,
             last_constructed_block_context,
         );
 

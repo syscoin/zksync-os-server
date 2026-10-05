@@ -63,6 +63,16 @@ impl JsTracerLimits {
     }
 }
 
+/// SYSCOIN: The interpreter's between-hook checks are not a hard sandbox boundary.
+/// Operators must explicitly enable custom code only for trusted tracer authors.
+pub(crate) fn ensure_custom_js_tracers_enabled(enabled: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        enabled,
+        "custom JS tracers are disabled; enable_custom_js_tracers requires trusted tracer input"
+    );
+    Ok(())
+}
+
 // Per-hook invoker functions installed by `host::install_invocation_helpers`.
 const INVOKE_SETUP: &str = "__zkjs_invoke_setup";
 const INVOKE_STEP: &str = "__zkjs_invoke_step";
@@ -165,6 +175,11 @@ impl JsTracer {
             )));
         }
 
+        // SYSCOIN: Initialization evaluates caller-supplied source; time and retained allocations
+        // belong to the same budget as hooks. These measurements do not interrupt Boa calls.
+        let started_at = Instant::now();
+        let mem_baseline = ThreadMemoryProbe::new().map(|probe| (probe, probe.net_allocated()));
+
         let (tracer_source, tracer_config) = extract_js_source_and_config(js_cfg)?;
 
         let mut ctx = BoaContext::default();
@@ -188,13 +203,13 @@ impl JsTracer {
 
         let invokers = resolve_invokers(&mut ctx)?;
 
-        Ok(Self {
+        let tracer = Self {
             ctx,
             tracer_config,
             invokers,
             limits,
-            started_at: Instant::now(),
-            mem_baseline: ThreadMemoryProbe::new().map(|probe| (probe, probe.net_allocated())),
+            started_at,
+            mem_baseline,
             storage_overlay,
             code_overlay,
             balance_overlay,
@@ -210,7 +225,12 @@ impl JsTracer {
             trace_tx_index,
             current_tx_index: 0,
             tracing_current_tx: true,
-        })
+        };
+        // SYSCOIN: Reject initialization overages before any transaction hook can run.
+        if let Some(reason) = tracer.budget_exceeded() {
+            return Err(anyhow::anyhow!(reason));
+        }
+        Ok(tracer)
     }
 
     /// Calls a pre-installed invoker function with the per-hook data. No-op if the user tracer
@@ -1163,6 +1183,55 @@ mod tests {
     use crate::trace_filter::{
         ASSET_TRACKER_ADDRESS, ASSET_TRACKER_ROOT_SELECTOR, L2_BASE_TOKEN_ADDRESS,
     };
+
+    // SYSCOIN: Initialization controls require no VM execution or external storage.
+    #[derive(Clone)]
+    struct EmptyState;
+
+    impl zksync_os_interface::traits::ReadStorage for EmptyState {
+        fn read(&mut self, _key: B256) -> Option<B256> {
+            None
+        }
+    }
+
+    impl zksync_os_interface::traits::PreimageSource for EmptyState {
+        fn get_preimage(&mut self, _hash: B256) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    // SYSCOIN: Bounded initialization controls cover budget rejection and trusted-code compatibility.
+    #[test]
+    fn initialization_must_finish_within_the_configured_budget() {
+        let limits = JsTracerLimits {
+            execution_deadline: Duration::ZERO,
+            max_memory_bytes: None,
+        };
+        let result = JsTracer::new(
+            EmptyState,
+            "({result: function() { return {}; }})".to_string(),
+            limits,
+        );
+        match result {
+            Err(err) => assert!(err.to_string().contains("execution time limit")),
+            Ok(_) => panic!("initialization unexpectedly bypassed its zero time budget"),
+        }
+    }
+
+    #[test]
+    fn ordinary_trusted_js_initialization_remains_available() {
+        let tracer = JsTracer::new(
+            EmptyState,
+            "({result: function() { return {}; }})".to_string(),
+            JsTracerLimits {
+                execution_deadline: Duration::from_secs(10),
+                max_memory_bytes: None,
+            },
+        )
+        .unwrap();
+        assert!(tracer.invokers.contains_key(INVOKE_RESULT));
+        assert!(tracer.budget_exceeded().is_none());
+    }
 
     fn tx_context(to: Address, gas: u64, gas_used: u64) -> TxContext {
         TxContext {
