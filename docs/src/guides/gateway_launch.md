@@ -76,6 +76,11 @@ The migration repair journal accepts this pinned build (and the audited
 vanilla Foundry 1.7.1 fallback) only; changing Forge requires re-auditing its
 sequence persistence and resume behavior.
 
+<!-- SYSCOIN: Fetch implementation changes do not change locked source or artifact checks. -->
+For fresh native builds, `export CARGO_NET_GIT_FETCH_WITH_CLI=true` uses standard
+Git for large prepared Airbender repositories. This avoids repeated embedded-Git
+history repacking; retain the normal source, lockfile and binary-stamp checks.
+
 Cache the Solidity and ZKsync Solidity compilers used by the v32 contracts
 before the first offline
 launch. Both `run-gateway-launch.sh` and `gateway-launch-repair.sh` default
@@ -176,11 +181,46 @@ Run from a `zksync-os-server` clone:
 cd /path/to/zksync-os-server
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
+export ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK=840000
 export PROVER_API_AUTH_PASSWORD=...
 export FUNDER_SIGNER=account
 export FUNDER_ACCOUNT_NAME=funder
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum --migrate-edge
 ```
+
+<!-- SYSCOIN: Registry proofs convert Core heights using the selected network's activation. -->
+Tanenbaum Core uses NEVM activation height **840000**; mainnet uses **1317500**.
+Select the matching bridge input before the first checkpoint fingerprint and
+verify its deployed `nevmStartBlock()` getter. Do not copy the mainnet default
+into the testnet launch.
+
+### Mock Gateway graph inspection
+
+<!-- SYSCOIN: This RPC-backed probe is not the historical real-verifier offline attestation. -->
+For an explicitly authorized mock Tanenbaum replacement, the separate
+`scripts/keygen/gateway-identity/DeriveMockGatewayIdentity.s.sol` inspector calls
+the canonical `GatewayVotePreparation.initializeConfig` and the complete
+`GatewayCTMDeployerHelper.calculateAddresses`. It verifies the published guest
+target/relay and critical namespace addresses from the fresh root and actual
+Gateway preparation TOML. Use the explicit `inspect(string,string)` selector,
+without `--broadcast`, and retain the exact source/input/artifact hashes and root
+block. The output labels its scope as RPC-backed mock inspection, not production
+proof attestation or independent-host reproduction.
+
+Compile a byte-identical copy inside an owner-private ignored Era
+`l1-contracts/script-out/` inspection directory, using the default pinned
+Cancun profile and separate harness `--out` / `--cache-path`. Keep canonical
+deployment `out/` unchanged. Use the normal project remappings; an external
+absolute script plus ad-hoc remappings can duplicate imported source units.
+Supply a new input with schema `syscoin-v32-mock-gateway-inspection-input-v1`,
+the actual `preparation_config_path`, `bridgehub`, representative chain ID,
+expected root Governance, salt, Era ID, factory, timelock/relay and critical
+deployer addresses from the selected namespace. The inherited `run` entry point
+is not the inspection route. An upstream `--only-save-calldata` conversion is
+also not read-only: its vote-preparation stage still broadcasts.
+
+Finish this check and live collision/address validation before discarding the
+old rollup runtime. No mock flag permits bypassing immutable guest bindings.
 
 Mainnet:
 
