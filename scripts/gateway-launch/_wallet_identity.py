@@ -115,7 +115,9 @@ def external_admin_wallet_args(role, label):
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or stat.S_IMODE(info.st_mode) & 0o077 or info.st_nlink != 1):
             raise SystemExit(f"unsafe protected {role} account/password file")
-    return ["--account", account, "--password-file", password]
+    # SYSCOIN: Forge changes into the contracts workspace. Bind a relative
+    # password reference to the already validated file, not that later cwd.
+    return ["--account", account, "--password-file", os.path.realpath(password)]
 
 
 def authenticate_wallet_entry(entry, label, cast_bin, role=None):

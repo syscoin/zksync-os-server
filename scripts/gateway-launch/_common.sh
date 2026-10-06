@@ -5338,12 +5338,13 @@ gl_probe_edge_chain_inited_and_governor_ready() {
 # Both routes bind the signer to the same declared role before live use.
 gl_authenticate_chain_wallet_roles() {
   gl_require GATEWAY_DIR
-  local emit_addresses=false emit_forge_args=false ecosystem_only=false
+  local emit_addresses=false emit_forge_args=false ecosystem_only=false conversion_actors=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --print-addresses) emit_addresses=true ;;
     --print-forge-args) emit_forge_args=true ;;
     --ecosystem-only) ecosystem_only=true ;;
+    --conversion-actors) conversion_actors=true ;;
     *) break ;;
     esac
     shift
@@ -5357,7 +5358,12 @@ gl_authenticate_chain_wallet_roles() {
     chain_name="${1:?chain name required}"
     shift
   fi
-  [ "$#" -gt 0 ] || gl_die "at least one wallet role is required"
+  if [ "${conversion_actors}" = true ]; then
+    [ "${ecosystem_only}" = false ] && [ "$#" -eq 0 ] ||
+      gl_die "conversion actors require one chain and no caller-selected role list"
+  else
+    [ "$#" -gt 0 ] || gl_die "at least one wallet role is required"
+  fi
   [ "${emit_addresses}:${emit_forge_args}" != true:true ] || gl_die "choose one wallet output format"
   cast_bin="$(command -v cast || true)"
   if [ -z "${cast_bin}" ] && [ -x "${HOME}/.foundry/bin/cast" ]; then
@@ -5369,6 +5375,7 @@ gl_authenticate_chain_wallet_roles() {
     GL_WALLET_EMIT_ADDRESSES="${emit_addresses}" \
     GL_WALLET_EMIT_FORGE_ARGS="${emit_forge_args}" \
     GL_WALLET_ECOSYSTEM_ONLY="${ecosystem_only}" \
+    GL_WALLET_CONVERSION_ACTORS="${conversion_actors}" \
     python3 - \
       "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
       "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
@@ -5385,12 +5392,19 @@ sys.path.insert(0, os.environ["GL_WALLET_COMMON_DIR"])
 from _wallet_identity import authenticate_wallet_entry, external_admin_wallet_args  # noqa: E402
 
 paths = [Path(value) for value in sys.argv[1:4]]
-if os.environ["GL_WALLET_ECOSYSTEM_ONLY"] == "true":
+subjects = [(role, paths) for role in sys.argv[4:]]
+if os.environ["GL_WALLET_CONVERSION_ACTORS"] == "true":
+    # SYSCOIN: Both Gateway commands consume the chain governor; conversion
+    # also consumes the ecosystem governor and chain deployer. Bind every
+    # actual actor before forwarding one global Forge selector to those calls.
+    subjects = [("deployer", paths[:2]), ("governor", paths[:2]), ("governor", paths[2:])]
+elif os.environ["GL_WALLET_ECOSYSTEM_ONLY"] == "true":
     paths = paths[2:]
+    subjects = [(role, paths) for role in sys.argv[4:]]
 addresses = []
 external = []
-for role in sys.argv[4:]:
-    for path in paths:
+for role, role_paths in subjects:
+    for path in role_paths:
         if not path.is_file():
             continue
         data = yaml.safe_load(path.read_text(encoding="utf-8"))

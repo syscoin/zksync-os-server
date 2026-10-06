@@ -40,7 +40,8 @@ import json,os,sys
 args=sys.argv[1:]
 if args[:2] == ['wallet','address']:
     with open(os.environ['CAST_ARGS_LOG'],'a') as handle: handle.write(json.dumps(args)+'\\n')
-    if args[2:] != ['--account','v32-admin','--password-file',os.environ['DEPLOYER_PASSWORD_FILE']]:
+    password=os.path.realpath(os.path.join(os.environ['VALIDATION_CWD'],os.environ['DEPLOYER_PASSWORD_FILE']))
+    if args[2:] != ['--account','v32-admin','--password-file',password]:
         raise SystemExit(91)
     print(os.environ['CAST_ACCOUNT_ADDRESS'])
 elif args[0] == 'keccak':
@@ -57,6 +58,7 @@ else: raise SystemExit(92)
                     "EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME": "v32-admin",
                     "EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE": str(self.password),
                     "CAST_ACCOUNT_ADDRESS": ADMIN, "GENERATED_ADDRESS": GENERATED,
+                    "VALIDATION_CWD": str(self.gateway),
                     "CAST_ARGS_LOG": str(self.root / "cast-args.jsonl"),
                     "PYTHONDONTWRITEBYTECODE": "1"}
         self.write_wallet({"deployer": self.external(), "governor": self.external()})
@@ -73,7 +75,8 @@ else: raise SystemExit(92)
 
     def run_shell(self, command, **overrides):
         return subprocess.run(["bash", "-c", 'set -euo pipefail; source "$COMMON"; ' + command],
-                              env={**self.env, **overrides}, capture_output=True, text=True, timeout=10)
+                              env={**self.env, **overrides}, cwd=self.gateway,
+                              capture_output=True, text=True, timeout=10)
 
     def test_null_administrators_authenticate_same_named_account(self):
         result = self.run_shell('gl_authenticate_chain_wallet_roles --print-addresses gateway deployer governor')
@@ -91,7 +94,7 @@ else: raise SystemExit(92)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split("\0")[:-1],
                          ["--additional-args", "--account", "--additional-args", "v32-admin",
-                          "--additional-args", "--password-file", "--additional-args", str(password)])
+                          "--additional-args", "--password-file", "--additional-args", str(password.resolve())])
 
     def test_account_mismatch_fails_before_broadcast(self):
         marker = self.root / "broadcast"
@@ -138,6 +141,87 @@ else: raise SystemExit(92)
         result = self.run_shell('gl_prepare_zkstack_admin_wallet_args gateway deployer governor')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must match every requested", result.stderr)
+
+    def set_ecosystem_governor(self, entry):
+        path = self.gateway / "configs/wallets.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump({"governor": entry}))
+        path.chmod(0o600)
+
+    def conversion_selector(self, marker):
+        source = (ROOT / "scripts/gateway-launch/gateway-convert-settlement.sh").read_text()
+        guard = next(line for line in source.splitlines() if line.startswith("gl_prepare_zkstack_admin_wallet_args "))
+        return self.run_shell('GATEWAY_CHAIN_NAME=gateway; gl_zkstack_pty() { touch "$BROADCAST_MARKER"; }; '
+                              + guard + '; gl_zkstack_pty zkstack chain gateway create-tx-filterer',
+                              BROADCAST_MARKER=str(marker))
+
+    def test_conversion_rejects_chain_governor_mismatch_before_any_wrapper_call(self):
+        self.write_wallet({"deployer": self.external(), "governor": self.generated()})
+        self.set_ecosystem_governor(self.external())
+        marker = self.root / "broadcast"
+        result = self.conversion_selector(marker)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must match every requested", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_conversion_rejects_ecosystem_governor_mismatch_before_any_wrapper_call(self):
+        self.set_ecosystem_governor(self.generated())
+        marker = self.root / "broadcast"
+        result = self.conversion_selector(marker)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must match every requested", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_conversion_missing_chain_governor_cannot_fall_back_to_ecosystem(self):
+        self.write_wallet({"deployer": self.external()})
+        self.set_ecosystem_governor(self.external())
+        marker = self.root / "broadcast"
+        result = self.conversion_selector(marker)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing governor wallet entry", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_conversion_all_matching_administrators_select_account(self):
+        self.set_ecosystem_governor(self.external())
+        marker = self.root / "broadcast"
+        result = self.conversion_selector(marker)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+        result = self.run_shell('gl_authenticate_chain_wallet_roles --print-forge-args --conversion-actors gateway')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)[1], "--account")
+
+    def test_conversion_generated_only_mixed_identities_keep_empty_selectors(self):
+        # Distinct generated private keys bind independently; no shared external
+        # selector is emitted, so upstream retains each stage's proper role key.
+        generated_second = {"address": "0x" + "66" * 20, "private_key": "0x" + "00" * 31 + "02"}
+        cast = self.bin / "cast"
+        source = cast.read_text()
+        source = source.replace("print('0x'+'00'*12+os.environ['GENERATED_ADDRESS'][2:])",
+                                "print('0x'+'00'*12+('66'*20 if args[1].startswith('0xc6047f') else os.environ['GENERATED_ADDRESS'][2:]))")
+        cast.write_text(source)
+        self.write_wallet({"deployer": self.generated(), "governor": generated_second})
+        self.set_ecosystem_governor(self.generated())
+        result = self.run_shell('gl_authenticate_chain_wallet_roles --print-forge-args --conversion-actors gateway')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [])
+
+    def test_relative_password_remains_bound_after_forge_changes_directory(self):
+        relative = self.gateway / "admin.password"
+        relative.write_text("selected-fixture\n")
+        relative.chmod(0o600)
+        contracts = self.root / "contracts"
+        contracts.mkdir()
+        decoy = contracts / "admin.password"
+        decoy.write_text("wrong-fixture\n")
+        decoy.chmod(0o600)
+        result = self.run_shell('gl_prepare_zkstack_admin_wallet_args gateway deployer governor; '
+                                'cd "$CONTRACTS_DIR"; cat "${GL_ZKSTACK_ADMIN_WALLET_ARGS[7]}"',
+                                DEPLOYER_PASSWORD_FILE="admin.password",
+                                EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE="admin.password",
+                                CONTRACTS_DIR=str(contracts))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "selected-fixture")
 
     def test_generated_empty_selector_adds_no_cli_argument_under_nounset(self):
         self.write_wallet({role: self.generated() for role in ("deployer", "governor")})

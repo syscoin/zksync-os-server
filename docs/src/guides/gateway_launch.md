@@ -141,6 +141,12 @@ administrator role used by that command; distinct administrator identities
 cannot share a single selector. Conflicting ambient wallet selectors are
 rejected rather than inherited.
 
+<!-- SYSCOIN: Bind every conversion actor and preserve protected file identity. -->
+Gateway conversion checks the chain deployer, chain governor and ecosystem
+governor together before either filterer setup or conversion. Generated-only
+administrators may remain distinct because no external selector is forwarded.
+Validated password paths become absolute before Forge changes working directory.
+
 Use `EDGE_REUSE_GATEWAY_GOVERNOR=false` for an address-only administrator:
 the raw-key governor copier deliberately remains generated-key-only. Supply
 the intended edge governor in its own wallet file. Operator, blob/prove/execute
