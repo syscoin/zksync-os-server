@@ -498,6 +498,44 @@ nonce state and fund its preserved dispenser on the new chain before opening
 it. Old v31 faucet balances do not carry into the fresh chain; do not grant an
 ad-hoc ZKSYS mint role to seed it.
 
+### Persistent sequencer handoff (dated testnet reference)
+
+<!-- SYSCOIN: Reproducible staging assets do not authorize service cutover or
+replace canonical migration ownership, configuration, source or app guards. -->
+The [2026-10-06 Tanenbaum reference assets](reference-assets/v32-public-tanenbaum-20261006/INSTALLATION-GATES.md)
+pin source `f638db92e5c5ea31507e089b61f122fd95cf9083` and the explicitly dated
+fresh runtime. They include two inactive systemd templates, a guarded edge
+adapter recipe, eight offline tests and a staging record. **They are mock-testnet
+references, not installed services or a completed launch. Never blindly copy
+their paths, chain IDs, no-proofs flags or deployment inputs to mainnet.**
+
+Follow the linked gates in order: source the exact protected `launch.env.sh`,
+export `ZKSYNC_OS_SERVER_PATH` to the reviewed f638 checkout, and preserve the
+same approved deployment inputs. Require the fresh canonical contracts/configs,
+normal edge `build-prebuilt` and config-bound `exec-prebuilt -- --help` before
+generating the adapter. Record actual final binary/stamp/script hashes; copied
+Cargo caches and earlier Gateway hashes are not new build attestations.
+
+The adapter preserves every canonical prefix byte (cookie refresh, context,
+exact config path and execute-operator FD9 lock) and changes only the terminal
+edge runner mode to `exec-prebuilt`. Source, binary, protocol, app and context
+checks still run. Gateway uses its unmodified generated prebuilt start script.
+Neither service may start while canonical migration/repair owns its temporary
+Gateway process: finish/revalidate migration and final configs, confirm all
+owned jobs exited and listeners are free, then obtain the explicit cutover and
+installation approval. Attest Gateway before edge; recheck exact PID/socket,
+genesis, live postimages and settlement bindings, not chain ID alone. The
+references do not weaken old-deposit retirement or external-collateral gates.
+
+Reviewed reference-asset SHA256 values:
+
+| Reference asset | SHA256 |
+| --- | --- |
+| [Gateway unit](reference-assets/v32-public-tanenbaum-20261006/zksys-v32-gateway.service) | `757028d30fbbaef6c0812f4d4aa71e3d9b23d3a03f09c094a1e080a0502722ce` |
+| [Edge unit](reference-assets/v32-public-tanenbaum-20261006/zksys-v32-edge.service) | `8d284e7f88d1b60a97ea5662c84a348843d7e2311418f075878bd13e0aaecfca` |
+| [Adapter recipe](reference-assets/v32-public-tanenbaum-20261006/generate-edge-prebuilt-adapter.py) | `a44ce5c40a309f224cf0cceaf8443d03af417683da05d57130df40b9a04f179c` |
+| [Offline tests](reference-assets/v32-public-tanenbaum-20261006/test-edge-prebuilt-adapter.py) | `38b12b6da896d9a0147750ccbe400b9ed0d81c60e435821a82a57b3f8bafb790` |
+
 ### Acceptance record and mainnet boundary
 
 Keep an operator-only record of actual commands, pinned inputs, resolved reset
