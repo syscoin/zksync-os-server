@@ -1,6 +1,8 @@
 """SYSCOIN: Authenticate secp256k1 wallet entries without exposing keys in argv."""
 
+import os
 import re
+import stat
 import subprocess
 
 SECP256K1_FIELD = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
@@ -80,10 +82,63 @@ def address_for_private_key(value, label, cast_bin):
     return "0x" + digest[-40:]
 
 
-def authenticate_wallet_entry(entry, label, cast_bin):
+def external_admin_wallet_args(role, label):
+    """SYSCOIN: Address-only administrators require an explicit protected account."""
+    prefixes = {"deployer": "DEPLOYER", "governor": "EDGE_GATEWAY_GOVERNOR"}
+    if role not in prefixes:
+        raise SystemExit("external accounts are supported only for governor/deployer")
+    prefix = prefixes[role]
+    if os.environ.get(f"{prefix}_SIGNER", "").lower() != "account":
+        raise SystemExit(f"address-only {role} requires {prefix}_SIGNER=account")
+    account = os.environ.get(f"{prefix}_ACCOUNT_NAME", "")
+    if not account or account in (".", "..") or "/" in account or "\x00" in account:
+        raise SystemExit(f"{prefix}_ACCOUNT_NAME must be a single Foundry account name")
+    password = os.environ.get(f"{prefix}_PASSWORD_FILE", "")
+    if not password:
+        raise SystemExit(f"address-only {role} requires {prefix}_PASSWORD_FILE")
+    # SYSCOIN: --account consumes Foundry's default store, not an arbitrary
+    # validator-only directory. Reject other wallet selectors before both the
+    # public-address check and the later Forge invocation can choose a key.
+    keystore_root = os.path.expanduser("~/.foundry/keystores")
+    supplied_root = os.environ.get("FOUNDRY_KEYSTORE_DIR", keystore_root)
+    if os.path.realpath(supplied_root) != os.path.realpath(keystore_root):
+        raise SystemExit("address-only accounts require the default Foundry keystore directory")
+    if any(os.environ.get(name) for name in (
+            "PRIVATE_KEY", "ETH_PRIVATE_KEY", "ETH_KEYSTORE", "ETH_KEYSTORE_ACCOUNT",
+            "ETH_PASSWORD", "MNEMONIC", "ETH_MNEMONIC", "ETH_MNEMONIC_PATH")):
+        raise SystemExit("address-only accounts reject conflicting ambient wallet selectors")
+    for path in (os.path.join(keystore_root, account), password):
+        try:
+            info = os.lstat(path)
+        except OSError:
+            raise SystemExit(f"missing protected {role} account/password file") from None
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077 or info.st_nlink != 1):
+            raise SystemExit(f"unsafe protected {role} account/password file")
+    return ["--account", account, "--password-file", password]
+
+
+def authenticate_wallet_entry(entry, label, cast_bin, role=None):
     if not isinstance(entry, dict):
         raise SystemExit(f"missing or invalid {label}")
     address = normalize_address(entry.get("address"), f"{label}.address")
+    # SYSCOIN: Only an explicit YAML null opts an administrator into account
+    # signing. Missing, empty or malformed supplied keys never fall back, and
+    # runtime operator roles always retain their generated-key authentication.
+    if "private_key" in entry and entry["private_key"] is None and role is not None:
+        args = external_admin_wallet_args(role, label)
+        try:
+            derived = subprocess.check_output(
+                [cast_bin, "wallet", "address", *args], text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            raise SystemExit(f"failed to authenticate external {role} account") from None
+        derived = normalize_address(derived, f"external {role} account")
+        if derived != address:
+            raise SystemExit(f"{label} address/account mismatch: configured={address} derived={derived}")
+        return address, None
     private_key = normalize_private_key(entry.get("private_key"), f"{label}.private_key")
     derived = address_for_private_key(private_key, f"{label}.private_key", cast_bin)
     if derived != address:

@@ -126,6 +126,27 @@ If using a separate Gateway governor signer for migration repairs, import it as
 another Foundry account (for example `governor`) and set
 `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor`.
 
+<!-- SYSCOIN: Keep release administrators in supported encrypted accounts,
+without substituting external keys for generated runtime operators. -->
+An imported administrator may be recorded in the ecosystem/chain wallet YAML
+with its public `address` and an explicit `private_key: null` for the
+`governor` and `deployer` roles only. Select `DEPLOYER_SIGNER=account` and
+`EDGE_GATEWAY_GOVERNOR_SIGNER=account`, with each role's explicit
+`*_ACCOUNT_NAME` and `*_PASSWORD_FILE`. Both files must be owner-only regular
+files; named accounts must reside in Foundry's default keystore directory.
+The helper derives each public account address and requires an exact match to
+the corresponding YAML role before forwarding zkstack's supported repeated
+`--additional-args` Forge selectors. Its one global selector must match every
+administrator role used by that command; distinct administrator identities
+cannot share a single selector. Conflicting ambient wallet selectors are
+rejected rather than inherited.
+
+Use `EDGE_REUSE_GATEWAY_GOVERNOR=false` for an address-only administrator:
+the raw-key governor copier deliberately remains generated-key-only. Supply
+the intended edge governor in its own wallet file. Operator, blob/prove/execute
+operator, fee-account and token-multiplier-setter roles retain generated keys.
+Missing, empty or malformed supplied keys never fall back to an external account.
+
 ## Canonical command
 
 Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `L1_RPC_URL`):

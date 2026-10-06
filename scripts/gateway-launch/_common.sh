@@ -5333,15 +5333,16 @@ gl_probe_edge_chain_inited_and_governor_ready() {
   gl_assert_edge_chain_init_checkpoint_state
 }
 
-# SYSCOIN: Runtime configs sign with private keys from generated wallet YAML.
-# Bind each declared operator address to its actual key before treating live
-# balances/roles as a valid migration postcondition.
+# SYSCOIN: Runtime operators require authenticated generated keys. Governor and
+# deployer alone may explicitly use protected Foundry accounts for YAML nulls.
+# Both routes bind the signer to the same declared role before live use.
 gl_authenticate_chain_wallet_roles() {
   gl_require GATEWAY_DIR
-  local emit_addresses=false ecosystem_only=false
+  local emit_addresses=false emit_forge_args=false ecosystem_only=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --print-addresses) emit_addresses=true ;;
+    --print-forge-args) emit_forge_args=true ;;
     --ecosystem-only) ecosystem_only=true ;;
     *) break ;;
     esac
@@ -5357,6 +5358,7 @@ gl_authenticate_chain_wallet_roles() {
     shift
   fi
   [ "$#" -gt 0 ] || gl_die "at least one wallet role is required"
+  [ "${emit_addresses}:${emit_forge_args}" != true:true ] || gl_die "choose one wallet output format"
   cast_bin="$(command -v cast || true)"
   if [ -z "${cast_bin}" ] && [ -x "${HOME}/.foundry/bin/cast" ]; then
     cast_bin="${HOME}/.foundry/bin/cast"
@@ -5365,12 +5367,14 @@ gl_authenticate_chain_wallet_roles() {
   common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   GL_WALLET_CAST_BIN="${cast_bin}" GL_WALLET_COMMON_DIR="${common_dir}" \
     GL_WALLET_EMIT_ADDRESSES="${emit_addresses}" \
+    GL_WALLET_EMIT_FORGE_ARGS="${emit_forge_args}" \
     GL_WALLET_ECOSYSTEM_ONLY="${ecosystem_only}" \
     python3 - \
       "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
       "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
       "${GATEWAY_DIR}/configs/wallets.yaml" \
       "$@" <<'PY'
+import json
 import os
 import sys
 from pathlib import Path
@@ -5378,12 +5382,13 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, os.environ["GL_WALLET_COMMON_DIR"])
-from _wallet_identity import authenticate_wallet_entry  # noqa: E402
+from _wallet_identity import authenticate_wallet_entry, external_admin_wallet_args  # noqa: E402
 
 paths = [Path(value) for value in sys.argv[1:4]]
 if os.environ["GL_WALLET_ECOSYSTEM_ONLY"] == "true":
     paths = paths[2:]
 addresses = []
+external = []
 for role in sys.argv[4:]:
     for path in paths:
         if not path.is_file():
@@ -5391,16 +5396,37 @@ for role in sys.argv[4:]:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         entry = data.get(role) if isinstance(data, dict) else None
         if isinstance(entry, dict):
-            address, _ = authenticate_wallet_entry(
-                entry, f"{role} in {path}", os.environ["GL_WALLET_CAST_BIN"]
+            address, private_key = authenticate_wallet_entry(
+                entry, f"{role} in {path}", os.environ["GL_WALLET_CAST_BIN"], role=role
             )
             addresses.append(address)
+            if private_key is None:
+                external.append((address, external_admin_wallet_args(role, str(path))))
             break
     else:
         raise SystemExit(f"missing {role} wallet entry")
 if os.environ["GL_WALLET_EMIT_ADDRESSES"] == "true":
     print("|".join(addresses))
+if os.environ["GL_WALLET_EMIT_FORGE_ARGS"] == "true":
+    # SYSCOIN: zkstack forwards one Forge selector to every stage. Never use
+    # one external administrator to sign for another governor/deployer role.
+    if external and any(address != external[0][0] for address in addresses):
+        raise SystemExit("one zkstack external account must match every requested administrator role")
+    # SYSCOIN: Each pinned zkstack -a option consumes one Forge argument. Keep
+    # selector names as separate values so wallet_args_passed detects them.
+    print(json.dumps([part for arg in external[0][1] for part in ("--additional-args", arg)] if external else []))
 PY
+}
+
+gl_prepare_zkstack_admin_wallet_args() {
+  # SYSCOIN: Append only the supported repeated Forge options after ordinary
+  # zkstack flags. Authenticate before any wrapper can reach a broadcast.
+  local encoded arg
+  GL_ZKSTACK_ADMIN_WALLET_ARGS=()
+  encoded="$(gl_authenticate_chain_wallet_roles --print-forge-args "$@")" || return $?
+  while IFS= read -r -d '' arg; do
+    GL_ZKSTACK_ADMIN_WALLET_ARGS+=("${arg}")
+  done < <(printf '%s' "${encoded}" | python3 -c 'import json,sys; [sys.stdout.write(arg + "\0") for arg in json.load(sys.stdin)]')
 }
 
 # SYSCOIN: Resolve the Gateway's persisted BridgeHub/diamond pair independently
@@ -5595,10 +5621,9 @@ for wallet_path in map(Path, sys.argv[1:3]):
     if (
         isinstance(entry, dict)
         and entry.get("address") is not None
-        and entry.get("private_key") not in (None, "")
     ):
         governor, _ = authenticate_wallet_entry(
-            entry, f"Gateway governor in {wallet_path}", sys.argv[11]
+            entry, f"Gateway governor in {wallet_path}", sys.argv[11], role="governor"
         )
         break
 if governor is None:
@@ -5610,11 +5635,10 @@ entry = wallets.get("governor") if isinstance(wallets, dict) else None
 if (
     not isinstance(entry, dict)
     or entry.get("address") is None
-    or entry.get("private_key") in (None, "")
 ):
     raise SystemExit(f"invalid edge governor wallet entry in {edge_wallet_path}")
 edge_governor, _ = authenticate_wallet_entry(
-    entry, f"edge governor in {edge_wallet_path}", sys.argv[11]
+    entry, f"edge governor in {edge_wallet_path}", sys.argv[11], role="governor"
 )
 edge_governor_matches = edge_governor == governor
 

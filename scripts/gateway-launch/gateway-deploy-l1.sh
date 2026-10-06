@@ -1065,6 +1065,9 @@ prepare_deployer_wallet_args() {
 unset DEPLOYER_PRIVATE_KEY
 prepare_deployer_wallet_args
 export DEPLOYER_ADDRESS="$(cast wallet address "${DEPLOYER_CAST_WALLET_ARGS[@]}")"
+# SYSCOIN: Authenticate address-only administrator roles before the earliest
+# direct Forge deployment as well as the later zkstack init/recovery calls.
+gl_prepare_zkstack_admin_wallet_args --ecosystem-only deployer governor
 
 wait_for_deployer_nonce_sync() {
   local timeout_s poll_s start now latest pending
@@ -1220,7 +1223,8 @@ run_ecosystem_init() {
     --deploy-paymaster false \
     --ecosystem-only \
     --no-genesis \
-    --observability false
+    --observability false \
+    ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"}
 }
 
 # SYSCOIN: Lost Forge journals must never force a broad deployment replay.
@@ -1233,7 +1237,8 @@ run_owner_reconciliation() {
     --update-submodules false \
     --skip-contract-compilation-override true \
     --l1-rpc-url "${L1_RPC_URL}" \
-    --deploy-erc20 false
+    --deploy-erc20 false \
+    ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"}
 }
 
 ecosystem_contracts_ready() {

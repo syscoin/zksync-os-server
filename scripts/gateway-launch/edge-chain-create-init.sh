@@ -305,6 +305,10 @@ if [ "${EDGE_WALLET_CREATION}" = "random" ] &&
   echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
 fi
 
+# SYSCOIN: Validate the complete chain-init signer selection before funding or
+# init broadcasts; generated governor/deployer wallets retain empty selectors.
+gl_prepare_zkstack_admin_wallet_args "${EDGE_CHAIN_NAME}" deployer governor
+
 if [ "${SKIP_FUND}" != "true" ]; then
   GATEWAY_FUND_EDGE_CONTEXT=true \
     GATEWAY_FUND_TARGET_CHAIN_NAME="${EDGE_CHAIN_NAME}" \
@@ -332,6 +336,7 @@ if [ "$(gl_to_lower "${MIGRATE_EDGE:-false}")" = true ]; then
   init_args+=(--pause-deposits)
 fi
 init_args+=(--l1-rpc-url "${L1_RPC_URL}")
+init_args+=(${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"})
 
 init_output=""
 if ! init_output="$(gl_zkstack_private_pty "${init_args[@]}" 2>&1)"; then
