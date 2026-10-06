@@ -154,6 +154,8 @@ contracts or escrow on the persistent Tanenbaum L1.
      -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'id -un'
    ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
      -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'sudo -n -l'
+   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+     -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'passwd -S'
    ```
 
    A private SSH key authenticates the SSH account; it does not grant sudo.
@@ -161,6 +163,10 @@ contracts or escrow on the persistent Tanenbaum L1.
    prompt or missing deployment privileges through the operator's approved
    administrative access before an unattended reset. Do not bypass sudo with
    privileged containers or infer root permission from Docker access.
+   `passwd -S` reports account status, not a password: `P` is usable, `NP` means
+   no password is configured and `L` is locked. A key-only SSH login can work
+   while password-based sudo is unavailable. Use the approved account-password
+   setup/recovery path; the SSH key cannot reveal an account password.
 3. Pin the server, Core/Geth and client source revisions, upstream patch trees,
    compiler versions and deterministic deployment inputs. Use a clean release
    checkout; do not pull over unrelated local changes. Read the current source
