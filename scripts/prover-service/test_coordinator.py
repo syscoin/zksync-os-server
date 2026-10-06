@@ -9,6 +9,7 @@ import urllib.parse
 
 import audit
 import coordinator as c
+import enrollment
 import keeper as k
 import relay as r
 import roster
@@ -55,6 +56,9 @@ class CoordinatorTests(unittest.TestCase):
         self.accepted(1)
         self.accepted(2)
         self.registry_rpc = self.rpc
+        registry_connection = patch.object(k, "registry_rpc_for", side_effect=lambda _: self.registry_rpc)
+        registry_connection.start()
+        self.addCleanup(registry_connection.stop)
         self.base = Path(self.tmp.name).resolve()
         self.roster = roster.construct(5, [self.f["proposal"]["candidate"]])
         self.f["proposal"]["accepted_package"]["rosterRoot"] = self.roster["root"]
@@ -98,6 +102,47 @@ class CoordinatorTests(unittest.TestCase):
         identifier = self.controller.reserve()
         self.assertIsNone(self.controller.acquire(identifier, True))
         return identifier
+
+    def test_missing_enrollment_rejects_configuration_before_state_creation(self):
+        config = copy.deepcopy(self.config)
+        del config["keeper"]["enrollment"]
+        root = self.base / "unconfigured-control"
+        with self.assertRaisesRegex(s.Error, "configured_enrollment_authority_required"):
+            c.initialize(root, config)
+        self.assertFalse(root.exists())
+        self.assertEqual(self.native.calls, [])
+
+    def test_acquire_authenticates_registry_and_pin_before_lease_mutation(self):
+        identifier = self.controller.reserve()
+        before = copy.deepcopy(self.controller.state)
+        files = {path.name: path.read_bytes() for path in self.controller.directory(identifier).iterdir()}
+        with patch.object(self.registry_rpc, "call", return_value="0x1"):
+            with self.assertRaisesRegex(s.Error, "wrong_rpc_chain"):
+                self.controller.acquire(identifier, True)
+        self.assertEqual(self.controller.state, before)
+        self.assertEqual(self.native.calls, [])
+        self.controller.keeper["enrollment"]["block_hash"] = h(199)
+        with self.assertRaisesRegex(s.Error, "enrollment_authority_anchor_mismatch"):
+            self.controller.acquire(identifier, True)
+        self.assertEqual(self.controller.state, before)
+        self.assertEqual(self.native.calls, [])
+        self.assertEqual({path.name: path.read_bytes() for path in self.controller.directory(identifier).iterdir()}, files)
+
+    def test_acquire_requires_registry_connection_before_native_pick(self):
+        identifier = self.controller.reserve()
+        before = copy.deepcopy(self.controller.state)
+        with patch.object(k, "registry_rpc_for", side_effect=s.Error("registry_rpc_unavailable")):
+            with self.assertRaisesRegex(s.Error, "registry_rpc_unavailable"):
+                self.controller.acquire(identifier, True)
+        self.assertEqual(self.controller.state, before)
+        self.assertEqual(self.native.calls, [])
+
+    def test_snapshot_reuses_authenticated_immutable_enrollment(self):
+        identifier = self.acquired()
+        count = len(self.registry_rpc.anchors)
+        chain, artifact = self.controller.status()
+        self.controller.snapshot(identifier, chain, artifact, True)
+        self.assertEqual(len(self.registry_rpc.anchors), count)
 
     def frozen(self):
         identifier = self.acquired()
@@ -351,18 +396,109 @@ class CoordinatorTests(unittest.TestCase):
         self.assertFalse((source / "work.json").exists())
 
     def test_open_maintenance_wallet_recovery_reuses_reserved_transaction(self):
+        with patch.object(enrollment, "enrollment_snapshot", wraps=enrollment.enrollment_snapshot) as scan:
+            identifier = self.acquired()
+            self.assertEqual(scan.call_count, 1)
+            authority = self.controller.enrollment
+            registry_reads = len(self.registry_rpc.anchors)
+            chain, artifact = self.controller.status()
+            self.controller.snapshot(identifier, chain, artifact, True)
+            first = self.controller.step(True)
+            self.assertEqual(first["status"], "broadcast")
+            self.assertEqual(scan.call_count, 1)
+            self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+            self.assertIs(self.controller.enrollment, authority)
+            transaction = self.rpc.sent[-1]
+            self.rpc.advance(31)
+            self.now = self.rpc.now
+            self.controller_reload()
+            self.assertIsNone(self.controller.enrollment)
+            second = self.controller.step(True)
+            self.assertEqual(second["status"], "broadcast")
+            self.assertEqual(scan.call_count, 2)
+            self.assertIsNot(self.controller.enrollment, authority)
+            registry_reads = len(self.registry_rpc.anchors)
+            third = self.controller.step(True)
+            self.assertEqual(third["next_action"], "wait_before_identical_rebroadcast")
+            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+        self.assertEqual(self.rpc.sent, [transaction, transaction])
+        self.assertEqual(len([call for call in self.wallet.calls if call[0] == "eth_signTransaction"]), 1)
+
+    def check_opening_enrollment_mismatch(self, binding, after_sign):
         identifier = self.acquired()
         chain, artifact = self.controller.status()
         bundle = self.controller.snapshot(identifier, chain, artifact, True)
-        first = self.controller.step(True)
-        self.assertEqual(first["status"], "broadcast")
-        transaction = self.rpc.sent[-1]
-        self.rpc.advance(31)
-        self.now = self.rpc.now
-        second = self.controller_reload().step(True)
-        self.assertEqual(second["status"], "broadcast")
-        self.assertEqual(self.rpc.sent, [transaction, transaction])
-        self.assertEqual(len([call for call in self.wallet.calls if call[0] == "eth_signTransaction"]), 1)
+        registry_reads = len(self.registry_rpc.anchors)
+        opening = {}
+        package_call, stage, wallet_call = k.package_call, c.transactions.Transactions.stage, self.wallet.call
+
+        def capture_package(*args, **kwargs):
+            opening["request"] = args[2]
+            return package_call(*args, **kwargs)
+
+        def change_binding():
+            if binding == "pin":
+                self.controller.keeper["enrollment"]["block_hash"] = h(199)
+            else:
+                opening["request"]["subscriptions"][0]["signature"] = "0xabcd"
+
+        def stage_then_change(manager, *args, **kwargs):
+            result = stage(manager, *args, **kwargs)
+            if not after_sign:
+                change_binding()
+            return result
+
+        def sign_then_change(method, params):
+            result = wallet_call(method, params)
+            if after_sign and method == "eth_signTransaction":
+                change_binding()
+            return result
+
+        with patch.object(k, "package_call", side_effect=capture_package), \
+                patch.object(c.transactions.Transactions, "stage", new=stage_then_change), \
+                patch.object(self.wallet, "call", side_effect=sign_then_change):
+            result = self.controller.step(True)
+        expected = "authorization_stale_reserved" if after_sign else "stale_unsigned"
+        self.assertEqual(result["status"], expected)
+        self.assertEqual(result["next_action"], "reconcile_reserved_nonce_no_replacement" if after_sign
+                         else "wait_for_fresh_preflight")
+        self.assertEqual(len([call for call in self.wallet.calls if call[0] == "eth_signTransaction"]), int(after_sign))
+        self.assertEqual(self.rpc.sent, [])
+        self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+        reason = "enrollment_authority_anchor_mismatch" if binding == "pin" else "enrollment_authority_scope_mismatch"
+        with self.assertRaisesRegex(s.Error, reason):
+            self.controller.enrollment_for(opening["request"])
+        store = c.transactions.Store(self.control_store.root / "transactions")
+        operations = store.load(self.controller.settings, self.controller.config["transaction_policy"])["operations"]
+        self.assertEqual(len(operations), 1)
+        retained = operations[result["operation_id"]]
+        if after_sign:
+            self.assertIsNotNone(retained["raw_transaction"])
+            self.assertEqual(retained["unsigned_transaction"]["nonce"], "0x0")
+            bundle["request"] = opening["request"]
+            recovered = self.controller.recover_maintenance(identifier, True, bundle, self.f["evidence"], self.f["fri_payload"])
+            self.assertEqual(recovered["status"], "authorization_stale_reserved")
+            operations = store.load(self.controller.settings, self.controller.config["transaction_policy"])["operations"]
+            self.assertEqual(operations, {result["operation_id"]: retained})
+            self.assertEqual(len([call for call in self.wallet.calls if call[0] == "eth_signTransaction"]), 1)
+            self.assertEqual(self.rpc.sent, [])
+            self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+        else:
+            for field in ("unsigned_transaction", "raw_transaction", "transaction_hash"):
+                self.assertIsNone(retained[field])
+
+    def test_open_maintenance_rejects_changed_enrollment_pin_before_signing(self):
+        self.check_opening_enrollment_mismatch("pin", False)
+
+    def test_open_maintenance_rejects_changed_enrollment_snapshot_before_signing(self):
+        self.check_opening_enrollment_mismatch("snapshot", False)
+
+    def test_open_maintenance_rejects_changed_enrollment_pin_after_signing(self):
+        self.check_opening_enrollment_mismatch("pin", True)
+
+    def test_open_maintenance_rejects_changed_enrollment_snapshot_after_signing(self):
+        self.check_opening_enrollment_mismatch("snapshot", True)
 
     def test_unresolved_dispatcher_receipt_does_not_freeze_or_sign_snapshot(self):
         identifier = self.acquired()

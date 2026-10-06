@@ -1,11 +1,13 @@
 import copy
 import unittest
+from unittest.mock import patch
 
 import keeper as k
 import relay as r
 import roster
 import service as s
 from test_relay import FakeRpc, relay_policy
+from test_dispatcher import Rpc as RegistryRpc
 from test_service import fixture, prepare, h, a, abi_type, cast_value, struct_values
 
 
@@ -16,6 +18,7 @@ def setup(f):
             "package_hash": prepared["sequencer_request"]["struct_hash"], "digest": prepared["sequencer_request"]["digest"],
             "calldata": "0xabcdef01"}
     config = {"schema_version": 1, "lane": "child", "rpc_url": "http://127.0.0.1:8545", "settings": settings,
+              "enrollment": {"registry_rpc_file": "/trusted/unit-registry.json", "block_hash": h(100)},
               "policy": {"expected_operator": f["proposal"]["candidate"]["operator"] if prepared["mode"] == "service" else settings["sequencer"],
                          "gate_code_hash": s.keccak(b"gate-code"), "coordinator_code_hash": s.keccak(b"coordinator-code"),
                          "priority_guard_code_hash": s.keccak(b"priority-code"), "reserve_seconds": 30,
@@ -101,6 +104,10 @@ class KeeperTests(unittest.TestCase):
         self.f = copy.deepcopy(self.base)
         self.config, self.request, item = setup(self.f)
         self.rpc = NativeRpc(self.f, self.config, item)
+        self.registry_rpc = RegistryRpc(self.f["settings"], self.f["subscriptions"])
+        connection = patch.object(k, "registry_rpc_for", return_value=self.registry_rpc)
+        connection.start()
+        self.addCleanup(connection.stop)
 
     def permit(self, runtime=50, now=1000):
         return k.permit(self.config, self.rpc, self.request, self.f["evidence"], self.f["fri_payload"], now, runtime)
@@ -110,6 +117,24 @@ class KeeperTests(unittest.TestCase):
         self.assertEqual(value["state"]["deadline"], 1200)
         self.assertEqual(value["payload_sha256"], k.sha(self.f["fri_payload"]))
         self.assertEqual(k.validate_permit(self.config, self.rpc, value, self.f["evidence"], self.f["fri_payload"], 1001, 50), value)
+
+    def test_automated_calls_require_enrollment_before_native_rpc(self):
+        config = {key: value for key, value in self.config.items() if key != "enrollment"}
+        with patch.object(self.rpc, "call") as native:
+            for action in ("permit", "open", "repair"):
+                with self.subTest(action=action), self.assertRaisesRegex(s.Error, "configured_enrollment_authority_required"):
+                    if action == "permit":
+                        k.permit(config, self.rpc, self.request, self.f["evidence"], self.f["fri_payload"], 1000, 50)
+                    else:
+                        k.package_call(config, self.rpc, self.request, self.f["evidence"], self.f["fri_payload"], 1000, action)
+            native.assert_not_called()
+        k.prepare(self.f["settings"], self.request, self.f["evidence"], self.f["fri_payload"])
+
+    def test_wrong_registry_chain_fails_before_native_rpc(self):
+        with patch.object(self.registry_rpc, "call", return_value="0x1"), patch.object(self.rpc, "call") as native:
+            with self.assertRaisesRegex(s.Error, "wrong_rpc_chain"):
+                self.permit()
+            native.assert_not_called()
 
     def test_wrong_turn_repair_parent_frontier_or_role_refuses_compute(self):
         for field, changed, reason in (("turn", 4, "stale_wrapper_turn"), ("selected", 1, "stale_wrapper_turn"),
@@ -165,6 +190,67 @@ class KeeperTests(unittest.TestCase):
                               cast_value(struct_values(s.PACKAGE, accepted)))
             self.assertEqual(result["transaction"]["data"], expected)
             self.assertFalse(result["broadcast"])
+
+    def test_cached_package_calls_skip_registry_but_still_validate_native_state(self):
+        authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
+        with patch.object(k, "registry_rpc_for", side_effect=AssertionError("unexpected registry connection")), \
+                patch.object(self.registry_rpc, "call", side_effect=AssertionError("unexpected registry lookup")), \
+                patch.object(self.registry_rpc, "contract", side_effect=AssertionError("unexpected registry view")), \
+                patch.object(self.rpc, "call", wraps=self.rpc.call) as native:
+            for action in ("open", "repair"):
+                with self.subTest(action=action):
+                    result = k.package_call(self.config, self.rpc, self.request, self.f["evidence"],
+                                            self.f["fri_payload"], 1000, action, enrollment=authority)
+                    self.assertEqual(result["action"], action + "Package")
+            self.assertTrue(any(call.args[0] == "eth_getCode" for call in native.call_args_list))
+            self.assertTrue(any(call.args[0] == "eth_call" for call in native.call_args_list))
+        self.assertEqual(len(self.rpc.simulated), 2)
+        self.rpc.bad_code = True
+        with self.assertRaisesRegex(s.Error, "gate_code_changed"):
+            k.package_call(self.config, self.rpc, self.request, self.f["evidence"],
+                           self.f["fri_payload"], 1000, "open", enrollment=authority)
+
+    def test_cached_package_authority_mismatches_fail_before_native_rpc(self):
+        authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
+        for mutation, reason in (("type", "configured_enrollment_authority_required"),
+                                 ("pin", "enrollment_authority_anchor_mismatch"),
+                                 ("registry", "enrollment_authority_scope_mismatch"),
+                                 ("period", "enrollment_authority_scope_mismatch"),
+                                 ("snapshot", "enrollment_authority_scope_mismatch")):
+            config, request, context = copy.deepcopy(self.config), copy.deepcopy(self.request), authority
+            if mutation == "type":
+                context = {"authenticated": True}
+            elif mutation == "pin":
+                config["enrollment"]["block_hash"] = h(201)
+            elif mutation == "registry":
+                config["settings"]["registry"] = a(202)
+            elif mutation == "period":
+                request["manifest"]["payload"]["period"] = 6
+            else:
+                request["subscriptions"][0]["signature"] = "0x1234"
+            with patch.object(self.rpc, "call") as native, \
+                    patch.object(k, "registry_rpc_for") as connection:
+                for action in ("open", "repair"):
+                    with self.subTest(mutation=mutation, action=action), self.assertRaisesRegex(s.Error, reason):
+                        k.package_call(config, self.rpc, request, self.f["evidence"], self.f["fri_payload"],
+                                       1000, action, enrollment=context)
+                native.assert_not_called()
+                connection.assert_not_called()
+
+    def test_cached_package_authority_does_not_skip_fresh_work_signatures(self):
+        authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
+        for signer in ("sequencer", "operator"):
+            request = copy.deepcopy(self.request)
+            if signer == "sequencer":
+                request["manifest"]["sequencer_signature"] = "0x1234"
+            else:
+                request["duties"][0]["operatorSignature"] = "0x1234"
+            with patch.object(self.rpc, "call") as native:
+                for action in ("open", "repair"):
+                    with self.subTest(signer=signer, action=action), self.assertRaises(s.Error):
+                        k.package_call(self.config, self.rpc, request, self.f["evidence"], self.f["fri_payload"],
+                                       1000, action, enrollment=authority)
+                native.assert_not_called()
 
     def test_bootstrap_frozen_range_requires_local_sequencer(self):
         proposal = self.request["proposal"]

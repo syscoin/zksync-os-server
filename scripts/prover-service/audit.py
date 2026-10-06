@@ -40,7 +40,7 @@ def work_request(identity, journal_id, subscription, nonce, expires_at):
 def validate_identity(identity, journal_id, trust, rpc):
     # The sequencer's own snapshot is insufficient: enumerate the complete registry at the
     # independently pinned canonical block, including eligible accounts omitted from the file.
-    import dispatcher
+    import enrollment as enrollment_state
     s.exact(identity, ("schema_version", "settings", "subscriptions", "period", "enrollment", "lanes"))
     s.require(identity["schema_version"] == 1 and s.keccak(s.canonical(identity)) == journal_id,
               "audit_journal_identity_mismatch")
@@ -52,16 +52,19 @@ def validate_identity(identity, journal_id, trust, rpc):
     lanes = identity["lanes"]
     s.require(type(lanes) is dict and set(lanes) in ({"child"}, {"child", "gateway"}), "invalid_audit_lanes")
     s.require(lanes["child"]["settings"] == settings, "audit_primary_lane_changed")
-    for lane in lanes.values():
+    for name, lane in lanes.items():
         s.exact(lane, ("settings", "endpoint_commitment"))
         s.nonzero(lane["endpoint_commitment"])
         other = s.config(lane["settings"])
         for key in ("registry_chain_id", "registry", "policy_hash", "sequencer", "duties_per_round"):
             s.require(other[key] == settings[key], "audit_shared_identity_changed")
-        subscriptions, anchor = dispatcher.enrollment_snapshot(other, identity["subscriptions"],
-                                          identity["period"], rpc, block_hash=enrollment["block_hash"])
-        s.require(subscriptions == identity["subscriptions"] and anchor == enrollment,
+        authenticated = s.EnrollmentAuthority(other, identity["subscriptions"], identity["period"], rpc,
+                                               enrollment["block_hash"])
+        s.require(authenticated.normalized_snapshot == s.canonical(identity["subscriptions"])
+                  and authenticated.anchor == s.canonical(enrollment),
                   "audit_enrollment_snapshot_changed")
+        if name == "child":
+            authority = authenticated
     if "gateway" in lanes:
         gateway = lanes["gateway"]["settings"]
         s.require(settings["execution_chain_id"] == settings["registry_chain_id"]
@@ -70,8 +73,9 @@ def validate_identity(identity, journal_id, trust, rpc):
                   and gateway["settlement_chain_id"] not in (settings["execution_chain_id"], gateway["execution_chain_id"])
                   and lanes["child"]["endpoint_commitment"] != lanes["gateway"]["endpoint_commitment"],
                   "audit_invalid_gateway_topology")
-    s.require(len(identity["subscriptions"]) * settings["duties_per_round"] <= dispatcher.MAX_OPERATIONS,
+    s.require(len(identity["subscriptions"]) * settings["duties_per_round"] <= enrollment_state.MAX_OPERATIONS,
               "audit_roster_exceeds_capacity")
+    return authority
 
 
 class Replay:
@@ -279,7 +283,7 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
     s.require(type(events) is list and len(events) <= MAX_EVENTS and len(s.canonical(bundle)) <= s.MAX_FILE,
               "audit_capacity_exceeded")
     s.verify_eoa(checkpoint_request(bundle), bundle["sequencer_signature"])
-    validate_identity(identity, journal_id, trust, rpc)
+    enrollment = validate_identity(identity, journal_id, trust, rpc)
     s.require(subscriptions == identity["subscriptions"], "audit_package_snapshot_changed")
     lanes = [name for name, lane in identity["lanes"].items() if lane["settings"] == settings]
     s.require(len(lanes) == 1, "audit_package_lane_changed")
@@ -341,7 +345,7 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
                   "audit_rejected_operator_proof_reused")
     expected_manifest = replay.manifest(relevant, lane)
     s.require(manifest["payload"] == expected_manifest, "audit_package_assignments_or_retries_incomplete")
-    s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True)
+    s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True, enrollment=enrollment)
     expected_duties = [replay.operations[key]["duty"] for key in relevant if replay.operations[key]["status"] == "accepted"]
     s.require(all(duty["friProofHash"] == proof_hashes[duty["batchNumber"]] for duty in expected_duties),
               "audit_accepted_duty_native_proof_changed")

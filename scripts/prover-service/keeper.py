@@ -18,7 +18,9 @@ def sha(value):
 
 
 def configuration(value):
-    s.exact(value, ("schema_version", "lane", "rpc_url", "settings", "policy"))
+    s.require(type(value) is dict, "unexpected_or_missing_fields")
+    s.require("enrollment" in value, "configured_enrollment_authority_required")
+    s.exact(value, ("schema_version", "lane", "rpc_url", "settings", "policy", "enrollment"))
     s.require(value["schema_version"] == 1 and value["lane"] in ("child", "gateway"), "invalid_keeper_configuration")
     s.config(value["settings"])
     p = value["policy"]
@@ -34,6 +36,10 @@ def configuration(value):
         s.require(0 < s.uint(p[field], 32), "positive_keeper_limit_required")
     s.require(p["rpc_timeout_seconds"] <= 30, "rpc_timeout_too_large")
     r.Rpc(value["rpc_url"], timeout=p["rpc_timeout_seconds"])
+    enrollment = value["enrollment"]
+    s.exact(enrollment, ("registry_rpc_file", "block_hash"))
+    s.require(os.path.isabs(enrollment["registry_rpc_file"]), "absolute_registry_rpc_file_required")
+    s.nonzero(enrollment["block_hash"])
     return value
 
 
@@ -41,12 +47,30 @@ def rpc_for(config):
     return r.Rpc(config["rpc_url"], timeout=config["policy"]["rpc_timeout_seconds"])
 
 
+def registry_rpc_for(config):
+    configuration(config)
+    import workflow_io
+    return workflow_io.wallet_connection(config["enrollment"]["registry_rpc_file"],
+                                         config["policy"]["rpc_timeout_seconds"])
+
+
+def enrollment_for(config, request, registry_rpc=None, *, enrollment=None):
+    configuration(config)
+    if enrollment is not None:
+        s.require(type(enrollment) is s.EnrollmentAuthority, "configured_enrollment_authority_required")
+        s.require(enrollment.block_hash == config["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
+        enrollment.check(config["settings"], request["subscriptions"], request["manifest"]["payload"]["period"])
+        return enrollment
+    return s.EnrollmentAuthority(config["settings"], request["subscriptions"], request["manifest"]["payload"]["period"],
+                                 registry_rpc or registry_rpc_for(config), config["enrollment"]["block_hash"])
+
+
 def normalized(accepted):
     return {**accepted, "turn": 0, "proofHash": s.ZERO, "wrapper": s.ZERO_ADDRESS,
             "wrapperBeneficiary": s.ZERO_ADDRESS}
 
 
-def prepare(settings, request, evidence, payload):
+def prepare(settings, request, evidence, payload, *, enrollment=None):
     """Validate the same native FRI artifacts and endorsements used by package signing."""
     s.exact(request, ("proposal", "manifest", "subscriptions", "duties"))
     proposal, duties = request["proposal"], request["duties"]
@@ -54,7 +78,7 @@ def prepare(settings, request, evidence, payload):
     numbers = list(statements)
     s.require(len(numbers) >= 2 and type(duties) is list and len(duties) <= len(numbers), "invalid_compute_range")
     assignments, subscriptions = s.validate_manifest(settings, request["manifest"], request["subscriptions"],
-                                                       statements, allow_empty=not duties)
+                                                       statements, allow_empty=not duties, enrollment=enrollment)
     s.exact(payload, ("from_batch_number", "to_batch_number", "vk_hash", "fri_proofs"))
     s.require(payload["from_batch_number"] == numbers[0] and payload["to_batch_number"] == numbers[-1]
               and payload["vk_hash"] == settings["vk_hash"] and type(payload["fri_proofs"]) is list
@@ -208,23 +232,23 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True):
             "deadline": deadline, "control_work": control, "priority": priority}
 
 
-def permit(config, rpc, request, evidence, payload, now, runtime):
-    configuration(config)
-    prepared = prepare(config["settings"], request, evidence, payload)
+def permit(config, rpc, request, evidence, payload, now, runtime, *, enrollment=None):
+    prepared = prepare(config["settings"], request, evidence, payload,
+                       enrollment=enrollment_for(config, request, enrollment=enrollment))
     state = inspect(config, rpc, prepared, evidence, now, runtime)
     return {"schema_version": 1, "configuration_sha256": sha(config), "lane": config["lane"],
             "payload_sha256": sha(payload), "evidence_sha256": sha(evidence), "request": request,
             "runtime_seconds": runtime, "state": state}
 
 
-def validate_permit(config, rpc, value, evidence, payload, now, runtime):
+def validate_permit(config, rpc, value, evidence, payload, now, runtime, *, enrollment=None):
     s.exact(value, ("schema_version", "configuration_sha256", "lane", "payload_sha256", "evidence_sha256", "request",
                     "runtime_seconds", "state"))
     s.require(value["schema_version"] == 1 and value["configuration_sha256"] == sha(config)
               and value["lane"] == config["lane"] and value["payload_sha256"] == sha(payload)
               and value["evidence_sha256"] == sha(evidence) and value["runtime_seconds"] == runtime,
               "compute_permit_binding_changed")
-    current = permit(config, rpc, value["request"], evidence, payload, now, runtime)
+    current = permit(config, rpc, value["request"], evidence, payload, now, runtime, enrollment=enrollment)
     for field in ("frozen_package_hash", "deadline", "control_work"):
         s.require(value["state"][field] == current["state"][field], "compute_permit_state_changed")
     s.require(value["state"]["priority"] == current["state"]["priority"], "compute_permit_checkpoint_changed")
@@ -241,9 +265,10 @@ def unsigned_call(rpc, settings, limits, head, anchor, account, target, signatur
             "transaction": tx, "action": signature.split("(")[0], "broadcast": False}
 
 
-def package_call(config, rpc, request, evidence, payload, now, action):
+def package_call(config, rpc, request, evidence, payload, now, action, *, enrollment=None):
     s.require(action in ("open", "repair"), "invalid_package_action")
-    prepared = prepare(config["settings"], request, evidence, payload)
+    prepared = prepare(config["settings"], request, evidence, payload,
+                       enrollment=enrollment_for(config, request, enrollment=enrollment))
     # Repairs preserve the old draw even if the clock has rolled to another roster.
     if action == "open":
         inspect(config, rpc, prepared, evidence, now, 1, require_open=False)
