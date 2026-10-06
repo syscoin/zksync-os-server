@@ -117,7 +117,9 @@ def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
         s.exact(signed, ("subscription", "signature"))
         subscription = signed["subscription"]
         request = s.subscription_request(settings, subscription)
-        s.verify_eoa(request, signed["signature"])
+        # subscribe() already authenticated both consents for the exact stored tuple. Rechecking
+        # a historical ERC-1271 signature can revoke a complete roster after enrollment.
+        s.raw_hex(signed["signature"])
         account, operator = subscription["account"], subscription["operator"]
         s.require(account not in accounts and operator not in operators, "duplicate_subscription_identity")
         s.require(subscription["firstPeriod"] <= period <= subscription["lastPeriod"]
@@ -180,7 +182,7 @@ def initialize(root, settings, subscriptions, period, endpoint, rpc, gateway=Non
 
 
 class Dispatcher:
-    def __init__(self, store, network=None, auth=None, now=None):
+    def __init__(self, store, network=None, auth=None, now=None, registry_rpc=None):
         self.store, self.network, self.auth = store, network, auth
         self.now = int(time.time()) if now is None else now
         self.state = s.read_json(store.root / "state.json", private=True)
@@ -194,6 +196,8 @@ class Dispatcher:
             s.require(type(auth) is dict and set(auth) == set(self.state["lanes"]), "lane_credentials_required")
         self.subscriptions = {item["subscription"]["account"]: item["subscription"]
                               for item in self.state["subscriptions"]}
+        self.enrollment = (s.EnrollmentAuthority(self.settings, self.state["subscriptions"], self.state["period"],
+                           registry_rpc, self.state["enrollment"]["block_hash"]) if registry_rpc is not None else None)
 
     def lane(self, operation):
         return self.state["lanes"][self.state["operations"][operation]["lane"]]
@@ -471,7 +475,7 @@ class Dispatcher:
         atomic_json(directory / "authority.json", authority)
         request = s.prepare_duty(self.lane(operation)["settings"], s.read_json(directory / "evidence.json", private=True),
                                  s.read_json(directory / "manifest.json", private=True), self.state["subscriptions"],
-                                 authority, proof)
+                                 authority, proof, enrollment=self.enrollment)
         s.verify_eoa(request, signature)
         duty = {**request["typed_data"]["message"], "operatorSignature": signature}
         atomic_json(directory / "duty.json", duty)
@@ -636,6 +640,7 @@ def main():
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--auth-file")
     parser.add_argument("--gateway-auth-file")
+    parser.add_argument("--registry-rpc", help="trusted child RPC for canonical journal enrollment consent")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init")
     for flag in ("config", "subscriptions", "rpc", "endpoint"):
@@ -699,7 +704,8 @@ def main():
             auth = {"child": sentry.authorization(args.auth_file)}
             if "gateway" in state["lanes"]:
                 auth["gateway"] = sentry.authorization(args.gateway_auth_file)
-        dispatcher = Dispatcher(store, network, auth)
+        dispatcher = Dispatcher(store, network, auth,
+                                registry_rpc=Rpc(args.registry_rpc, network) if args.registry_rpc else None)
         if args.command == "work-request":
             s.write_new(args.output, dispatcher.request(args.account, args.expires_at))
         elif args.command == "ready":

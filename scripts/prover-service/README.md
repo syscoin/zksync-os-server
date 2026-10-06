@@ -68,17 +68,21 @@ The proof gate and production verifier make the final native validity decision;
 The automated wrapper performs the CPU FRI and canonical native SNARK checks
 before signing; low-level manual signing must apply the same checks.
 
-Current signatures are verified with `cast wallet verify --no-hash` and require
-canonical 65-byte EOA signatures. Contracts support ERC-1271, but this offline
-tool deliberately rejects smart-wallet signatures until a trusted, anchored
-chain-call verifier is integrated. Wallet signing happens outside this program;
+Fresh operator, sequencer and wrapper signatures are verified with
+`cast wallet verify --no-hash` and require canonical 65-byte EOA signatures.
+Historical account enrollment consent can instead be authenticated from the exact
+subscription already accepted by the canonical registry, including ERC-1271
+accounts. The offline default still checks EOA account signatures. Contract
+operators require a separately implemented adapter; this account-consent path does
+not verify fresh ERC-1271 work signatures. Wallet signing happens outside this program;
 use the generated `typed_data` object or exact `digest`, never add the Ethereum
 personal-message prefix to that digest.
 
 Signatures authenticate these records. They do not prove physical computation,
 private offer or delivery times, fairness, completeness of omitted work, or
-independent ownership of operator keys. The snapshot only checks signed
-subscription contents; live registration, seniority, eligibility, selected wrapper
+independent ownership of operator keys. Offline snapshots check signed
+subscription contents; canonical enrollment authority also checks registration,
+seniority and the complete eligible set. Selected wrapper
 index/turn, frozen parent and roster are authenticated by the dispatcher, audit,
 and keeper against canonical contract state before the automated workflow
 endorses work. The contracts enforce the applicable on-chain checks again.
@@ -161,7 +165,12 @@ chain and supplies both signatures to the same contract call.
 Subscription snapshots remain JSON arrays of the existing account-signed
 `{"subscription": {…}, "signature": "0x…"}` records, with unique account/operator
 identities. Operator consent is checked on-chain at registration and is not added
-to historical snapshot or audit envelopes. Their commitment remains Keccak-256
+to historical snapshot or audit envelopes. Canonical enrollment authority checks
+the exact stored tuple and its account/operator period mappings: `subscribe`
+already authenticated both consents. It does not recheck mutable historical
+ERC-1271 approval, so wallet policy changes cannot invalidate a complete enrolled
+snapshot. Signature bytes remain part of the unchanged snapshot commitment.
+Their commitment remains Keccak-256
 of canonical JSON (sorted keys, compact separators, UTF-8, no newline). The same
 canonicalization is used for all JSON commitments. Every
 subscription must set `services: 3`: the same operators perform FRI duties and
@@ -365,12 +374,12 @@ readiness requests and delivers its signed offers; the journal does not prove
 that a malicious sequencer has withheld neither. This is a trusted dispatcher,
 not a decentralized availability protocol.
 
-Initialization verifies account signatures and every subscription, operator
-binding, fresh senior membership, policy, chain address, quota, and period clock
+Initialization authenticates accepted account consent through every exact stored
+subscription and operator binding, fresh senior membership, policy, chain address, quota, and period clock
 against the same finalized child-chain RPC block using EIP-1898 `blockHash` with
 `requireCanonical`. The RPC must support these methods; there is no latest-block
-fallback. This adapter currently accepts canonical EOA signatures. The contracts
-also support ERC-1271 accounts, which require a separate contract-wallet adapter.
+fallback. ERC-1271 membership accounts with EOA operators use this same canonical
+enrollment path. Fresh operator work signatures still require canonical EOA signatures.
 The supplied account list must exactly match the on-chain FRI subscriber
 enumeration at that block after explicit fresh-membership eligibility checks.
 Removed or stale entries need no supplied subscription. Every enrolled operator
@@ -396,7 +405,19 @@ The enrolled operator signs the exact `typed_data` in `work-request.json` with i
 external wallet and returns `{"signature":"0x..."}`. The request binds the journal,
 account, subscription, period, nonce, and deadline. Its journal commitment includes
 both complete lane configurations; `work_scopes` exposes their identities for
-operator review. Registration or readiness earns
+operator review.
+
+For subsequent dispatcher commands that prepare accepted duties for a contract
+account, supply `--registry-rpc https://trusted-child-rpc.example/` before the
+subcommand. It reauthenticates the journal's exact snapshot at its retained
+canonical enrollment block. Low-level `service.py duty`, `offered-duty`, and
+`package` commands can use the same boundary with both `--registry-rpc-file` and
+`--enrollment-block-hash` before their subcommand; the RPC connection file has
+exactly `url` and `authorization` fields and must be private. These trusted inputs
+cannot be substituted by flags in a work envelope. Omitting them preserves the
+offline EOA account-signature checks.
+
+Registration or readiness earns
 no credit. Authenticated ready accounts receive nonempty native batches in sorted
 account round-robin order, one outstanding assignment per account. No job,
 unregistered identities, expired readiness, and empty work consume no service

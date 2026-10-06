@@ -110,6 +110,9 @@ class Coordinator:
         state = k.status(self.keeper, self.rpc, int(self.clock()), roster)
         return state, roster
 
+    def prepare(self, request, evidence, payload):
+        return k.prepare(self.settings, request, evidence, payload, enrollment=k.enrollment_for(self.keeper, request))
+
     def directory(self, identifier):
         return self.store.root / "jobs" / identifier
 
@@ -203,7 +206,7 @@ class Coordinator:
                 journal_root = journal_root / str(chain["roster"]["period"])
             store = Store(io.directory(journal_root))
             with store.lock("dispatcher.lock"):
-                dispatch = dispatcher.Dispatcher(store, now=int(self.clock()))
+                dispatch = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=k.registry_rpc_for(self.keeper))
                 lane = self.keeper["lane"]
                 s.require(dispatch.state["lanes"][lane]["settings"] == self.settings
                           and dispatch.state["lanes"][lane]["endpoint"] == sentry.endpoint_url(self.config["endpoint"]),
@@ -267,7 +270,7 @@ class Coordinator:
                    "manifest": {"payload": snapshot["manifest"], "sequencer_signature": manifest_signature},
                    "subscriptions": snapshot["subscriptions"], "duties": snapshot["duties"]}
         s.require(accepted["period"] == chain["roster"]["period"], "dispatcher_period_does_not_match_opening_roster")
-        k.prepare(self.settings, request, evidence, payload)
+        self.prepare(request, evidence, payload)
         bundle = {"request": request, "audit": {**snapshot["audit"], "sequencer_signature": audit_signature}}
         io.immutable_json(directory / "bundle.json", bundle)
         op["bundle"] = io.digest(bundle)
@@ -449,7 +452,7 @@ class Coordinator:
             produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open")
             return self.maintenance(identifier, produce(), produce, execute)
         request = k.rebind_request(self.settings, bundle["request"], chain, roster)
-        prepared = k.prepare(self.settings, request, evidence, payload)
+        prepared = self.prepare(request, evidence, payload)
         priority = r.priority_context(self.rpc, self.settings, {**self.keeper["policy"], "min_turn_seconds": 1},
                      {"sidecar": prepared}, chain["head"], {"blockHash": chain["head"]["hash"], "requireCanonical": True})
         r.check_anchor(self.rpc, self.settings, chain["head"])
@@ -495,7 +498,8 @@ class Coordinator:
                 if result["prepared"] is None:
                     continue
                 expected = s.prepare_package(self.settings, evidence, request["manifest"], request["subscriptions"],
-                              request["duties"], request["proposal"], proof, payload)
+                              request["duties"], request["proposal"], proof, payload,
+                              enrollment=k.enrollment_for(self.keeper, request))
                 if result["prepared"] != expected:
                     continue
                 s.verify_eoa(expected["wrapper_request"], result["wrapper_signature"])

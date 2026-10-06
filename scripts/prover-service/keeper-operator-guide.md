@@ -61,6 +61,17 @@ phase, reviewed code, or operator requires a new reviewed pool configuration;
 the pool freezes these values at initialization. No live deployment values or
 production VK are supplied by the examples.
 
+For a journal containing ERC-1271 membership accounts, the keeper can additionally
+contain `enrollment` with exactly `registry_rpc_file` and `block_hash`. The first
+is an absolute private connection-file path with `url` and `authorization`; the
+second is the independently reviewed canonical enrollment block for that journal.
+Use the same pin as its dispatch audit trust. This trusted configuration enables
+canonical historical account consent in keeper, coordinator, wrapper and pool
+permit revalidation; it does not waive any fresh work signature. Configure it per
+journal and preserve pending work when preparing a new period configuration.
+Without it, the offline EOA account-signature checks remain. Contract operators
+still require a separately implemented adapter.
+
 For an external SNARK stage, pool configuration must contain:
 
 ```json

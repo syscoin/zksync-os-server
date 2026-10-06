@@ -72,6 +72,8 @@ def validate_identity(identity, journal_id, trust, rpc):
                   "audit_invalid_gateway_topology")
     s.require(len(identity["subscriptions"]) * settings["duties_per_round"] <= dispatcher.MAX_OPERATIONS,
               "audit_roster_exceeds_capacity")
+    return s.EnrollmentAuthority(settings, identity["subscriptions"], identity["period"], rpc,
+                                 trust["enrollment_block_hash"])
 
 
 class Replay:
@@ -279,7 +281,7 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
     s.require(type(events) is list and len(events) <= MAX_EVENTS and len(s.canonical(bundle)) <= s.MAX_FILE,
               "audit_capacity_exceeded")
     s.verify_eoa(checkpoint_request(bundle), bundle["sequencer_signature"])
-    validate_identity(identity, journal_id, trust, rpc)
+    enrollment = validate_identity(identity, journal_id, trust, rpc)
     s.require(subscriptions == identity["subscriptions"], "audit_package_snapshot_changed")
     lanes = [name for name, lane in identity["lanes"].items() if lane["settings"] == settings]
     s.require(len(lanes) == 1, "audit_package_lane_changed")
@@ -341,7 +343,7 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
                   "audit_rejected_operator_proof_reused")
     expected_manifest = replay.manifest(relevant, lane)
     s.require(manifest["payload"] == expected_manifest, "audit_package_assignments_or_retries_incomplete")
-    s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True)
+    s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True, enrollment=enrollment)
     expected_duties = [replay.operations[key]["duty"] for key in relevant if replay.operations[key]["status"] == "accepted"]
     s.require(all(duty["friProofHash"] == proof_hashes[duty["batchNumber"]] for duty in expected_duties),
               "audit_accepted_duty_native_proof_changed")

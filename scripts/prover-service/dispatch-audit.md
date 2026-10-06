@@ -7,7 +7,8 @@ lease token, Basic authentication, endpoint URL, FRI input, or proof bytes.
 
 `audit.verify_package(settings, evidence, manifest, subscriptions, duties, bundle,
 trust, rpc, fri_payload=payload)` independently enumerates the eligible registry accounts at the pinned
-canonical enrollment block, verifies every subscription and event signature, and
+canonical enrollment block, authenticates every exact accepted subscription and
+verifies every fresh event signature, then
 replays account and lane selection. Account selection follows the existing sorted
 circular cursor, skips absent or expired readiness, and blocks an account with a
 live job. Both child and gateway work share the same account quota. Only a signed
@@ -15,6 +16,15 @@ offer consumes a quota opportunity; empty picks and unsigned expired reservation
 consume none. A rejected signed attempt consumes its opportunity, and a retry uses
 a fresh native lease commitment and increments the attempt. An ambiguous submission
 cannot be expired or reassigned.
+
+Historical account consent comes from the registry's accepted subscription and
+exact account/operator period mappings. It supports ERC-1271 accounts without
+rechecking wallet approval after enrollment. The original account-signature JSON
+bytes and commitments are retained. Readiness, duty, sequencer and wrapper
+signatures remain EOA-authenticated; fresh contract-operator signatures require a
+separately implemented adapter. The authority is bound to the exact snapshot, registry identity, period
+and independently pinned canonical block, and cannot be supplied as an untrusted
+JSON assertion.
 
 For the proposed lane and contiguous batch range, the manifest must contain every
 assignment and retry from the journal, and the duty report must contain exactly

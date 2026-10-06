@@ -2,6 +2,7 @@
 """Trusted-host, unsigned service packages; no signing keys or transaction submission."""
 
 import argparse
+from dataclasses import dataclass
 import base64
 import functools
 import json
@@ -202,6 +203,35 @@ def config(value):
     return value
 
 
+@dataclass(frozen=True, init=False)
+class EnrollmentAuthority:
+    """Canonical registry consent for one exact subscription snapshot and period."""
+
+    identity: tuple
+    snapshot: bytes
+    period: int
+    block_hash: str
+
+    def __init__(self, settings, subscriptions, period, rpc, block_hash):
+        import dispatcher
+        nonzero(block_hash)
+        _, anchor = dispatcher.enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=block_hash)
+        object.__setattr__(self, "identity", self.scope(settings))
+        object.__setattr__(self, "snapshot", canonical(subscriptions))
+        object.__setattr__(self, "period", period)
+        object.__setattr__(self, "block_hash", anchor["block_hash"])
+
+    @staticmethod
+    def scope(settings):
+        config(settings)
+        return tuple(settings[key] for key in
+                     ("registry_chain_id", "registry", "policy_hash", "sequencer", "duties_per_round"))
+
+    def check(self, settings, subscriptions, period):
+        require(self.identity == self.scope(settings) and self.period == period
+                and self.snapshot == canonical(subscriptions), "enrollment_authority_scope_mismatch")
+
+
 def subscription_request(settings, subscription):
     encode_fields(SUBSCRIPTION, subscription)
     for field in ("account", "operator", "beneficiary", "sequencer"):
@@ -376,7 +406,7 @@ def manifest_request(settings, payload):
                          settings["registry_chain_id"], settings["registry"], settings["sequencer"])
 
 
-def validate_manifest(settings, manifest, subscriptions, evidence, allow_empty=False):
+def validate_manifest(settings, manifest, subscriptions, evidence, allow_empty=False, *, enrollment=None):
     exact(manifest, ("payload", "sequencer_signature"))
     payload = manifest["payload"]
     exact(payload, ("schema_version", "chain_id", "chain_address", "sequencer", "period", "previous_cursor",
@@ -389,13 +419,17 @@ def validate_manifest(settings, manifest, subscriptions, evidence, allow_empty=F
     minimum = 0 if allow_empty else 1
     require(type(subscriptions) is list and minimum <= len(subscriptions) <= 1000, "invalid_subscription_snapshot")
     require(payload["subscription_snapshot_hash"] == keccak(canonical(subscriptions)), "subscription_snapshot_mismatch")
+    if enrollment is not None:
+        require(type(enrollment) is EnrollmentAuthority, "authenticated_enrollment_authority_required")
+        enrollment.check(settings, subscriptions, payload["period"])
     by_hash = {}
     accounts, operators = set(), set()
     for signed in subscriptions:
         exact(signed, ("subscription", "signature"))
         subscription = signed["subscription"]
         request = subscription_request(settings, subscription)
-        verify_eoa(request, signed["signature"])
+        if enrollment is None:
+            verify_eoa(request, signed["signature"])
         require(subscription["account"] not in accounts and subscription["operator"] not in operators,
                 "duplicate_subscription_identity")
         require(subscription["firstPeriod"] <= payload["period"] <= subscription["lastPeriod"]
@@ -447,9 +481,9 @@ def duty_request(settings, duty, subscription):
                          settings["registry"], subscription["operator"])
 
 
-def offered_duty(settings, evidence, manifest, subscriptions, proof):
+def offered_duty(settings, evidence, manifest, subscriptions, proof, *, enrollment=None):
     statements = validate_evidence(settings, evidence)
-    assignments, by_hash = validate_manifest(settings, manifest, subscriptions, statements)
+    assignments, by_hash = validate_manifest(settings, manifest, subscriptions, statements, enrollment=enrollment)
     exact(proof, ("batch_number", "vk_hash", "proof"))
     number = uint(proof["batch_number"], 32)
     require(proof["vk_hash"] == settings["vk_hash"], "proof_vk_mismatch")
@@ -464,13 +498,13 @@ def offered_duty(settings, evidence, manifest, subscriptions, proof):
     return duty_request(settings, duty, by_hash[duty["subscriptionHash"]]), assignment
 
 
-def prepare_offered_duty(settings, evidence, manifest, subscriptions, proof):
-    request, _ = offered_duty(settings, evidence, manifest, subscriptions, proof)
+def prepare_offered_duty(settings, evidence, manifest, subscriptions, proof, *, enrollment=None):
+    request, _ = offered_duty(settings, evidence, manifest, subscriptions, proof, enrollment=enrollment)
     return {**request, "native_acceptance": "pending"}
 
 
-def prepare_duty(settings, evidence, manifest, subscriptions, authority, proof):
-    request, assignment = offered_duty(settings, evidence, manifest, subscriptions, proof)
+def prepare_duty(settings, evidence, manifest, subscriptions, authority, proof, *, enrollment=None):
+    request, assignment = offered_duty(settings, evidence, manifest, subscriptions, proof, enrollment=enrollment)
     require(authority.get("schema_version") == 1 and authority.get("stage") == "FRI"
             and authority.get("status") == "accepted" and authority.get("vk_hash") == settings["vk_hash"],
             "native_fri_acceptance_required")
@@ -533,12 +567,13 @@ def decode_proof_data(data):
     return stored(0), [stored(12 + 9 * index) for index in range(count)]
 
 
-def prepare_package(settings, evidence, manifest, subscriptions, duties, proposal, snark, fri_payload):
+def prepare_package(settings, evidence, manifest, subscriptions, duties, proposal, snark, fri_payload, *, enrollment=None):
     statements = validate_evidence(settings, evidence)
     require(len(statements) >= 2, "wrapper_requires_two_batches")
     require(type(duties) is list and len(duties) <= len(statements), "invalid_duty_count")
     # Idle native proofs still require wrapper endorsement, without inventing a rewarded FRI duty.
-    assignments, by_hash = validate_manifest(settings, manifest, subscriptions, statements, allow_empty=not duties)
+    assignments, by_hash = validate_manifest(settings, manifest, subscriptions, statements, allow_empty=not duties,
+                                            enrollment=enrollment)
     exact(fri_payload, ("from_batch_number", "to_batch_number", "vk_hash", "fri_proofs"))
     numbers = list(statements)
     require(fri_payload["from_batch_number"] == numbers[0] and fri_payload["to_batch_number"] == numbers[-1]
@@ -661,6 +696,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--registry-rpc-file", help="trusted child RPC connection for canonical enrollment consent")
+    parser.add_argument("--enrollment-block-hash", help="independently pinned canonical journal enrollment block")
     commands = parser.add_subparsers(dest="command", required=True)
     subscription = commands.add_parser("subscription")
     subscription.add_argument("--subscription", required=True)
@@ -691,6 +728,14 @@ def main():
     args = parser.parse_args()
     try:
         settings = config(read_json(args.config))
+        require(bool(args.registry_rpc_file) == bool(args.enrollment_block_hash), "complete_enrollment_context_required")
+        enrollment = None
+        if args.registry_rpc_file:
+            require(args.command in ("duty", "offered-duty", "package"), "enrollment_context_not_used_by_command")
+            import workflow_io
+            enrollment = EnrollmentAuthority(settings, read_json(args.subscriptions),
+                read_json(args.manifest)["payload"]["period"], workflow_io.wallet_connection(args.registry_rpc_file, 30),
+                args.enrollment_block_hash)
         if args.command == "subscription":
             result = subscription_request(settings, read_json(args.subscription))
         elif args.command == "operator-subscription":
@@ -709,14 +754,14 @@ def main():
             result = prepare_renewal(settings, read_json(args.signed_subscription), read_json(args.registry_snapshot))
         elif args.command == "duty":
             result = prepare_duty(settings, read_json(args.evidence), read_json(args.manifest), read_json(args.subscriptions),
-                                  read_json(args.authority, private=True), read_json(args.proof))
+                                  read_json(args.authority, private=True), read_json(args.proof), enrollment=enrollment)
         elif args.command == "offered-duty":
             result = prepare_offered_duty(settings, read_json(args.evidence), read_json(args.manifest),
-                                          read_json(args.subscriptions), read_json(args.proof))
+                                          read_json(args.subscriptions), read_json(args.proof), enrollment=enrollment)
         else:
             result = prepare_package(settings, read_json(args.evidence), read_json(args.manifest), read_json(args.subscriptions),
                                      read_json(args.duties), read_json(args.proposal), read_json(args.proof),
-                                     read_json(args.fri_payload, maximum=256 * 1024 * 1024))
+                                     read_json(args.fri_payload, maximum=256 * 1024 * 1024), enrollment=enrollment)
         write_new(args.output, result)
         print(json.dumps({"output": str(Path(args.output).absolute()), "command": args.command}))
     except (Error, OSError) as error:

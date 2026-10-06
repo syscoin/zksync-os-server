@@ -157,6 +157,9 @@ class Wrapper:
     def pool(self):
         return pool.Pool(Store(Path(self.config["pool_dir"])), clock=self.clock, service_rpc=self.rpc)
 
+    def enrollment(self, request):
+        return k.enrollment_for(self.keeper, request, self.registry_rpc)
+
     def pool_policy(self, p, body):
         lane = p.settings["lanes"][self.keeper["lane"]]
         stage = lane["stages"]["SNARK"]
@@ -177,7 +180,8 @@ class Wrapper:
         body = envelope["body"]
         request = k.rebind_request(self.settings, body["request"], state, roster)
         s.require(request == body["request"] and state["local_operator_selected"], "work_not_for_current_local_turn")
-        prepared = k.prepare(self.settings, request, body["evidence"], payload)
+        enrollment = self.enrollment(request)
+        prepared = k.prepare(self.settings, request, body["evidence"], payload, enrollment=enrollment)
         self.audited(body, state, execute, payload)
         p = self.pool()
         runtime, release = self.pool_policy(p, body)
@@ -199,9 +203,11 @@ class Wrapper:
         permit_path = directory / "permit.json"
         if permit_path.exists():
             permit = io.private_json(permit_path)
-            k.validate_permit(self.keeper, self.rpc, permit, body["evidence"], payload, self.clock(), runtime)
+            k.validate_permit(self.keeper, self.rpc, permit, body["evidence"], payload, self.clock(), runtime,
+                              enrollment=enrollment)
         else:
-            permit = k.permit(self.keeper, self.rpc, request, body["evidence"], payload, self.clock(), runtime)
+            permit = k.permit(self.keeper, self.rpc, request, body["evidence"], payload, self.clock(), runtime,
+                              enrollment=enrollment)
             io.immutable_json(permit_path, permit)
         deadline = min(body["native_lease_deadline"], permit["state"]["deadline"])
         s.require(self.clock() + runtime + self.keeper["policy"]["reserve_seconds"] < deadline,
@@ -233,7 +239,8 @@ class Wrapper:
         atomic_json(directory / "proof-check.json", checked)
         current, roster = self.status()
         prepared, signature = None, "0x"
-        original = k.prepare(self.settings, body["request"], body["evidence"], payload)
+        enrollment = self.enrollment(body["request"])
+        original = k.prepare(self.settings, body["request"], body["evidence"], payload, enrollment=enrollment)
         unchanged = current["frozen_package"] == k.normalized(original["accepted_package"])
         if unchanged and current["mode"] == "service" and current["package_open"] and current["local_operator_selected"]:
             rebound = k.rebind_request(self.settings, body["request"], current, roster)
@@ -241,8 +248,9 @@ class Wrapper:
                 self.audited(body, current, execute, payload)
                 request = body["request"]
                 prepared = s.prepare_package(self.settings, body["evidence"], request["manifest"], request["subscriptions"],
-                                             request["duties"], request["proposal"], proof, payload)
-                k.inspect(self.keeper, self.rpc, k.prepare(self.settings, request, body["evidence"], payload),
+                                             request["duties"], request["proposal"], proof, payload, enrollment=enrollment)
+                k.inspect(self.keeper, self.rpc, k.prepare(self.settings, request, body["evidence"], payload,
+                                                        enrollment=enrollment),
                           body["evidence"], self.clock(), 1)
                 signature = io.typed_signature(self.store.root / "signatures", prepared["wrapper_request"],
                                                 self.signing_wallet(), execute)
