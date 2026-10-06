@@ -569,6 +569,43 @@ ZKSYS_L2_TOKEN_ADDRESS="$(
     --init-code "${token_proxy_init_code}"
 )"
 
+# SYSCOIN: Token choices also bind the immutable gas tank. Reject a wrong
+# administrator/salt/compiler profile before even the token-only prelude sends.
+gas_tank_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}")"
+gas_tank_creation_code="$(forge_inspect_bytecode ZkSysGasTank)"
+gas_tank_init_code="${gas_tank_creation_code}${gas_tank_ctor_args#0x}"
+gas_tank_init_code_hash="$(cast keccak "${gas_tank_init_code}")"
+ZKSYS_L2_GAS_TANK_ADDRESS="$(
+  cast create2 \
+    --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+    --salt "${ZKSYS_L2_GAS_TANK_SALT}" \
+    --init-code "${gas_tank_init_code}"
+)"
+PUBLISHED_GAS_TANK_INIT_CODE_HASH=0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561
+PUBLISHED_GAS_TANK_RUNTIME_HASH=0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269
+PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
+[ "${ZKSYS_L2_TOKEN_DECIMALS}" = 18 ] || gl_die "canonical gas tank requires token decimals 18"
+[ "$(gl_to_lower "${gas_tank_init_code_hash}")" = "${PUBLISHED_GAS_TANK_INIT_CODE_HASH}" ] || \
+  gl_die "derived gas tank init-code hash ${gas_tank_init_code_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_INIT_CODE_HASH}; changing it requires a new app, VK, and verifier"
+[ "$(printf '%s' "${ZKSYS_L2_GAS_TANK_ADDRESS}" | tr '[:upper:]' '[:lower:]')" = \
+  "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
+  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the canonical app value ${PUBLISHED_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
+# SYSCOIN: The constructor reads token.decimals(), so a fresh chain cannot
+# execute it yet. Specialize the pinned compiler's sole token immutable first;
+# retain the real constructor execution check after the token is deployed.
+compiled_gas_tank_runtime="$(python3 - \
+  "${zksys_bootstrap_forge_inspect_dir}/out/ZkSysGasTank.sol/ZkSysGasTank.json" \
+  "${ZKSYS_L2_TOKEN_ADDRESS}" "${SCRIPT_DIR}" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[3])
+from _issuance_anchor import specialize_token_runtime
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(specialize_token_runtime(json.load(handle), sys.argv[2]))
+PY
+)"
+[ "$(gl_to_lower "$(cast keccak "${compiled_gas_tank_runtime}")")" = "${PUBLISHED_GAS_TANK_RUNTIME_HASH}" ] || \
+  gl_die "gas tank compiler runtime differs from the canonical application binding"
+
 # SYSCOIN: Bind the source, signer and exact token constructor graph before the
 # prelude's first send. The receipt-based policy is immutable across retries.
 token_prelude_identity() {
@@ -730,28 +767,6 @@ ZKSYS_L2_STAKING_VAULT_ADDRESS="$(
     --init-code "${staking_vault_proxy_init_code}"
 )"
 
-# SYSCOIN: prepaid zkSYS gas ledger debited by the patched ZKsync OS
-# bootloader. Non-upgradeable and atomic by construction: the constructor
-# pins the token; the only wiring is the BURNER_ROLE grant for burnSurplus().
-gas_tank_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}")"
-gas_tank_creation_code="$(forge_inspect_bytecode ZkSysGasTank)"
-gas_tank_init_code="${gas_tank_creation_code}${gas_tank_ctor_args#0x}"
-gas_tank_init_code_hash="$(cast keccak "${gas_tank_init_code}")"
-ZKSYS_L2_GAS_TANK_ADDRESS="$(
-  cast create2 \
-    --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
-    --salt "${ZKSYS_L2_GAS_TANK_SALT}" \
-    --init-code "${gas_tank_init_code}"
-)"
-PUBLISHED_GAS_TANK_INIT_CODE_HASH=0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561
-PUBLISHED_GAS_TANK_RUNTIME_HASH=0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269
-PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
-[ "$(gl_to_lower "${gas_tank_init_code_hash}")" = "${PUBLISHED_GAS_TANK_INIT_CODE_HASH}" ] || \
-  gl_die "derived gas tank init-code hash ${gas_tank_init_code_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_INIT_CODE_HASH}; changing it requires a new app, VK, and verifier"
-[ "$(printf '%s' "${ZKSYS_L2_GAS_TANK_ADDRESS}" | tr '[:upper:]' '[:lower:]')" = \
-  "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
-  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the canonical app value ${PUBLISHED_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
-
 # SYSCOIN: Bind both the normalized inputs and their complete derived CREATE2
 # graph before the first deployment. A retry after any source/tooling change
 # therefore fails closed instead of creating a second privileged contract set.
@@ -804,6 +819,8 @@ expected_gas_tank_runtime="$(
     "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}"
 )"
 expected_gas_tank_runtime_hash="$(cast keccak "${expected_gas_tank_runtime}")"
+[ "$(gl_to_lower "${expected_gas_tank_runtime}")" = "$(gl_to_lower "${compiled_gas_tank_runtime}")" ] || \
+  gl_die "gas tank constructor runtime differs from its compiler-specialized preflight"
 [ "$(gl_to_lower "${expected_gas_tank_runtime_hash}")" = "${PUBLISHED_GAS_TANK_RUNTIME_HASH}" ] || \
   gl_die "derived gas tank runtime hash ${expected_gas_tank_runtime_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_RUNTIME_HASH}; changing it requires a new app, VK, and verifier"
 deploy_create2 "zkSYS gas tank" "${ZKSYS_L2_GAS_TANK_ADDRESS}" "${ZKSYS_L2_GAS_TANK_SALT}" "${gas_tank_init_code}"

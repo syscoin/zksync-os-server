@@ -15,6 +15,32 @@ from _checkpoint_state_io import atomic_write_json
 DELAY_SECONDS = 24 * 60 * 60
 
 
+def specialize_token_runtime(artifact: dict, token: str) -> str:
+    """SYSCOIN: Patch only the compiler-recorded token immutable, before deployment."""
+    token = hex_value(token, 20, "token address")
+    deployed = artifact["deployedBytecode"]
+    raw = deployed["object"]
+    if not isinstance(raw, str) or not re.fullmatch(r"(?:0x)?[0-9a-fA-F]+", raw):
+        raise ValueError("invalid gas tank compiler runtime")
+    code = bytearray.fromhex(raw.removeprefix("0x"))
+    references = deployed.get("immutableReferences")
+    if not isinstance(references, dict) or len(references) != 1:
+        raise ValueError("gas tank must have exactly one token immutable")
+    slots = next(iter(references.values()))
+    if not isinstance(slots, list) or not slots:
+        raise ValueError("missing gas tank token immutable references")
+    seen = set()
+    for slot in slots:
+        start, length = uint(slot["start"], "immutable offset"), uint(slot["length"], "immutable length")
+        if length != 32 or start + length > len(code) or start in seen:
+            raise ValueError("invalid gas tank token immutable reference")
+        seen.add(start)
+        if code[start:start + length] != bytes(32):
+            raise ValueError("gas tank immutable slot must be unbound")
+        code[start:start + length] = bytes(12) + bytes.fromhex(token[2:])
+    return "0x" + code.hex()
+
+
 def uint(value: object, label: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"invalid {label}")

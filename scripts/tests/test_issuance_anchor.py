@@ -7,6 +7,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -58,6 +59,54 @@ class IssuanceAnchorTests(unittest.TestCase):
         self.assertEqual(value["issuer_start_time"], 4096 + 86400)
         self.assertEqual(value["transaction_hash"], self.transaction["hash"])
         self.assertEqual(value["block_number"], 7)
+
+    def test_specializes_only_the_single_compiler_token_immutable(self):
+        artifact = {"deployedBytecode": {"object": "0x6000" + "00" * 32,
+                    "immutableReferences": {"71": [{"start": 2, "length": 32}]}}}
+        self.assertEqual(anchor.specialize_token_runtime(artifact, self.identity["token"]),
+                         "0x6000" + "00" * 12 + "33" * 20)
+        for references in ({}, {"71": []}, {"71": [{"start": 2, "length": 20}]},
+                           {"71": [{"start": 999, "length": 32}]}, {"71": [], "72": []}):
+            artifact["deployedBytecode"]["immutableReferences"] = references
+            with self.assertRaises(ValueError):
+                anchor.specialize_token_runtime(artifact, self.identity["token"])
+
+    def test_bad_admin_salt_or_profile_fails_before_any_prelude_send(self):
+        source = (HELPER.parent / "zksys-l2-bootstrap.sh").read_text()
+        guard = source[source.index("# SYSCOIN: Token choices also bind"):source.index("# SYSCOIN: Bind the source, signer")]
+        expected_hash = "0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561"
+        expected_runtime = "0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269"
+        expected_address = "0xb49943ea232624dd4aa63e18186076c6c99a68ef"
+        artifact = Path(self.temporary.name) / "out/ZkSysGasTank.sol/ZkSysGasTank.json"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text(json.dumps({"deployedBytecode": {"object": "0x6000" + "00" * 32,
+            "immutableReferences": {"71": [{"start": 2, "length": 32}]}}}))
+        for scenario in ("admin", "salt", "profile", "valid"):
+            sends = Path(self.temporary.name) / (scenario + ".sends")
+            setup = '''set -euo pipefail
+gl_die() { echo "$*" >&2; exit 1; }
+gl_to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+forge_inspect_bytecode() { printf '0x6000'; }
+cast() {
+ case "$1" in
+ abi-encode) printf '0x00';;
+ create2) if [ "$SCENARIO" = salt ]; then printf '0x0000000000000000000000000000000000000001'; else printf '%s' "$EXPECTED_ADDRESS"; fi;;
+ keccak) if [ "$2" = 0x600000 ]; then
+   if [ "$SCENARIO" = admin ] || [ "$SCENARIO" = profile ]; then printf '0x00'; else printf '%s' "$EXPECTED_HASH"; fi
+  else printf '%s' "$EXPECTED_RUNTIME"; fi;;
+ esac
+}
+'''
+            result = subprocess.run(["bash", "-c", setup + guard + '\nprintf send > "$SEND_FILE"'],
+                capture_output=True, text=True, env={**os.environ, "SCENARIO": scenario,
+                "EXPECTED_HASH": expected_hash, "EXPECTED_RUNTIME": expected_runtime,
+                "EXPECTED_ADDRESS": expected_address, "SEND_FILE": str(sends),
+                "ZKSYS_L2_TOKEN_ADDRESS": self.identity["token"], "ZKSYS_L2_TOKEN_DECIMALS": "18",
+                "ZKSYS_L2_CREATE2_DEPLOYER": self.identity["create2"], "ZKSYS_L2_GAS_TANK_SALT": "0x01",
+                "zksys_bootstrap_forge_inspect_dir": self.temporary.name, "SCRIPT_DIR": str(HELPER.parent)})
+            with self.subTest(scenario=scenario):
+                self.assertEqual(result.returncode == 0, scenario == "valid", result.stderr)
+                self.assertEqual(sends.exists(), scenario == "valid")
 
     def test_integer_rpc_fields_and_boolean_rejection(self):
         self.receipt["status"] = 1
