@@ -454,6 +454,23 @@ cargo_lock.write_text(lock_text, encoding="utf-8")
 PY
 }
 
+prepare_server_airbender() {
+  python3 "${ZKSYNC_OS_SERVER_PATH}/scripts/prepare-server-airbender.py" \
+    --server "${ZKSYNC_OS_SERVER_PATH}" --workspace "$1"
+}
+
+run_cargo_with_verified_server_airbender() {
+  local cargo_status=0
+  # The source identity must still hold when Cargo consumes it and after Cargo
+  # returns; a failed build must not hide a changed verifier or lock graph.
+  python3 "${ZKSYNC_OS_SERVER_PATH}/scripts/prepare-server-airbender.py" \
+    --server "${ZKSYNC_OS_SERVER_PATH}" --workspace "${RUN_PATH}" --verify || return $?
+  cargo "$@" || cargo_status=$?
+  python3 "${ZKSYNC_OS_SERVER_PATH}/scripts/prepare-server-airbender.py" \
+    --server "${ZKSYNC_OS_SERVER_PATH}" --workspace "${RUN_PATH}" --verify || return $?
+  return "${cargo_status}"
+}
+
 clear_multivm_build_script_cache() {
   local target_dir="$1"
   # prepare_run_workspace recreates lib/multivm/apps, but Cargo may reuse an

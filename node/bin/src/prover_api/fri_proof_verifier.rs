@@ -283,8 +283,7 @@ mod v8_verifier {
         3765215681,
     ];
     pub(super) const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [
-        467704222, 2976569635, 1593588786, 175442682, 1232043748, 3415504018, 1844231507,
-        2666440308,
+        149192261, 835771444, 163950109, 3003860415, 3964363145, 1015301364, 1602282946, 1423293844,
     ];
 
     pub(super) struct UnifiedLevelData {
@@ -530,5 +529,48 @@ mod tests {
             expected_chain,
             "proof recursion chain is not rooted in the V8 batch program"
         );
+    }
+
+    /// Exercise the canonical byte decoder and shared production verifier with
+    /// a fresh proof and an independently authenticated batch statement.
+    #[test]
+    #[ignore = "needs a fresh V8 proof and its authenticated batch statement"]
+    fn v8_current_proof_passes_server_boundary_and_rejects_wrong_batch() {
+        use sha2::{Digest, Sha256};
+
+        let path = std::env::var("V8_PROOF_ARTIFACT_JSON")
+            .expect("set V8_PROOF_ARTIFACT_JSON to the fresh proof.json");
+        let expected_sha = std::env::var("V8_PROOF_ARTIFACT_SHA256")
+            .expect("set V8_PROOF_ARTIFACT_SHA256 to its authenticated SHA-256");
+        let bytes = std::fs::read(path).expect("cannot read proof artifact");
+        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), expected_sha);
+        let artifact: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("invalid proof artifact JSON");
+        let proof: execution_utils::unrolled::UnrolledProgramProof =
+            serde_json::from_value(artifact["proof"].clone()).expect("invalid proof field");
+        let expected_input: alloy::primitives::B256 =
+            std::env::var("V8_PROOF_EXPECTED_PUBLIC_INPUT_HASH")
+                .expect("set the independently authenticated batch public-input hash")
+                .parse()
+                .expect("invalid expected batch public-input hash");
+        let expected = super::hash_as_register_values(expected_input);
+        let mut encoded = bincode::serde::encode_to_vec(&proof, bincode::config::standard())
+            .expect("cannot encode native proof bytes");
+        let decoded = super::decode_canonical_real_fri_proof(&encoded)
+            .expect("fresh proof failed canonical byte decoding");
+        super::verify_fri_proof(expected, &decoded, 20)
+            .expect("fresh proof failed the server shape, chain or batch-input boundary");
+
+        let mut wrong_batch = expected;
+        wrong_batch[0] ^= 1;
+        assert!(matches!(
+            super::verify_fri_proof(wrong_batch, &decoded, 20),
+            Err(crate::prover_api::fri_job_manager::SubmitError::FriProofVerificationError { .. })
+        ));
+        encoded.push(0xaa);
+        assert!(matches!(
+            super::decode_canonical_real_fri_proof(&encoded),
+            Err(crate::prover_api::fri_job_manager::SubmitError::InvalidProofShape(_))
+        ));
     }
 }

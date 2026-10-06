@@ -4280,8 +4280,8 @@ mod tests {
         IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call,
     };
     use zksync_os_types::{
-        NodeRole, NotAcceptingReason, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
-        SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+        NodeRole, NotAcceptingReason, ProvingVersion, PubdataMode,
+        SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
         SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
         SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH, SYSCOIN_EDGE_DA_RELAY_FACTORY,
         SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH, SYSCOIN_GAS_TANK_RUNTIME_HASH,
@@ -4891,6 +4891,38 @@ mod tests {
         )
         .unwrap_err();
         assert!(mismatch_err.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn historical_component_key_is_not_current_real_proving_authority() {
+        let historical_vk: B256 =
+            "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe"
+                .parse()
+                .unwrap();
+        let active_vk: B256 = ProvingVersion::V8.vk_hash().parse().unwrap();
+        assert_ne!(historical_vk, active_vk);
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
+        let err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            false,
+            historical_vk,
+            active_vk,
+        )
+        .expect_err("a historical production key cannot authorize the regenerated lane");
+        assert!(err.to_string().contains("does not match"));
+
+        // Preserve the explicitly mocked historical component lane. Its testnet
+        // verifier and both fake pools cannot qualify current real proofs.
+        prover.enabled = false;
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+        validate_deployed_verifier_prover_policy(false, &prover, true, historical_vk, active_vk)
+            .unwrap();
     }
 
     #[test]

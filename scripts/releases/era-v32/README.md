@@ -1,25 +1,82 @@
 # Generated Era sources and separate canonical fixture certification
 
-The overlay, manifest and read-only checker bind the reviewed domain-corrected
-crypto bundle to the source tree containing the native priority observation getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`,
-reviewed source tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
-`ff5565cd22b61259d6f886e9a0130f788bbdb11c`. Only four exact paths are overlaid;
-all 278 identities and retained FFLONK remain unchanged. The manifest binds the
-pre-reviewed proof/EVM artifacts but is not a live fixture/deployment certificate.
+The overlay, manifest and read-only checker bind the newly generated Security100
+verifier to the reviewed source tree containing the native priority observation
+getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source
+tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
+`76af1dc7837a5c1cb1d1098ee75bb3c03a65ffae`. Only four exact paths are overlaid.
+All 278 inventory identities and retained FFLONK remain unchanged; only the hash
+and length fields of the PLONK verifier and its Gateway deployer may change.
+The manifest binds completed current contract generation separately from the
+pending current proof/EVM qualification and explicitly historical evidence.
+The bundle is not a live fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
 bytes and absence of the generated source copy; the manifest binds
 all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
-## Completed crypto sources are not a packaged fixture
+## Current contract generation; proof qualification pending
 
-The server now registers the reproduced Syscoin guest tree
-`6935489bdbc7b1ed31e608677d1b2418b10691b5` and its Security100 key
-`0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe`.
-The identities have been exercised by genuine private service proofs and native
-verification with real DA and settlement. This does not qualify the remaining
-edge/bridge, sustained performance, five-role snapshot/restore or public rollout
-gates. No fixture descriptor or successful restore is manufactured by this PR.
+The candidate preserves the reproduced Syscoin guest tree
+`6935489bdbc7b1ed31e608677d1b2418b10691b5` and binds the rebuilt proving circuits'
+Security100 key
+`0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90`.
+The recursive guests are the literal canonical-recipe postimages of patched
+Airbender tree `98a3e82a726bca322340ec675263a4533857250a`; their new program
+commitment is
+`0x08e47e4531d0dc3409c5ae1db30b45bfec4b61893c8444f45f80e5c254d5bd94`.
+Both generated PLONK copies have SHA-256
+`265ff76ec295d3aea569e937ff54d793179d2e44576f842c588969d38f813856`;
+the scheduler key has SHA-256
+`c3cec62f1b8d47ad23773bcf4906b1779ac1a2be58f9b7ce01f69956c0924a23`.
+The generated overlay has SHA-256
+`1dd60c89994b54dd1dcd1482d048958864a151a83bb8f9a0ef6fde85ad541af6`.
+
+The actual contract-generation result, SHA-256
+`2973ac60ac2d18d3c3aa9f55d43af3b8c89b8ea8118657d0a6bb9701559bd828`,
+records four passing native PLONK generator tests, generation from this new key,
+the full `recompute_hashes.sh` build/recomputation, successful
+`calculate-hashes:check`, byte-identical retained FFLONK reproduction and
+byte-identical genesis regeneration. The source/index and submodule identities
+were rechecked after generation. This is contracts-only qualification on one
+host. It does not assert a fresh FRI/SNARK proof, EVM proof acceptance, real DA or
+settlement run, edge/bridge qualification, sustained performance, five-role
+snapshot/restore, deployment or public rollout for the new key. No fixture
+descriptor or successful restore is manufactured by this change. The generation
+receipt binds the fresh keygen result SHA-256
+`7020f0c8447da54b15b65e319f958182e319e59df859fac1c04581b8370ae204`.
+
+The current `proof_qualification` is explicitly
+`pending_fresh_canonical_proof_qualification`: its result map is empty, proof/EVM
+verification flags are false, and verified-stage/control counts are zero. Fresh
+normal GPU FRI proofs for retained batch 20/21, combination, CPU standard wrapper
+and SNARK, all three native verifications, genuine serialization, production EVM
+controls and owning server verification must succeed for this exact new key
+before current proof qualification can be recorded. No old result is relabeled.
+
+`historical_d5bc_contract_generation_provenance` and
+`historical_d5bc_proof_qualification` retain the previous d5bc key's generation
+and offline proof evidence unchanged. The latter records batch 20/21 FRI proofs,
+combination, three native wrapper verifications, genuine serialization, ten EVM
+controls and seventeen owning server/type tests for that previous candidate.
+Its historical source archive authenticates those tested runtime bytes, not the
+current key or auxiliary commitment.
+
+That previous candidate's additional Linux rebuild did not reproduce its macOS
+bytes for
+`recursion_in_unrolled_layer_security_100_bits.bin` and its `.text`; the cause is
+unresolved in that historical receipt and the other three guest pairs were not
+compared after that failure. The failed receipt remains historical.
+
+The current canonical-recipe guests passed their separate cross-host check:
+all twelve `.bin`/`.text`/`.elf` outputs matched byte-for-byte between the Mac
+Docker build and an independent Linux Docker host. The old-source control also
+reproduced all eight checked `.bin`/`.text` outputs. The successful receipt has
+SHA-256 `89935b6c988dc36827060ea33b5fc01fa5123839aba562ad787010d7e916713a`.
+This establishes cross-host guest-byte reproduction, not independent-host
+key generation or whole-stack qualification.
+Current live HTTP submission, service/DA/settlement acceptance,
+deployment and canonical fixture acceptance remain unqualified.
 
 Key generation used one host under the explicitly approved validation constraint.
 It is not two-independent-host reproduction. The existing production workflow's
@@ -92,23 +149,36 @@ are required. No automatic repair, reset or retry is performed after a partial
 failure. The real Git index is not changed. Existing ignored build outputs are
 not artifact attestation; normal artifact/build gates remain necessary.
 
-Focused tests use synthetic temporary repositories/fixtures only; the real
-bundle reconstruction is read-only. No build, deployment, signing, original
-checkout mutation or fixture registry activation is part of this implementation.
+Focused tests use synthetic temporary repositories/fixtures, with an optional
+read-only real-bundle reconstruction using `ERA_GENERATED_RELEASE_TEST_ROOT`.
+That check reconstructs both exact trees without modifying the real index or
+worktree; it does not compile or qualify a proof. No deployment, signing,
+original-checkout mutation or fixture registry activation is part of this
+source-materialization implementation.
 
 ## Priority observation source integration
 
-The service source adds only the concrete Getters facet's priority transaction
-timestamp and tree-height observations, their selectors, generated inventory row,
-and regression test. The shared IGetters interface, genesis predeploys, real VK,
-generated PLONK/key bytes, and guest application identity are unchanged. The
-source-only inventory and the generated overlay are re-attested as distinct exact
-trees; the overlay still changes only its two permitted verifier inventory rows.
+The reviewed service source already contains the concrete Getters facet's
+priority transaction timestamp and tree-height observations, their selectors,
+generated inventory row, and regression test. That source patch is unchanged by
+this key regeneration. The shared IGetters interface, genesis predeploys and
+guest application identity also remain unchanged; the new VK and generated
+PLONK/key bytes are the explicit changes in the separate generated overlay.
+The source-only inventory and generated overlay remain distinct exact trees;
+the overlay still changes only its two permitted verifier inventory rows.
 
-`crypto_validation_provenance` retains the original PR323 source/generated trees
-for the existing real-proof, EVM, Cancun and native-build archive records. Their
-unchanged hashes are historical crypto evidence, not a claim that a real proof
-or deployment was rerun for the service source tree. The published offline
+`historical_crypto_validation_provenance` retains the original PR323
+source/generated trees and old
+`0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe`
+key for the existing real-proof, EVM, Cancun and native-build archive records.
+Every old proof/artifact hash is nested there, not presented as current evidence.
+Those records concern the old key and unchanged crypto bytes subsequently carried
+by generated tree `ff5565cd22b61259d6f886e9a0130f788bbdb11c`; they do not qualify
+the new key or generated tree. `contract_generation_provenance` records only the
+new completed generation checks, while `proof_qualification` remains pending
+for fresh current-key results. The distinct historical d5bc records preserve
+their previous results and limits without qualifying the current candidate.
+The published offline
 critical Gateway input/helper/result under `scripts/keygen/gateway-identity` is
 also preserved byte-for-byte at its historical source tree. It is not consumed
 as current deployment authorization. Before a fresh service deployment, rebuild

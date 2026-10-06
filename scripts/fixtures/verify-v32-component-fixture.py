@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only public-package gate for V32/V8 Anvil component CI, not release CI.
+"""Read-only gate for historical V32/V8 mocked Anvil component CI, not release CI.
 
 No generator, registry writer, wallet importer, RPC, process or canonical fallback.
 The registration must be issued in source review only after genuine generation.
@@ -16,6 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 REGISTRATION = ROOT / "scripts/fixtures/v32-component-registration.json"
 FIXTURE = ROOT / "local-chains/anvil-component-only/v32.0"
 GENESIS = "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95"
+# Authenticate the actual old mock deployment, not the active production key.
 VK = "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe"
 PUBLIC_KEY = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 # Intentionally public, insecure development signers, with separate nonce owners

@@ -104,6 +104,7 @@ jobs:
           # SYSCOIN: Keep secret-file and smoke-verdict regressions in the existing tooling gate.
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
             scripts.tests.test_local_patched_zksync_os \
+            scripts.tests.test_server_airbender_security \
             scripts.tests.test_gateway_settlement_fee_payer \
             scripts.tests.test_private_launch_files \
             scripts.tests.test_era_generated_release \

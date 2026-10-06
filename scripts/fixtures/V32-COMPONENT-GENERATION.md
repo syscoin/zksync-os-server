@@ -1,5 +1,10 @@
 # Genuine V32/V8 component fixture generation
 
+This records the previous `c1ab3d65…b7388fe` mock deployment and its original
+generation recipe. It is not a recipe or qualification for the regenerated
+Security100 circuits or the active production key. Preserve the package's actual
+old identities; a new-key fixture requires genuine regeneration and separate review.
+
 This lane is **AnvilComponentOnly**. It does not qualify Syscoin Core consensus,
 NEVM/Bitcoin DA finality, real FRI/SNARK proofs, or the canonical five-role release
 fixture. The canonical marker and trusted canonical descriptor registry remain
