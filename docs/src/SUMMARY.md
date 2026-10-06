@@ -36,4 +36,5 @@
 ---
 
 - [Guides](guides/index.md)
+  - [Gateway launch and fresh public testnet replacement](guides/gateway_launch.md)
   - [Updating local chains: genesis and L1 state](guides/local_setup_update.md)

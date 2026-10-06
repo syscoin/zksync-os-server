@@ -2,6 +2,10 @@
 
 Gateway + edge launch is now a **single canonical command** with checkpointed resume and explicit repair.
 
+For an operator-authorized replacement of an existing public testnet, use the
+[fresh testnet procedure](#fresh-public-testnet-replacement) before the normal
+launch command. It is not a mainnet reset or upgrade procedure.
+
 ## Host prerequisites
 
 Install the host toolchain before starting the launcher. The launcher can
@@ -125,6 +129,192 @@ export FUNDER_PASSWORD_FILE="$HOME/.foundry/funder.password"
 If using a separate Gateway governor signer for migration repairs, import it as
 another Foundry account (for example `governor`) and set
 `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor`.
+
+## Fresh public testnet replacement
+
+<!-- SYSCOIN: A destructive testnet reset needs its own inventory and acceptance
+record; SSH authentication, resumable launch, and mainnet rollout are not equivalent. -->
+
+Replacing v31 with a fresh v32 testnet discards the old Gateway/edge history and
+dependent indexes. Obtain explicit reset authorization and record the chosen
+proving mode before stopping services. Preserve wallets and signer access even
+when the old chain does not need to be retained. A local reset cannot erase old
+contracts or escrow on the persistent Tanenbaum L1.
+
+### Operator and source preflight
+
+1. Inventory the sequencer, external-node/explorer, faucet, portal and bridge
+   hosts. Record service/container owners, actual config paths, RPC routing,
+   chain IDs, database/volume names, free disk and the running source identity.
+   A host may serve more than one of these roles.
+2. Check SSH and privileged access independently on every relevant host:
+
+   ```bash
+   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+     -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'id -un'
+   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+     -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'sudo -n -l'
+   ```
+
+   A private SSH key authenticates the SSH account; it does not grant sudo.
+   Inspect the allowed commands, not only group membership. Resolve a password
+   prompt or missing deployment privileges through the operator's approved
+   administrative access before an unattended reset. Do not bypass sudo with
+   privileged containers or infer root permission from Docker access.
+3. Pin the server, Core/Geth and client source revisions, upstream patch trees,
+   compiler versions and deterministic deployment inputs. Use a clean release
+   checkout; do not pull over unrelated local changes. Read the current source
+   namespace/address plan instead of copying an old CREATE2 salt or governor.
+   Mock proving does not waive the immutable Gateway DA target/relay or gas-tank
+   address checks. Stop for reviewed repinning if a fresh deployment differs.
+4. Locate the actual wallet YAML, encrypted Foundry accounts and password-file
+   references. Store required wallet files outside the reset workspace, with
+   private permissions, and verify public signer addresses and live balances on
+   root chain 5700. An isolated chain-31337 test receipt is not that balance.
+   Preserve the required Core DA wallet separately. Do not commit secret values,
+   credentialed RPC URLs, host inventories or private operator paths.
+5. Load the current signer configuration explicitly. Tanenbaum defaults to
+   encrypted account/keystore signing; do not carry raw private-key environment
+   variables from an old command. Generated prover configs still require a
+   password of at least 32 characters, even for this mock-proof deployment.
+
+### Exact reset inventory
+
+Stop the identified owners and verify their processes have exited before
+removing chain-derived state. Record the resolved targets; do not perform a
+wildcard home-directory cleanup or global Docker pruning.
+
+| Component | Fresh-reset scope | Preserve |
+| --- | --- | --- |
+| Gateway and edge | Obsolete ecosystem workspace, both complete runtime database/recovery trees and the exact matching launch checkpoint namespace | External wallet YAML, signer/keystore material, required deployment inputs |
+| zkSYS external nodes | Both configured public/debug database and recovery trees | Peer identities, private config inputs and build prerequisites |
+| Blockscout | Exact Gateway/zkSYS project database, Redis and backend DETS volumes | Compiler caches, secrets, TLS and branding |
+| Faucet and applications | Old-chain nonce/rate caches, contract/start-block configuration and explicitly identified L2-derived worker state | Faucet wallet, application secrets and unrelated chain history |
+| Tanenbaum L1 | Not part of the discarded rollup | Core/Geth datastore, DA wallet and root-L1 funds/history |
+
+Fresh checkpoint state is normally beside `GATEWAY_DIR`, under
+`.gateway-launch-state/<sha256(realpath(GATEWAY_DIR))>`; a supported legacy
+deployment can instead have state inside `GATEWAY_DIR/.gateway-launch`.
+Resolve the active path with `gl_checkpoint_state_dir` before reset. Deleting
+`gateway` alone is not sufficient, and deleting the entire sibling namespace
+can destroy another deployment's state.
+
+`deploy-zksys-en-rpc.sh` rebuilds/reconfigures nodes but does not clear their old
+databases. Blockscout `deploy-remote.sh` recreates services but retains chain
+indexes. Both require the explicit, inventoried reset above. Keep bridge ingress
+paused while old L2 routes are replaced; do not erase unchanged Tanenbaum,
+Sepolia, external checkpoint or shared queue history as a side effect.
+
+### Explicit mock-testnet launch
+
+Load the approved wallet, namespace, admin and RPC inputs described below, then
+select the complete testnet verifier mode:
+
+```bash
+export PROTOCOL_VERSION=v32.0
+export SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER=true
+export PROVER_MODE=no-proofs
+export GATEWAY_PROVER_MODE=no-proofs
+export EDGE_PROVER_MODE=no-proofs
+unset MIGRATE_EDGE REUSE_ECOSYSTEM
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
+```
+
+`PROVER_MODE=no-proofs` alone is not sufficient. The explicit mock flag and all
+three modes must agree. Use the actual Tanenbaum root chain 5700 and the
+canonical Gateway/zkSYS chain configuration, not a local fork masquerading as a
+public launch. Do not populate the blocked canonical local-chain fixture.
+
+The staged invocation omits migration while the independent
+`GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS` pin is acquired and verified from the
+deployment record. Once that pin and the launch identity gates pass, resume:
+
+```bash
+unset GATEWAY_WALLET_CREATION GATEWAY_WALLET_PATH
+unset EDGE_WALLET_CREATION EDGE_WALLET_PATH
+bash scripts/gateway-launch/run-gateway-launch.sh \
+  --l1 tanenbaum --reuse-ecosystem --migrate-edge
+```
+
+`--migrate-edge` transitions the newly initialized edge to Gateway settlement;
+it does not mean retaining or migrating the old v31 chain. Keep the proving
+mode and deterministic inputs unchanged across retries. Use the checkpoint
+repair procedure for a diagnosed failure, not manual checkpoint deletion.
+
+### Contract and client deployment
+
+After the chain is live, run `zksys-l2-bootstrap.sh` for the current token,
+ProxyAdmin, membership/weight registries, issuer, native staking vault and
+canonical gas tank. Verify all proxy, role, receiver and immutable runtime
+bindings. The persisted tank authority ends the first-boot exception; do not
+disable its startup gate after bootstrap.
+
+`ZKSYS_ISSUER_START_TIME` is an absolute future Unix timestamp, bound in the
+bootstrap manifest before broadcasts. If the approved policy is a 24-hour
+post-deployment start, choose and persist the planned target once and record the
+actual deployment block/time and `startTime()` readback. Do not recompute it on
+retries or reuse the past v31 value. The helper does not implement an exact
+receipt-relative `+86400` option. Defaults remain daily periods, a 365-day
+schedule year and a three-period positive-weight activation delay.
+
+Deploy standard EntryPoint v0.9 with the helper's official artifact profile:
+optimizer 1,000,000, viaIR and default IPFS metadata. Build the Pali account
+implementation, validators, recovery module and factory with the separate
+optimizer-200, metadata-free profile and matching wallet deployment constants
+in [the contracts guide](https://github.com/syscoin/zksync-os-server/blob/main/contracts/README.md).
+Do not redeploy legacy custom EntryPoints/paymasters or blindly use stale
+`contracts/out` artifacts. The EntryPoint/gas-tank helper does not deploy the
+entire Pali suite. Its keystore interface uses `DEPLOYER_ACCOUNT` with
+`DEPLOYER_SIGNER` unset, unlike the launcher's `DEPLOYER_ACCOUNT_NAME` and
+`DEPLOYER_SIGNER=account`; map the environment explicitly in a separate process.
+Supply exact code-hash expectations to `check-pali-deployment.sh` and attest
+factory/EntryPoint/validator relationships, not only explorer verification.
+
+Inventory Multicall3 and other required standard infrastructure separately.
+For canonical `0xcA11bde05977b3631167028862bE2a173976CA11`, follow the
+[official deployment instructions](https://github.com/mds1/multicall3#new-deployments),
+check the deployer nonce and signed transaction gas limit, fund minimally and
+verify the exact deployed runtime. Its publicly compromised deployment EOA is
+not the project funding wallet. Opt-in service-V1 proof/reward contracts are not
+enabled by token bootstrap and are not automatically part of mock proving.
+
+Refresh EN source/build stamps, sequencer enode and direct RPC inputs, both
+explorers, token branding, wallet, portal, bridge routes/start blocks and faucet
+configuration from the new deployment outputs. Reset the faucet's in-memory
+nonce state and fund its preserved dispenser on the new chain before opening
+it. Old v31 faucet balances do not carry into the fresh chain; do not grant an
+ad-hoc ZKSYS mint role to seed it.
+
+### Acceptance record and mainnet boundary
+
+Keep an operator-only record of actual commands, pinned inputs, resolved reset
+targets, approvals, failures and repairs. Keep proposed/not-run checks separate
+from completed checks. Publish the final chain identities, contract address/
+runtime manifest, successful transaction receipts and issuance start without
+publishing secrets or credentialed endpoints.
+
+Before declaring the public replacement complete, verify:
+
+- Root/Gateway/edge chain and genesis identities, explicit testnet verifier
+  marker and compiled address bindings agree.
+- Both nodes and DA are healthy and mock batches commit/prove/execute; do not
+  report this as real SNARK verification.
+- Token/registry/issuer/staking/gas-tank wiring and current Pali/native-gas and
+  tank-backed account flows pass their deployment checks.
+- Both ENs sync the new chain and use the direct sequencer upstream, both
+  explorers index fresh state, and clients/bridge/faucet use the new addresses.
+- Intended public endpoints work while Gateway/debug/admin/prover boundaries
+  retain their access restrictions. An ordinary restart uses the attested
+  binaries without rebuilding or reusing stale stamps.
+- Public endpoints identify the release as a fresh mock-proof testnet.
+
+Mainnet is a separate rollout: this destructive reset and mock verifier recipe
+are forbidden there. Require production proofs and the current deployed
+verifier/VK, chainlocked finality, reviewed governance/activation and asset
+reconciliation, durable encrypted off-host recovery, and an approved cutover/
+rollback plan. Do not copy testnet one-confirmation, custody or reset choices
+into a mainnet launch. A completed mock-testnet rehearsal does not close those
+release gates.
 
 ## Canonical command
 
