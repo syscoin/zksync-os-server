@@ -1,3 +1,4 @@
+import base64
 import copy
 import json
 from pathlib import Path
@@ -386,6 +387,96 @@ class CoordinatorTests(unittest.TestCase):
         self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
         self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
         self.assertTrue(self.controller.state["operations"][identifier]["works"][old["work_hash"]]["ignored"])
+
+    def test_canonical_revert_is_retired_across_restart_and_turn_rotation(self):
+        identifier, _ = self.frozen()
+        old = self.controller.step(True)
+        self.returned(old, bare=True)
+        self.rpc.verification_error = r.RpcError(3, next(iter(c.proof_check.NATIVE_PROOF_REJECTIONS)))
+        self.controller.step(True)
+        meta = self.controller.state["operations"][identifier]["works"][old["work_hash"]]
+        self.assertEqual((meta["checked"], meta["ignored"], meta["error"]),
+                         (True, True, "native_snark_rejected"))
+        self.rpc.verification_error = None
+        self.rpc.turn += 1
+        current = self.controller_reload().step(True)
+        self.assertEqual(current["next_action"], "await_selected_wrapper")
+        self.assertNotEqual(current["work_hash"], old["work_hash"])
+        self.assertTrue(self.controller.state["operations"][identifier]["works"][old["work_hash"]]["checked"])
+
+    def test_old_canonical_revert_does_not_block_new_verified_proof_submission(self):
+        identifier, _ = self.frozen()
+        old = self.controller.step(True)
+        self.rpc.turn += 1
+        current = self.controller_reload().step(True)
+        original_proof = self.f["snark"]
+        self.f["snark"] = {**original_proof, "proof": base64.b64encode(
+            b"old-result-test-fixture".ljust(c.proof_check.SNARK_BYTES, b"\0")).decode()}
+        self.returned(old, bare=True)
+        old_calldata = c.proof_check.verifier_calldata(
+            [entry["statement"] for entry in s.validate_evidence(self.f["settings"], self.f["evidence"]).values()],
+            s.decode_proof(self.f["snark"]["proof"]))
+        self.f["snark"] = original_proof
+        self.returned(current)
+        original = self.rpc.call
+        verifications = 0
+        def call(method, params):
+            nonlocal verifications
+            if method == "eth_call" and params[0]["data"].startswith(
+                    "0x" + r.selector(c.proof_check.VERIFY_SIGNATURE).hex()):
+                verifications += 1
+                if params[0]["data"] == old_calldata:
+                    raise r.RpcError(3, next(iter(c.proof_check.NATIVE_PROOF_REJECTIONS)))
+            return original(method, params)
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        with patch.object(self.rpc, "call", side_effect=call):
+            self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        self.assertEqual(verifications, 2)
+        self.assertTrue(self.controller.state["operations"][identifier]["works"][old["work_hash"]]["ignored"])
+        self.assertIsNotNone(self.controller.state["operations"][identifier]["proof"])
+
+    def test_canonical_revert_does_not_block_expired_known_lease_renewal(self):
+        identifier, bundle = self.frozen()
+        work = self.controller.step(True)
+        self.returned(work, bare=True)
+        self.rpc.verification_error = r.RpcError(3, next(iter(c.proof_check.NATIVE_PROOF_REJECTIONS)))
+        self.rpc.advance(601)
+        self.rpc.deadline = 2000
+        self.rpc.status_overrides[(a(123), "maxProofWorkSeconds()")] = 2000
+        self.now = self.rpc.now
+        result = self.controller_reload().step(True)
+        self.assertEqual(result["next_action"], "renew_expired_native_lease_same_frozen_payload")
+        op = self.controller.state["operations"][identifier]
+        self.assertTrue(op["works"][work["work_hash"]]["ignored"])
+        self.assertEqual(op["bundle"], io.digest(bundle))
+        self.assertEqual(io.private_json(self.controller.directory(identifier) / "payload.json"), self.f["fri_payload"])
+
+    def test_uncertain_revert_keeps_result_retryable(self):
+        identifier, _ = self.frozen()
+        work = self.controller.step(True)
+        self.returned(work, bare=True)
+        original = copy.deepcopy(self.controller.state)
+        for error in (r.RpcError(3), r.RpcError(3, "0x"), s.Error("rpc_transport_failure")):
+            with self.subTest(error=error):
+                self.rpc.verification_error = error
+                with self.assertRaises(s.Error):
+                    self.controller.result(identifier, True)
+                self.assertEqual(self.controller.state, original)
+        self.rpc.verification_error = None
+        self.controller_reload().result(identifier, True)
+        self.assertTrue(self.controller.state["operations"][identifier]["works"][work["work_hash"]]["checked"])
+        self.assertIsNotNone(self.controller.state["operations"][identifier]["proof"])
+
+    def test_dry_run_canonical_revert_does_not_write_or_retire_result(self):
+        identifier, _ = self.frozen()
+        work = self.controller.step(True)
+        self.returned(work, bare=True)
+        original = copy.deepcopy(self.controller.state)
+        before = {str(path): path.read_bytes() for path in self.base.rglob("*") if path.is_file()}
+        self.rpc.verification_error = r.RpcError(3, next(iter(c.proof_check.NATIVE_PROOF_REJECTIONS)))
+        self.assertIsNone(self.controller.result(identifier, False))
+        self.assertEqual(self.controller.state, original)
+        self.assertEqual(before, {str(path): path.read_bytes() for path in self.base.rglob("*") if path.is_file()})
 
     def test_signed_wrong_range_result_is_rejected_without_rpc_verification(self):
         identifier, _ = self.frozen()

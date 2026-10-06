@@ -23,6 +23,8 @@ class ProofRpc(NativeRpc):
         if method == "eth_call" and params[0]["data"][:10] == "0x" + r.selector(p.VERIFY_SIGNATURE).hex():
             self.verifications.append(copy.deepcopy(params))
             if self.verification_error:
+                if self.after_verify:
+                    self.after_verify()
                 raise self.verification_error
             if self.after_verify:
                 self.after_verify()
@@ -98,6 +100,63 @@ class ProofCheckTests(unittest.TestCase):
             with self.subTest(error=error):
                 self.rpc.verification_error = error
                 with self.assertRaises(s.Error):
+                    self.verify()
+
+    def test_exact_native_rejections_are_canonical_negatives(self):
+        reasons = ("loadProof: Proof is invalid", "invalid quotient evaluation",
+                   "invalid vanishing polynomial", "finalPairing: pairing failure",
+                   "pointNegate: invalid point")
+        encodings = {s.cast("calldata", "Error(string)", reason) for reason in reasons}
+        self.assertEqual(encodings, p.NATIVE_PROOF_REJECTIONS)
+        for data in encodings:
+            with self.subTest(data=data):
+                self.rpc.verification_error = r.RpcError(3, data)
+                with self.assertRaisesRegex(s.Error, "^native_snark_rejected$"):
+                    self.verify()
+                self.assertEqual(self.rpc.observed[-2:], [
+                    ("eth_getBlockByNumber", [self.rpc.head["number"], False]), ("eth_chainId", [])])
+
+    def test_unknown_or_infrastructure_reverts_remain_uncertain(self):
+        rejection = next(iter(p.NATIVE_PROOF_REJECTIONS))
+        errors = [r.RpcError(3), r.RpcError(3.0, rejection), r.RpcError(-32000, rejection), r.RpcError(3, "0x"),
+                  r.RpcError(3, rejection[:-2]), r.RpcError(3, rejection + "00"),
+                  r.RpcError(3, {"data": rejection}), r.RpcError(3, "not hex")]
+        for reason in ("modexp precompile failed", "pointMulIntoDest: ecMul failed",
+                       "pointAddIntoDest: ecAdd failed", "pointSubAssign: ecAdd failed",
+                       "pointAddAssign: ecAdd failed", "pointMulAndAddIntoDest",
+                       "finalPairing: precompile failure", "unknown verifier error"):
+            errors.append(r.RpcError(3, s.cast("calldata", "Error(string)", reason)))
+        for error in errors:
+            with self.subTest(data=error.data):
+                self.rpc.verification_error = error
+                with self.assertRaises(r.RpcError) as caught:
+                    self.verify()
+                self.assertIs(caught.exception, error)
+
+    def test_rejected_proof_still_requires_canonical_chain_and_anchor(self):
+        self.rpc.verification_error = r.RpcError(3, next(iter(p.NATIVE_PROOF_REJECTIONS)))
+        for field, value in (("reorg_anchor", True), ("chain_override", "0x1")):
+            with self.subTest(field=field):
+                self.rpc.after_verify = lambda: setattr(self.rpc, field, value)
+                with self.assertRaisesRegex(s.Error, "rpc_reorg_or_chain_change"):
+                    self.verify()
+                setattr(self.rpc, field, False if field == "reorg_anchor" else None)
+
+    def test_rejection_outside_final_verifier_call_is_not_terminal(self):
+        error = r.RpcError(3, next(iter(p.NATIVE_PROOF_REJECTIONS)))
+        with patch.object(p.k, "base_context", side_effect=error), self.assertRaises(r.RpcError) as caught:
+            self.verify()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(self.rpc.verifications, [])
+
+    def test_rejected_proof_still_requires_deadline_and_freshness(self):
+        self.rpc.verification_error = r.RpcError(3, next(iter(p.NATIVE_PROOF_REJECTIONS)))
+        for elapsed, age, reason in ((16, 120, "proof_verification_timeout"),
+                                     (2, 1, "stale_verification_anchor")):
+            with self.subTest(reason=reason), patch.object(p.time, "monotonic", return_value=0) as clock:
+                self.config["policy"]["max_head_age_seconds"] = age
+                self.rpc.after_verify = lambda: setattr(clock, "return_value", elapsed)
+                with self.assertRaisesRegex(s.Error, reason):
                     self.verify()
 
     def test_native_binding_failures_precede_verifier_call(self):

@@ -28,8 +28,8 @@ TERMINAL = {"accepted", "reverted", "accepted_elsewhere", "stale_unsigned"}
 
 
 class RpcError(s.Error):
-    def __init__(self, code):
-        self.code = code
+    def __init__(self, code, data=None):
+        self.code, self.data = code, data
         super().__init__("rpc_rejected_request")
 
 
@@ -74,7 +74,8 @@ class Rpc:
                   "invalid_rpc_response")
         if "error" in result:
             error = result["error"]
-            raise RpcError(error.get("code") if isinstance(error, dict) else None)
+            raise RpcError(error.get("code") if isinstance(error, dict) else None,
+                           error.get("data") if isinstance(error, dict) else None)
         s.require("result" in result, "missing_rpc_result")
         return result["result"]
 
