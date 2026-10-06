@@ -236,7 +236,12 @@ rebuilds the deployment bundle, deploys ERC20/CTM contracts, or falls back to a
 fresh core script after **any** Forge resume error, including a missing journal.
 The fixed core-script resume is followed by the normal state-gated owner/admin
 handoffs and clean owner/pending-owner postchecks; only then is the canonical
-typed core config persisted. Core input/output bytes must remain unchanged.
+typed core config persisted. The final save serializes with the unchanged
+canonical YAML serializer and exclusively creates the canonical config path
+with owner-only permissions, then syncs the file. Any regular file, empty or
+malformed config, symlink or broken link created after the early absence check
+is preserved and causes recovery to fail; it is never overwritten. Core
+input/output bytes must remain unchanged.
 An exact same-owner pending transfer to the authenticated governor EOA is cleared
 through the pinned direct acceptance function; foreign or aliased pending owners
 remain errors. This is not a blanket acceptance of pending successors.

@@ -50,7 +50,7 @@ class CoreJournalOnlyTests(unittest.TestCase):
         ):
             self.assertIn(required, recovery)
         branch = source.split("if final_ecosystem_args.core_journal_only {", 1)[1].split("\n    }", 1)[0]
-        self.assertIn("contracts.save_with_base_path(shell, &ecosystem_config.config)?;", branch)
+        self.assertIn("persist_recovered_core_config_new(&contracts, &ecosystem_config.config)?;", branch)
         self.assertIn("return Ok(());", branch)
 
     def test_strict_forge_returns_every_resume_error_before_fresh_fallback(self) -> None:
@@ -80,6 +80,27 @@ class CoreJournalOnlyTests(unittest.TestCase):
             "missing_empty_or_symlink_core_inputs_are_never_generated",
         ):
             self.assertIn(required, source)
+
+    def test_final_core_config_publication_is_exclusive_and_canonical(self) -> None:
+        source = added("zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs")
+        start = source.index("fn persist_recovered_core_config_new(")
+        writer = source[start:source.index("\n}", start)]
+        self.assertIn("CoreContractsConfig::get_path_with_base_path(base_path)", writer)
+        self.assertIn("serde_yaml::to_string(contracts)?", writer)
+        self.assertLess(writer.index("serde_yaml::to_string"), writer.index(".open(path)"))
+        self.assertIn("options.write(true).create_new(true)", writer)
+        self.assertIn("options.mode(0o600)", writer)
+        self.assertIn("file.write_all(content.as_bytes())", writer)
+        self.assertIn("file.sync_all()", writer)
+        self.assertNotIn(".save_with_base_path", writer)
+        for regression in (
+            "core_config_save_is_create_only_and_matches_canonical_yaml_bytes",
+            "concurrent_regular_empty_or_malformed_core_config_is_preserved",
+            "concurrent_core_config_symlink_or_broken_link_is_preserved",
+        ):
+            self.assertIn(regression, source)
+        forge = added("zkstack_cli/crates/common/src/forge.rs")
+        self.assertIn("crate::config::init_global_config(crate::config::GlobalConfig", forge)
 
 
 if __name__ == "__main__":
