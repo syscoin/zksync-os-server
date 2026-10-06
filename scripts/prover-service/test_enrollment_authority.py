@@ -69,6 +69,29 @@ class AuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "omits_or_adds"):
             d.enrollment_snapshot(self.f["settings"], [eoa], 5, rpc)
 
+    def test_verified_scan_metadata_is_immutable_and_preserves_input_order(self):
+        eoa = copy.deepcopy(self.base["subscriptions"][0])
+        eoa["subscription"]["operator"] = eoa["subscription"]["account"]
+        eoa["signature"] = sign(s.subscription_request(self.f["settings"], eoa["subscription"]), "account")
+        normalized = sorted([eoa, *self.f["subscriptions"]], key=lambda entry: entry["subscription"]["account"])
+        submitted = list(reversed(normalized))
+        rpc = td.Rpc(self.f["settings"], submitted)
+        authority = s.EnrollmentAuthority(self.f["settings"], submitted, 5, rpc, h(100))
+        self.assertEqual(authority.normalized_snapshot, s.canonical(normalized))
+        self.assertEqual(authority.snapshot, s.canonical(submitted))
+        self.assertNotEqual(authority.snapshot, authority.normalized_snapshot)
+        self.assertEqual(authority.anchor, s.canonical({"block_hash": h(100), "timestamp": 550,
+                                                       "phase": "service", "ends_at": 600}))
+        authority.check(self.f["settings"], submitted, 5)
+        for field in ("normalized_snapshot", "anchor"):
+            with self.subTest(field=field), self.assertRaises(FrozenInstanceError):
+                setattr(authority, field, b"changed")
+        before = (authority.snapshot, authority.normalized_snapshot, authority.anchor)
+        submitted[0]["subscription"]["beneficiary"] = a(183)
+        self.assertEqual((authority.snapshot, authority.normalized_snapshot, authority.anchor), before)
+        with self.assertRaisesRegex(s.Error, "scope_mismatch"):
+            authority.check(self.f["settings"], submitted, 5)
+
     def test_context_is_not_a_json_flag_and_cannot_authorize_changed_snapshot(self):
         with self.assertRaisesRegex(s.Error, "authenticated_enrollment_authority_required"):
             self.validate({"authenticated": True})

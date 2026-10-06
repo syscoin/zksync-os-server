@@ -209,15 +209,20 @@ class EnrollmentAuthority:
 
     identity: tuple
     snapshot: bytes
+    normalized_snapshot: bytes
+    anchor: bytes
     period: int
     block_hash: str
 
     def __init__(self, settings, subscriptions, period, rpc, block_hash):
         import enrollment
         nonzero(block_hash)
-        _, anchor = enrollment.enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=block_hash)
+        normalized, anchor = enrollment.enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=block_hash)
         object.__setattr__(self, "identity", self.scope(settings))
         object.__setattr__(self, "snapshot", canonical(subscriptions))
+        # Audits compare the normalized roster and entire anchor without another registry scan.
+        object.__setattr__(self, "normalized_snapshot", canonical(normalized))
+        object.__setattr__(self, "anchor", canonical(anchor))
         object.__setattr__(self, "period", period)
         object.__setattr__(self, "block_hash", anchor["block_hash"])
 

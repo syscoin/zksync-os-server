@@ -52,16 +52,19 @@ def validate_identity(identity, journal_id, trust, rpc):
     lanes = identity["lanes"]
     s.require(type(lanes) is dict and set(lanes) in ({"child"}, {"child", "gateway"}), "invalid_audit_lanes")
     s.require(lanes["child"]["settings"] == settings, "audit_primary_lane_changed")
-    for lane in lanes.values():
+    for name, lane in lanes.items():
         s.exact(lane, ("settings", "endpoint_commitment"))
         s.nonzero(lane["endpoint_commitment"])
         other = s.config(lane["settings"])
         for key in ("registry_chain_id", "registry", "policy_hash", "sequencer", "duties_per_round"):
             s.require(other[key] == settings[key], "audit_shared_identity_changed")
-        subscriptions, anchor = enrollment_state.enrollment_snapshot(other, identity["subscriptions"],
-                                          identity["period"], rpc, block_hash=enrollment["block_hash"])
-        s.require(subscriptions == identity["subscriptions"] and anchor == enrollment,
+        authenticated = s.EnrollmentAuthority(other, identity["subscriptions"], identity["period"], rpc,
+                                               enrollment["block_hash"])
+        s.require(authenticated.normalized_snapshot == s.canonical(identity["subscriptions"])
+                  and authenticated.anchor == s.canonical(enrollment),
                   "audit_enrollment_snapshot_changed")
+        if name == "child":
+            authority = authenticated
     if "gateway" in lanes:
         gateway = lanes["gateway"]["settings"]
         s.require(settings["execution_chain_id"] == settings["registry_chain_id"]
@@ -72,8 +75,7 @@ def validate_identity(identity, journal_id, trust, rpc):
                   "audit_invalid_gateway_topology")
     s.require(len(identity["subscriptions"]) * settings["duties_per_round"] <= enrollment_state.MAX_OPERATIONS,
               "audit_roster_exceeds_capacity")
-    return s.EnrollmentAuthority(settings, identity["subscriptions"], identity["period"], rpc,
-                                 trust["enrollment_block_hash"])
+    return authority
 
 
 class Replay:
