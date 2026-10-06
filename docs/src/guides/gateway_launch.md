@@ -236,8 +236,28 @@ Distinguish these recovery cases before changing any checkpoint or artifact:
 
 | Evidence | Permitted next step |
 | --- | --- |
-| Verified pre-broadcast failure: no new sender nonce, no deployment receipts or code, and no partial deployment outputs | Correct the diagnosed selector/configuration problem, retain the evidence, and rerun the same reviewed inputs through the canonical launcher. A missing output file alone is not proof that nothing was broadcast. |
+| Verified pre-broadcast failure: no submitted transaction, no new latest/pending sender nonce, no deployment receipts or code, and no partially broadcast deployment output | Correct the diagnosed selector/configuration problem and retain the evidence. The absent-graph recovery below permits only an explicit same-input invocation of the canonical deployment helper; checkpoint repair/revalidation follows only after the full live graph exists. A missing output file alone is not proof that nothing was broadcast. |
 | Any transaction submitted, confirmed or pending; a changed sender nonce; or a partial deployment/broadcast artifact | Preserve the entire checkpoint, Forge broadcast journal, inputs, hashes and receipts. Reconcile the exact sequence using supported repair/resume; do not reset, replay or reconstruct an apparently fresh deployment automatically. |
+
+<!-- SYSCOIN: A blocked L1 checkpoint's ownership-only repair cannot create a
+missing graph; this narrow no-broadcast recovery is not a partial-journal replay. -->
+For the verified no-broadcast/absent-graph case, the current blocked
+`gl.l1_ecosystem_deployed` repair uses ownership-only recovery and rejects a
+missing graph. Do not delete its checkpoint or artifacts to manufacture freshness.
+After recording the no-broadcast evidence and approving the diagnosed fix,
+retain the exact network, source, namespace/salt, wallet/admin inputs and invoke
+the canonical helper explicitly with the already validated launch environment:
+
+```bash
+GATEWAY_ECOSYSTEM_RESUME_FIRST=false \
+  bash scripts/gateway-launch/gateway-deploy-l1.sh
+```
+
+This helper still authenticates the serialized launch context and rejects an
+existing partial/invalid graph; it is not a bypass. Only once the complete live
+graph exists, use supported checkpoint repair/revalidation and then resume the
+launcher. **Never use this fresh-helper recovery for a submitted, pending or
+partially broadcast journal**, even when its normal output file is absent.
 
 An `eth_call` from an owner address proves call compatibility, not possession of
 its signing credential. Do not treat that simulation as a custody or broadcast
@@ -253,11 +273,25 @@ list, diamonds, ChainAdmins, Governance and their actual signer custody. Keep
 decryptable/restorable controller credentials and verify their derived public
 addresses against live owners. SSH/sudo, an available newly deployed governor,
 TSYS balances and a successful owner-address simulation do not establish old
-contract control. Missing old signing authority is a stop, not permission to
-leave a permissionless old deposit endpoint accepting funds into a retired chain.
+contract control. Missing old signing authority is a strict stop for mainnet,
+and is never implicit permission to retire an accepting deposit endpoint.
 
-Prefer the deployed per-chain `pauseDepositsBeforeInitiatingMigration()` route
-when its admin/CTM authority is available. Bind its selector and runtime to the
+<!-- SYSCOIN: Disposable-testnet deprecation is an explicit operator exception,
+not an onchain pause claim or a mainnet custody/retirement shortcut. -->
+For a disposable **testnet only**, the operator may explicitly approve a
+different boundary: deprecate the old unpaused contracts, replace official
+clients/endpoints and publish that direct manual deposits to those exact old
+contracts can still be accepted and may remain unprocessed or unrecoverable on
+the retired chain. Record the specific addresses/chain IDs, reconciled existing
+obligations and accepted manual-deposit risk. Do not claim old onchain intake
+stopped; this exception does not waive external collateral, shared history or
+existing-claim reconciliation, and can never be copied to mainnet. The current
+testnet exception decision is **pending**; general authorization to wipe v31
+databases does not select it automatically.
+
+For the normal paused-retirement path, prefer the deployed per-chain
+`pauseDepositsBeforeInitiatingMigration()` route when its admin/CTM authority
+is available. Bind its selector and runtime to the
 old release, inspect the actual pause delay, and verify `depositsPaused()` rather
 than assuming a source-only function or zero-delay setting. For the reviewed
 v31 Tanenbaum deployment the delay is zero. Pausing the migrated edge on ROOT
@@ -285,7 +319,10 @@ cancellation, reimbursement and reserve/liability records; never replay a
 cancelled or reimbursed message against the new Bridgehub. Preserve unchanged
 Tanenbaum/Sepolia state, external collateral and shared validator/relayer history.
 The operator-authorized discard covers v31 rollup databases and indexes, not
-those shared assets. Repeat final queue/event checks after intake is closed.
+those shared assets. For paused retirement, repeat final queue/event checks
+after onchain intake is closed. Under a separately approved testnet exception,
+close official/fast-path intake and record a bounded final reconciliation cutoff;
+explicitly acknowledge that later manual legacy deposits can still arrive.
 
 An existing collateralized NativeIngress proxy has no Bridgehub setter in the
 reviewed old implementation. A proposed minimal proxy upgrade/rebind is a
