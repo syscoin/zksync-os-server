@@ -198,6 +198,57 @@ Select the matching bridge input before the first checkpoint fingerprint and
 verify its deployed `nevmStartBlock()` getter. Do not copy the mainnet default
 into the testnet launch.
 
+### Confirmed core deployment interrupted before CTM initialization
+
+<!-- SYSCOIN: Keep partial-core recovery separate from fresh replay and the
+persisted complete-graph ownership-only repair route. -->
+Core transactions may all succeed before a later ownership handoff fails and
+before zkstack persists `configs/contracts.yaml`. Do not reset checkpoints or
+rerun a fresh ecosystem deployment. The complete-graph `--ownership-only`
+repair is not appropriate when the core config and CTM have not been persisted.
+
+First bind a protected, independently reviewed recovery manifest to the exact
+source/artifact identities, existing initial deployment config, unchanged core
+input/output, complete Forge journal, actor/nonce/calldata commitments, canonical
+successful receipts, deployed runtimes and proxy slots. Recheck the live chain,
+genesis, nonce and receipt canonicality immediately before execution. A journal
+file's presence or self-reported successful receipts are not authentication.
+Separately qualify the patched CLI binary and its build stamp; historical core
+evidence does not automatically qualify a newly built CLI.
+
+Only for an authenticated, fully confirmed core journal, the explicit narrow
+entry point is:
+
+```bash
+# Existing qualified ecosystem working directory and authenticated external
+# wallet selectors must be supplied by the reviewed operator invocation.
+zkstack ecosystem init-core-contracts \
+  --core-journal-only --resume --zksync-os \
+  --update-submodules false --skip-contract-compilation-override true \
+  --deploy-erc20 false --support-l2-legacy-shared-bridge-test false \
+  --l1-rpc-url "$L1_RPC_URL"
+```
+
+This mode requires an absent persisted contracts config, existing input/output,
+and a complete journal with no pending
+or failed receipts. It never generates deployment inputs, updates submodules,
+rebuilds the deployment bundle, deploys ERC20/CTM contracts, or falls back to a
+fresh core script after **any** Forge resume error, including a missing journal.
+The fixed core-script resume is followed by the normal state-gated owner/admin
+handoffs and clean owner/pending-owner postchecks; only then is the canonical
+typed core config persisted. Core input/output bytes must remain unchanged.
+An exact same-owner pending transfer to the authenticated governor EOA is cleared
+through the pinned direct acceptance function; foreign or aliased pending owners
+remain errors. This is not a blanket acceptance of pending successors.
+
+Retain receipts and all original journals. Initialize and register the CTM through
+its separate canonical command only after the core graph is qualified. Use the
+supported launcher checkpoint repair/revalidation after the complete registered
+graph satisfies its existing guards; do not manufacture a passed checkpoint or
+claim this core-only step completed the whole ecosystem. Recovery manifests and
+invocation capsules must use the selected network's reviewed identities; never
+copy a Tanenbaum actor, salt, genesis or receipt set into a mainnet operation.
+
 ### Mock Gateway graph inspection
 
 <!-- SYSCOIN: This RPC-backed probe is not the historical real-verifier offline attestation. -->

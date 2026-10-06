@@ -4021,16 +4021,16 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "734ca6c26ee88a370b0f724bbdaa75c1a185b9efa7b839bec34db1ead4f6535a",
+            "077e7230373ef0d8165e935d158cd3e6c49094095de328eb1c10f976dda3f7e9",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="734ca6c26ee88a370b0f724bbdaa75c1a185b9efa7b839bec34db1ead4f6535a"',
+            'EXPECTED_PATCH_SHA256="077e7230373ef0d8165e935d158cd3e6c49094095de328eb1c10f976dda3f7e9"',
             'EXPECTED_PATCH_PATH_COUNT="27"',
             'EXPECTED_PATCH_PATHS_SHA256="a6b6a8b3d2205b10e602f5a1463925ff9cd4f077b1b441c92a464a2f1cbdc985"',
-            'EXPECTED_PATCHED_TREE="a25aa51c0121f9fe2a2bda2f950cf6b6dc207092"',
+            'EXPECTED_PATCHED_TREE="1a21bca1460ca689ff22d6922b1f931cdf2dc284"',
             'FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"',
             'FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8\'s V32 finish-migration tuple ABI."',
         ):
