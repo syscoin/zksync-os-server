@@ -5428,7 +5428,11 @@ if os.environ["GL_WALLET_EMIT_FORGE_ARGS"] == "true":
         raise SystemExit("one zkstack external account must match every requested administrator role")
     # SYSCOIN: Each pinned zkstack -a option consumes one Forge argument. Keep
     # selector names as separate values so wallet_args_passed detects them.
-    print(json.dumps([part for arg in external[0][1] for part in ("--additional-args", arg)] if external else []))
+    # SYSCOIN: Forge 0.1.5 also requires an explicit script sender when an
+    # encrypted account is selected. Use only the already authenticated shared
+    # actor; cast wallet address must continue receiving selector args alone.
+    forge_args = external[0][1] + ["--sender", external[0][0]] if external else []
+    print(json.dumps([part for arg in forge_args for part in ("--additional-args", arg)]))
 PY
 }
 

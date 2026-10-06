@@ -146,6 +146,10 @@ administrator role used by that command; distinct administrator identities
 cannot share a single selector. Conflicting ambient wallet selectors are
 rejected rather than inherited.
 
+<!-- SYSCOIN: Pinned Forge scripts require an explicit, authenticated sender. -->
+The forwarded Forge arguments include `--sender` bound to that authenticated
+administrator; the address-derivation command receives only account selectors.
+
 <!-- SYSCOIN: Bind every conversion actor and preserve protected file identity. -->
 Gateway conversion checks the chain deployer, chain governor and ecosystem
 governor together before either filterer setup or conversion. Generated-only

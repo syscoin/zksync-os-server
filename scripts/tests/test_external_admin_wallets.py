@@ -94,7 +94,19 @@ else: raise SystemExit(92)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split("\0")[:-1],
                          ["--additional-args", "--account", "--additional-args", "v32-admin",
-                          "--additional-args", "--password-file", "--additional-args", str(password.resolve())])
+                          "--additional-args", "--password-file", "--additional-args", str(password.resolve()),
+                          "--additional-args", "--sender", "--additional-args", ADMIN])
+
+    def test_forge_sender_is_authenticated_but_never_forwarded_to_cast_derivation(self):
+        result = self.run_shell('gl_authenticate_chain_wallet_roles --print-forge-args gateway deployer governor')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)[-4:],
+                         ["--additional-args", "--sender", "--additional-args", ADMIN])
+        calls = [json.loads(line) for line in (self.root / "cast-args.jsonl").read_text().splitlines()]
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertEqual(call, ["wallet", "address", "--account", "v32-admin",
+                                    "--password-file", str(self.password.resolve())])
 
     def test_account_mismatch_fails_before_broadcast(self):
         marker = self.root / "broadcast"
@@ -189,7 +201,10 @@ else: raise SystemExit(92)
         self.assertTrue(marker.exists())
         result = self.run_shell('gl_authenticate_chain_wallet_roles --print-forge-args --conversion-actors gateway')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)[1], "--account")
+        self.assertEqual(json.loads(result.stdout),
+                         ["--additional-args", "--account", "--additional-args", "v32-admin",
+                          "--additional-args", "--password-file", "--additional-args", str(self.password.resolve()),
+                          "--additional-args", "--sender", "--additional-args", ADMIN])
 
     def test_conversion_generated_only_mixed_identities_keep_empty_selectors(self):
         # Distinct generated private keys bind independently; no shared external
