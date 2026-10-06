@@ -484,7 +484,7 @@ index 67e80c6a7..d0c83b94f 100644
 +                H256::from_str(&value)
 +                    .expect("ZKSYS_ZK_TOKEN_ASSET_ID / ZK_TOKEN_ASSET_ID must be bytes32")
 diff --git a/zkstack_cli/crates/zkstack/src/admin_functions.rs b/zkstack_cli/crates/zkstack/src/admin_functions.rs
-index 0ffe0e96f..aab4fc375 100644
+index 0ffe0e96f..eff8fdab1 100644
 --- a/zkstack_cli/crates/zkstack/src/admin_functions.rs
 +++ b/zkstack_cli/crates/zkstack/src/admin_functions.rs
 @@ -3 +3,2 @@ use std::path::{Path, PathBuf};
@@ -504,7 +504,7 @@ index 0ffe0e96f..aab4fc375 100644
 +    // SYSCOIN: Reuse pinned generated bindings for ownership address discovery.
 +    abi::{BridgehubAbi, IL1NativeTokenVaultAbi, ADMINFUNCTIONSABI_ABI},
 +    commands::chain::admin_call_builder::{decode_admin_calls, AdminCall as DecodedAdminCall},
-@@ -37 +40,173 @@ lazy_static! {
+@@ -37 +40,200 @@ lazy_static! {
 -pub async fn accept_admin(
 +// SYSCOIN: Exact OZ Ownable2Step acceptOwnership selector used inside the
 +// ChainAdmin-wrapped call payload.
@@ -547,6 +547,23 @@ index 0ffe0e96f..aab4fc375 100644
 +        bail!("expected owner is not the target's pending owner");
 +    }
 +    Ok(true)
++}
++
++// SYSCOIN: DeployL1CoreContracts initializes the vault to the governor EOA
++// before transferring to that same EOA. Only its exact pending-owner match
++// permits direct acceptance cleanup; Governance keeps its stricter pre-state.
++fn direct_owner_acceptance_required(
++    current_owner: Address,
++    pending_owner: Address,
++    expected_owner: Address,
++) -> anyhow::Result<bool> {
++    if expected_owner != Address::zero()
++        && current_owner == expected_owner
++        && pending_owner == expected_owner
++    {
++        return Ok(true);
++    }
++    owner_acceptance_required(current_owner, pending_owner, expected_owner)
 +}
 +
 +// SYSCOIN: Permit only the clean terminal state, an already-pending retry, or
@@ -603,6 +620,16 @@ index 0ffe0e96f..aab4fc375 100644
 +    l1_rpc_url: &str,
 +) -> anyhow::Result<()> {
 +    let (current_owner, pending_owner) = owner_state(target_address, l1_rpc_url).await?;
++    ensure_owner_state_complete(current_owner, pending_owner, expected_owner)
++}
++
++// SYSCOIN: Check post-state independently of a successful acceptance receipt;
++// conditional script no-ops and ownership drift must still fail closed.
++fn ensure_owner_state_complete(
++    current_owner: Address,
++    pending_owner: Address,
++    expected_owner: Address,
++) -> anyhow::Result<()> {
 +    if current_owner != expected_owner || pending_owner != Address::zero() {
 +        bail!("ownership handoff did not reach the expected clean state");
 +    }
@@ -679,29 +706,29 @@ index 0ffe0e96f..aab4fc375 100644
 +// path so resume disabling and external wallet arguments cannot diverge.
 +#[allow(clippy::too_many_arguments)]
 +async fn execute_owner_calldata(
-@@ -40,3 +215,2 @@ pub async fn accept_admin(
+@@ -40,3 +242,2 @@ pub async fn accept_admin(
 -    admin: Address,
 -    governor: &Wallet,
 -    target_address: Address,
 +    wallet: &Wallet,
 +    wallet_owner: WalletOwner,
-@@ -44 +218,2 @@ pub async fn accept_admin(
+@@ -44 +245,2 @@ pub async fn accept_admin(
 -    l1_rpc_url: String,
 +    l1_rpc_url: &str,
 +    calldata: Bytes,
-@@ -46,3 +220,0 @@ pub async fn accept_admin(
+@@ -46,3 +247,0 @@ pub async fn accept_admin(
 -    // Resume for accept admin doesn't work properly. Foundry assumes that if signature of the function is the same,
 -    // than it's the same call, but because we are calling this function multiple times during the init process,
 -    // code assumes that doing only once is enough, but actually we need to accept admin multiple times
-@@ -51,4 +222,0 @@ pub async fn accept_admin(
+@@ -51,4 +249,0 @@ pub async fn accept_admin(
 -
 -    let calldata = ADMIN_FUNCTIONS
 -        .encode("chainAdminAcceptAdmin", (admin, target_address))
 -        .unwrap();
-@@ -61 +229 @@ pub async fn accept_admin(
+@@ -61 +256 @@ pub async fn accept_admin(
 -        .with_rpc_url(l1_rpc_url)
 +        .with_rpc_url(l1_rpc_url.to_owned())
-@@ -64 +232,69 @@ pub async fn accept_admin(
+@@ -64 +259,69 @@ pub async fn accept_admin(
 -    accept_ownership(shell, governor, forge).await
 +    execute_ownership_as(shell, wallet, wallet_owner, forge).await
 +}
@@ -772,7 +799,7 @@ index 0ffe0e96f..aab4fc375 100644
 +        bail!("admin handoff did not reach the expected state");
 +    }
 +    Ok(())
-@@ -75,0 +312,7 @@ pub async fn accept_owner(
+@@ -75,0 +339,7 @@ pub async fn accept_owner(
 +    // SYSCOIN: Fail closed unless ownership is either already complete or is
 +    // still in the exact state required for the intended acceptance.
 +    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
@@ -780,10 +807,10 @@ index 0ffe0e96f..aab4fc375 100644
 +        return Ok(());
 +    }
 +
-@@ -89 +332 @@ pub async fn accept_owner(
+@@ -89 +359 @@ pub async fn accept_owner(
 -        .with_rpc_url(l1_rpc_url)
 +        .with_rpc_url(l1_rpc_url.clone())
-@@ -92 +335,113 @@ pub async fn accept_owner(
+@@ -92 +362,113 @@ pub async fn accept_owner(
 -    accept_ownership(shell, governor, forge).await
 +    accept_ownership(shell, governor, forge).await?;
 +    ensure_owner_handoff_complete(target_address, governor_contract, &l1_rpc_url).await
@@ -844,7 +871,7 @@ index 0ffe0e96f..aab4fc375 100644
 +    l1_rpc_url: String,
 +) -> anyhow::Result<()> {
 +    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
-+    if !owner_acceptance_required(current_owner, pending_owner, governor.address)? {
++    if !direct_owner_acceptance_required(current_owner, pending_owner, governor.address)? {
 +        return Ok(());
 +    }
 +    let calldata = ADMIN_FUNCTIONS
@@ -898,7 +925,7 @@ index 0ffe0e96f..aab4fc375 100644
 +    )
 +    .await?;
 +    ensure_owner_handoff_complete(target_address, chain_admin, &l1_rpc_url).await
-@@ -348,0 +704,11 @@ async fn accept_ownership(
+@@ -348,0 +731,11 @@ async fn accept_ownership(
 +    forge: ForgeScript,
 +) -> anyhow::Result<()> {
 +    execute_ownership_as(shell, governor, WalletOwner::Governor, forge).await
@@ -910,23 +937,23 @@ index 0ffe0e96f..aab4fc375 100644
 +    shell: &Shell,
 +    wallet: &Wallet,
 +    wallet_owner: WalletOwner,
-@@ -351 +717 @@ async fn accept_ownership(
+@@ -351 +744 @@ async fn accept_ownership(
 -    forge = fill_forge_private_key(forge, Some(governor), WalletOwner::Governor)?;
 +    forge = fill_forge_private_key(forge, Some(wallet), wallet_owner)?;
-@@ -382 +748,2 @@ pub struct AdminScriptOutput {
+@@ -382 +775,2 @@ pub struct AdminScriptOutput {
 -    pub calls: Vec<AdminCall>,
 +    // SYSCOIN: retain the upstream decoded-call type beside generated query bindings.
 +    pub calls: Vec<DecodedAdminCall>,
-@@ -535,0 +903,2 @@ pub async fn set_da_validator_pair(
+@@ -535,0 +930,2 @@ pub async fn set_da_validator_pair(
 +    // SYSCOIN: backport upstream 10d3bd2d's V32 AdminFunctions ABI.
 +    access_control_restriction: Address,
-@@ -544,0 +914 @@ pub async fn set_da_validator_pair(
+@@ -544,0 +941 @@ pub async fn set_da_validator_pair(
 +                access_control_restriction,
-@@ -811 +1181,2 @@ pub(crate) async fn finalize_migrate_to_gateway(
+@@ -811 +1208,2 @@ pub(crate) async fn finalize_migrate_to_gateway(
 -            "migrateChainToGateway",
 +            // SYSCOIN: backport upstream b8e4dbdc8's paired V32 cut-data selector fix.
 +            "migrateChainToGatewayWithCutData",
-@@ -998,0 +1370,103 @@ pub async fn start_migrate_chain_from_gateway(
+@@ -998,0 +1397,150 @@ pub async fn start_migrate_chain_from_gateway(
 +
 +// SYSCOIN: lock the state-aware ownership retry invariants.
 +#[cfg(test)]
@@ -952,6 +979,53 @@ index 0ffe0e96f..aab4fc375 100644
 +        assert!(owner_acceptance_required(current, governor, governor).unwrap());
 +        assert!(owner_acceptance_required(current, Address::zero(), governor).is_err());
 +        assert!(owner_acceptance_required(current, Address::from_low_u64_be(3), governor).is_err());
++    }
++
++    #[test]
++    fn direct_same_owner_pending_acceptance_is_not_a_noop() {
++        let governor = Address::from_low_u64_be(1);
++        let other = Address::from_low_u64_be(2);
++
++        assert!(!direct_owner_acceptance_required(governor, Address::zero(), governor).unwrap());
++        assert!(direct_owner_acceptance_required(governor, governor, governor).unwrap());
++        assert!(direct_owner_acceptance_required(other, governor, governor).unwrap());
++        assert!(direct_owner_acceptance_required(governor, other, governor).is_err());
++        assert!(direct_owner_acceptance_required(other, Address::zero(), governor).is_err());
++        assert!(direct_owner_acceptance_required(other, other, governor).is_err());
++        // SYSCOIN: Do not broaden the Governance script's supported pre-state.
++        assert!(owner_acceptance_required(governor, governor, governor).is_err());
++        assert!(!direct_owner_acceptance_required(
++            Address::zero(),
++            Address::zero(),
++            Address::zero()
++        )
++        .unwrap());
++    }
++
++    #[test]
++    fn direct_same_owner_pending_acceptance_rejects_an_aliased_governor() {
++        let governor = Address::from_low_u64_be(1);
++        // SYSCOIN: The L1-to-L2 alias of 0x1 is a different authority, never
++        // an acceptable substitute for the authenticated direct governor.
++        let alias = Address::from([
++            0x11, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x12,
++        ]);
++
++        assert!(direct_owner_acceptance_required(governor, alias, governor).is_err());
++        assert!(direct_owner_acceptance_required(alias, alias, governor).is_err());
++        assert!(direct_owner_acceptance_required(governor, governor, alias).is_err());
++    }
++
++    #[test]
++    fn successful_acceptance_receipt_still_requires_clean_owner_post_state() {
++        let governor = Address::from_low_u64_be(1);
++        let other = Address::from_low_u64_be(2);
++
++        assert!(ensure_owner_state_complete(governor, Address::zero(), governor).is_ok());
++        assert!(ensure_owner_state_complete(governor, governor, governor).is_err());
++        assert!(ensure_owner_state_complete(governor, other, governor).is_err());
++        assert!(ensure_owner_state_complete(other, Address::zero(), governor).is_err());
++        assert!(ensure_owner_state_complete(other, governor, governor).is_err());
 +    }
 +
 +    #[test]

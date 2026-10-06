@@ -26,10 +26,10 @@ fi
 # idempotency could accept a partial or locally modified deployment tool.
 EXPECTED_BASE_COMMIT="d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 EXPECTED_BASE_TREE="6d8ac3b2867f9aeb561ba9a2174cd459d6362585"
-EXPECTED_PATCH_SHA256="fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69"
+EXPECTED_PATCH_SHA256="734ca6c26ee88a370b0f724bbdaa75c1a185b9efa7b839bec34db1ead4f6535a"
 EXPECTED_PATCH_PATH_COUNT="27"
 EXPECTED_PATCH_PATHS_SHA256="a6b6a8b3d2205b10e602f5a1463925ff9cd4f077b1b441c92a464a2f1cbdc985"
-EXPECTED_PATCHED_TREE="2e4eed988d0014be40a7fcbdc0d9920229bfb56e"
+EXPECTED_PATCHED_TREE="a25aa51c0121f9fe2a2bda2f950cf6b6dc207092"
 FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"
 FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8's V32 finish-migration tuple ABI."
 
