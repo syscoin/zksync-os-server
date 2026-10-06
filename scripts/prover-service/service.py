@@ -213,9 +213,9 @@ class EnrollmentAuthority:
     block_hash: str
 
     def __init__(self, settings, subscriptions, period, rpc, block_hash):
-        import dispatcher
+        import enrollment
         nonzero(block_hash)
-        _, anchor = dispatcher.enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=block_hash)
+        _, anchor = enrollment.enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=block_hash)
         object.__setattr__(self, "identity", self.scope(settings))
         object.__setattr__(self, "snapshot", canonical(subscriptions))
         object.__setattr__(self, "period", period)

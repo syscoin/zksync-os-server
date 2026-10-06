@@ -54,6 +54,9 @@ class CoordinatorTests(unittest.TestCase):
         self.accepted(1)
         self.accepted(2)
         self.registry_rpc = self.rpc
+        registry_connection = patch.object(k, "registry_rpc_for", side_effect=lambda _: self.registry_rpc)
+        registry_connection.start()
+        self.addCleanup(registry_connection.stop)
         self.base = Path(self.tmp.name).resolve()
         self.roster = roster.construct(5, [self.f["proposal"]["candidate"]])
         self.f["proposal"]["accepted_package"]["rosterRoot"] = self.roster["root"]
@@ -97,6 +100,47 @@ class CoordinatorTests(unittest.TestCase):
         identifier = self.controller.reserve()
         self.assertIsNone(self.controller.acquire(identifier, True))
         return identifier
+
+    def test_missing_enrollment_rejects_configuration_before_state_creation(self):
+        config = copy.deepcopy(self.config)
+        del config["keeper"]["enrollment"]
+        root = self.base / "unconfigured-control"
+        with self.assertRaisesRegex(s.Error, "configured_enrollment_authority_required"):
+            c.initialize(root, config)
+        self.assertFalse(root.exists())
+        self.assertEqual(self.native.calls, [])
+
+    def test_acquire_authenticates_registry_and_pin_before_lease_mutation(self):
+        identifier = self.controller.reserve()
+        before = copy.deepcopy(self.controller.state)
+        files = {path.name: path.read_bytes() for path in self.controller.directory(identifier).iterdir()}
+        with patch.object(self.registry_rpc, "call", return_value="0x1"):
+            with self.assertRaisesRegex(s.Error, "wrong_rpc_chain"):
+                self.controller.acquire(identifier, True)
+        self.assertEqual(self.controller.state, before)
+        self.assertEqual(self.native.calls, [])
+        self.controller.keeper["enrollment"]["block_hash"] = h(199)
+        with self.assertRaisesRegex(s.Error, "enrollment_authority_anchor_mismatch"):
+            self.controller.acquire(identifier, True)
+        self.assertEqual(self.controller.state, before)
+        self.assertEqual(self.native.calls, [])
+        self.assertEqual({path.name: path.read_bytes() for path in self.controller.directory(identifier).iterdir()}, files)
+
+    def test_acquire_requires_registry_connection_before_native_pick(self):
+        identifier = self.controller.reserve()
+        before = copy.deepcopy(self.controller.state)
+        with patch.object(k, "registry_rpc_for", side_effect=s.Error("registry_rpc_unavailable")):
+            with self.assertRaisesRegex(s.Error, "registry_rpc_unavailable"):
+                self.controller.acquire(identifier, True)
+        self.assertEqual(self.controller.state, before)
+        self.assertEqual(self.native.calls, [])
+
+    def test_snapshot_reuses_authenticated_immutable_enrollment(self):
+        identifier = self.acquired()
+        count = len(self.registry_rpc.anchors)
+        chain, artifact = self.controller.status()
+        self.controller.snapshot(identifier, chain, artifact, True)
+        self.assertEqual(len(self.registry_rpc.anchors), count)
 
     def frozen(self):
         identifier = self.acquired()

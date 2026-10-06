@@ -398,6 +398,7 @@ python3 scripts/prover-service/dispatcher.py --execute --state /private/service-
   --rpc https://trusted-child-rpc.example/ --endpoint http://127.0.0.1:3125/ \
   --gateway-config gateway-service-config.json --gateway-endpoint http://127.0.0.1:3124/
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   work-request --account 0xACCOUNT --expires-at UNIX_SECONDS --output work-request.json
 ```
 
@@ -407,15 +408,15 @@ account, subscription, period, nonce, and deadline. Its journal commitment inclu
 both complete lane configurations; `work_scopes` exposes their identities for
 operator review.
 
-For subsequent dispatcher commands that prepare accepted duties for a contract
-account, supply `--registry-rpc https://trusted-child-rpc.example/` before the
-subcommand. It reauthenticates the journal's exact snapshot at its retained
+Every subsequent dispatcher command requires
+`--registry-rpc https://trusted-child-rpc.example/` before the subcommand.
+It authenticates the journal's exact snapshot at its retained
 canonical enrollment block. Low-level `service.py duty`, `offered-duty`, and
 `package` commands can use the same boundary with both `--registry-rpc-file` and
 `--enrollment-block-hash` before their subcommand; the RPC connection file has
 exactly `url` and `authorization` fields and must be private. These trusted inputs
-cannot be substituted by flags in a work envelope. Omitting them preserves the
-offline EOA account-signature checks.
+cannot be substituted by flags in a work envelope. Omitting the low-level
+`service.py` context preserves its offline EOA account-signature checks.
 
 Registration or readiness earns
 no credit. Authenticated ready accounts receive nonempty native batches in sorted
@@ -439,15 +440,20 @@ journals for the two chains in the same period.
 
 ```sh
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   ready --request work-request.json --signature operator-work-signature.json
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   --auth-file /private/child-prover-basic-auth --gateway-auth-file /private/gateway-prover-basic-auth pick
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   offer-request --operation job-000000 --output offer-request.json
 # The sequencer wallet signs offer-request.json's typed_data.
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   authorize --operation job-000000 --signature sequencer-offer-signature.json
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   export --operation job-000000 --output-directory /private/worker-handoff-000000
 ```
 
@@ -474,12 +480,15 @@ The host then submits the original private lease to the existing native verifier
 
 ```sh
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   proof-request --operation job-000000 --proof fri-proof.json --output duty-request.json
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   --auth-file /private/child-prover-basic-auth --gateway-auth-file /private/gateway-prover-basic-auth \
   submit --operation job-000000 \
   --proof fri-proof.json --signature operator-duty-signature.json
-python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 report
+python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ report
 ```
 
 Only the native verifier's accepted disposition, or recovery of exactly the same

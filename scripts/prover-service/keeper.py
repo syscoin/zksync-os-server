@@ -19,8 +19,8 @@ def sha(value):
 
 def configuration(value):
     s.require(type(value) is dict, "unexpected_or_missing_fields")
-    s.exact(value, ("schema_version", "lane", "rpc_url", "settings", "policy")
-            + (("enrollment",) if "enrollment" in value else ()))
+    s.require("enrollment" in value, "configured_enrollment_authority_required")
+    s.exact(value, ("schema_version", "lane", "rpc_url", "settings", "policy", "enrollment"))
     s.require(value["schema_version"] == 1 and value["lane"] in ("child", "gateway"), "invalid_keeper_configuration")
     s.config(value["settings"])
     p = value["policy"]
@@ -36,11 +36,10 @@ def configuration(value):
         s.require(0 < s.uint(p[field], 32), "positive_keeper_limit_required")
     s.require(p["rpc_timeout_seconds"] <= 30, "rpc_timeout_too_large")
     r.Rpc(value["rpc_url"], timeout=p["rpc_timeout_seconds"])
-    if "enrollment" in value:
-        enrollment = value["enrollment"]
-        s.exact(enrollment, ("registry_rpc_file", "block_hash"))
-        s.require(os.path.isabs(enrollment["registry_rpc_file"]), "absolute_registry_rpc_file_required")
-        s.nonzero(enrollment["block_hash"])
+    enrollment = value["enrollment"]
+    s.exact(enrollment, ("registry_rpc_file", "block_hash"))
+    s.require(os.path.isabs(enrollment["registry_rpc_file"]), "absolute_registry_rpc_file_required")
+    s.nonzero(enrollment["block_hash"])
     return value
 
 
@@ -49,17 +48,19 @@ def rpc_for(config):
 
 
 def registry_rpc_for(config):
-    if "enrollment" not in config:
-        return None
+    configuration(config)
     import workflow_io
     return workflow_io.wallet_connection(config["enrollment"]["registry_rpc_file"],
                                          config["policy"]["rpc_timeout_seconds"])
 
 
-def enrollment_for(config, request, registry_rpc=None):
-    if "enrollment" not in config:
-        return None
+def enrollment_for(config, request, registry_rpc=None, *, enrollment=None):
     configuration(config)
+    if enrollment is not None:
+        s.require(type(enrollment) is s.EnrollmentAuthority, "configured_enrollment_authority_required")
+        s.require(enrollment.block_hash == config["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
+        enrollment.check(config["settings"], request["subscriptions"], request["manifest"]["payload"]["period"])
+        return enrollment
     return s.EnrollmentAuthority(config["settings"], request["subscriptions"], request["manifest"]["payload"]["period"],
                                  registry_rpc or registry_rpc_for(config), config["enrollment"]["block_hash"])
 
@@ -232,13 +233,8 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True):
 
 
 def permit(config, rpc, request, evidence, payload, now, runtime, *, enrollment=None):
-    configuration(config)
-    if enrollment is not None:
-        s.require("enrollment" in config and type(enrollment) is s.EnrollmentAuthority,
-                  "configured_enrollment_authority_required")
-        s.require(enrollment.block_hash == config["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
     prepared = prepare(config["settings"], request, evidence, payload,
-                       enrollment=enrollment if enrollment is not None else enrollment_for(config, request))
+                       enrollment=enrollment_for(config, request, enrollment=enrollment))
     state = inspect(config, rpc, prepared, evidence, now, runtime)
     return {"schema_version": 1, "configuration_sha256": sha(config), "lane": config["lane"],
             "payload_sha256": sha(payload), "evidence_sha256": sha(evidence), "request": request,

@@ -142,7 +142,7 @@ class AuthorityTests(unittest.TestCase):
         offline = {key: value for key, value in config.items() if key != "enrollment"}
         with self.assertRaisesRegex(s.Error, "configured_enrollment_authority_required"):
             k.permit(offline, rpc, request, self.f["evidence"], self.f["fri_payload"], 1000, 50, enrollment=authority)
-        with self.assertRaisesRegex(s.Error, "eoa_signature_required"):
+        with self.assertRaisesRegex(s.Error, "configured_enrollment_authority_required"):
             k.permit(offline, rpc, request, self.f["evidence"], self.f["fri_payload"], 1000, 50)
 
     def test_fresh_sequencer_operator_and_wrapper_signatures_remain_required(self):

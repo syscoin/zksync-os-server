@@ -109,11 +109,13 @@ initialize a new period journal from independently verified enrollment.
 
 ```sh
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   audit-request --lane child --batch-from 1 --batch-to 2 --output /private/audit-request.json
 
 # Sign the request.digest using the configured sequencer signer, then store
 # {"signature":"0x..."} in /private/audit-signature.json.
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
+  --registry-rpc https://trusted-child-rpc.example/ \
   export-audit --request /private/audit-request.json --signature /private/audit-signature.json \
   --output /private/audit.json
 ```

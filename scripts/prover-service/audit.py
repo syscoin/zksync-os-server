@@ -40,7 +40,7 @@ def work_request(identity, journal_id, subscription, nonce, expires_at):
 def validate_identity(identity, journal_id, trust, rpc):
     # The sequencer's own snapshot is insufficient: enumerate the complete registry at the
     # independently pinned canonical block, including eligible accounts omitted from the file.
-    import dispatcher
+    import enrollment as enrollment_state
     s.exact(identity, ("schema_version", "settings", "subscriptions", "period", "enrollment", "lanes"))
     s.require(identity["schema_version"] == 1 and s.keccak(s.canonical(identity)) == journal_id,
               "audit_journal_identity_mismatch")
@@ -58,7 +58,7 @@ def validate_identity(identity, journal_id, trust, rpc):
         other = s.config(lane["settings"])
         for key in ("registry_chain_id", "registry", "policy_hash", "sequencer", "duties_per_round"):
             s.require(other[key] == settings[key], "audit_shared_identity_changed")
-        subscriptions, anchor = dispatcher.enrollment_snapshot(other, identity["subscriptions"],
+        subscriptions, anchor = enrollment_state.enrollment_snapshot(other, identity["subscriptions"],
                                           identity["period"], rpc, block_hash=enrollment["block_hash"])
         s.require(subscriptions == identity["subscriptions"] and anchor == enrollment,
                   "audit_enrollment_snapshot_changed")
@@ -70,7 +70,7 @@ def validate_identity(identity, journal_id, trust, rpc):
                   and gateway["settlement_chain_id"] not in (settings["execution_chain_id"], gateway["execution_chain_id"])
                   and lanes["child"]["endpoint_commitment"] != lanes["gateway"]["endpoint_commitment"],
                   "audit_invalid_gateway_topology")
-    s.require(len(identity["subscriptions"]) * settings["duties_per_round"] <= dispatcher.MAX_OPERATIONS,
+    s.require(len(identity["subscriptions"]) * settings["duties_per_round"] <= enrollment_state.MAX_OPERATIONS,
               "audit_roster_exceeds_capacity")
     return s.EnrollmentAuthority(settings, identity["subscriptions"], identity["period"], rpc,
                                  trust["enrollment_block_hash"])

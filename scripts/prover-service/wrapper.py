@@ -119,6 +119,7 @@ class Wrapper:
         self.rpc = rpc or k.rpc_for(self.keeper)
         self.registry_rpc = registry_rpc or io.wallet_connection(self.config["registry_rpc_file"],
                                                                  self.keeper["policy"]["rpc_timeout_seconds"])
+        self.enrollment_authority = None
         self.wallet = wallet
         self.fri_checker, self.snark_checker = fri_checker, snark_checker
 
@@ -158,7 +159,9 @@ class Wrapper:
         return pool.Pool(Store(Path(self.config["pool_dir"])), clock=self.clock, service_rpc=self.rpc)
 
     def enrollment(self, request):
-        return k.enrollment_for(self.keeper, request, self.registry_rpc)
+        self.enrollment_authority = k.enrollment_for(self.keeper, request, self.registry_rpc,
+                                                    enrollment=self.enrollment_authority)
+        return self.enrollment_authority
 
     def pool_policy(self, p, body):
         lane = p.settings["lanes"][self.keeper["lane"]]
