@@ -6,11 +6,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 
+# SYSCOIN: Token-first staging makes an exact receipt-relative issuance start
+# possible without changing privileged contract bytecode or estimating wall time.
+TOKEN_PRELUDE=false
+case "$#:${1:-}" in
+0:) ;;
+1:--token-prelude) TOKEN_PRELUDE=true ;;
+*) gl_die "usage: zksys-l2-bootstrap.sh [--token-prelude]" ;;
+esac
+
 gl_export_foundry_evm_version
 
 gl_require ZKSYS_L2_RPC_URL
 gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
-gl_require ZKSYS_ISSUER_START_TIME
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 : "${EDGE_CHAIN_NAME:=zksys}"
 export GATEWAY_DIR EDGE_CHAIN_NAME L1_CHAIN_ID L1_NETWORK
@@ -149,7 +157,8 @@ deploy_create2() {
   local expected_address="${2:?expected address required}"
   local salt="${3:?salt required}"
   local init_code="${4:?init code required}"
-  local code
+  local code receipt
+  LAST_CREATE2_TRANSACTION_HASH=""
 
   code="$(rpc_code "${expected_address}")"
   if [ "${code}" != "0x" ]; then
@@ -158,11 +167,25 @@ deploy_create2() {
   fi
 
   echo "zksys-l2-bootstrap: deploying ${label} to ${expected_address}"
-  gl_non_l1_cast send \
-    --rpc-url "${ZKSYS_L2_RPC_URL}" \
-    "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
-    "${ZKSYS_L2_CREATE2_DEPLOYER}" \
-    "${salt}${init_code#0x}" >/dev/null
+  if [ "${5:-false}" = true ]; then
+    # SYSCOIN: Capture only the public deployment hash for the canonical anchor.
+    receipt="$(gl_non_l1_cast send --json \
+      --rpc-url "${ZKSYS_L2_RPC_URL}" \
+      "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
+      "${ZKSYS_L2_CREATE2_DEPLOYER}" "${salt}${init_code#0x}")"
+    LAST_CREATE2_TRANSACTION_HASH="$(printf '%s' "${receipt}" | python3 -c '
+import json, re, sys
+value = json.load(sys.stdin).get("transactionHash", "")
+if not re.fullmatch(r"0x[0-9a-fA-F]{64}", value):
+    raise SystemExit("token deployment did not return a transaction hash")
+print(value.lower())')"
+  else
+    gl_non_l1_cast send \
+      --rpc-url "${ZKSYS_L2_RPC_URL}" \
+      "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
+      "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+      "${salt}${init_code#0x}" >/dev/null
+  fi
 
   code="$(rpc_code "${expected_address}")"
   [ "${code}" != "0x" ] || gl_die "${label} deployment did not create code at ${expected_address}"
@@ -340,7 +363,7 @@ case "${ZKSYS_L2_TOKEN_DECIMALS}" in
 ''|*[!0-9]*) gl_die "ZKSYS_L2_TOKEN_DECIMALS must be a uint8" ;;
 esac
 [ "${ZKSYS_L2_TOKEN_DECIMALS}" -le 59 ] || gl_die "ZKSYS_L2_TOKEN_DECIMALS must be <= 59"
-for schedule_var in ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS; do
+for schedule_var in ZKSYS_ISSUER_PERIOD_SECONDS ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS; do
   case "${!schedule_var}" in
   ''|*[!0-9]*) gl_die "${schedule_var} must be a decimal uint256" ;;
   esac
@@ -382,7 +405,7 @@ export ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT
 export ZKSYS_L2_ISSUER_IMPL_SALT ZKSYS_L2_ISSUER_PROXY_SALT
 export ZKSYS_L2_STAKING_VAULT_IMPL_SALT ZKSYS_L2_STAKING_VAULT_PROXY_SALT
 export ZKSYS_L2_GAS_TANK_SALT ZKSYS_L2_TOKEN_NAME ZKSYS_L2_TOKEN_SYMBOL
-export ZKSYS_L2_TOKEN_DECIMALS ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS
+export ZKSYS_L2_TOKEN_DECIMALS ZKSYS_ISSUER_PERIOD_SECONDS
 export ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS
 
 bind_zksys_l2_bootstrap_manifest() {
@@ -545,6 +568,69 @@ ZKSYS_L2_TOKEN_ADDRESS="$(
     --salt "${ZKSYS_L2_TOKEN_PROXY_SALT}" \
     --init-code "${token_proxy_init_code}"
 )"
+
+# SYSCOIN: Bind the source, signer and exact token constructor graph before the
+# prelude's first send. The receipt-based policy is immutable across retries.
+token_prelude_identity() {
+  ZKSYS_TOKEN_PRELUDE_CALLDATA="${ZKSYS_L2_TOKEN_PROXY_SALT}${token_proxy_init_code#0x}" \
+  ZKSYS_TOKEN_PRELUDE_TOKEN="${ZKSYS_L2_TOKEN_ADDRESS}" \
+  ZKSYS_TOKEN_PRELUDE_PROXY_ADMIN="${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" \
+  ZKSYS_TOKEN_PRELUDE_IMPL="${ZKSYS_L2_TOKEN_IMPL_ADDRESS}" \
+  ZKSYS_TOKEN_PRELUDE_ADMIN_HASH="$(cast keccak "${proxy_admin_init_code}")" \
+  ZKSYS_TOKEN_PRELUDE_IMPL_HASH="$(cast keccak "${token_impl_init_code}")" \
+  ZKSYS_TOKEN_PRELUDE_SIGNER="${BOOTSTRAP_SIGNER_ADDRESS}" \
+  python3 - "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" <<'PY'
+import hashlib, json, os, sys
+import yaml
+chain = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+names = ("PROTOCOL_VERSION", "REQUIRED_ZKSTACK_CLI_SHA", "REQUIRED_CONTRACTS_SHA",
+    "L1_CHAIN_ID", "L1_NETWORK", "ZKSYS_L2_TOKEN_ADMIN_ADDRESS",
+    "ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS", "ZKSYS_L2_PROXY_ADMIN_SALT",
+    "ZKSYS_L2_TOKEN_IMPL_SALT", "ZKSYS_L2_TOKEN_PROXY_SALT",
+    "ZKSYS_L2_TOKEN_NAME", "ZKSYS_L2_TOKEN_SYMBOL", "ZKSYS_L2_TOKEN_DECIMALS")
+print(json.dumps({"schema": "syscoin-token-prelude-v1", "inputs": {k: os.environ[k] for k in names},
+    "edge_chain_id": str(chain["chain_id"]), "delay_seconds": 86400,
+    "rpc_sha256": hashlib.sha256(os.environ["ZKSYS_L2_RPC_URL"].encode()).hexdigest(),
+    "signer": os.environ["ZKSYS_TOKEN_PRELUDE_SIGNER"].lower(),
+    "create2": os.environ["ZKSYS_L2_CREATE2_DEPLOYER"].lower(),
+    "token": os.environ["ZKSYS_TOKEN_PRELUDE_TOKEN"].lower(),
+    "proxy_admin": os.environ["ZKSYS_TOKEN_PRELUDE_PROXY_ADMIN"].lower(),
+    "token_implementation": os.environ["ZKSYS_TOKEN_PRELUDE_IMPL"].lower(),
+    "proxy_admin_init_hash": os.environ["ZKSYS_TOKEN_PRELUDE_ADMIN_HASH"].lower(),
+    "token_implementation_init_hash": os.environ["ZKSYS_TOKEN_PRELUDE_IMPL_HASH"].lower(),
+    "token_calldata": os.environ["ZKSYS_TOKEN_PRELUDE_CALLDATA"].lower()}))
+PY
+}
+
+token_prelude_manifest="$(gl_checkpoint_state_dir)/zksys-token-prelude.json"
+token_receipt_anchor="$(gl_checkpoint_state_dir)/zksys-token-receipt.json"
+if [ "${TOKEN_PRELUDE}" = true ]; then
+  [ -z "${ZKSYS_ISSUER_START_TIME:-}" ] || \
+    gl_die "--token-prelude uses token receipt + 86400, not an absolute issuance start"
+  token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" bind "${token_prelude_manifest}"
+  require_create2_deployer
+  deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"
+  deploy_create2 "zkSYS token implementation" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}" "${ZKSYS_L2_TOKEN_IMPL_SALT}" "${token_impl_init_code}"
+  deploy_create2 "zkSYS token proxy" "${ZKSYS_L2_TOKEN_ADDRESS}" "${ZKSYS_L2_TOKEN_PROXY_SALT}" "${token_proxy_init_code}" true
+  assert_proxy_admin_owner "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
+  assert_proxy_wiring "zkSYS token" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADDRESS}" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}"
+  token_tx_hash="${LAST_CREATE2_TRANSACTION_HASH:-${ZKSYS_TOKEN_DEPLOYMENT_TX_HASH:-}}"
+  start_time="$(token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" resolve "${token_receipt_anchor}" "${token_tx_hash}")"
+  echo "zksys-l2-bootstrap: token prelude complete; issuance start=${start_time} (token receipt + 86400)"
+  exit 0
+fi
+if [ -e "${token_prelude_manifest}" ] || [ -L "${token_prelude_manifest}" ]; then
+  token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" bind "${token_prelude_manifest}"
+  anchored_start="$(token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" resolve "${token_receipt_anchor}")"
+  [ -z "${ZKSYS_ISSUER_START_TIME:-}" ] || [ "${ZKSYS_ISSUER_START_TIME}" = "${anchored_start}" ] || \
+    gl_die "ZKSYS_ISSUER_START_TIME conflicts with the canonical token deployment receipt"
+  ZKSYS_ISSUER_START_TIME="${anchored_start}"
+fi
+gl_require ZKSYS_ISSUER_START_TIME
+case "${ZKSYS_ISSUER_START_TIME}" in
+''|*[!0-9]*) gl_die "ZKSYS_ISSUER_START_TIME must be a decimal uint256" ;;
+esac
+export ZKSYS_ISSUER_START_TIME
 
 registry_impl_init_code="$(forge_inspect_bytecode ZkSysMembershipRegistry)"
 ZKSYS_L2_REGISTRY_IMPL_ADDRESS="$(

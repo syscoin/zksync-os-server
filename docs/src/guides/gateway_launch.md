@@ -714,7 +714,8 @@ work and bind recovery to one verifier mode. -->
 | `ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 reward weight registry implementation/proxy deployments; the proxy address is wired as the membership registry receiver |
 | `ZKSYS_L2_ISSUER_IMPL_SALT` / `ZKSYS_L2_ISSUER_PROXY_SALT` | Optional bytes32 salts for deterministic L2 issuer implementation/proxy deployments; the proxy address receives the token minter role |
 | `ZKSYS_L2_STAKING_VAULT_IMPL_SALT` / `ZKSYS_L2_STAKING_VAULT_PROXY_SALT` | Optional bytes32 salts for deterministic L2 native SYS staking vault implementation/proxy deployments; the proxy address receives the reward weight updater role |
-| `ZKSYS_ISSUER_START_TIME` | Required by L2 bootstrap; UNIX timestamp when algorithmic zkSYS issuance periods begin |
+| `ZKSYS_ISSUER_START_TIME` | UNIX timestamp when algorithmic zkSYS issuance periods begin; required for absolute-time bootstrap, or derived from the recorded token receipt after `--token-prelude` |
+| `ZKSYS_TOKEN_DEPLOYMENT_TX_HASH` | Recovery-only exact token-proxy deployment transaction hash when `--token-prelude` found an existing token but its receipt anchor was not durably recorded |
 | `ZKSYS_ISSUER_PERIOD_SECONDS` | Issuance period length; defaults to `86400`; must multiply with `ZKSYS_ISSUER_PERIODS_PER_YEAR` to exactly `365 days` |
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
 | `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` | Reward-weight activation delay for positive native stake and Sentry Node weight changes; defaults to `3` periods and must be `1..7` |
@@ -758,6 +759,33 @@ work and bind recovery to one verifier mode. -->
 - The prover API is plain HTTP and loopback-only in the node process. Internet-reachable provers must use the generated buffering HTTPS vhost, which forwards Basic Auth while draining each complete bounded response independently of client pace.
 - `GATEWAY_CREATE2_FACTORY_SALT` is fingerprint-bound. Changing it requires a fresh deployment directory or an explicit operator reset of both launcher state and the corresponding deployment artifacts; clearing checkpoint JSON alone is unsafe.
 - After the chain is live, run `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the canonical L2 zkSYS `ProxyAdmin`, transparent proxy, implementation, membership fact registry, reward weight registry, algorithmic issuer, and zkSYS gas tank with deterministic CREATE2 salts, then wire issuer minting, membership-to-weight callbacks, weight-to-issuer callbacks, optional L1 registry bridge authority, and burn rights for the gas tank (`burnSurplus()`). The script verifies the final role and receiver wiring before exiting and records the gas tank address as `l2.zksys_gas_tank_addr`. That persisted, attested value is also the durable launch-policy transition: the next canonical edge-chain main-node start requires the exact gas-tank runtime to exist in the latest local state, and no operator-supplied `SYSCOIN_REQUIRE_GAS_TANK=0` can keep the first-boot exception active. That address must equal the immutable address already bound to the canonical application and VK; changing it requires rebuilding the app and verifier artifacts. The token admin receives role-admin authority for recovery and later governance transfer, but not direct `MINTER_ROLE` / `BURNER_ROLE`.
+
+<!-- SYSCOIN: Exact receipt-relative issuance is an operator policy, not an
+estimated wall-clock timestamp or a contract bytecode change. -->
+For issuance beginning exactly 24 hours after the canonical **token proxy**
+deployment, leave `ZKSYS_ISSUER_START_TIME` unset and run:
+
+```bash
+scripts/gateway-launch/zksys-l2-bootstrap.sh --token-prelude
+scripts/gateway-launch/zksys-l2-bootstrap.sh
+```
+
+The first command binds and deploys only the proxy admin, token implementation
+and token proxy, then records the successful exact CREATE2 transaction and its
+canonical block timestamp. The second command revalidates that receipt and
+sets issuance start to its timestamp plus **86,400 seconds** before deriving
+and binding the remaining bootstrap graph. It must complete issuer deployment
+before that start time; an expired anchor is not silently moved forward.
+The token receipt, rather than the later issuer receipt or operator wall clock,
+is the recorded timing anchor. Existing absolute-time bootstrap remains available.
+
+Preserve `zksys-token-prelude.json`, `zksys-token-receipt.json` and the complete
+bootstrap manifest in the private launch checkpoint directory. Retries reuse
+the exact anchor and reject changed inputs or reorged receipts. If deployment
+succeeded but receipt recording was interrupted, rerun the prelude with
+`ZKSYS_TOKEN_DEPLOYMENT_TX_HASH` set to that exact transaction hash; its sender,
+factory, calldata, value, chain and canonical block are checked before recovery.
+Do not substitute an unrelated successful transaction or use `now + 86400`.
 - The membership registry mirrors NEVM facts from the L1 `0x62` precompile and exposes the active Sentry Node address set for offchain diffing. The L1 registry bridge derives each Sentry Node's seniority-weighted reward weight from raw Syscoin collateral age (`nNEVMStartBlock + block.number - collateralHeight`) and sends that final weight to L2. For mainnet, use effective post-NEVM seniority thresholds `210240` and `525600` blocks with levels `3500` and `10000` bps. Native SYS staking is handled by the L2 staking vault.
 - Reward weight increases are not active immediately: native SYS deposits, Sentry Node additions, and Sentry Node seniority increases are queued for `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` periods and require the account to call `activatePendingWeight()` after the delay. Weight decreases and removals apply immediately. This prevents a stake or Sentry weight increase submitted just before a period boundary from earning the completed period.
 - The issuer uses a fixed remaining-cap curve: 20% in schedule year 1, 12% in year 2, 8% in year 3, then 5% per year afterward. Each annual amount is released pro-rata over `ZKSYS_ISSUER_PERIODS_PER_YEAR` periods, so scheduled issuance approaches but never exceeds the 210M zkSYS cap.

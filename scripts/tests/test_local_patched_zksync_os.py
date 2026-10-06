@@ -3721,7 +3721,8 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
         bootstrap = (
             REPO_ROOT / "scripts" / "gateway-launch" / "zksys-l2-bootstrap.sh"
         ).read_text(encoding="utf-8")
-        self.assertEqual(bootstrap.count("gl_non_l1_cast"), 6)
+        # SYSCOIN: the receipt-capturing token prelude is also a non-L1 send.
+        self.assertEqual(bootstrap.count("gl_non_l1_cast"), 7)
         for bare_rpc_cast in ("  cast code --rpc-url", "  cast send \\", "  cast call \\"):
             self.assertNotIn(bare_rpc_cast, bootstrap)
 
@@ -6837,7 +6838,9 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertLess(
             bootstrap.index('ZKSYS_L2_GAS_TANK_ADDRESS="$('), manifest_bind
         )
-        self.assertLess(manifest_bind, bootstrap.index("require_create2_deployer\n"))
+        # SYSCOIN: the token-only prelude has its own bound constructor graph;
+        # the complete graph still precedes the normal full-bootstrap sends.
+        self.assertLess(manifest_bind, bootstrap.rindex("require_create2_deployer\n"))
         self.assertIn('"schema_version": 2', bootstrap)
         self.assertIn('"derived_addresses":', bootstrap)
         self.assertIn('"init_code_hashes":', bootstrap)
