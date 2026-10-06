@@ -184,6 +184,119 @@ contracts or escrow on the persistent Tanenbaum L1.
    variables from an old command. Generated prover configs still require a
    password of at least 32 characters, even for this mock-proof deployment.
 
+<!-- SYSCOIN: Documentation follows the reviewed helper fixes without duplicating
+their implementation in the runbook change. -->
+Use the reviewed launch helpers, including the administrator authentication and
+receipt-anchor changes in [server PR #333](https://github.com/syscoin/zksync-os-server/pull/333).
+This runbook update does not itself add those code changes. For an external
+encrypted administrator, set all three signer families explicitly; for example:
+
+```bash
+export FUNDER_SIGNER=account
+export FUNDER_ACCOUNT_NAME=launch-admin
+export FUNDER_PASSWORD_FILE=/secure/operator/launch-admin.password
+export DEPLOYER_SIGNER=account
+export DEPLOYER_ACCOUNT_NAME=launch-admin
+export DEPLOYER_PASSWORD_FILE=/secure/operator/launch-admin.password
+export EDGE_GATEWAY_GOVERNOR_SIGNER=account
+export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=launch-admin
+export EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE=/secure/operator/launch-admin.password
+unset FUNDER_PRIVATE_KEY DEPLOYER_PRIVATE_KEY EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY
+cast wallet address --account "$DEPLOYER_ACCOUNT_NAME" \
+  --password-file "$DEPLOYER_PASSWORD_FILE"
+```
+
+Use an absolute, owner-only regular password-file path: Forge changes working
+directory. Public YAML addresses with `private_key: null` are supported only
+for authenticated governor/deployer roles, not generated runtime operators.
+The helpers verify every requested role against the decrypted account and
+forward an explicit Forge `--sender` bound to that authenticated address.
+Account selection alone was insufficient for pinned Forge 0.1.5. Address
+derivation receives only account selectors, not Forge's `--sender` option.
+Gateway conversion checks its chain deployer, chain governor and ecosystem
+governor together; one global external selector must match all three actual
+actors. Distinct generated-key administrators remain supported when no external
+selector is forwarded. Do not bypass a role mismatch with an arbitrary sender
+or an ambient wallet environment variable.
+
+### Confirmation progress and broadcast recovery
+
+<!-- SYSCOIN: Slow root confirmations are not permission to erase a broadcast
+journal or re-run a deterministic deployment from scratch. -->
+The current Tanenbaum rehearsal uses a **150-second block target** and its
+canonical core deployment sequence contains **43 transactions**. These are
+observed/configured rehearsal inputs, not a fixed ETA or a universal deployment
+transaction count. Sequential receipt waits, actual block cadence and required
+confirmations can make a healthy run appear quiet for several minutes. Inspect
+the recorded transaction hashes, canonical receipts, sender's latest/pending
+nonce and launcher progress before diagnosing a failure. Do not start a second
+deployment or stop a progressing broadcast because a wall-clock estimate elapsed.
+
+Distinguish these recovery cases before changing any checkpoint or artifact:
+
+| Evidence | Permitted next step |
+| --- | --- |
+| Verified pre-broadcast failure: no new sender nonce, no deployment receipts or code, and no partial deployment outputs | Correct the diagnosed selector/configuration problem, retain the evidence, and rerun the same reviewed inputs through the canonical launcher. A missing output file alone is not proof that nothing was broadcast. |
+| Any transaction submitted, confirmed or pending; a changed sender nonce; or a partial deployment/broadcast artifact | Preserve the entire checkpoint, Forge broadcast journal, inputs, hashes and receipts. Reconcile the exact sequence using supported repair/resume; do not reset, replay or reconstruct an apparently fresh deployment automatically. |
+
+An `eth_call` from an owner address proves call compatibility, not possession of
+its signing credential. Do not treat that simulation as a custody or broadcast
+receipt. Keep the live deployment status in the private operator record; this
+guide does not assert that all 43 transactions or public acceptance have passed.
+
+### Retire old onchain deposit entry points
+
+<!-- SYSCOIN: A disposable L2 database does not make persistent L1 governance,
+external collateral or undelivered deposits disposable. -->
+Before destructive retirement, inventory the old Bridgehub's registered chain
+list, diamonds, ChainAdmins, Governance and their actual signer custody. Keep
+decryptable/restorable controller credentials and verify their derived public
+addresses against live owners. SSH/sudo, an available newly deployed governor,
+TSYS balances and a successful owner-address simulation do not establish old
+contract control. Missing old signing authority is a stop, not permission to
+leave a permissionless old deposit endpoint accepting funds into a retired chain.
+
+Prefer the deployed per-chain `pauseDepositsBeforeInitiatingMigration()` route
+when its admin/CTM authority is available. Bind its selector and runtime to the
+old release, inspect the actual pause delay, and verify `depositsPaused()` rather
+than assuming a source-only function or zero-delay setting. For the reviewed
+v31 Tanenbaum deployment the delay is zero. Pausing the migrated edge on ROOT
+also queues a free service transaction through the old Gateway to set the mirror
+pause. Request the edge pause **before** pausing the ROOT Gateway. Keep the old
+nodes live until that service executes, both pause flags are verified, active
+queues drain and committed/verified/executed batch counts agree. The ROOT edge's
+post-migration ingress mirror is not the active Gateway execution queue; compare
+their totals, start indexes and priority roots instead of misreading its raw size.
+
+A fallback `pause()` on the **dedicated old Bridgehub instance** is appropriate
+only after proving its complete scope is exactly the two retired Tanenbaum
+chains (57001 and 57057), verifying the deployed deposit guards, and establishing
+that withdrawal/proof forwarding remains available. It is not permission to
+pause shared AssetRouter/Nullifier contracts or another ecosystem. The reviewed
+old Governance has zero minimum delay but still requires a scheduled operation:
+`scheduleTransparent(operation, 0)` followed by `execute(operation)`.
+`executeInstant` also requires a pending/scheduled operation; it is not an
+unscheduled shortcut. Use only verified owner custody and approved exact targets.
+
+Pause the old source fast-path ingress as well, then reconcile deployment-to-pause
+event windows, canonical old-L2 receipts, escrow paid/used state and queue
+processing boundaries. Worker ledgers alone can omit historical orders. Preserve
+cancellation, reimbursement and reserve/liability records; never replay a
+cancelled or reimbursed message against the new Bridgehub. Preserve unchanged
+Tanenbaum/Sepolia state, external collateral and shared validator/relayer history.
+The operator-authorized discard covers v31 rollup databases and indexes, not
+those shared assets. Repeat final queue/event checks after intake is closed.
+
+An existing collateralized NativeIngress proxy has no Bridgehub setter in the
+reviewed old implementation. A proposed minimal proxy upgrade/rebind is a
+separate approval and verification gate: storage layout, immutable mailbox,
+owner/ProxyAdmin, native asset identity and pending-message continuity must be
+attested. That approval and its live acceptance have **not been granted/passed
+by this runbook**. Rebinding native ingress alone does not rebind one-time
+fast-path Escrow/Settlement peers. Do not replace addresses in client JSON and
+claim the public route works. A closed route must be labelled explicitly, and
+UI closure alone does not block direct source-contract calls.
+
 ### Exact reset inventory
 
 Stop the identified owners and verify their processes have exited before
@@ -247,6 +360,51 @@ it does not mean retaining or migrating the old v31 chain. Keep the proving
 mode and deterministic inputs unchanged across retries. Use the checkpoint
 repair procedure for a diagnosed failure, not manual checkpoint deletion.
 
+### Independently derive and then attest the wrapped-token pin
+
+<!-- SYSCOIN: Published genesis bytes, not mutable Forge output or an RPC-selected
+recipient, determine the wrapped native-token CREATE2 identity. -->
+Derive the pin before using it as a native-value recipient. Preserve the exact
+reviewed genesis JSON/hash, source routing, proxy creation/runtime bytes,
+constructor inputs and CREATE2 preimage in the deployment record. The proxy
+creation bytes must come from the **published genesis** implementation, not
+whatever `contracts/out` currently contains after a different build/profile.
+The reviewed v32 seed embeds a 4,171-byte proxy creation blob in the initial
+GenesisUpgrade runtime at `0x10001`; its observed byte offset is 7,381. Those
+numbers identify this reviewed seed, not a rule for future releases: validate
+the genesis hash and a unique, aligned bytecode match before extraction.
+
+For this source route, `ComplexUpgrader` at `0x800f` remains the EVM CREATE2
+caller through delegatecalls, with salt zero. ABI-encode the proxy constructor
+`(logic, admin, data)` using implementation `0x10007`, the independently recorded
+aliased ROOT Governance, and `initializeV3(name, symbol, assetRouter,
+nativeTokenSentinel, baseTokenAssetId)` from the reviewed native-token inputs.
+The current Tanenbaum initializer uses `Wrapped Syscoin`/`WSYS`, asset router
+`0x10003`, native sentinel `0x1`, and the native asset ID derived from ROOT chain
+5700, native token vault `0x10004` and that sentinel. Apply ordinary EVM CREATE2
+to the **exact extracted creation bytes plus ABI constructor data**. The
+ecosystem namespace salt selects ROOT Governance; it is not the wrapped-token
+CREATE2 salt, and Gateway chain ID is not an extra constructor-preimage field.
+Source inspection must also exclude an intervening force-replacement/reset of
+the seeded implementation or native-token-vault state during conversion.
+
+A narrowly checked Solidity IPFS-metadata comparison may establish source
+correspondence and locate that unique embedded blob. It must never normalize,
+strip or substitute metadata in the CREATE2 preimage or in live code acceptance:
+the actual published bytes are the identity. A mutable Forge artifact with only
+a different metadata digest can produce a different address and must be rejected.
+Do not copy this rehearsal's address, Governance alias, asset ID or extracted
+offset into a mainnet launch; rederive from its reviewed source and deployment.
+
+After fresh Gateway startup and conversion, verify the chain/genesis identity,
+ROOT Governance/native-asset bindings, NTV `WETH_TOKEN()` at `0x10004` and
+GWAssetTracker `wrappedZKToken()` at `0x10010` against the independent pin. Also
+attest exact proxy runtime bytes, EIP-1967 implementation/admin slots, exact
+implementation code and token name/symbol/decimals/bridge/vault/asset getters.
+Only then supply the pin for settlement-fee funding/migration. A source-derived
+record is **not live attestation**; any mismatch stops use instead of replacing
+the pin with a value discovered from the RPC receiving the transaction.
+
 ### Contract and client deployment
 
 After the chain is live, run `zksys-l2-bootstrap.sh` for the current token,
@@ -255,25 +413,37 @@ canonical gas tank. Verify all proxy, role, receiver and immutable runtime
 bindings. The persisted tank authority ends the first-boot exception; do not
 disable its startup gate after bootstrap.
 
+<!-- SYSCOIN: Anchor the approved issuance policy to a verified token receipt;
+never publish a wall-clock guess or silently advance the original start. -->
 `ZKSYS_ISSUER_START_TIME` is an absolute future Unix timestamp, bound in the
-bootstrap manifest before broadcasts. If the approved policy is a 24-hour
-post-deployment start, choose and persist the planned target once and record the
-actual deployment block/time and `startTime()` readback. Do not recompute it on
-retries or reuse the past v31 value. The helper does not implement an exact
-receipt-relative `+86400` option. Defaults remain daily periods, a 365-day
-schedule year and a three-period positive-weight activation delay.
+bootstrap manifest before broadcasts. For the approved exact 24-hour
+post-token-deployment policy, use the receipt-anchor helper from PR #333:
+leave that variable unset, run `zksys-l2-bootstrap.sh --token-prelude`, then run
+the full bootstrap. It records and revalidates the exact token proxy deployment
+receipt and derives start from its canonical block timestamp plus 86,400 seconds.
+Persist the receipt/prelude/bootstrap manifests and later `startTime()` readback;
+an interrupted recording may recover only that exact attested deployment hash.
+Do not recompute the time on retries, use `now + 86400`, reuse v31's past value
+or publish a start before its receipt/readback exists. Complete initial issuer
+deployment before the anchored start; otherwise its initializer reverts. Never
+roll the anchor forward: retries of an already deployed issuer retain the original
+start. Defaults remain daily periods, a 365-day schedule year and a three-period
+positive-weight activation delay.
 
-Deploy standard EntryPoint v0.9 with the helper's official artifact profile:
-optimizer 1,000,000, viaIR and default IPFS metadata. Build the Pali account
-implementation, validators, recovery module and factory with the separate
-optimizer-200, metadata-free profile and matching wallet deployment constants
-in [the contracts guide](https://github.com/syscoin/zksync-os-server/blob/main/contracts/README.md).
-Do not redeploy legacy custom EntryPoints/paymasters or blindly use stale
-`contracts/out` artifacts. The EntryPoint/gas-tank helper does not deploy the
-entire Pali suite. Its keystore interface uses `DEPLOYER_ACCOUNT` with
-`DEPLOYER_SIGNER` unset, unlike the launcher's `DEPLOYER_ACCOUNT_NAME` and
-`DEPLOYER_SIGNER=account`; map the environment explicitly in a separate process.
-Supply exact code-hash expectations to `check-pali-deployment.sh` and attest
+<!-- SYSCOIN: This rehearsal delegates the mandatory Pali suite to the wallet,
+not a duplicate server-side deployment. -->
+For this public rehearsal the Pali wallet's Advanced settings owns deployment
+and attestation of its nine mandatory infrastructure contracts, starting with
+canonical EntryPoint v0.9. The server must not duplicate that suite. EntryPoint's
+official artifact profile is optimizer 1,000,000, viaIR and default IPFS metadata;
+Pali account/validator/recovery/factory artifacts use their separate optimizer-200,
+metadata-free profile and matching wallet constants in
+[the contracts guide](https://github.com/syscoin/zksync-os-server/blob/main/contracts/README.md).
+Do not redeploy legacy custom EntryPoints/paymasters or use stale `contracts/out`.
+An explicitly selected helper-based deployment is a different workflow: its
+keystore interface uses `DEPLOYER_ACCOUNT` with `DEPLOYER_SIGNER` unset, unlike
+the launcher. Map that environment separately and do not claim it deploys the
+whole wallet suite. Supply exact hashes to `check-pali-deployment.sh` and attest
 factory/EntryPoint/validator relationships, not only explorer verification.
 
 Inventory Multicall3 and other required standard infrastructure separately.
@@ -320,7 +490,10 @@ verifier/VK, chainlocked finality, reviewed governance/activation and asset
 reconciliation, durable encrypted off-host recovery, and an approved cutover/
 rollback plan. Do not copy testnet one-confirmation, custody or reset choices
 into a mainnet launch. A completed mock-testnet rehearsal does not close those
-release gates.
+release gates. Before destroying any old runtime or removing hot keys, prove
+continued signing ability for its deposit administrator and Governance; retain
+the corresponding encrypted recovery credentials and test their restoration.
+Do not repeat a testnet's missing-old-owner custody gap in mainnet retirement.
 
 ## Canonical command
 
@@ -562,14 +735,19 @@ $GATEWAY_DIR/os-server-configs/gateway/config.yaml
 $GATEWAY_DIR/os-server-configs/zksys/config.yaml
 ```
 
+<!-- SYSCOIN: Distinct ecosystem/old governance keys are required custody, not
+redundant files that may be deleted after checking only runtime operators. -->
 The final `config.yaml` files contain the operator private keys used by the
-running nodes. The chain-scoped `wallets.yaml` files contain the deployer,
-governor, fee, and operator wallet keys needed for repair/governance/migration
-work. Avoid backing up root or duplicate wallet files such as
+running nodes. The chain-scoped `wallets.yaml` files contain deployer, governor,
+fee and operator keys needed for repair/governance/migration. Inventory ROOT
+Governance and chain deposit-admin ownership separately: an ecosystem/root
+wallet or an external encrypted account may hold a distinct controller key not
+present in a chain wallet. Include every such required signer in the encrypted
+recovery plan and verify its restored address. Avoid merely duplicate files such as
 `$GATEWAY_DIR/configs/wallets.yaml`, `$GATEWAY_DIR.wallets.yaml`, hidden
-`.*wallets.yaml` copies, or `*.backup` files unless you are intentionally making
-a broader forensic archive; exporting extra unrelated keys increases confusion
-and recovery risk.
+`.*wallets.yaml` copies or `*.backup` files only after proving that they contain
+no unique required controller. Exporting unrelated keys increases recovery risk;
+omitting a distinct old Governance key can make safe deposit retirement impossible.
 
 ```bash
 (
@@ -584,6 +762,7 @@ trap 'rm -f "$secret_list"' EXIT
 
 shopt -s nullglob
 secret_paths=(
+  "$GATEWAY_DIR"/configs/wallets.yaml
   "$GATEWAY_DIR"/chains/gateway/configs/wallets.yaml
   "$GATEWAY_DIR"/chains/zksys/configs/wallets.yaml
   "$GATEWAY_DIR"/os-server-configs/gateway/config.yaml
@@ -617,8 +796,11 @@ printf 'encrypted backup created: %s\n' "$backup_archive"
 ```
 
 Keep the encrypted archive and its passphrase separated. The command exits on
-backup or verification failure; do not delete source keys unless it completes
-successfully and the encrypted backup has been copied to durable storage.
+backup or verification failure. Listing the archive is not a signer-restoration
+test: explicitly include any externally referenced controller wallet/account,
+restore/decrypt it securely and compare its derived address to every required
+old/current onchain owner. Do not delete source keys unless those checks pass
+and the encrypted backup has been copied to durable storage.
 
 After copying that backup off the hot host, remove launch-time wallet files,
 duplicate wallet copies, and Foundry signer material. Do not remove final
