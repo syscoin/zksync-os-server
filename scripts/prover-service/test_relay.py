@@ -12,6 +12,24 @@ import service as s
 from test_service import KEYS, fixture, prepare, sign, h, a, abi_type, cast_value, struct_values
 
 
+class RpcErrorTests(unittest.TestCase):
+    def test_transport_retains_revert_bytes_without_exposing_them_in_error_text(self):
+        rpc = r.Rpc("http://127.0.0.1:8545")
+        response = io.BytesIO(s.canonical({"jsonrpc": "2.0", "id": 1,
+            "error": {"code": 3, "message": "private RPC detail", "data": "0x1234"}}))
+        response.status = 200
+        with patch.object(rpc.opener, "open", return_value=response), self.assertRaises(r.RpcError) as caught:
+            rpc.call("eth_call", [])
+        self.assertEqual((caught.exception.code, caught.exception.data), (3, "0x1234"))
+        self.assertEqual(str(caught.exception), "rpc_rejected_request")
+
+    def test_existing_code_only_callers_remain_compatible(self):
+        error = r.RpcError(3)
+        self.assertEqual(error.code, 3)
+        self.assertIsNone(error.data)
+        self.assertEqual(str(error), "rpc_rejected_request")
+
+
 def relay_policy(settings):
     return {"schema_version": 1, "account": s.cast("wallet", "address", "--private-key", KEYS["account"]).lower(),
             "gate_code_hash": s.keccak(b"gate-code"), "coordinator_code_hash": s.keccak(b"coordinator-code"),

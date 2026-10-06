@@ -17,6 +17,15 @@ MAX_PAYLOAD = 256 * 1024 * 1024
 MAX_FRI_ENCODING = 10 * 1024 * 1024
 SNARK_BYTES = 44 * 32
 VERIFY_SIGNATURE = "verify(uint256[],uint256[])"
+# Only explicit proof-rejection branches in the pinned V32 PLONK verifier are terminal.
+# Precompile/RPC failures remain uncertain, even when they use the same RPC error code.
+NATIVE_PROOF_REJECTIONS = frozenset(
+    "0x" + (bytes.fromhex("08c379a0") + s.word(32) + s.word(len(reason))
+            + reason.encode("ascii").ljust(32, b"\0")).hex()
+    for reason in ("loadProof: Proof is invalid", "invalid quotient evaluation",
+                   "invalid vanishing polynomial", "finalPairing: pairing failure",
+                   "pointNegate: invalid point")
+)
 
 
 def sha(value):
@@ -80,7 +89,8 @@ def verify_snark(config, rpc, evidence, payload, proof, now):
     """Return a local check record; callers must recheck before each new endorsement.
 
     The record does not attest to FRI authorship or replace assignment/report validation.
-    A false verifier result is rejected; transport errors and reorgs produce no record.
+    False results and explicit proof rejections are rejected only at a canonical anchor;
+    transport errors, unknown reverts and reorgs remain uncertain and produce no record.
     """
     k.configuration(config)
     s.require(type(now) in (int, float) and math.isfinite(now) and now >= 0, "invalid_verification_time")
@@ -91,7 +101,13 @@ def verify_snark(config, rpc, evidence, payload, proof, now):
     head, anchor, call = k.base_context(config, bounded, evidence, now)
     verifier = call(config["settings"]["proof_gate"], "productionVerifier()", kind="address")
     data = verifier_calldata(statements, native_proof)
-    result = bounded.call("eth_call", [{"to": verifier, "data": data}, anchor])
+    try:
+        result = bounded.call("eth_call", [{"to": verifier, "data": data}, anchor])
+    except r.RpcError as error:
+        if (type(error.code) is not int or error.code != 3 or type(error.data) is not str
+                or error.data not in NATIVE_PROOF_REJECTIONS):
+            raise
+        result = "0x" + s.word(0).hex()
     # Recheck the anchor before classifying a negative result as a canonical rejection.
     r.check_anchor(bounded, config["settings"], head)
     elapsed = time.monotonic() - bounded.started
