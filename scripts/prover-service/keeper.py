@@ -265,9 +265,10 @@ def unsigned_call(rpc, settings, limits, head, anchor, account, target, signatur
             "transaction": tx, "action": signature.split("(")[0], "broadcast": False}
 
 
-def package_call(config, rpc, request, evidence, payload, now, action):
+def package_call(config, rpc, request, evidence, payload, now, action, *, enrollment=None):
     s.require(action in ("open", "repair"), "invalid_package_action")
-    prepared = prepare(config["settings"], request, evidence, payload, enrollment=enrollment_for(config, request))
+    prepared = prepare(config["settings"], request, evidence, payload,
+                       enrollment=enrollment_for(config, request, enrollment=enrollment))
     # Repairs preserve the old draw even if the clock has rolled to another roster.
     if action == "open":
         inspect(config, rpc, prepared, evidence, now, 1, require_open=False)

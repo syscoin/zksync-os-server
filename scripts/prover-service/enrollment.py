@@ -91,4 +91,3 @@ def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
         normalized.append(copy.deepcopy(signed))
     s.require(accounts == eligible_accounts, "subscription_snapshot_omits_or_adds_eligible_accounts")
     return normalized, {"block_hash": anchor, "timestamp": timestamp, "phase": phase, "ends_at": end}
-

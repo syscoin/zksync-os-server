@@ -360,7 +360,8 @@ class Coordinator:
                 if action in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
                     return False
                 if action == "openPackage":
-                    call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open")
+                    call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open",
+                                          enrollment=self.enrollment_for(bundle["request"]))
                 elif action == "refreshPriorityCheckpoint":
                     call = k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
                 elif action == "publishPrefixWitness":
@@ -481,7 +482,8 @@ class Coordinator:
         if pending is not None:
             return pending
         if not chain["package_open"]:
-            produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open")
+            produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open",
+                                             enrollment=self.enrollment_for(bundle["request"]))
             return self.maintenance(identifier, produce(), produce, execute)
         request = k.rebind_request(self.settings, bundle["request"], chain, roster)
         prepared = self.prepare(request, evidence, payload)

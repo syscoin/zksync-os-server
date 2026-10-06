@@ -191,6 +191,67 @@ class KeeperTests(unittest.TestCase):
             self.assertEqual(result["transaction"]["data"], expected)
             self.assertFalse(result["broadcast"])
 
+    def test_cached_package_calls_skip_registry_but_still_validate_native_state(self):
+        authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
+        with patch.object(k, "registry_rpc_for", side_effect=AssertionError("unexpected registry connection")), \
+                patch.object(self.registry_rpc, "call", side_effect=AssertionError("unexpected registry lookup")), \
+                patch.object(self.registry_rpc, "contract", side_effect=AssertionError("unexpected registry view")), \
+                patch.object(self.rpc, "call", wraps=self.rpc.call) as native:
+            for action in ("open", "repair"):
+                with self.subTest(action=action):
+                    result = k.package_call(self.config, self.rpc, self.request, self.f["evidence"],
+                                            self.f["fri_payload"], 1000, action, enrollment=authority)
+                    self.assertEqual(result["action"], action + "Package")
+            self.assertTrue(any(call.args[0] == "eth_getCode" for call in native.call_args_list))
+            self.assertTrue(any(call.args[0] == "eth_call" for call in native.call_args_list))
+        self.assertEqual(len(self.rpc.simulated), 2)
+        self.rpc.bad_code = True
+        with self.assertRaisesRegex(s.Error, "gate_code_changed"):
+            k.package_call(self.config, self.rpc, self.request, self.f["evidence"],
+                           self.f["fri_payload"], 1000, "open", enrollment=authority)
+
+    def test_cached_package_authority_mismatches_fail_before_native_rpc(self):
+        authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
+        for mutation, reason in (("type", "configured_enrollment_authority_required"),
+                                 ("pin", "enrollment_authority_anchor_mismatch"),
+                                 ("registry", "enrollment_authority_scope_mismatch"),
+                                 ("period", "enrollment_authority_scope_mismatch"),
+                                 ("snapshot", "enrollment_authority_scope_mismatch")):
+            config, request, context = copy.deepcopy(self.config), copy.deepcopy(self.request), authority
+            if mutation == "type":
+                context = {"authenticated": True}
+            elif mutation == "pin":
+                config["enrollment"]["block_hash"] = h(201)
+            elif mutation == "registry":
+                config["settings"]["registry"] = a(202)
+            elif mutation == "period":
+                request["manifest"]["payload"]["period"] = 6
+            else:
+                request["subscriptions"][0]["signature"] = "0x1234"
+            with patch.object(self.rpc, "call") as native, \
+                    patch.object(k, "registry_rpc_for") as connection:
+                for action in ("open", "repair"):
+                    with self.subTest(mutation=mutation, action=action), self.assertRaisesRegex(s.Error, reason):
+                        k.package_call(config, self.rpc, request, self.f["evidence"], self.f["fri_payload"],
+                                       1000, action, enrollment=context)
+                native.assert_not_called()
+                connection.assert_not_called()
+
+    def test_cached_package_authority_does_not_skip_fresh_work_signatures(self):
+        authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
+        for signer in ("sequencer", "operator"):
+            request = copy.deepcopy(self.request)
+            if signer == "sequencer":
+                request["manifest"]["sequencer_signature"] = "0x1234"
+            else:
+                request["duties"][0]["operatorSignature"] = "0x1234"
+            with patch.object(self.rpc, "call") as native:
+                for action in ("open", "repair"):
+                    with self.subTest(signer=signer, action=action), self.assertRaises(s.Error):
+                        k.package_call(self.config, self.rpc, request, self.f["evidence"], self.f["fri_payload"],
+                                       1000, action, enrollment=authority)
+                native.assert_not_called()
+
     def test_bootstrap_frozen_range_requires_local_sequencer(self):
         proposal = self.request["proposal"]
         proposal.update(mode="bootstrap", candidate=None, candidate_proof=[])
