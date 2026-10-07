@@ -569,9 +569,40 @@ The subsequent normal Root checkpoint repair, session `66941` with output
 marked repaired. No ownership fallback or new broadcast was observed in that
 invocation. Its initial readiness preprobe does **not** atomically disable the
 repair's fallback; retain normal live validation and never assume a later repair
-is incapable of broadcasting. The next normal Gateway prefix, session `11030`,
-is running at this dated checkpoint. Gateway/Edge readiness, the fresh native
-bridge route and public-service acceptance are not yet claimed.
+is incapable of broadcasting.
+
+<!-- SYSCOIN: Generated runtime-config permissions do not authorize replay
+of a chain initialization that already submitted transactions. -->
+The next Gateway prefix, session `11030`, reported successful chain
+initialization, then exited one when the strict metadata check rejected its
+generated chain `contracts.yaml` mode `0664`. The exact owned regular file was
+tightened to `0600`, preserving its content, inode, size and modification time.
+The existing local schema normalization and admin/readiness checks were then
+completed separately. Normal checkpoint repair, session `58944`, exited zero
+and reported `gl.gateway_chain_inited` already valid and marked repaired.
+Initialization was not replayed. The later schema normalization intentionally
+updates schema fields; it is distinct from the earlier content-preserving mode
+repair. This is not a recursive chmod instruction or a source-file mode policy.
+Pinned zkstack copies template permission bits and later saves preserve them;
+the original remote template's mode was not measured. Do not assume every
+template has mode `0664` or that another chain must encounter the same failure.
+
+<!-- SYSCOIN: Shared administrator roles require one deduplicated reserve
+top-up, not duplicate funding or another chain initialization. -->
+The following continuation, session `44668`, stopped before settlement or new
+transactions at the funding checkpoint's live balance check. The shared
+Root/Gateway deployer and governor had **10.098799201732923023 TSYS** against the
+deduplicated **11-TSYS** target. The reviewed normal repair explicitly selects
+Root plus Gateway wallets, permits only that administrator's
+**0.901200798267076977-TSYS** deficit within a one-TSYS top-up bound, and preserves
+the separate **3,000-TSYS** faucet allocation. Its single funder nonce 8 transfer
+is `0xc71669ffc05c07838cf7d2eee6aa63c3d448126b6e8913eb1b9d881a6c98bc44`;
+retain this known hash instead of resending it during the expected Tanenbaum
+confirmation interval. Once funding validates, the normal launcher revalidates
+and skips completed initialization, then continues to `gl.gateway_settlement`.
+Funding, settlement and public-service completion require their actual results;
+none is inferred from starting this recovery. Gateway/Edge readiness, the fresh
+native bridge route and public-service acceptance are not yet claimed.
 
 For this disposable testnet rollout, the operator has accepted the explicit
 legacy manual-deposit risk described below and selected a clean fresh native
