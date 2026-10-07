@@ -471,7 +471,7 @@ remove journals, change sender nonces, or modify contracts. A subsequent
 metadata-only capture passed at `2026-10-07T04:56:36Z`; that capture is not a
 receipt, runtime, ownership or whole-graph audit.
 
-The separate read-only reconciliation remains **unqualified**. It stopped
+The first separate read-only reconciliation was **unqualified**. It stopped
 before full receipt/poststate qualification because 21 unique L1 artifact
 JSON files have different raw SHA256 identities from the original source plan.
 All compared deployment calldata, runtime, constructor, initializer and
@@ -481,13 +481,33 @@ original recorded raw artifact hash. Serialization-only equivalence is
 therefore **unproven**; the raw-hash mismatch alone is not evidence of a
 contract vulnerability or proof failure.
 
-Use a separately reviewed independent read-only source-and-receipt
-qualification bound to the actual preserved artifacts, full source/compiler
-context and canonical transaction sequence. Retain the original raw-hash
-mismatch and unknown CLI exit as historical limitations; do not rewrite pins,
+The subsequent independent current-artifact qualification passed: genuine
+capture `d3eb3e5e` and separately activated result `effafb83`, both with exit
+zero, bind all 48 full raw artifacts, complete source/compiler context and the
+42 canonical transactions. The final snapshot was ROOT block 985489 with 80
+confirmations for the last receipt and next administrator nonce 118. All
+853 function selectors and 239 physical source units were independently
+checked. Fees for those 42 unique receipts were booked once.
+
+<!-- SYSCOIN: Compiler metadata projection and source-derived event checks are
+operator qualifications, not changes to contracts or already signed payloads. -->
+Canonical raw Solc metadata is authoritative; parsed Foundry metadata has a
+narrow, explicitly checked projection for empty ABI arrays and empty remapping
+contexts. Preserve both complete representations without claiming full JSON
+equality. Exact handoff checks were also corrected against contract source and
+actual receipts: fresh CTM administration starts at zero, and ChainAdmin
+multicalls emit their own audit event. Nonces 113 and 117 have exactly three and
+two ordered logs respectively. The signed deployment and handoff bytes did
+not change.
+
+This qualifies current CTM source, artifacts, receipts and state only. Retain
+the original raw-hash mismatch and unknown CLI exit as historical limitations;
+do not rewrite pins,
 restore a fabricated artifact, replay any of the 42 transactions, manufacture
 the original completion record or manually mark a checkpoint passed. Nonce
-118 alone is not authorization to run registration.
+118 alone is not authorization to run registration. Separate normal
+registration, Registry deployment, checkpoint validation and public-service
+acceptance remain required; the original failed guard's completion stays absent.
 
 For this disposable testnet rollout, the operator has accepted the explicit
 legacy manual-deposit risk described below and selected a clean fresh native
@@ -512,14 +532,24 @@ For a disposable **testnet only**, the operator may explicitly approve a
 different boundary: deprecate the old unpaused contracts, replace official
 clients/endpoints and publish that direct manual deposits to those exact old
 contracts can still be accepted and may remain unprocessed or unrecoverable on
-the retired chain. Record the specific addresses/chain IDs, reconciled existing
-obligations and accepted manual-deposit risk. Do not claim old onchain intake
-stopped; this exception does not waive external collateral, shared history or
-existing-claim reconciliation, and can never be copied to mainnet. The operator
-explicitly accepted this exception for the current v31-to-v32 testnet replacement.
+the retired chain. Record the specific addresses/chain IDs, the retirement
+boundary and accepted manual-deposit risk. Do not claim old onchain intake
+stopped or reset shared external contracts and collateral. The treatment of
+existing claims must be explicit, and this exception can never be copied to
+mainnet. The operator explicitly accepted this exception for the current
+v31-to-v32 testnet replacement.
 Official old UI/routes still must be disabled; old contracts are **not claimed
 paused**. General authorization to wipe databases alone is not sufficient for
 another rollout.
+
+<!-- SYSCOIN: This explicitly disposable rollout does not preserve or replay
+v31 claims; the normal paused-retirement procedure below remains for other launches. -->
+For this replacement, v31 rollup/queue/order/history preservation or migration
+is not a launch prerequisite. Retire the exact old official routes and workers;
+do not replay old messages or credit old backing to v32. Leave shared L1/Sepolia
+contracts, collateral and validator/relayer history untouched. This is an
+explicit testnet discard decision, not a completed mainnet claim-reconciliation
+procedure.
 
 For the normal paused-retirement path, prefer the deployed per-chain
 `pauseDepositsBeforeInitiatingMigration()` route when its admin/CTM authority
@@ -544,8 +574,9 @@ old Governance has zero minimum delay but still requires a scheduled operation:
 `executeInstant` also requires a pending/scheduled operation; it is not an
 unscheduled shortcut. Use only verified owner custody and approved exact targets.
 
-Pause the old source fast-path ingress as well, then reconcile deployment-to-pause
-event windows, canonical old-L2 receipts, escrow paid/used state and queue
+For the normal paused-retirement path, pause the old source fast-path ingress
+as well, then reconcile deployment-to-pause event windows, canonical old-L2
+receipts, escrow paid/used state and queue
 processing boundaries. Worker ledgers alone can omit historical orders. Preserve
 cancellation, reimbursement and reserve/liability records; never replay a
 cancelled or reimbursed message against the new Bridgehub. Preserve unchanged
@@ -553,7 +584,7 @@ Tanenbaum/Sepolia state, external collateral and shared validator/relayer histor
 The operator-authorized discard covers v31 rollup databases and indexes, not
 those shared assets. For paused retirement, repeat final queue/event checks
 after onchain intake is closed. Under a separately approved testnet exception,
-close official/fast-path intake and record a bounded final reconciliation cutoff;
+follow its recorded claim/discard boundary, close official/fast-path intake and
 explicitly acknowledge that later manual legacy deposits can still arrive.
 
 <!-- SYSCOIN: Clean testnet replacement must not require new production contract
