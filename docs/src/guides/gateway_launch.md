@@ -489,10 +489,10 @@ restore a fabricated artifact, replay any of the 42 transactions, manufacture
 the original completion record or manually mark a checkpoint passed. Nonce
 118 alone is not authorization to run registration.
 
-Public cutover also still requires the operator's unresolved shared-native-route
-choice and either verified old-deposit pause custody or the explicit disposable-
-testnet manual-deposit risk exception. Unaffected private preparation can
-continue, but it does not select either public boundary automatically.
+For this disposable testnet rollout, the operator has accepted the explicit
+legacy manual-deposit risk described below and selected a clean fresh native
+bridge route using the existing contracts. Those decisions do not establish
+receipt, route or public-service acceptance; the deployment is not complete.
 
 ### Retire old onchain deposit entry points
 
@@ -515,9 +515,11 @@ contracts can still be accepted and may remain unprocessed or unrecoverable on
 the retired chain. Record the specific addresses/chain IDs, reconciled existing
 obligations and accepted manual-deposit risk. Do not claim old onchain intake
 stopped; this exception does not waive external collateral, shared history or
-existing-claim reconciliation, and can never be copied to mainnet. The current
-testnet exception decision is **pending**; general authorization to wipe v31
-databases does not select it automatically.
+existing-claim reconciliation, and can never be copied to mainnet. The operator
+explicitly accepted this exception for the current v31-to-v32 testnet replacement.
+Official old UI/routes still must be disabled; old contracts are **not claimed
+paused**. General authorization to wipe databases alone is not sufficient for
+another rollout.
 
 For the normal paused-retirement path, prefer the deployed per-chain
 `pauseDepositsBeforeInitiatingMigration()` route when its admin/CTM authority
@@ -554,15 +556,36 @@ after onchain intake is closed. Under a separately approved testnet exception,
 close official/fast-path intake and record a bounded final reconciliation cutoff;
 explicitly acknowledge that later manual legacy deposits can still arrive.
 
+<!-- SYSCOIN: Clean testnet replacement must not require new production contract
+logic just to retain an obsolete route's collateral or one-time peer bindings. -->
 An existing collateralized NativeIngress proxy has no Bridgehub setter in the
-reviewed old implementation. A proposed minimal proxy upgrade/rebind is a
-separate approval and verification gate: storage layout, immutable mailbox,
-owner/ProxyAdmin, native asset identity and pending-message continuity must be
-attested. That approval and its live acceptance have **not been granted/passed
-by this runbook**. Rebinding native ingress alone does not rebind one-time
-fast-path Escrow/Settlement peers. Do not replace addresses in client JSON and
-claim the public route works. A closed route must be labelled explicitly, and
-UI closure alone does not block direct source-contract calls.
+reviewed old implementation. Its original initializer already accepts a
+Bridgehub, so a fresh proxy can target the new ecosystem without adding a setter
+or upgrading the old proxy. The operator narrowed the earlier rebind approval
+to simple operations and selected this fresh route. The staged setter candidate
+is unused; old proxy/admin/implementation, backing and Sepolia synthetic supply
+remain untouched.
+
+Deploy fresh GasVault/NativeIngress instances, a new Sepolia synthetic router
+with **zero initial supply**, route-specific pause/timelock/aggregation modules
+and a fresh paused fast-path pair using the original contract logic. Attest any
+reused shared Mailboxes/validators/relayer without resetting their history or
+policy. Do not retarget one-time timelock or fast-path peer bindings, manually
+mint synthetic supply, move old backing or credit it to the new route.
+
+The current Sepolia fee-plus-value ceiling remains **0.05 ETH**; an offer to
+provide more testnet ETH does not raise it automatically. Obtain actual bounded
+transaction estimates before signing. New native sponsorship, canaries and
+fast-path inventory must fit the approved operating allocation, not the
+separate faucet reserve. The documented 1,000-wSYS example minimum is not a
+requirement to spend 1,000 TSYS: use reviewed smaller testnet limits or obtain
+additional funding approval.
+
+Fresh addresses alone are not acceptance. Require reciprocal new-router
+enrollment, actual owner/code/asset readbacks, route preflight and authenticated
+canonical credit through the new Root/Gateway/edge before enabling the UI or
+fast lane. Keep new routes closed until these checks pass. UI closure alone does
+not block direct calls to old source contracts.
 
 ### Exact reset inventory
 
