@@ -1,3 +1,15 @@
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs b/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
+@@ -51,0 +52,2 @@ pub async fn run(
++    // SYSCOIN: Preserve protected external governor selectors for both actions.
++    // The address-only wallet must not fall back to a missing YAML private key.
+@@ -56 +58 @@ pub async fn run(
+-                &Default::default(),
++                &_args.forge_args,
+@@ -68 +70 @@ pub async fn run(
+-                &Default::default(),
++                &_args.forge_args,
 diff --git a/core/lib/basic_types/src/network.rs b/core/lib/basic_types/src/network.rs
 index 3403ec404..d55f8e1d5 100644
 --- a/core/lib/basic_types/src/network.rs

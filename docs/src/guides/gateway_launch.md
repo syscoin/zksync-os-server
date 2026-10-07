@@ -162,6 +162,17 @@ the intended edge governor in its own wallet file. Operator, blob/prove/execute
 operator, fee-account and token-multiplier-setter roles retain generated keys.
 Missing, empty or malformed supplied keys never fall back to an external account.
 
+<!-- SYSCOIN: CLI source adoption and deposit management retain protected custody. -->
+Pause and unpause deposit commands use the same authenticated governor account
+selector as initialization. Both the launcher and the pinned Syscoin zkstack
+patch must forward that selector; an address-only governor must never fall back
+to a null YAML private key. When adopting a CLI patch update, attest the complete
+new postimage and rebuild the normal zkstack release/stamp before resuming an
+existing launch. The upstream CLI revision and deployment-input fingerprint do
+not change for this selector fix, but the source-bound CLI build fingerprint
+does. Preserve the existing checkpoints and mined receipts; do not edit a
+fingerprint or replay a completed transaction to make an old binary pass.
+
 ## Canonical command
 
 Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `L1_RPC_URL`):

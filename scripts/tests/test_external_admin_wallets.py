@@ -246,6 +246,75 @@ else: raise SystemExit(92)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "3")
 
+    def deposit_command(self, action, **overrides):
+        # SYSCOIN: Exercise the actual launcher call sites, but replace the PTY
+        # boundary with an argv recorder; no zkstack, Forge or RPC is invoked.
+        log = self.root / "deposit-args.json"
+        if log.exists():
+            log.unlink()
+        source = (ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh").read_text()
+        if action == "pause":
+            body = source.split('  pause_output=""\n', 1)[1].split('  migrate_output=""\n', 1)[0]
+        else:
+            body = source.split("ensure_deposits_unpaused() {\n", 1)[1].split("\n}\n\nrefresh_l1_admin_wallet_funding()", 1)[0]
+            body = 'ensure_deposits_unpaused() {\n' + body + '\n}\nensure_deposits_unpaused gateway\n'
+        command = '''
+EDGE_CHAIN_NAME=gateway; L1_RPC_URL=http://fixture.invalid
+gl_l1_broadcast_preflight() { :; }
+refresh_l1_admin_wallet_funding() { :; }
+gl_zkstack_pty() {
+  python3 - "$@" <<'PY'
+import json,os,sys
+with open(os.environ['DEPOSIT_ARGS_LOG'], 'x') as output:
+    json.dump(sys.argv[1:], output)
+PY
+}
+''' + body
+        return self.run_shell(command, DEPOSIT_ARGS_LOG=str(self.root / "deposit-args.json"), **overrides)
+
+    def test_pause_and_unpause_forward_authenticated_null_governor_account(self):
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                log = self.root / "deposit-args.json"
+                if log.exists():
+                    log.unlink()
+                result = self.deposit_command(action)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(log.read_text()),
+                    ["zkstack", "chain", action + "-deposits", "--chain", "gateway",
+                     "--l1-rpc-url", "http://fixture.invalid", "--additional-args", "--account",
+                     "--additional-args", "v32-admin", "--additional-args", "--password-file",
+                     "--additional-args", str(self.password.resolve()), "--additional-args", "--sender",
+                     "--additional-args", ADMIN, "-v"])
+
+    def test_pause_and_unpause_reject_account_mismatch_before_pty(self):
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                result = self.deposit_command(action, CAST_ACCOUNT_ADDRESS="0x" + "33" * 20)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("address/account mismatch", result.stderr)
+                self.assertFalse((self.root / "deposit-args.json").exists())
+
+    def test_pause_and_unpause_generated_governor_preserve_empty_selector(self):
+        self.write_wallet({"governor": self.generated()})
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                log = self.root / "deposit-args.json"
+                if log.exists():
+                    log.unlink()
+                result = self.deposit_command(action)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(log.read_text()),
+                    ["zkstack", "chain", action + "-deposits", "--chain", "gateway",
+                     "--l1-rpc-url", "http://fixture.invalid", "-v"])
+
+    def test_pause_and_unpause_do_not_allow_raw_key_backend(self):
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                result = self.deposit_command(action, EDGE_GATEWAY_GOVERNOR_SIGNER="private-key")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "deposit-args.json").exists())
+
     def test_protected_account_password_files_reject_permissions_links_and_absence(self):
         for path in (self.account, self.password):
             with self.subTest(path=path.name):

@@ -2370,9 +2370,13 @@ ensure_deposits_unpaused() {
 
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${chain_name}"
+  # SYSCOIN: Address-only governors must retain their authenticated account
+  # selector; never fall back to a missing YAML key during deposit management.
+  gl_prepare_zkstack_admin_wallet_args "${chain_name}" governor
   if ! unpause_output="$(gl_zkstack_pty zkstack chain unpause-deposits \
     --chain "${chain_name}" \
     --l1-rpc-url "${L1_RPC_URL}" \
+    ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"} \
     -v 2>&1)"; then
     unpause_output_lc="$(gl_to_lower "${unpause_output}")"
     case "${unpause_output_lc}" in
@@ -2466,9 +2470,13 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output_lc=""
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
+  # SYSCOIN: Use the same owner-bound protected account as chain initialization
+  # instead of asking zkstack to recover a null governor key from YAML.
+  gl_prepare_zkstack_admin_wallet_args "${EDGE_CHAIN_NAME}" governor
   if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits \
     --chain "${EDGE_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \
+    ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"} \
     -v 2>&1)"; then
     pause_output_lc="$(gl_to_lower "${pause_output}")"
     case "${pause_output_lc}" in
