@@ -419,6 +419,13 @@ That source is **not live-adopted** while the d8 CTM invocation owns the launch:
 normal source adoption and new canonical Gateway/edge builds and stamps remain
 required. Do not republish the already confirmed DA readiness marker to test it.
 
+The issuance chain-ID normalization in the same reviewed release is also a
+genuine launcher correctness fix: a configured/persisted hexadecimal edge
+chain ID must be normalized before token-prelude sends, and receipt-anchor comparisons
+must treat its decimal/hex aliases as the same chain while keeping every other
+manifest binding strict. This preserves the receipt-timestamp-plus86400 policy;
+it neither changes the issuance schedule nor establishes live token deployment.
+
 The CI process-exit observation change is **test-only**: a bounded two-second
 observer lets an already signalled owned task reach its terminal process state,
 checks its start identity and still rejects a live child. It does not fix or
@@ -437,6 +444,14 @@ its signed **35 deployment transactions plus seven owner/admin handoffs** are
 active and non-final. Receipt, poststate and separate registration/Registry
 qualification remain required; no full ROOT ecosystem, service cutover or
 public-testnet completion is claimed.
+
+An additional offline reproduction found a false failure in the operator's
+Python postcheck, not in the contracts: the pinned Rust YAML serializer emits
+large hex payload Strings unquoted, while Python's generic safe reader coerces
+them to integers. Preserve the original invocation and complete its ordinary
+transaction sequence. Qualify the resulting state through a separately reviewed,
+read-only exact-text/schema-aware check; never replay transactions or fabricate
+the original guard's completion/exit result to satisfy a later registration gate.
 
 ### Retire old onchain deposit entry points
 
