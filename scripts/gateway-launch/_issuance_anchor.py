@@ -60,6 +60,23 @@ def hex_value(value: object, size: int, label: str) -> str:
     return value.lower()
 
 
+def canonical_identity(value: object) -> dict:
+    """SYSCOIN: Compare chain-ID aliases only; preserve every other pinned field."""
+    if not isinstance(value, dict):
+        raise ValueError("invalid issuance prelude identity")
+    raw = value.get("edge_chain_id")
+    try:
+        chain_id = raw if isinstance(raw, int) else int(
+            raw, 16 if isinstance(raw, str) and raw.lower().startswith("0x") else 10)
+    except (TypeError, ValueError):
+        raise ValueError("invalid issuance edge chain ID") from None
+    if isinstance(raw, bool) or not 0 < chain_id < 2**256:
+        raise ValueError("invalid issuance edge chain ID")
+    result = value.copy()
+    result["edge_chain_id"] = str(chain_id)
+    return result
+
+
 def read_private_json(path: Path) -> dict:
     info = os.lstat(path)
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
@@ -78,9 +95,10 @@ def read_private_json(path: Path) -> dict:
 
 
 def bind_private_json(path: Path, value: dict) -> None:
+    value = canonical_identity(value)
     validate_parent(path)
     if path.exists() or path.is_symlink():
-        if read_private_json(path) != value:
+        if canonical_identity(read_private_json(path)) != value:
             raise ValueError("issuance prelude identity differs from its first run")
     else:
         atomic_write_json(path, value)
@@ -95,6 +113,7 @@ def validate_parent(path: Path) -> None:
 
 def make_anchor(expected: dict, transaction: dict, receipt: dict, block: dict) -> dict:
     """Validate a successful, exact CREATE2 call and its canonical receipt."""
+    expected = canonical_identity(expected)
     tx_hash = hex_value(receipt.get("transactionHash"), 32, "receipt transaction hash")
     block_hash = hex_value(receipt.get("blockHash"), 32, "receipt block hash")
     if uint(receipt.get("status"), "receipt status") != 1:
@@ -148,15 +167,13 @@ def main() -> None:
         raise ValueError("usage: _issuance_anchor.py bind|resolve PATH [DEPLOYMENT_TX_HASH]")
     mode, path = sys.argv[1], Path(sys.argv[2])
     validate_parent(path)
-    expected = json.load(sys.stdin)
-    if not isinstance(expected, dict):
-        raise ValueError("invalid issuance prelude identity")
+    expected = canonical_identity(json.load(sys.stdin))
     if mode == "bind":
         bind_private_json(path, expected)
         return
     saved = read_private_json(path) if path.exists() or path.is_symlink() else None
     supplied = sys.argv[3] if len(sys.argv) == 4 else ""
-    if saved and saved.get("identity") != expected:
+    if saved is not None and canonical_identity(saved.get("identity")) != expected:
         raise ValueError("token receipt identity differs from the current prelude")
     tx_hash = supplied or (saved or {}).get("transaction_hash")
     if not tx_hash:
@@ -168,11 +185,16 @@ def main() -> None:
     transaction = rpc("eth_getTransactionByHash", [tx_hash])
     block = rpc("eth_getBlockByNumber", [receipt["blockNumber"], False])
     anchor = make_anchor(expected, transaction, receipt, block)
-    if saved and saved != anchor:
-        raise ValueError("recorded token deployment anchor no longer matches canonical history")
+    if saved is not None:
+        # SYSCOIN: Normalize only a comparison copy; never rewrite legacy bytes
+        # or relax the saved receipt/actor/source/history identity checks.
+        compared_saved = saved.copy()
+        compared_saved["identity"] = canonical_identity(saved.get("identity"))
+        if compared_saved != anchor:
+            raise ValueError("recorded token deployment anchor no longer matches canonical history")
     if rpc("eth_getCode", [expected["token"], "latest"]) == "0x":
         raise ValueError("anchored token proxy is missing")
-    if not saved:
+    if saved is None:
         atomic_write_json(path, anchor)
     print(anchor["issuer_start_time"])
 

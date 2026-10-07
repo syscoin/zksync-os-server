@@ -115,6 +115,83 @@ cast() {
         with self.assertRaises(ValueError):
             anchor.uint(True, "timestamp")
 
+    def test_chain_id_aliases_are_decimal_only_in_fresh_identity_and_anchor(self):
+        for value in (57057, "57057", "057057", "0xdee1", "0XDEE1"):
+            with self.subTest(value=value):
+                self.identity["edge_chain_id"] = value
+                unchanged = copy.deepcopy(self.identity)
+                self.assertEqual(self.make()["identity"]["edge_chain_id"], "57057")
+                self.assertEqual(self.identity, unchanged)
+        maximum = {**self.identity, "edge_chain_id": str(2**256 - 1)}
+        self.assertEqual(anchor.canonical_identity(maximum)["edge_chain_id"], str(2**256 - 1))
+
+    def test_legacy_manifest_chain_alias_resume_preserves_bytes_and_other_identity_fields(self):
+        self.identity.update({"schema": "syscoin-token-prelude-v1", "rpc_sha256": "a" * 64,
+                              "inputs": {"source": "pinned", "L1_CHAIN_ID": "5700"}})
+        for value in ("0xdee1", "0XDEE1", "057057", 57057):
+            with self.subTest(value=value):
+                legacy = {**self.identity, "edge_chain_id": value}
+                original = (json.dumps(legacy, indent=7) + "\n").encode()
+                self.path.write_bytes(original)
+                self.path.chmod(0o600)
+                anchor.bind_private_json(self.path, self.identity)
+                self.assertEqual(self.path.read_bytes(), original)
+                for field, changed in (("edge_chain_id", "57058"), ("rpc_sha256", "b" * 64),
+                                       ("signer", "0x" + "66" * 20),
+                                       ("inputs", {"source": "different", "L1_CHAIN_ID": "5700"})):
+                    with self.assertRaises(ValueError):
+                        anchor.bind_private_json(self.path, {**self.identity, field: changed})
+                    self.assertEqual(self.path.read_bytes(), original)
+
+    def test_legacy_explicit_receipt_recovery_and_saved_alias_anchor_preserve_bytes(self):
+        self.identity["edge_chain_id"] = "0XDEE1"
+        self.assertEqual(self.resolve(self.transaction["hash"]), "90496\n")
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved["identity"]["edge_chain_id"], "57057")
+        for value in ("0xdee1", "0XDEE1", "057057", 57057):
+            with self.subTest(value=value):
+                saved["identity"]["edge_chain_id"] = value
+                original = (json.dumps(saved, indent=5) + "\n").encode()
+                self.path.write_bytes(original)
+                self.path.chmod(0o600)
+                self.identity["edge_chain_id"] = "57057"
+                self.assertEqual(self.resolve(), "90496\n")
+                self.assertEqual(self.resolve(self.transaction["hash"]), "90496\n")
+                self.assertEqual(self.path.read_bytes(), original)
+        saved["token_deployment_timestamp"] += 1
+        self.path.write_text(json.dumps(saved))
+        self.path.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "no longer matches"):
+            self.resolve()
+
+    def test_invalid_chain_identity_fails_before_rpc_or_persistence(self):
+        for value in (True, False, 0, "0", "0x0", "0X0", -1, "-1", "-0x1", "", "broken", "0xzz",
+                      None, [], {}, 1.5, 2**256, str(2**256)):
+            with self.subTest(value=value):
+                expected = {**self.identity, "edge_chain_id": value}
+                with self.assertRaises(ValueError):
+                    anchor.bind_private_json(self.path, expected)
+                self.assertFalse(self.path.exists())
+                self.identity = expected
+                with patch.object(anchor, "rpc", side_effect=AssertionError("unexpected RPC")):
+                    with self.assertRaises(ValueError):
+                        self.resolve(self.transaction["hash"])
+                self.assertFalse(self.path.exists())
+
+    def test_saved_invalid_identity_and_rpc_drift_do_not_fall_back_to_fresh_anchor(self):
+        saved = self.make()
+        for value in ({}, {**saved, "identity": {**self.identity, "edge_chain_id": True}},
+                      {**saved, "identity": {**self.identity, "edge_chain_id": "57058"}},
+                      {**saved, "identity": {**self.identity, "rpc_sha256": "other"}}):
+            with self.subTest(value=value):
+                original = json.dumps(value).encode()
+                self.path.write_bytes(original)
+                self.path.chmod(0o600)
+                with patch.object(anchor, "rpc", side_effect=AssertionError("unexpected RPC")):
+                    with self.assertRaises(ValueError):
+                        self.resolve(self.transaction["hash"])
+                self.assertEqual(self.path.read_bytes(), original)
+
     def test_rejects_wrong_receipt_or_transaction_identity(self):
         for obj, field, value in [
             (self.receipt, "status", "0x0"), (self.receipt, "from", "0x" + "77" * 20),
@@ -210,6 +287,89 @@ cast() {
         self.assertNotIn('issuer implementation', stage)
         self.assertIn('conflicts with the canonical token deployment receipt', stage)
         self.assertLess(source.index('anchored_start='), source.index('issuer_init_data='))
+
+    def token_prelude_shell(self, yaml_chain, prelude_stage=False):
+        # SYSCOIN: Source the actual function/common helper, not live top-level
+        # deploy code. Three explicit fake sends run only after a real bind.
+        source = (HELPER.parent / "zksys-l2-bootstrap.sh").read_text()
+        function = source[source.index("token_prelude_identity() {\n"):
+                          source.index("\ntoken_prelude_manifest=")]
+        gateway = Path(self.temporary.name) / "gateway"
+        chain = gateway / "chains/zksys"
+        chain.mkdir(parents=True, exist_ok=True)
+        (chain / "ZkStack.yaml").write_text("chain_id: " + yaml_chain + "\n")
+        (chain / "ZkStack.yaml").chmod(0o600)
+        manifest = Path(self.temporary.name) / "prelude.json"
+        sends = Path(self.temporary.name) / "sends.txt"
+        env = {**os.environ, "PATH": str(Path(sys.executable).parent) + ":" + os.environ["PATH"],
+               "PYTHON_REAL": sys.executable, "PYTHONDONTWRITEBYTECODE": "1",
+               "COMMON": str(HELPER.parent / "_common.sh"), "SCRIPT_DIR": str(HELPER.parent),
+               "GATEWAY_DIR": str(gateway), "EDGE_CHAIN_NAME": "zksys", "PROTOCOL_VERSION": "v32.0",
+               "REQUIRED_ZKSTACK_CLI_SHA": "source-pinned", "REQUIRED_CONTRACTS_SHA": "contracts-pinned",
+               "L1_CHAIN_ID": "5700", "L1_NETWORK": "tanenbaum", "ZKSYS_L2_TOKEN_ADMIN_ADDRESS": "0x" + "77" * 20,
+               "ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS": "0x" + "88" * 20,
+               "ZKSYS_L2_PROXY_ADMIN_SALT": "0x01", "ZKSYS_L2_TOKEN_IMPL_SALT": "0x02",
+               "ZKSYS_L2_TOKEN_PROXY_SALT": "0x03", "ZKSYS_L2_TOKEN_NAME": "ZKSYS",
+               "ZKSYS_L2_TOKEN_SYMBOL": "ZKSYS", "ZKSYS_L2_TOKEN_DECIMALS": "18",
+               "ZKSYS_L2_RPC_URL": "http://fixture.invalid/no-live-request",
+               "ZKSYS_L2_CREATE2_DEPLOYER": self.identity["create2"], "ZKSYS_L2_TOKEN_ADDRESS": self.identity["token"],
+               "ZKSYS_L2_PROXY_ADMIN_ADDRESS": "0x" + "99" * 20,
+               "ZKSYS_L2_TOKEN_IMPL_ADDRESS": "0x" + "aa" * 20,
+               "BOOTSTRAP_SIGNER_ADDRESS": self.identity["signer"],
+               "proxy_admin_init_code": "0x6000", "token_impl_init_code": "0x6001", "token_proxy_init_code": "0x6002",
+               "PRELUDE_FILE": str(manifest), "SEND_FILE": str(sends)}
+        setup = '''set -euo pipefail
+source "$COMMON"
+cast() { test "$1" = keccak; printf '0x%s' "$(printf '%064d' 0)"; }
+'''
+        if prelude_stage:
+            stage = source[source.index('if [ "${TOKEN_PRELUDE}" = true ]; then'):
+                           source.index('\nif [ -e "${token_prelude_manifest}" ]')]
+            setup += '''python3() {
+ if [ "${1:-}" = "$SCRIPT_DIR/_issuance_anchor.py" ] && [ "${2:-}" = resolve ]; then
+  "$PYTHON_REAL" -c 'import sys; sys.stdin.read(); print(90496)'
+ else "$PYTHON_REAL" "$@"; fi
+}
+require_create2_deployer() { :; }
+deploy_create2() { test -s "$PRELUDE_FILE"; printf '%s\\n' "$1" >> "$SEND_FILE"; }
+assert_proxy_admin_owner() { :; }
+assert_proxy_wiring() { :; }
+TOKEN_PRELUDE=true
+token_prelude_manifest="$PRELUDE_FILE"
+token_receipt_anchor="$PRELUDE_FILE.receipt"
+LAST_CREATE2_TRANSACTION_HASH=fixture-transaction
+'''
+            command = setup + function + "\n" + stage
+        else:
+            command = setup + function + "\ntoken_prelude_identity\n"
+        result = subprocess.run(["bash", "-c", command], env=env, capture_output=True, text=True, timeout=10)
+        return result, manifest, sends
+
+    def test_actual_sourced_prelude_canonicalizes_config_before_three_fake_sends(self):
+        aliases = ('"0xdee1"', '"0XDEE1"', '"57057"', '"057057"', "57057", "0xdee1")
+        first = None
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                result, manifest, sends = self.token_prelude_shell(alias)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                current = json.loads(result.stdout)
+                self.assertEqual(current["edge_chain_id"], "57057")
+                self.assertEqual(current, first or current)
+                first = current
+                result, manifest, sends = self.token_prelude_shell(alias, prelude_stage=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(manifest.read_text())["edge_chain_id"], "57057")
+                self.assertEqual(len(sends.read_text().splitlines()), 3)
+                sends.unlink()
+                manifest.unlink()
+
+    def test_actual_sourced_prelude_rejects_invalid_config_before_bind_or_send(self):
+        for invalid in ('true', 'false', '0', '"0x0"', '-1', '"broken"', 'null', '[]', '{}', '1.5', str(2**256)):
+            with self.subTest(invalid=invalid):
+                result, manifest, sends = self.token_prelude_shell(invalid, prelude_stage=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(manifest.exists())
+                self.assertFalse(sends.exists())
 
 
 if __name__ == "__main__":

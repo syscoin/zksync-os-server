@@ -609,6 +609,10 @@ PY
 # SYSCOIN: Bind the source, signer and exact token constructor graph before the
 # prelude's first send. The receipt-based policy is immutable across retries.
 token_prelude_identity() {
+  local edge_chain_id
+  # SYSCOIN: Use the existing validated positive-u256 config parser before binding or sending.
+  edge_chain_id="$(gl_chain_id_from_config "${EDGE_CHAIN_NAME}" "zkSYS")" || return $?
+  ZKSYS_TOKEN_PRELUDE_CHAIN_ID="${edge_chain_id}" \
   ZKSYS_TOKEN_PRELUDE_CALLDATA="${ZKSYS_L2_TOKEN_PROXY_SALT}${token_proxy_init_code#0x}" \
   ZKSYS_TOKEN_PRELUDE_TOKEN="${ZKSYS_L2_TOKEN_ADDRESS}" \
   ZKSYS_TOKEN_PRELUDE_PROXY_ADMIN="${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" \
@@ -616,17 +620,15 @@ token_prelude_identity() {
   ZKSYS_TOKEN_PRELUDE_ADMIN_HASH="$(cast keccak "${proxy_admin_init_code}")" \
   ZKSYS_TOKEN_PRELUDE_IMPL_HASH="$(cast keccak "${token_impl_init_code}")" \
   ZKSYS_TOKEN_PRELUDE_SIGNER="${BOOTSTRAP_SIGNER_ADDRESS}" \
-  python3 - "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" <<'PY'
-import hashlib, json, os, sys
-import yaml
-chain = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+  python3 - <<'PY'
+import hashlib, json, os
 names = ("PROTOCOL_VERSION", "REQUIRED_ZKSTACK_CLI_SHA", "REQUIRED_CONTRACTS_SHA",
     "L1_CHAIN_ID", "L1_NETWORK", "ZKSYS_L2_TOKEN_ADMIN_ADDRESS",
     "ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS", "ZKSYS_L2_PROXY_ADMIN_SALT",
     "ZKSYS_L2_TOKEN_IMPL_SALT", "ZKSYS_L2_TOKEN_PROXY_SALT",
     "ZKSYS_L2_TOKEN_NAME", "ZKSYS_L2_TOKEN_SYMBOL", "ZKSYS_L2_TOKEN_DECIMALS")
 print(json.dumps({"schema": "syscoin-token-prelude-v1", "inputs": {k: os.environ[k] for k in names},
-    "edge_chain_id": str(chain["chain_id"]), "delay_seconds": 86400,
+    "edge_chain_id": os.environ["ZKSYS_TOKEN_PRELUDE_CHAIN_ID"], "delay_seconds": 86400,
     "rpc_sha256": hashlib.sha256(os.environ["ZKSYS_L2_RPC_URL"].encode()).hexdigest(),
     "signer": os.environ["ZKSYS_TOKEN_PRELUDE_SIGNER"].lower(),
     "create2": os.environ["ZKSYS_L2_CREATE2_DEPLOYER"].lower(),
