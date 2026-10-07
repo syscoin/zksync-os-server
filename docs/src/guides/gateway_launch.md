@@ -425,9 +425,9 @@ corrects this by authenticating raw bytes first, then
 allowing one bounded strict bare-hex decode only when it matches the same
 committed Blake2s digest, before attempt reservation or wallet publication.
 It does not change the pinned SDK, finality policy or republish controls.
-That source is **not live-adopted**. The d8 CTM invocation has exited, but normal
-source adoption and new canonical Gateway/edge builds and stamps remain
-required. Do not republish the already confirmed DA readiness marker to test it.
+At that dated checkpoint, this source was **not live-adopted**; the later
+Gateway-only adoption/build milestone is recorded below. Edge builds and stamps
+remain separate requirements. Do not republish the confirmed DA readiness marker.
 
 The issuance chain-ID normalization in the same reviewed release is also a
 genuine launcher correctness fix: a configured/persisted hexadecimal edge
@@ -603,6 +603,41 @@ and skips completed initialization, then continues to `gl.gateway_settlement`.
 Funding, settlement and public-service completion require their actual results;
 none is inferred from starting this recovery. Gateway/Edge readiness, the fresh
 native bridge route and public-service acceptance are not yet claimed.
+
+<!-- SYSCOIN: Dated Gateway-only milestones are not Edge/kernel/public/proof acceptance. -->
+The later 2026-10-07 continuation completed the normal Root/Gateway-init repairs
+and Gateway settlement prefix. The RPC-backed `inspect(string,string)` mock
+inspection checked the complete CTM calculation against the actual preparation
+TOML, root snapshot, namespace and immutable guest target/relay. It remains a
+mock-testnet check, not real-proof attestation or independent-host reproduction.
+After fast-forward adoption of `4726f87e`, normal Gateway config repair, release
+build and config-bound `--help` passed in `69257` (`b5d6323c`); no Edge build/start.
+
+Import `_common.sh` **once per shell**; readonly `GL_DIR` rejects a second import.
+The post-fast-forward failure stays preserved; continue already-adopted source,
+without another merge. Stream SSH scripts via a separate descriptor (FD3) and
+give child stdin `/dev/null`, preventing it from consuming the script/footer.
+Retain actual exit, logs and final source/fingerprint checks.
+
+The later normal reserve repair topped up the administrator once: funder nonce 9,
+`0x97220ed2b7720931972aac0ebb1dbfa6f2bb46c35b69d36d3a771799d54e6db4`,
+transferred **9.37394307428 TSYS** and had three canonical confirmations at its
+audit snapshot. Its **1,050,000,147,000 wei** fee and the other ten administrator
+groups' **2,542,915,667,076,977 wei** fees are booked once, separately from value.
+The operator subsequently approved fresh bridge core and **750-TSYS** operations;
+the protected **3,000-TSYS** faucet allocation and **0.05-ETH** Sepolia cap remain.
+No additional transfer or bridge-contract write is claimed at this milestone.
+
+Prestart tightening changed **18 files and 18 task directories**, preserving
+bytes, hashes, inodes, sizes, modification times and executable bits; no binary
+copy, stamp rewrite or shared-parent change occurred. Original check `94370`
+remains failed. After a RAM-only two-line quote/whole-YAML-equivalence diagnosis,
+unchanged stock Gateway repair and fresh checks passed (`36832`, `b2c6ee62`).
+Do not run help/cookie refresh again before fresh bindings. Post-regeneration
+measurement `15759` found all 26 inputs/22 directories non-writable by others,
+with source/native/stamp hashes unchanged. Durable formatter alignment is only
+proposed, not implemented; source pins are unchanged. This does not complete
+Edge, kernel publication, Gateway first boot, bridge validation or public launch.
 
 For this disposable testnet rollout, the operator has accepted the explicit
 legacy manual-deposit risk described below and selected a clean fresh native
