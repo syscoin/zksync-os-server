@@ -505,9 +505,23 @@ the original raw-hash mismatch and unknown CLI exit as historical limitations;
 do not rewrite pins,
 restore a fabricated artifact, replay any of the 42 transactions, manufacture
 the original completion record or manually mark a checkpoint passed. Nonce
-118 alone is not authorization to run registration. Separate normal
-registration, Registry deployment, checkpoint validation and public-service
-acceptance remain required; the original failed guard's completion stays absent.
+118 alone is not authorization to run registration; a separate source-bound
+normal registration invocation and receipt/poststate qualification are required.
+The original failed guard's completion stays absent.
+
+<!-- SYSCOIN: A later independent registration qualification does not rewrite
+the original wrapper exit, manufacture its completion or authorize replay. -->
+The distinct registration invocation submitted two successful transactions at
+nonces 118 and 119, but its wrapper exited with an error and its normal CLI exit
+remains unknown. A later independent read-only qualification, `e583eb9d`, passed
+at ROOT block 985519 with 27 confirmations for the last receipt. It binds the
+complete current RegisterCTM artifact and all 64 source units, rechecks the
+whole contracts/CLI source context before and after, and verifies both canonical
+receipts, exact ordered events, bidirectional registry entries and preserved
+Core/CTM configuration and checkpoint state. The two unique receipt fees were
+booked once; do not resend either transaction or fabricate the missing original
+completion. Registry deployment, normal checkpoint validation and public-service
+acceptance remain pending.
 
 For this disposable testnet rollout, the operator has accepted the explicit
 legacy manual-deposit risk described below and selected a clean fresh native
