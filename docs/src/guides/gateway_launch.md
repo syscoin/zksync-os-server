@@ -415,8 +415,8 @@ corrects this by authenticating raw bytes first, then
 allowing one bounded strict bare-hex decode only when it matches the same
 committed Blake2s digest, before attempt reservation or wallet publication.
 It does not change the pinned SDK, finality policy or republish controls.
-That source is **not live-adopted** while the d8 CTM invocation owns the launch:
-normal source adoption and new canonical Gateway/edge builds and stamps remain
+That source is **not live-adopted**. The d8 CTM invocation has exited, but normal
+source adoption and new canonical Gateway/edge builds and stamps remain
 required. Do not republish the already confirmed DA readiness marker to test it.
 
 The issuance chain-ID normalization in the same reviewed release is also a
@@ -441,17 +441,58 @@ diagnostics. The corrected capsule `02b03df1` was separately reviewed and
 explicitly approved with a distinct intent namespace; it is not an automatic
 retry or permission to erase/reuse the first intent. At this dated checkpoint,
 its signed **35 deployment transactions plus seven owner/admin handoffs** are
-active and non-final. Receipt, poststate and separate registration/Registry
-qualification remain required; no full ROOT ecosystem, service cutover or
-public-testnet completion is claimed.
+observed with canonical successful `status=1` receipts for administrator nonces
+76 through 117; latest/pending nonce is 118. This progress observation is not
+the full source, runtime, poststate or registration qualification.
+
+The original guard session `87536` actually exited with code **1**, observed at
+`2026-10-07T04:46:53Z`. The underlying normal CLI exit status is unknown, and
+the original `completed.json` is absent. Preserve the failed intent, normal
+journals and diagnostics: successful transactions do not permit fabricating
+an exit-zero/completion record or retrying the deployment. Separate CTM,
+registration and Registry qualification remain required; no full ROOT
+ecosystem, service cutover or public-testnet completion is claimed.
 
 An additional offline reproduction found a false failure in the operator's
 Python postcheck, not in the contracts: the pinned Rust YAML serializer emits
 large hex payload Strings unquoted, while Python's generic safe reader coerces
-them to integers. Preserve the original invocation and complete its ordinary
-transaction sequence. Qualify the resulting state through a separately reviewed,
+them to integers. Preserve the original invocation and its ordinary transaction
+sequence. Qualify the resulting state through a separately reviewed,
 read-only exact-text/schema-aware check; never replay transactions or fabricate
 the original guard's completion/exit result to satisfy a later registration gate.
+
+<!-- SYSCOIN: Dated operator reconciliation distinguishes file metadata and
+raw-artifact provenance from canonical receipts and complete live qualification. -->
+Post-exit inspection found six public AdminFunctions journal JSON files and
+six corresponding private-cache JSON files at mode `0664`. One exact,
+identity-bound operation tightened those **12 files only** to `0600`, preserving
+their bytes, hashes, inodes, sizes and modification times. It did not reset or
+remove journals, change sender nonces, or modify contracts. A subsequent
+metadata-only capture passed at `2026-10-07T04:56:36Z`; that capture is not a
+receipt, runtime, ownership or whole-graph audit.
+
+The separate read-only reconciliation remains **unqualified**. It stopped
+before full receipt/poststate qualification because 21 unique L1 artifact
+JSON files have different raw SHA256 identities from the original source plan.
+All compared deployment calldata, runtime, constructor, initializer and
+source-unit summaries matched; those summaries do not establish equality of
+the complete artifact JSON. No checked preserved candidate recovered an
+original recorded raw artifact hash. Serialization-only equivalence is
+therefore **unproven**; the raw-hash mismatch alone is not evidence of a
+contract vulnerability or proof failure.
+
+Use a separately reviewed independent read-only source-and-receipt
+qualification bound to the actual preserved artifacts, full source/compiler
+context and canonical transaction sequence. Retain the original raw-hash
+mismatch and unknown CLI exit as historical limitations; do not rewrite pins,
+restore a fabricated artifact, replay any of the 42 transactions, manufacture
+the original completion record or manually mark a checkpoint passed. Nonce
+118 alone is not authorization to run registration.
+
+Public cutover also still requires the operator's unresolved shared-native-route
+choice and either verified old-deposit pause custody or the explicit disposable-
+testnet manual-deposit risk exception. Unaffected private preparation can
+continue, but it does not select either public boundary automatically.
 
 ### Retire old onchain deposit entry points
 
