@@ -101,9 +101,11 @@ jobs:
 
       - name: Test patched zksync-os workspace tooling
         run: |
-          # SYSCOIN: Keep secret-file and smoke-verdict regressions in the existing tooling gate.
+          # SYSCOIN: Keep protected administrator and smoke regressions in the existing tooling gate.
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
             scripts.tests.test_local_patched_zksync_os \
+            scripts.tests.test_external_admin_wallets \
+            scripts.tests.test_deposit_cli_argument_forwarding \
             scripts.tests.test_server_airbender_security \
             scripts.tests.test_gateway_settlement_fee_payer \
             scripts.tests.test_private_launch_files \

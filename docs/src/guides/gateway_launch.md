@@ -169,9 +169,12 @@ patch must forward that selector; an address-only governor must never fall back
 to a null YAML private key. When adopting a CLI patch update, attest the complete
 new postimage and rebuild the normal zkstack release/stamp before resuming an
 existing launch. The upstream CLI revision and deployment-input fingerprint do
-not change for this selector fix, but the source-bound CLI build fingerprint
-does. Preserve the existing checkpoints and mined receipts; do not edit a
-fingerprint or replay a completed transaction to make an old binary pass.
+not change for this selector fix, but both the CLI build fingerprint and native
+prebuilt-input digest include the patch. Rebuild the canonical native binary and
+its normal stamp, then run the config-bound help check before publication; never
+manually restamp an old binary. Preserve the existing checkpoints and mined
+receipts; do not edit a fingerprint or replay a completed transaction to make an
+old binary pass.
 
 ## Canonical command
 
