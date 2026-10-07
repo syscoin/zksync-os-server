@@ -87,6 +87,40 @@ def harness_process_is_running(pid: int) -> bool:
         return True
 
 
+def harness_process_identity(pid: int) -> tuple[int, str] | None:
+    try:
+        fields = (
+            Path(f"/proc/{pid}/stat")
+            .read_text(encoding="utf-8")
+            .rsplit(")", 1)[1]
+            .split()
+        )
+        return int(fields[19]), fields[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+def harness_wait_for_process_exit(
+    identities: dict[int, int], timeout: float = 2
+) -> dict[int, str]:
+    # SYSCOIN: EOF can precede a SIGKILLed task's /proc zombie state. Observe
+    # bounded completion without signaling again or mistaking PID reuse for it.
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = {}
+        for pid, start_time in identities.items():
+            observed = harness_process_identity(pid)
+            if observed is not None and observed[0] == start_time:
+                if observed[1] not in {"Z", "X"}:
+                    remaining[pid] = observed[1]
+        if not remaining:
+            return remaining
+        remaining_time = deadline - time.monotonic()
+        if remaining_time <= 0:
+            return remaining
+        time.sleep(min(0.01, remaining_time))
+
+
 def run_bash_harness(
     command: str,
     env: dict[str, str],
@@ -10073,6 +10107,77 @@ exit 99
                     ],
                 )
 
+    def test_process_exit_observation_waits_for_delayed_exit(self) -> None:
+        clock = [10.0]
+
+        def advance(duration: float) -> None:
+            clock[0] += duration
+
+        with patch(
+            f"{__name__}.harness_process_identity",
+            side_effect=[(100, "R"), (100, "R"), (100, "Z")],
+        ) as observe, patch.object(
+            time, "monotonic", side_effect=lambda: clock[0]
+        ), patch.object(time, "sleep", side_effect=advance) as sleep, patch.object(
+            os, "kill"
+        ) as kill, patch.object(os, "killpg") as killpg:
+            self.assertEqual(harness_wait_for_process_exit({123: 100}, 0.1), {})
+            self.assertEqual(observe.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+            self.assertAlmostEqual(clock[0], 10.02)
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_process_exit_observation_keeps_lingering_process_failure(self) -> None:
+        clock = [10.0]
+
+        def advance(duration: float) -> None:
+            clock[0] += duration
+
+        with patch(
+            f"{__name__}.harness_process_identity", return_value=(100, "S")
+        ), patch.object(
+            time, "monotonic", side_effect=lambda: clock[0]
+        ), patch.object(time, "sleep", side_effect=advance) as sleep, patch.object(
+            os, "kill"
+        ) as kill, patch.object(os, "killpg") as killpg:
+            self.assertEqual(
+                harness_wait_for_process_exit({123: 100}, 0.025), {123: "S"}
+            )
+            self.assertEqual(sleep.call_count, 3)
+            self.assertAlmostEqual(clock[0], 10.025)
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_process_exit_observation_does_not_follow_reused_pid(self) -> None:
+        with patch(
+            f"{__name__}.harness_process_identity", return_value=(101, "S")
+        ), patch.object(time, "sleep") as sleep, patch.object(
+            os, "kill"
+        ) as kill, patch.object(os, "killpg") as killpg:
+            self.assertEqual(harness_wait_for_process_exit({123: 100}), {})
+            sleep.assert_not_called()
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_process_exit_observation_reports_a_live_linux_child(self) -> None:
+        if not sys.platform.startswith("linux"):
+            self.skipTest("requires Linux process identity observations")
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        try:
+            identity = harness_process_identity(process.pid)
+            self.assertIsNotNone(identity)
+            assert identity is not None
+            remaining = harness_wait_for_process_exit({process.pid: identity[0]}, 0.025)
+            self.assertEqual(set(remaining), {process.pid})
+            self.assertIsNone(process.poll())
+        finally:
+            process.kill()
+            process.wait(timeout=2)
+
     def test_owned_pty_cleans_nested_session_and_preserves_status(self) -> None:
         if not sys.platform.startswith("linux"):
             self.skipTest("requires Linux process/session semantics")
@@ -10213,10 +10318,17 @@ exit $?
                         start_new_session=True,
                     )
                     details: tuple[int, ...] | None = None
+                    identities: dict[int, int] = {}
                     try:
                         if action or mode == "return":
                             wait_file(ready, process)
                             details = tuple(map(int, info.read_text(encoding="utf-8").split(":")))
+                            for pid in (details[0], details[3], details[4]):
+                                observed = harness_process_identity(pid)
+                                if observed is not None:
+                                    identities[pid] = observed[0]
+                            if action:
+                                self.assertEqual(len(identities), 3)
                         if action in {"TERM", "INT"}:
                             os.killpg(process.pid, getattr(signal, f"SIG{action}"))
                         elif action == "KILL_PROXY":
@@ -10234,9 +10346,9 @@ exit $?
                             self.assertEqual(inner_pgid, inner_sid)
                             self.assertEqual(guard, inner_pgid)
                             self.assertNotEqual(command, inner_pgid)
-                            self.assertFalse(
-                                [pid for pid in (command, guard, child) if running(pid)]
-                            )
+                            before = heartbeat.read_bytes()
+                            self.assertFalse(harness_wait_for_process_exit(identities))
+                            self.assertEqual(heartbeat.read_bytes(), before)
                         self.assertFalse(hostile_marker.exists())
                         self.assertEqual(list(root.glob("gateway-pty-return.*")), [])
                         self.assertIsNone(sibling.poll())
