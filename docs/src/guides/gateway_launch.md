@@ -232,6 +232,16 @@ the recorded transaction hashes, canonical receipts, sender's latest/pending
 nonce and launcher progress before diagnosing a failure. Do not start a second
 deployment or stop a progressing broadcast because a wall-clock estimate elapsed.
 
+<!-- SYSCOIN: Cast's submission wait is separate from the root block cadence
+and RPC request timeout; preserve submitted transactions after a timeout. -->
+For the dated 2.5-minute Tanenbaum lane, the pinned Linux `cast send --help`
+confirms that `ETH_TIMEOUT` controls transaction confirmation waiting. Set
+`export ETH_TIMEOUT=1800` in the reviewed invocation environment before a new
+broadcast; this does not change gas pricing, finality or the RPC request timeout.
+A Cast timeout does not prove that its transaction failed or disappeared.
+Reconcile its hash and canonical receipt before selecting a supported remainder;
+do not automatically retry the whole helper.
+
 Distinguish these recovery cases before changing any checkpoint or artifact:
 
 | Evidence | Permitted next step |
@@ -520,8 +530,48 @@ whole contracts/CLI source context before and after, and verifies both canonical
 receipts, exact ordered events, bidirectional registry entries and preserved
 Core/CTM configuration and checkpoint state. The two unique receipt fees were
 booked once; do not resend either transaction or fabricate the missing original
-completion. Registry deployment, normal checkpoint validation and public-service
-acceptance remain pending.
+completion. This independently qualifies registration only; the later Registry
+and Root checkpoint milestones below do not establish public-service acceptance.
+
+<!-- SYSCOIN: A source-preserved remainder completes the missing transaction
+without replaying ownership handshakes or rewriting the failed invocation. -->
+The later normal ownership/Registry invocation submitted successful rows
+120–122, then its wrapper exited **1** when stock Cast timed out waiting for the
+implementation receipt. The underlying helper's exact exit remains unknown,
+and that original intent's completion marker remains absent. A separately
+accepted read-only audit, `8ace1206`, qualified the three canonical receipts and
+exact existing implementation at ROOT block 985546, with latest/pending nonce
+123. Their **11,246,562,718 wei** in fees were booked once.
+
+Do not rerun the whole ownership helper for this remainder: the pinned normal
+ownership path emits two admin handshakes on each invocation, even when those
+admins are already accepted. The reviewed temporary operator instead extracted
+only the byte-exact reusable Registry function definitions and original context,
+factory, private-inspection/trap and encrypted-account preparation from the
+existing helper. It kept fresh source, custody, config, exact existing
+ProxyAdmin/implementation, empty-proxy, nonce, fee and lifecycle-lock gates, then
+called the stock Registry function once with `ETH_TIMEOUT=1800`. It neither
+changed production code nor replayed rows 120–122.
+
+That remainder invocation, session `18572`, exited zero and its accepted result
+`02c08317` qualifies all four canonical rows **120–123**, exact Registry
+runtime/proxy/initializer readbacks and the single Registry-address config
+delta at ROOT block **985556**, with next administrator nonce **124**. The
+proxy-only nonce 123 receipt added **6,114,086,867 wei** in new fees; do not charge
+the already-booked first three again. The original failed invocation and unknown
+helper exit remain unchanged, and this Registry result did not advance a
+checkpoint or qualify services.
+
+<!-- SYSCOIN: A successful already-valid repair is not proof that a future
+repair's fallback has been atomically disabled by an earlier readiness probe. -->
+The subsequent normal Root checkpoint repair, session `66941` with output
+`62c0f18f`, exited zero and reported `gl.l1_ecosystem_deployed` already valid and
+marked repaired. No ownership fallback or new broadcast was observed in that
+invocation. Its initial readiness preprobe does **not** atomically disable the
+repair's fallback; retain normal live validation and never assume a later repair
+is incapable of broadcasting. The next normal Gateway prefix, session `11030`,
+is running at this dated checkpoint. Gateway/Edge readiness, the fresh native
+bridge route and public-service acceptance are not yet claimed.
 
 For this disposable testnet rollout, the operator has accepted the explicit
 legacy manual-deposit risk described below and selected a clean fresh native
