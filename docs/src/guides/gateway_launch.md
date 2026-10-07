@@ -365,6 +365,30 @@ Any recovery harness must be independently reviewed, exact-source/hash-bound
 to only the required derivation functions and retain normal source, signer,
 artifact and lifecycle-lock checks. It is not a generic launcher feature or
 permission for broad replay. Ordinary fresh launches need no such harness.
+The standalone process must also carry the effective Solidity CREATE2 salt,
+not only the outer launcher's `GATEWAY_CREATE2_FACTORY_SALT`. The approved
+2026-10-07 Tanenbaum context explicitly binds these distinct variables:
+
+```bash
+export GATEWAY_CREATE2_FACTORY_SALT=0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0
+export CREATE2_FACTORY_SALT=0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0
+export LEGACY_GOV_SALT=0x0000000000000000000000000000000000000000000000000000000000000000
+```
+
+These are dated testnet inputs, not mainnet defaults. Require both CREATE2
+values to equal the normalized existing initial deployment salt. Keep the
+legacy governance operation salt separate; do not substitute a script default,
+rewrite the existing input, or copy a dry-run artifact into the live namespace.
+Omitting the effective salt from the recovery invocation was the launch
+operator's context error, not an upstream vulnerability.
+
+The unchanged CLI checks global prerequisites before CTM command dispatch.
+A sanitized execution `PATH` must retain the qualified Cargo route: this
+rehearsal uses `/home/ubuntu/.cargo/bin` alongside the pinned Foundry and system
+tools. Validate the installed Cargo/rustup proxy and normal prerequisite checks;
+do not add `--ignore-prerequisites`, install a replacement toolchain, or source
+an ambient Cargo shell environment to bypass the failure.
+
 After rechecking the qualified Core graph, no-broadcast CTM evidence and
 current nonce, run the separate canonical fresh CTM initialization with the
 derived value in that process, **without a resume flag**. If anything was
@@ -377,6 +401,42 @@ Only after the complete registered graph satisfies the existing live probes
 may supported checkpoint repair/revalidation run. Never manufacture a passed
 checkpoint. The actual CTM receipts and whole-graph qualification remain
 separate operator evidence; this section does not assert they have passed.
+
+### Dated recovery findings and non-final CTM status
+
+<!-- SYSCOIN: Separate a genuine runtime compatibility defect from test-only
+observation changes and operator invocation mistakes; none imply live adoption. -->
+The DA recovery mismatch is real: the pinned SDK can return a public-cloud
+response as bare ASCII hex, while the d8 recovery gate authenticates those
+wire bytes as though they were the decoded blob. A successful HTTP retrieval
+therefore does not establish usable authenticated recovery data. The later
+reviewed [4726 source](https://github.com/syscoin/zksync-os-server/commit/4726f87e205a5869250dc3aefc2ce0f6ead1fed8)
+corrects this by authenticating raw bytes first, then
+allowing one bounded strict bare-hex decode only when it matches the same
+committed Blake2s digest, before attempt reservation or wallet publication.
+It does not change the pinned SDK, finality policy or republish controls.
+That source is **not live-adopted** while the d8 CTM invocation owns the launch:
+normal source adoption and new canonical Gateway/edge builds and stamps remain
+required. Do not republish the already confirmed DA readiness marker to test it.
+
+The CI process-exit observation change is **test-only**: a bounded two-second
+observer lets an already signalled owned task reach its terminal process state,
+checks its start identity and still rejects a live child. It does not fix or
+relax a runtime cleanup timeout. The default-salt omission above and the
+missing Cargo `PATH` below are launch-operator errors, not upstream security
+findings.
+
+The first normal CTM invocation, capsule `f3e6e15c`, failed in the global Cargo
+prerequisite gate before CTM dispatch. Independent reconciliation found zero
+submissions, latest/pending administrator nonce 76 and no normal CTM
+input/output/broadcast/cache namespace. Preserve that failed intent and all
+diagnostics. The corrected capsule `02b03df1` was separately reviewed and
+explicitly approved with a distinct intent namespace; it is not an automatic
+retry or permission to erase/reuse the first intent. At this dated checkpoint,
+its signed **35 deployment transactions plus seven owner/admin handoffs** are
+active and non-final. Receipt, poststate and separate registration/Registry
+qualification remain required; no full ROOT ecosystem, service cutover or
+public-testnet completion is claimed.
 
 ### Retire old onchain deposit entry points
 
@@ -893,6 +953,28 @@ before making that governance decision. Also provision the [ordinary idle-tail h
 if settlement must progress without application traffic; it is opt-in and needs a dedicated wallet.
 
 ## Start nodes after successful launch
+
+<!-- SYSCOIN: First Gateway boot precedes Edge creation in the canonical
+launcher; deployment staging must follow that producer/consumer ordering. -->
+The canonical launcher's first supervised Gateway start is an earlier,
+Gateway-only lifecycle step: it generates Gateway configs with
+`MATERIALIZE_EDGE_CONFIG=false`, starts Gateway, then initializes/migrates Edge.
+Both final config sets are generated only afterward. A first-boot prestart
+gate must bind the exact reviewed source and Gateway config/genesis/start script,
+canonical native binary and source stamp; it cannot require not-yet-generated
+final Edge artifacts. Keep the later service-publication gate separate and
+strict: both final native/config/genesis identities, completed migration and
+serialized acceptance still need qualification before public cutover.
+
+When only Gateway config generation needs repair, the supported
+`gateway-launch-repair.sh --l1 tanenbaum repair gl.os_configs_gateway` route
+generates and live-validates that Gateway-only output without starting Gateway.
+Do not manufacture a passed checkpoint or fake Edge artifacts to satisfy
+prestart. An operator staging gate that demands final Edge output before this
+first Gateway start is an ordering error, not a protocol defect or a reason to
+bypass the canonical lifecycle. Source/build ancestor permissions and ordinary
+Cargo binary/stamp provenance must also qualify before installing a staged
+publisher; a packet or syntax test alone is not deployment readiness.
 
 ```bash
 "$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"
