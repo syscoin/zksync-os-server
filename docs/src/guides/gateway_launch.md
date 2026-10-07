@@ -262,7 +262,121 @@ partially broadcast journal**, even when its normal output file is absent.
 An `eth_call` from an owner address proves call compatibility, not possession of
 its signing credential. Do not treat that simulation as a custody or broadcast
 receipt. Keep the live deployment status in the private operator record; this
-guide does not assert that all 43 transactions or public acceptance have passed.
+guide does not infer full-ecosystem or public acceptance from Core receipts.
+
+### Confirmed Core journal interrupted before CTM initialization
+
+<!-- SYSCOIN: Core-only continuation is an explicit reviewed journal recovery,
+not the fresh absent-graph invocation or a complete-graph ownership-only repair. -->
+A successful Core deployment can be followed by an interrupted administrator
+handoff before zkstack persists `configs/contracts.yaml`. A missing config does
+not make that graph absent. Preserve the Core inputs/output, original journals,
+receipts and checkpoint; do not invoke the fresh-helper recovery above.
+
+The reviewed CLI in PR #333 exposes the narrow
+`ecosystem init-core-contracts --core-journal-only --resume` entry point. Before
+using it, independently bind a protected recovery manifest and exact invocation
+to the selected network/genesis, source and artifact identities, unchanged
+initial deployment config and Core input/output bytes, complete journal,
+actor/nonces/calldata, canonical successful receipts, full deployed runtimes,
+proxy slots and administrator state. Authenticate the wallet selectors and
+qualify the actual CLI binary and its normal build stamp separately. Hold the
+canonical launcher lifecycle lock and repeat those checks immediately before
+execution; neither journal presence nor a receipt claimed inside it is sufficient.
+
+This mode requires an absent contracts config, existing input/output and a
+complete Core journal with no failed or pending receipts. The reviewed
+invocation includes `--zksync-os`, `--update-submodules false`,
+`--skip-contract-compilation-override true`, `--deploy-erc20 false` and
+`--support-l2-legacy-shared-bridge-test false`, with the authenticated root RPC
+and external wallet selectors. It never regenerates inputs, deploys CTM
+contracts, or falls back to a fresh Core script after a resume error, including
+a missing journal.
+The existing state-gated handoffs run after the fixed Core resume. Only the
+exact same-owner pending transfer to the authenticated governor EOA may use
+the pinned direct acceptance path; foreign and aliased successors remain errors.
+
+Require clean owner/pending-owner postchecks before the canonical typed Core
+config is saved. The reviewed writer uses the unchanged YAML serializer and
+owner-only, exclusive creation followed by file sync. An existing regular file,
+empty/malformed config, symlink or broken link is never overwritten. A write or
+sync failure can leave a newly created partial config: stop and inspect it,
+rather than deleting it or retrying against an assumed absent path. Retain all
+original journals and verify that Core input/output bytes did not change.
+
+<!-- SYSCOIN: Dated receipt evidence records completed scope without upgrading
+a Core-only observation to CTM, launch, finality or funding authorization. -->
+The 2026-10-06/07 Tanenbaum rehearsal used release
+`d8d5cc2fbb8db13109d68897431e610b59788491` for this continuation. At canonical
+block 985288, the independent post-Core audit found 61 successful receipts,
+zero failed or pending receipts, unchanged prior 59 commitments and no replay
+of the original 43 Core transactions. The only new handoffs were:
+
+| Administrator nonce | Action | Canonical transaction |
+| --- | --- | --- |
+| 69 | Bridgehub `setPendingAdmin` + `acceptAdmin`, atomically via ChainAdmin | `0x7cc634145f32528cd10b6590eb85ded56e8cf6ef68d452c4b1150e60f51cb70b` |
+| 70 | NativeTokenVault direct `acceptOwnership()` | `0xd52db01f32eef2fa6ca933032192a2fe9ad772f347d65e1f8e0b82b2642857ac` |
+
+Both had at least two canonical confirmations at that snapshot; this is not a
+consensus-finalized assertion. The persisted Core-only config was mode `0600`,
+SHA256 `edf1728bcd4552c04d00b084254a12fb8025b294b5d60c3b1d8587d3e6907339`,
+with CTM absent. The retained audit digest is
+`a00079746ad8b7584652494d96af55f93397b8756a7a99a3cc08f3079401c71f`.
+These are dated evidence identifiers, not inputs to copy into a new deployment.
+This qualification does not complete CTM registration, checkpoint repair,
+Gateway settlement, funding, service installation or public acceptance.
+
+### Restore canonical context before a separate fresh CTM deployment
+
+<!-- SYSCOIN: The canonical asset-ID derivation is an in-process dependency;
+operator-provided overrides must remain rejected by launch fingerprint guards. -->
+On Tanenbaum/mainnet, CTM initialization requires the derived
+`ZKSYS_ZK_TOKEN_ASSET_ID` (with `ZK_TOKEN_ASSET_ID` as its exported alias).
+The normal `gateway-deploy-l1.sh` performs this derivation before invoking
+zkstack. A standalone CTM command after Core-only recovery does not inherit
+that earlier shell process's exported value. In this rehearsal, its absence
+caused an initialization panic **before broadcast**: latest/pending nonce
+remained 71 and no CTM journal, input or output was created. A panic or missing
+output alone is not sufficient proof; establish that full no-broadcast evidence
+before correcting context and invoking the separate fresh CTM command.
+
+Keep both asset-ID variables **unset in protected operator launch environment
+files**. Do not insert a copied constant or relax their preflight/fingerprint
+rejection. Derive the value in-process from the authenticated canonical source
+after validating the launch context. The reviewed function is
+`derive_and_export_zksys_zk_token_asset_id()` in
+`scripts/gateway-launch/gateway-deploy-l1.sh` (source SHA256
+`9ec03f7df3fac8093fa8f0bb8a4fdfd25eaf427a8de57825b8f2fd3d24e1dc10`
+for the d8 rehearsal). Bind its normalization helpers, exact
+`forge inspect --no-metadata` bytecodes and toolchain, canonical `0x4e59...`
+deployer, three selected salts, token admin, token name/symbol/decimals and
+edge-chain ID. Record the resulting ProxyAdmin, implementation, proxy address
+and full preimages without changing canonical deployment artifacts.
+
+The asset ID is `keccak256(abi.encode(edgeChainId, L2NativeTokenVault,
+derivedZksysTokenProxy))`, where the v32 vault is
+`0x0000000000000000000000000000000000010004`. It is not the native SYS asset
+ID and does not use Root or Gateway chain ID. The token proxy is still a
+deterministic **future** L2 address; this derivation does not deploy the token,
+start issuance, attest live token code or authorize its use as a value recipient.
+
+Do not source the entire deployment script to evade its partial-graph guard.
+Any recovery harness must be independently reviewed, exact-source/hash-bound
+to only the required derivation functions and retain normal source, signer,
+artifact and lifecycle-lock checks. It is not a generic launcher feature or
+permission for broad replay. Ordinary fresh launches need no such harness.
+After rechecking the qualified Core graph, no-broadcast CTM evidence and
+current nonce, run the separate canonical fresh CTM initialization with the
+derived value in that process, **without a resume flag**. If anything was
+submitted, stop and reconcile its actual journal instead of assuming this case.
+
+CTM initialization and `ecosystem register-ctm` are distinct steps. Source-bind
+their inputs/calldata, canonical receipts, CREATE2/runtime/proxy/immutable
+identities, explicit testnet verifier mode, owners and Bridgehub registration.
+Only after the complete registered graph satisfies the existing live probes
+may supported checkpoint repair/revalidation run. Never manufacture a passed
+checkpoint. The actual CTM receipts and whole-graph qualification remain
+separate operator evidence; this section does not assert they have passed.
 
 ### Retire old onchain deposit entry points
 
@@ -387,11 +501,15 @@ deployment record. Once that pin and the launch identity gates pass, resume:
 
 ```bash
 unset GATEWAY_WALLET_CREATION GATEWAY_WALLET_PATH
-unset EDGE_WALLET_CREATION EDGE_WALLET_PATH
+# SYSCOIN: Keep approved edge in-file selectors and EDGE_REUSE_GATEWAY_GOVERNOR=false
+# while the fresh edge is absent.
 bash scripts/gateway-launch/run-gateway-launch.sh \
   --l1 tanenbaum --reuse-ecosystem --migrate-edge
 ```
 
+Clear edge wallet-creation inputs only when reusing an already created edge.
+Until then, retain the exact protected edge in-file path/creation inputs and
+`EDGE_REUSE_GATEWAY_GOVERNOR=false`; do not discard its selected custody.
 `--migrate-edge` transitions the newly initialized edge to Gateway settlement;
 it does not mean retaining or migrating the old v31 chain. Keep the proving
 mode and deterministic inputs unchanged across retries. Use the checkpoint
@@ -509,9 +627,19 @@ adapter recipe, eight offline tests and a staging record. **They are mock-testne
 references, not installed services or a completed launch. Never blindly copy
 their paths, chain IDs, no-proofs flags or deployment inputs to mainnet.**
 
-Follow the linked gates in order: source the exact protected `launch.env.sh`,
-export `ZKSYNC_OS_SERVER_PATH` to the reviewed f638 checkout, and preserve the
-same approved deployment inputs. Require the fresh canonical contracts/configs,
+<!-- SYSCOIN: Preserve historical staging evidence rather than relabeling its
+source or copied binary stamp as a newly qualified release. -->
+That f638 bundle is a historical snapshot, **not installable against the later
+d8 recovery release**. Before service installation, independently review an
+updated bundle against the final approved source and private-validation gates,
+regenerate normal build stamps and record actual final artifact hashes. The d8
+CLI and Gateway native binary were rebuilt and qualified through the normal
+helpers; this neither restamps the f638 references nor authorizes node start.
+
+Follow the linked gates in order using the final reviewed bundle: source the
+exact protected `launch.env.sh`, export `ZKSYNC_OS_SERVER_PATH` to its matching
+approved checkout, and preserve the same approved deployment inputs.
+Require the fresh canonical contracts/configs,
 normal edge `build-prebuilt` and config-bound `exec-prebuilt -- --help` before
 generating the adapter. Record actual final binary/stamp/script hashes; copied
 Cargo caches and earlier Gateway hashes are not new build attestations.
