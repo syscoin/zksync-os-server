@@ -51,6 +51,12 @@ gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 cd "${GATEWAY_DIR}"
 
+# SYSCOIN: The external Rust migration sender supports protected accounts only.
+# Authenticate all four finalization actors before any pause or calldata Forge run.
+if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
+  gl_prepare_zkstack_admin_wallet_args --migration-actors "${EDGE_CHAIN_NAME}"
+fi
+
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_RPC_URL:=http://127.0.0.1:${GATEWAY_OS_RPC_PORT:-3052}}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
@@ -2432,8 +2438,8 @@ if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
   # edge registration is not needed for this read-only check.
   "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" --preflight-fee-target
   # SYSCOIN: Prove the selected external signer resolves to the authenticated
-  # edge governor while gl.migration is still pending. Hardware/KMS signers may
-  # require their normal read-only interaction here.
+  # edge governor while gl.migration is still pending. The direct migration
+  # transaction supports the protected account route authenticated above.
   assert_gateway_governor_signer_identity
 fi
 
@@ -2470,9 +2476,9 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output_lc=""
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
-  # SYSCOIN: Use the same owner-bound protected account as chain initialization
-  # instead of asking zkstack to recover a null governor key from YAML.
-  gl_prepare_zkstack_admin_wallet_args "${EDGE_CHAIN_NAME}" governor
+  # SYSCOIN: Funding may refresh wallet files; reauthenticate all four roles
+  # before the first pause so a global account cannot override another actor.
+  gl_prepare_zkstack_admin_wallet_args --migration-actors "${EDGE_CHAIN_NAME}"
   if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits \
     --chain "${EDGE_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \
@@ -2497,11 +2503,14 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   migrate_output_lc=""
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
+  # SYSCOIN: Do not retain selectors across a wallet-funding refresh.
+  gl_prepare_zkstack_admin_wallet_args --migration-actors "${EDGE_CHAIN_NAME}"
   if ! migrate_output="$(gl_zkstack_private_pty zkstack chain gateway migrate-to-gateway \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \
     --gateway-rpc-url "${GATEWAY_RPC_URL}" \
+    ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"} \
     -v 2>&1)"; then
     migrate_output_lc="$(gl_to_lower "${migrate_output}")"
     case "${migrate_output_lc}" in
@@ -2533,12 +2542,14 @@ else
   finalize_output=""
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
+  gl_prepare_zkstack_admin_wallet_args --migration-actors "${EDGE_CHAIN_NAME}"
   if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \
     --gateway-rpc-url "${GATEWAY_RPC_URL}" \
-    --deploy-paymaster false 2>&1)"; then
+    --deploy-paymaster false \
+    ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"} 2>&1)"; then
     finalize_already_complete="$(gateway_migration_finalized_on_l1 \
       "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
     if [ "${finalize_already_complete}" = true ]; then

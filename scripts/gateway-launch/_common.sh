@@ -5338,13 +5338,14 @@ gl_probe_edge_chain_inited_and_governor_ready() {
 # Both routes bind the signer to the same declared role before live use.
 gl_authenticate_chain_wallet_roles() {
   gl_require GATEWAY_DIR
-  local emit_addresses=false emit_forge_args=false ecosystem_only=false conversion_actors=false
+  local emit_addresses=false emit_forge_args=false ecosystem_only=false conversion_actors=false migration_actors=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --print-addresses) emit_addresses=true ;;
     --print-forge-args) emit_forge_args=true ;;
     --ecosystem-only) ecosystem_only=true ;;
     --conversion-actors) conversion_actors=true ;;
+    --migration-actors) migration_actors=true ;;
     *) break ;;
     esac
     shift
@@ -5358,9 +5359,10 @@ gl_authenticate_chain_wallet_roles() {
     chain_name="${1:?chain name required}"
     shift
   fi
-  if [ "${conversion_actors}" = true ]; then
+  [ "${conversion_actors}:${migration_actors}" != true:true ] || gl_die "choose one fixed administrator group"
+  if [ "${conversion_actors}" = true ] || [ "${migration_actors}" = true ]; then
     [ "${ecosystem_only}" = false ] && [ "$#" -eq 0 ] ||
-      gl_die "conversion actors require one chain and no caller-selected role list"
+      gl_die "fixed administrator groups require one chain and no caller-selected role list"
   else
     [ "$#" -gt 0 ] || gl_die "at least one wallet role is required"
   fi
@@ -5376,6 +5378,7 @@ gl_authenticate_chain_wallet_roles() {
     GL_WALLET_EMIT_FORGE_ARGS="${emit_forge_args}" \
     GL_WALLET_ECOSYSTEM_ONLY="${ecosystem_only}" \
     GL_WALLET_CONVERSION_ACTORS="${conversion_actors}" \
+    GL_WALLET_MIGRATION_ACTORS="${migration_actors}" \
     python3 - \
       "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
       "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
@@ -5393,7 +5396,12 @@ from _wallet_identity import authenticate_wallet_entry, external_admin_wallet_ar
 
 paths = [Path(value) for value in sys.argv[1:4]]
 subjects = [(role, paths) for role in sys.argv[4:]]
-if os.environ["GL_WALLET_CONVERSION_ACTORS"] == "true":
+if os.environ["GL_WALLET_MIGRATION_ACTORS"] == "true":
+    # SYSCOIN: Finalization consumes both chain and ecosystem administrators.
+    # One external selector is safe only when it owns every actual role.
+    subjects = [("governor", paths[:2]), ("deployer", paths[:2]),
+                ("governor", paths[2:]), ("deployer", paths[2:])]
+elif os.environ["GL_WALLET_CONVERSION_ACTORS"] == "true":
     # SYSCOIN: Both Gateway commands consume the chain governor; conversion
     # also consumes the ecosystem governor and chain deployer. Bind every
     # actual actor before forwarding one global Forge selector to those calls.

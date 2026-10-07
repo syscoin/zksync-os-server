@@ -176,6 +176,17 @@ manually restamp an old binary. Preserve the existing checkpoints and mined
 receipts; do not edit a fingerprint or replay a completed transaction to make an
 old binary pass.
 
+<!-- SYSCOIN: Migration consumes a wider actor set than deposit management. -->
+External migration signing currently supports protected named accounts only.
+Before pause, migrate and finalize, the launcher authenticates the chain and
+ecosystem governor/deployer roles together, including any inline-key roles.
+All four must match the one globally forwarded external selector; other external
+backends and distinct role addresses are refused before the first pause.
+Generated-only roles keep their individual keys and existing behavior. The direct
+migration send uses one explicit nonce and validates the intended transaction's
+successful canonical receipt before the unchanged priority-operation wait; an
+uncertain send must be audited by its original hash, never automatically retried.
+
 ## Canonical command
 
 Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `L1_RPC_URL`):
