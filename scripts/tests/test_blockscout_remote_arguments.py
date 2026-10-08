@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / "scripts/explorer/blockscout/deploy-remote.sh").read_text()
@@ -62,6 +63,29 @@ class RemoteArgumentTests(unittest.TestCase):
     def test_nonempty_key_updates_only_selected_secret(self):
         before, after = self.remote("new-synthetic-only")
         self.assertEqual(after, before.replace(b"API_SENSITIVE_ENDPOINTS_KEY=keep-test-value", b"API_SENSITIVE_ENDPOINTS_KEY=new-synthetic-only"))
+
+
+class VerifierCompatibilityTests(unittest.TestCase):
+    """SYSCOIN: A floating verifier upgrade must not disable public verification."""
+
+    def setUp(self):
+        compose = yaml.safe_load((ROOT / "scripts/explorer/blockscout/docker-compose.yml").read_text())
+        self.service = compose["services"]["smart-contract-verifier"]
+
+    def test_compatibility_version_and_exact_image_override(self):
+        self.assertEqual(self.service["image"], "${SMART_CONTRACT_VERIFIER_IMAGE:-ghcr.io/blockscout/smart-contract-verifier:${SMART_CONTRACT_VERIFIER_TAG:-v1.10.3}}")
+        self.assertNotIn("latest", self.service["image"])
+
+    def test_cached_image_pin_can_disable_pulling(self):
+        self.assertEqual(self.service["pull_policy"], "${SMART_CONTRACT_VERIFIER_PULL_POLICY:-always}")
+
+    def test_no_new_native_execution_or_host_docker_mount(self):
+        self.assertEqual(self.service["environment"]["SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED"], "true")
+        self.assertNotIn("SMART_CONTRACT_VERIFIER__COMPILERS__EXECUTION__TYPE", self.service["environment"])
+        self.assertFalse(self.service.get("volumes"))
+
+    def test_official_compiler_mirror_is_configurable(self):
+        self.assertEqual(self.service["environment"]["SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL"], "${SMART_CONTRACT_VERIFIER_SOLC_LIST_URL:-https://raw.githubusercontent.com/ethereum/solc-bin/gh-pages/linux-amd64/list.json}")
 
 
 if __name__ == "__main__":
