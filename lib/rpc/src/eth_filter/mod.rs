@@ -84,19 +84,32 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterNamespace<RpcStora
                     latest_block.saturating_add(1),
                 ))
             }
-            FilterKind::Log(filter) => {
+            FilterKind::Log {
+                filter,
+                block_hash_number,
+            } => {
                 // SYSCOIN: The stored cursor, not the original fromBlock, bounds every later poll.
-                let (from, to) =
-                    log_changes_range(filter, start_block, latest_block, |block_id| {
+                let (from, to) = log_changes_range(
+                    filter,
+                    start_block,
+                    latest_block,
+                    *block_hash_number,
+                    |block_id| {
                         self.storage
                             .resolve_block_number(block_id)?
                             .ok_or(EthFilterError::BlockNotFound(block_id))
-                    })?;
+                    },
+                )?;
                 if from > to {
                     return Ok((FilterChanges::Empty, start_block));
                 }
-                let logs = self.get_logs_in_block_range((**filter).clone(), from, to)?;
-                Ok((FilterChanges::Logs(logs), to.saturating_add(1)))
+                let (logs, next_block) = poll_log_range(
+                    from,
+                    to,
+                    self.query_limits.max_blocks_per_filter,
+                    |from, to| self.get_logs_in_block_range((**filter).clone(), from, to),
+                )?;
+                Ok((FilterChanges::Logs(logs), next_block))
             }
         })
     }
@@ -189,8 +202,16 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterApiServer
             },
         )
         .to_rpc_result()?;
+        let block_hash_number =
+            matches!(filter.block_option, FilterBlockOption::AtBlockHash(_)).then_some(start_block);
         self.registry
-            .install_with(|| FilterKind::Log(Box::new(filter)), start_block)
+            .install_with(
+                || FilterKind::Log {
+                    filter: Box::new(filter),
+                    block_hash_number,
+                },
+                start_block,
+            )
             .to_rpc_result()
     }
 
@@ -254,6 +275,7 @@ fn log_changes_range(
     filter: &Filter,
     start_block: BlockNumber,
     latest_block: BlockNumber,
+    block_hash_number: Option<BlockNumber>,
     resolve: impl FnOnce(BlockId) -> EthFilterResult<BlockNumber>,
 ) -> EthFilterResult<(BlockNumber, BlockNumber)> {
     match filter.block_option {
@@ -265,9 +287,33 @@ fn log_changes_range(
             Ok((start_block, end))
         }
         FilterBlockOption::AtBlockHash(hash) => {
-            let block = resolve(hash.into())?;
+            let block = match block_hash_number {
+                Some(block) => block,
+                None => resolve(hash.into())?,
+            };
             Ok((start_block.max(block), latest_block.min(block)))
         }
+    }
+}
+
+// SYSCOIN: A change poll has no caller-supplied range to narrow after a limit error.
+// Return a bounded successful prefix; only that prefix advances the installed cursor.
+// Keep the existing single-block exception for a block whose logs exceed the limit.
+fn poll_log_range<T>(
+    from: BlockNumber,
+    to: BlockNumber,
+    max_block_span: Option<u64>,
+    mut scan: impl FnMut(BlockNumber, BlockNumber) -> EthFilterResult<T>,
+) -> EthFilterResult<(T, BlockNumber)> {
+    let to = max_block_span.map_or(to, |span| to.min(from.saturating_add(span)));
+    match scan(from, to) {
+        Ok(logs) => Ok((logs, to.saturating_add(1))),
+        Err(EthFilterError::QueryExceedsMaxResults { to_block, .. }) if from < to => {
+            let prefix_end = to_block.max(from).min(to - 1);
+            let logs = scan(from, prefix_end)?;
+            Ok((logs, prefix_end.saturating_add(1)))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -319,11 +365,15 @@ mod tests {
         let start = log_filter_start(&filter, 10, |_| panic!("latest is already known")).unwrap();
         assert_eq!(start, 10);
         assert_eq!(
-            log_changes_range(&filter, start, 13, |_| panic!("latest is already known")).unwrap(),
+            log_changes_range(&filter, start, 13, None, |_| panic!(
+                "latest is already known"
+            ))
+            .unwrap(),
             (10, 13)
         );
         assert_eq!(
-            log_changes_range(&filter, 14, 17, |_| panic!("latest is already known")).unwrap(),
+            log_changes_range(&filter, 14, 17, None, |_| panic!("latest is already known"))
+                .unwrap(),
             (14, 17)
         );
         assert_eq!(filter, Filter::default());
@@ -339,12 +389,18 @@ mod tests {
         let filter = Filter::new().from_block(2u64);
         let start = log_filter_start(&filter, 4, |_| Ok(2)).unwrap();
         let id = registry
-            .install_with(|| FilterKind::Log(Box::new(filter.clone())), start)
+            .install_with(
+                || FilterKind::Log {
+                    filter: Box::new(filter.clone()),
+                    block_hash_number: None,
+                },
+                start,
+            )
             .unwrap();
         for (head, expected) in [(4, vec![2, 3, 4]), (4, vec![]), (5, vec![5])] {
             let changes = registry
                 .poll(id.clone(), |cursor, _| {
-                    let (from, to) = log_changes_range(&filter, cursor, head, |_| {
+                    let (from, to) = log_changes_range(&filter, cursor, head, None, |_| {
                         panic!("latest is already known")
                     })?;
                     if from > to {
@@ -364,15 +420,15 @@ mod tests {
             .from_block(2u64)
             .to_block(BlockNumberOrTag::Finalized);
         assert_eq!(
-            log_changes_range(&filter, 2, 10, |_| Ok(4)).unwrap(),
+            log_changes_range(&filter, 2, 10, None, |_| Ok(4)).unwrap(),
             (2, 4)
         );
         assert_eq!(
-            log_changes_range(&filter, 5, 10, |_| Ok(4)).unwrap(),
+            log_changes_range(&filter, 5, 10, None, |_| Ok(4)).unwrap(),
             (5, 4)
         );
         assert_eq!(
-            log_changes_range(&filter, 5, 12, |_| Ok(6)).unwrap(),
+            log_changes_range(&filter, 5, 12, None, |_| Ok(6)).unwrap(),
             (5, 6)
         );
     }
@@ -382,15 +438,15 @@ mod tests {
         let filter = Filter::new().from_block(10u64).to_block(12u64);
         assert_eq!(log_filter_start(&filter, 5, |_| Ok(10)).unwrap(), 10);
         assert_eq!(
-            log_changes_range(&filter, 10, 5, |_| Ok(12)).unwrap(),
+            log_changes_range(&filter, 10, 5, None, |_| Ok(12)).unwrap(),
             (10, 5)
         );
         assert_eq!(
-            log_changes_range(&filter, 10, 11, |_| Ok(12)).unwrap(),
+            log_changes_range(&filter, 10, 11, None, |_| Ok(12)).unwrap(),
             (10, 11)
         );
         assert_eq!(
-            log_changes_range(&filter, 13, 20, |_| Ok(12)).unwrap(),
+            log_changes_range(&filter, 13, 20, None, |_| Ok(12)).unwrap(),
             (13, 12)
         );
     }
@@ -400,12 +456,118 @@ mod tests {
         let filter = Filter::new().at_block_hash(B256::repeat_byte(1));
         assert_eq!(log_filter_start(&filter, 10, |_| Ok(3)).unwrap(), 3);
         assert_eq!(
-            log_changes_range(&filter, 3, 10, |_| Ok(3)).unwrap(),
+            log_changes_range(&filter, 3, 10, Some(3), |_| panic!(
+                "hash resolved at installation"
+            ))
+            .unwrap(),
             (3, 3)
         );
         assert_eq!(
-            log_changes_range(&filter, 4, 11, |_| Ok(3)).unwrap(),
+            log_changes_range(&filter, 4, 11, Some(3), |_| panic!(
+                "consumed hash must not be resolved again"
+            ))
+            .unwrap(),
             (4, 3)
         );
+    }
+
+    #[test]
+    fn oversized_change_polls_return_contiguous_bounded_prefixes() {
+        let registry = FilterRegistry::new(
+            Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
+            NonZeroU32::new(4).unwrap(),
+        );
+        let id = registry.install_with(|| FilterKind::Block, 2).unwrap();
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            let logs = registry
+                .poll(id.clone(), |cursor, _| {
+                    poll_log_range(cursor, 10, Some(2), |from, to| {
+                        assert!(to - from <= 2);
+                        Ok((from..=to).collect::<Vec<_>>())
+                    })
+                })
+                .unwrap();
+            received.extend(logs);
+        }
+        assert_eq!(received, (2..=10).collect::<Vec<_>>());
+        registry
+            .poll(id, |cursor, _| {
+                assert_eq!(cursor, 11);
+                Ok(((), cursor))
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn result_limited_poll_retries_only_the_successful_prefix() {
+        let mut ranges = Vec::new();
+        let (logs, next) = poll_log_range(2, 10, None, |from, to| {
+            ranges.push((from, to));
+            if to > 3 {
+                Err(EthFilterError::QueryExceedsMaxResults {
+                    max_logs: 2,
+                    from_block: from,
+                    to_block: 3,
+                })
+            } else {
+                Ok((from..=to).collect::<Vec<_>>())
+            }
+        })
+        .unwrap();
+        assert_eq!(ranges, vec![(2, 10), (2, 3)]);
+        assert_eq!(logs, vec![2, 3]);
+        assert_eq!(next, 4);
+    }
+
+    #[test]
+    fn oversized_single_block_uses_the_existing_single_block_exception() {
+        let mut ranges = Vec::new();
+        let (_, next) = poll_log_range(2, 10, None, |from, to| {
+            ranges.push((from, to));
+            if from != to {
+                Err(EthFilterError::QueryExceedsMaxResults {
+                    max_logs: 2,
+                    from_block: from,
+                    to_block: from - 1,
+                })
+            } else {
+                Ok(vec![from; 3])
+            }
+        })
+        .unwrap();
+        assert_eq!(ranges, vec![(2, 10), (2, 2)]);
+        assert_eq!(next, 3);
+    }
+
+    #[test]
+    fn failed_prefix_rescan_does_not_advance_cursor() {
+        let registry = FilterRegistry::new(
+            Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
+            NonZeroU32::new(4).unwrap(),
+        );
+        let id = registry.install_with(|| FilterKind::Block, 2).unwrap();
+        let result = registry.poll(id.clone(), |cursor, _| {
+            poll_log_range(cursor, 10, None, |from, to| {
+                if to == 10 {
+                    Err(EthFilterError::QueryExceedsMaxResults {
+                        max_logs: 2,
+                        from_block: from,
+                        to_block: 3,
+                    })
+                } else {
+                    Err::<Vec<u64>, _>(EthFilterError::BlockNotFound(from.into()))
+                }
+            })
+        });
+        assert!(matches!(result, Err(EthFilterError::BlockNotFound(_))));
+        registry
+            .poll(id, |cursor, _| {
+                assert_eq!(cursor, 2);
+                Ok(((), cursor))
+            })
+            .unwrap();
     }
 }

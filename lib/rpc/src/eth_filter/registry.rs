@@ -36,14 +36,18 @@ impl Drop for FilterReservation {
 
 #[derive(Clone, Debug)]
 pub(crate) enum FilterKind {
-    Log(Box<Filter>),
+    Log {
+        filter: Box<Filter>,
+        // SYSCOIN: Hash filters resolve once at installation, including after consumption.
+        block_hash_number: Option<u64>,
+    },
     Block,
     PendingTransaction(PendingTransactionKind),
 }
 
 impl FilterKind {
     pub(crate) fn as_log_filter(&self) -> Option<&Filter> {
-        if let Self::Log(filter) = self {
+        if let Self::Log { filter, .. } = self {
             Some(filter)
         } else {
             None
