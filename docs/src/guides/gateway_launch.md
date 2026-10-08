@@ -880,6 +880,19 @@ canonical gas tank. Verify all proxy, role, receiver and immutable runtime
 bindings. The persisted tank authority ends the first-boot exception; do not
 disable its startup gate after bootstrap.
 
+<!-- SYSCOIN: Explorer publication must reproduce this deployment, not a prior
+testnet's addresses or a verification helper's default compiler. -->
+Publish tokenomics sources using the actual bootstrap manifest and build
+profile. Reproduce each manifest init-code hash including its constructor
+arguments, then compare the entire live runtime (with the deployed immutable
+values) before submitting standard JSON through the explorer's normal
+verification API. Record the compiler, optimizer, viaIR, EVM version and
+metadata settings from those reproduced artifacts; do not assume the defaults
+in a legacy verification script match the release. Read back the explorer's
+verified status and proxy implementation, and distinguish partial verification
+from full verification. Source publication is not a replacement for role,
+state, transaction or positive-credit GasTank acceptance.
+
 <!-- SYSCOIN: Anchor the approved issuance policy to a verified token receipt;
 never publish a wall-clock guess or silently advance the original start. -->
 `ZKSYS_ISSUER_START_TIME` is an absolute future Unix timestamp, bound in the
