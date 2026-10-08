@@ -870,7 +870,7 @@ assert_l2_address_call "${ZKSYS_L2_GAS_TANK_ADDRESS}" "token()(address)" "${ZKSY
 assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${BURNER_ROLE}" "${ZKSYS_L2_GAS_TANK_ADDRESS}"
 
 cat <<EOF
-zksys-l2-bootstrap: complete
+zksys-l2-bootstrap: on-chain deployment and role checks passed
   proxyAdmin          = ${ZKSYS_L2_PROXY_ADMIN_ADDRESS}
   tokenImplementation = ${ZKSYS_L2_TOKEN_IMPL_ADDRESS}
   tokenProxy          = ${ZKSYS_L2_TOKEN_ADDRESS}
@@ -903,34 +903,17 @@ if [ ! -f "${zksys_contracts_yaml}" ]; then
   done
 fi
 if [ -f "${zksys_contracts_yaml}" ]; then
-  python3 - "${zksys_contracts_yaml}" "${ZKSYS_L2_GAS_TANK_ADDRESS}" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-import yaml
-
-path = Path(sys.argv[1])
-address = sys.argv[2].strip().lower()
-if not re.fullmatch(r"0x[0-9a-f]{40}", address) or address == "0x" + "0" * 40:
-    raise SystemExit("gas tank address must be a nonzero 20-byte hex address")
-if int(address[2:], 16) < 1 << 16:
-    raise SystemExit("gas tank address must not be in the reserved system address space")
-
-data = yaml.safe_load(path.read_text(encoding="utf-8"))
-if not isinstance(data, dict):
-    raise SystemExit(f"invalid YAML object in {path}")
-l2 = data.setdefault("l2", {})
-if not isinstance(l2, dict):
-    raise SystemExit(f"invalid l2 section in {path}")
-l2["zksys_gas_tank_addr"] = address
-path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-PY
+  # SYSCOIN: Re-serializing unrelated huge bytecode integers can fail after all
+  # on-chain sends succeeded. Preserve their exact spelling and every other byte.
+  python3 "${SCRIPT_DIR}/_contracts_yaml_scalar.py" \
+    "${zksys_contracts_yaml}" "${ZKSYS_L2_GAS_TANK_ADDRESS}"
   echo "zksys-l2-bootstrap: updated ${zksys_contracts_yaml}: l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS}"
   echo "zksys-l2-bootstrap: address matches the canonical app binding"
   # SYSCOIN: The canonical main-node runner treats this attested nonzero value
   # as the durable transition out of its one-time first-boot exception.
   echo "zksys-l2-bootstrap: the next canonical edge-node launch will require the gas-tank runtime in local state"
+  # SYSCOIN: A transaction-success summary is not a completed local persistence step.
+  echo "zksys-l2-bootstrap: complete"
 else
   echo "zksys-l2-bootstrap: warning: ${zksys_contracts_yaml} not found; set l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS} manually" >&2
 fi
