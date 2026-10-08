@@ -6,11 +6,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 
+# SYSCOIN: Token-first staging makes an exact receipt-relative issuance start
+# possible without changing privileged contract bytecode or estimating wall time.
+TOKEN_PRELUDE=false
+case "$#:${1:-}" in
+0:) ;;
+1:--token-prelude) TOKEN_PRELUDE=true ;;
+*) gl_die "usage: zksys-l2-bootstrap.sh [--token-prelude]" ;;
+esac
+
 gl_export_foundry_evm_version
 
 gl_require ZKSYS_L2_RPC_URL
 gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
-gl_require ZKSYS_ISSUER_START_TIME
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 : "${EDGE_CHAIN_NAME:=zksys}"
 export GATEWAY_DIR EDGE_CHAIN_NAME L1_CHAIN_ID L1_NETWORK
@@ -149,7 +157,8 @@ deploy_create2() {
   local expected_address="${2:?expected address required}"
   local salt="${3:?salt required}"
   local init_code="${4:?init code required}"
-  local code
+  local code receipt
+  LAST_CREATE2_TRANSACTION_HASH=""
 
   code="$(rpc_code "${expected_address}")"
   if [ "${code}" != "0x" ]; then
@@ -158,11 +167,25 @@ deploy_create2() {
   fi
 
   echo "zksys-l2-bootstrap: deploying ${label} to ${expected_address}"
-  gl_non_l1_cast send \
-    --rpc-url "${ZKSYS_L2_RPC_URL}" \
-    "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
-    "${ZKSYS_L2_CREATE2_DEPLOYER}" \
-    "${salt}${init_code#0x}" >/dev/null
+  if [ "${5:-false}" = true ]; then
+    # SYSCOIN: Capture only the public deployment hash for the canonical anchor.
+    receipt="$(gl_non_l1_cast send --json \
+      --rpc-url "${ZKSYS_L2_RPC_URL}" \
+      "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
+      "${ZKSYS_L2_CREATE2_DEPLOYER}" "${salt}${init_code#0x}")"
+    LAST_CREATE2_TRANSACTION_HASH="$(printf '%s' "${receipt}" | python3 -c '
+import json, re, sys
+value = json.load(sys.stdin).get("transactionHash", "")
+if not re.fullmatch(r"0x[0-9a-fA-F]{64}", value):
+    raise SystemExit("token deployment did not return a transaction hash")
+print(value.lower())')"
+  else
+    gl_non_l1_cast send \
+      --rpc-url "${ZKSYS_L2_RPC_URL}" \
+      "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
+      "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+      "${salt}${init_code#0x}" >/dev/null
+  fi
 
   code="$(rpc_code "${expected_address}")"
   [ "${code}" != "0x" ] || gl_die "${label} deployment did not create code at ${expected_address}"
@@ -340,7 +363,7 @@ case "${ZKSYS_L2_TOKEN_DECIMALS}" in
 ''|*[!0-9]*) gl_die "ZKSYS_L2_TOKEN_DECIMALS must be a uint8" ;;
 esac
 [ "${ZKSYS_L2_TOKEN_DECIMALS}" -le 59 ] || gl_die "ZKSYS_L2_TOKEN_DECIMALS must be <= 59"
-for schedule_var in ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS; do
+for schedule_var in ZKSYS_ISSUER_PERIOD_SECONDS ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS; do
   case "${!schedule_var}" in
   ''|*[!0-9]*) gl_die "${schedule_var} must be a decimal uint256" ;;
   esac
@@ -382,7 +405,7 @@ export ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT
 export ZKSYS_L2_ISSUER_IMPL_SALT ZKSYS_L2_ISSUER_PROXY_SALT
 export ZKSYS_L2_STAKING_VAULT_IMPL_SALT ZKSYS_L2_STAKING_VAULT_PROXY_SALT
 export ZKSYS_L2_GAS_TANK_SALT ZKSYS_L2_TOKEN_NAME ZKSYS_L2_TOKEN_SYMBOL
-export ZKSYS_L2_TOKEN_DECIMALS ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS
+export ZKSYS_L2_TOKEN_DECIMALS ZKSYS_ISSUER_PERIOD_SECONDS
 export ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS
 
 bind_zksys_l2_bootstrap_manifest() {
@@ -546,6 +569,108 @@ ZKSYS_L2_TOKEN_ADDRESS="$(
     --init-code "${token_proxy_init_code}"
 )"
 
+# SYSCOIN: Token choices also bind the immutable gas tank. Reject a wrong
+# administrator/salt/compiler profile before even the token-only prelude sends.
+gas_tank_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}")"
+gas_tank_creation_code="$(forge_inspect_bytecode ZkSysGasTank)"
+gas_tank_init_code="${gas_tank_creation_code}${gas_tank_ctor_args#0x}"
+gas_tank_init_code_hash="$(cast keccak "${gas_tank_init_code}")"
+ZKSYS_L2_GAS_TANK_ADDRESS="$(
+  cast create2 \
+    --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+    --salt "${ZKSYS_L2_GAS_TANK_SALT}" \
+    --init-code "${gas_tank_init_code}"
+)"
+PUBLISHED_GAS_TANK_INIT_CODE_HASH=0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561
+PUBLISHED_GAS_TANK_RUNTIME_HASH=0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269
+PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
+[ "${ZKSYS_L2_TOKEN_DECIMALS}" = 18 ] || gl_die "canonical gas tank requires token decimals 18"
+[ "$(gl_to_lower "${gas_tank_init_code_hash}")" = "${PUBLISHED_GAS_TANK_INIT_CODE_HASH}" ] || \
+  gl_die "derived gas tank init-code hash ${gas_tank_init_code_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_INIT_CODE_HASH}; changing it requires a new app, VK, and verifier"
+[ "$(printf '%s' "${ZKSYS_L2_GAS_TANK_ADDRESS}" | tr '[:upper:]' '[:lower:]')" = \
+  "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
+  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the canonical app value ${PUBLISHED_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
+# SYSCOIN: The constructor reads token.decimals(), so a fresh chain cannot
+# execute it yet. Specialize the pinned compiler's sole token immutable first;
+# retain the real constructor execution check after the token is deployed.
+compiled_gas_tank_runtime="$(python3 - \
+  "${zksys_bootstrap_forge_inspect_dir}/out/ZkSysGasTank.sol/ZkSysGasTank.json" \
+  "${ZKSYS_L2_TOKEN_ADDRESS}" "${SCRIPT_DIR}" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[3])
+from _issuance_anchor import specialize_token_runtime
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(specialize_token_runtime(json.load(handle), sys.argv[2]))
+PY
+)"
+[ "$(gl_to_lower "$(cast keccak "${compiled_gas_tank_runtime}")")" = "${PUBLISHED_GAS_TANK_RUNTIME_HASH}" ] || \
+  gl_die "gas tank compiler runtime differs from the canonical application binding"
+
+# SYSCOIN: Bind the source, signer and exact token constructor graph before the
+# prelude's first send. The receipt-based policy is immutable across retries.
+token_prelude_identity() {
+  local edge_chain_id
+  # SYSCOIN: Use the existing validated positive-u256 config parser before binding or sending.
+  edge_chain_id="$(gl_chain_id_from_config "${EDGE_CHAIN_NAME}" "zkSYS")" || return $?
+  ZKSYS_TOKEN_PRELUDE_CHAIN_ID="${edge_chain_id}" \
+  ZKSYS_TOKEN_PRELUDE_CALLDATA="${ZKSYS_L2_TOKEN_PROXY_SALT}${token_proxy_init_code#0x}" \
+  ZKSYS_TOKEN_PRELUDE_TOKEN="${ZKSYS_L2_TOKEN_ADDRESS}" \
+  ZKSYS_TOKEN_PRELUDE_PROXY_ADMIN="${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" \
+  ZKSYS_TOKEN_PRELUDE_IMPL="${ZKSYS_L2_TOKEN_IMPL_ADDRESS}" \
+  ZKSYS_TOKEN_PRELUDE_ADMIN_HASH="$(cast keccak "${proxy_admin_init_code}")" \
+  ZKSYS_TOKEN_PRELUDE_IMPL_HASH="$(cast keccak "${token_impl_init_code}")" \
+  ZKSYS_TOKEN_PRELUDE_SIGNER="${BOOTSTRAP_SIGNER_ADDRESS}" \
+  python3 - <<'PY'
+import hashlib, json, os
+names = ("PROTOCOL_VERSION", "REQUIRED_ZKSTACK_CLI_SHA", "REQUIRED_CONTRACTS_SHA",
+    "L1_CHAIN_ID", "L1_NETWORK", "ZKSYS_L2_TOKEN_ADMIN_ADDRESS",
+    "ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS", "ZKSYS_L2_PROXY_ADMIN_SALT",
+    "ZKSYS_L2_TOKEN_IMPL_SALT", "ZKSYS_L2_TOKEN_PROXY_SALT",
+    "ZKSYS_L2_TOKEN_NAME", "ZKSYS_L2_TOKEN_SYMBOL", "ZKSYS_L2_TOKEN_DECIMALS")
+print(json.dumps({"schema": "syscoin-token-prelude-v1", "inputs": {k: os.environ[k] for k in names},
+    "edge_chain_id": os.environ["ZKSYS_TOKEN_PRELUDE_CHAIN_ID"], "delay_seconds": 86400,
+    "rpc_sha256": hashlib.sha256(os.environ["ZKSYS_L2_RPC_URL"].encode()).hexdigest(),
+    "signer": os.environ["ZKSYS_TOKEN_PRELUDE_SIGNER"].lower(),
+    "create2": os.environ["ZKSYS_L2_CREATE2_DEPLOYER"].lower(),
+    "token": os.environ["ZKSYS_TOKEN_PRELUDE_TOKEN"].lower(),
+    "proxy_admin": os.environ["ZKSYS_TOKEN_PRELUDE_PROXY_ADMIN"].lower(),
+    "token_implementation": os.environ["ZKSYS_TOKEN_PRELUDE_IMPL"].lower(),
+    "proxy_admin_init_hash": os.environ["ZKSYS_TOKEN_PRELUDE_ADMIN_HASH"].lower(),
+    "token_implementation_init_hash": os.environ["ZKSYS_TOKEN_PRELUDE_IMPL_HASH"].lower(),
+    "token_calldata": os.environ["ZKSYS_TOKEN_PRELUDE_CALLDATA"].lower()}))
+PY
+}
+
+token_prelude_manifest="$(gl_checkpoint_state_dir)/zksys-token-prelude.json"
+token_receipt_anchor="$(gl_checkpoint_state_dir)/zksys-token-receipt.json"
+if [ "${TOKEN_PRELUDE}" = true ]; then
+  [ -z "${ZKSYS_ISSUER_START_TIME:-}" ] || \
+    gl_die "--token-prelude uses token receipt + 86400, not an absolute issuance start"
+  token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" bind "${token_prelude_manifest}"
+  require_create2_deployer
+  deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"
+  deploy_create2 "zkSYS token implementation" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}" "${ZKSYS_L2_TOKEN_IMPL_SALT}" "${token_impl_init_code}"
+  deploy_create2 "zkSYS token proxy" "${ZKSYS_L2_TOKEN_ADDRESS}" "${ZKSYS_L2_TOKEN_PROXY_SALT}" "${token_proxy_init_code}" true
+  assert_proxy_admin_owner "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
+  assert_proxy_wiring "zkSYS token" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADDRESS}" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}"
+  token_tx_hash="${LAST_CREATE2_TRANSACTION_HASH:-${ZKSYS_TOKEN_DEPLOYMENT_TX_HASH:-}}"
+  start_time="$(token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" resolve "${token_receipt_anchor}" "${token_tx_hash}")"
+  echo "zksys-l2-bootstrap: token prelude complete; issuance start=${start_time} (token receipt + 86400)"
+  exit 0
+fi
+if [ -e "${token_prelude_manifest}" ] || [ -L "${token_prelude_manifest}" ]; then
+  token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" bind "${token_prelude_manifest}"
+  anchored_start="$(token_prelude_identity | python3 "${SCRIPT_DIR}/_issuance_anchor.py" resolve "${token_receipt_anchor}")"
+  [ -z "${ZKSYS_ISSUER_START_TIME:-}" ] || [ "${ZKSYS_ISSUER_START_TIME}" = "${anchored_start}" ] || \
+    gl_die "ZKSYS_ISSUER_START_TIME conflicts with the canonical token deployment receipt"
+  ZKSYS_ISSUER_START_TIME="${anchored_start}"
+fi
+gl_require ZKSYS_ISSUER_START_TIME
+case "${ZKSYS_ISSUER_START_TIME}" in
+''|*[!0-9]*) gl_die "ZKSYS_ISSUER_START_TIME must be a decimal uint256" ;;
+esac
+export ZKSYS_ISSUER_START_TIME
+
 registry_impl_init_code="$(forge_inspect_bytecode ZkSysMembershipRegistry)"
 ZKSYS_L2_REGISTRY_IMPL_ADDRESS="$(
   cast create2 \
@@ -644,28 +769,6 @@ ZKSYS_L2_STAKING_VAULT_ADDRESS="$(
     --init-code "${staking_vault_proxy_init_code}"
 )"
 
-# SYSCOIN: prepaid zkSYS gas ledger debited by the patched ZKsync OS
-# bootloader. Non-upgradeable and atomic by construction: the constructor
-# pins the token; the only wiring is the BURNER_ROLE grant for burnSurplus().
-gas_tank_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}")"
-gas_tank_creation_code="$(forge_inspect_bytecode ZkSysGasTank)"
-gas_tank_init_code="${gas_tank_creation_code}${gas_tank_ctor_args#0x}"
-gas_tank_init_code_hash="$(cast keccak "${gas_tank_init_code}")"
-ZKSYS_L2_GAS_TANK_ADDRESS="$(
-  cast create2 \
-    --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
-    --salt "${ZKSYS_L2_GAS_TANK_SALT}" \
-    --init-code "${gas_tank_init_code}"
-)"
-PUBLISHED_GAS_TANK_INIT_CODE_HASH=0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561
-PUBLISHED_GAS_TANK_RUNTIME_HASH=0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269
-PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
-[ "$(gl_to_lower "${gas_tank_init_code_hash}")" = "${PUBLISHED_GAS_TANK_INIT_CODE_HASH}" ] || \
-  gl_die "derived gas tank init-code hash ${gas_tank_init_code_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_INIT_CODE_HASH}; changing it requires a new app, VK, and verifier"
-[ "$(printf '%s' "${ZKSYS_L2_GAS_TANK_ADDRESS}" | tr '[:upper:]' '[:lower:]')" = \
-  "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
-  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the canonical app value ${PUBLISHED_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
-
 # SYSCOIN: Bind both the normalized inputs and their complete derived CREATE2
 # graph before the first deployment. A retry after any source/tooling change
 # therefore fails closed instead of creating a second privileged contract set.
@@ -718,6 +821,8 @@ expected_gas_tank_runtime="$(
     "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}"
 )"
 expected_gas_tank_runtime_hash="$(cast keccak "${expected_gas_tank_runtime}")"
+[ "$(gl_to_lower "${expected_gas_tank_runtime}")" = "$(gl_to_lower "${compiled_gas_tank_runtime}")" ] || \
+  gl_die "gas tank constructor runtime differs from its compiler-specialized preflight"
 [ "$(gl_to_lower "${expected_gas_tank_runtime_hash}")" = "${PUBLISHED_GAS_TANK_RUNTIME_HASH}" ] || \
   gl_die "derived gas tank runtime hash ${expected_gas_tank_runtime_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_RUNTIME_HASH}; changing it requires a new app, VK, and verifier"
 deploy_create2 "zkSYS gas tank" "${ZKSYS_L2_GAS_TANK_ADDRESS}" "${ZKSYS_L2_GAS_TANK_SALT}" "${gas_tank_init_code}"
@@ -765,7 +870,7 @@ assert_l2_address_call "${ZKSYS_L2_GAS_TANK_ADDRESS}" "token()(address)" "${ZKSY
 assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${BURNER_ROLE}" "${ZKSYS_L2_GAS_TANK_ADDRESS}"
 
 cat <<EOF
-zksys-l2-bootstrap: complete
+zksys-l2-bootstrap: on-chain deployment and role checks passed
   proxyAdmin          = ${ZKSYS_L2_PROXY_ADMIN_ADDRESS}
   tokenImplementation = ${ZKSYS_L2_TOKEN_IMPL_ADDRESS}
   tokenProxy          = ${ZKSYS_L2_TOKEN_ADDRESS}
@@ -798,34 +903,17 @@ if [ ! -f "${zksys_contracts_yaml}" ]; then
   done
 fi
 if [ -f "${zksys_contracts_yaml}" ]; then
-  python3 - "${zksys_contracts_yaml}" "${ZKSYS_L2_GAS_TANK_ADDRESS}" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-import yaml
-
-path = Path(sys.argv[1])
-address = sys.argv[2].strip().lower()
-if not re.fullmatch(r"0x[0-9a-f]{40}", address) or address == "0x" + "0" * 40:
-    raise SystemExit("gas tank address must be a nonzero 20-byte hex address")
-if int(address[2:], 16) < 1 << 16:
-    raise SystemExit("gas tank address must not be in the reserved system address space")
-
-data = yaml.safe_load(path.read_text(encoding="utf-8"))
-if not isinstance(data, dict):
-    raise SystemExit(f"invalid YAML object in {path}")
-l2 = data.setdefault("l2", {})
-if not isinstance(l2, dict):
-    raise SystemExit(f"invalid l2 section in {path}")
-l2["zksys_gas_tank_addr"] = address
-path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-PY
+  # SYSCOIN: Re-serializing unrelated huge bytecode integers can fail after all
+  # on-chain sends succeeded. Preserve their exact spelling and every other byte.
+  python3 "${SCRIPT_DIR}/_contracts_yaml_scalar.py" \
+    "${zksys_contracts_yaml}" "${ZKSYS_L2_GAS_TANK_ADDRESS}"
   echo "zksys-l2-bootstrap: updated ${zksys_contracts_yaml}: l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS}"
   echo "zksys-l2-bootstrap: address matches the canonical app binding"
   # SYSCOIN: The canonical main-node runner treats this attested nonzero value
   # as the durable transition out of its one-time first-boot exception.
   echo "zksys-l2-bootstrap: the next canonical edge-node launch will require the gas-tank runtime in local state"
+  # SYSCOIN: A transaction-success summary is not a completed local persistence step.
+  echo "zksys-l2-bootstrap: complete"
 else
   echo "zksys-l2-bootstrap: warning: ${zksys_contracts_yaml} not found; set l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS} manually" >&2
 fi

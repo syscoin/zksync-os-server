@@ -154,6 +154,20 @@ class AuditTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "omits_or_adds"):
             audit.verify_package(**package)
 
+    def test_identity_rejects_changed_anchor_metadata_and_unsorted_roster(self):
+        identity = self.dispatcher.audit_payload("child", 1, 2)["identity"]
+        trust = {"enrollment_block_hash": h(100)}
+        for field, value in (("timestamp", 551), ("phase", "bootstrap"), ("ends_at", 601)):
+            changed = copy.deepcopy(identity)
+            changed["enrollment"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(s.Error, "audit_enrollment_snapshot_changed"):
+                audit.validate_identity(changed, s.keccak(s.canonical(changed)), trust, self.rpc)
+        self.two_accounts()
+        identity = self.dispatcher.audit_payload("child", 1, 2)["identity"]
+        identity["subscriptions"].reverse()
+        with self.assertRaisesRegex(s.Error, "audit_enrollment_snapshot_changed"):
+            audit.validate_identity(identity, s.keccak(s.canonical(identity)), trust, self.rpc)
+
     def test_independent_checkpoint_rejects_forks_truncation_and_wrong_cursor(self):
         self.accepted()
         first = self.package()

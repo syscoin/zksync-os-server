@@ -26,7 +26,7 @@ before endorsing. Selection and wrapping add no duty points, fee entitlement, or
 
 ## Pin the trusted host
 
-Keep one mode-0600 keeper configuration per lane and phase:
+Keep one mode-0600 keeper configuration per lane, phase, and enrollment journal:
 
 ```json
 {
@@ -34,6 +34,10 @@ Keep one mode-0600 keeper configuration per lane and phase:
   "lane": "child",
   "rpc_url": "https://trusted-settlement-rpc.example/",
   "settings": { "...": "the complete service.py configuration for this lane" },
+  "enrollment": {
+    "registry_rpc_file": "/trusted/child-registry-rpc.json",
+    "block_hash": "0xREVIEWED_CANONICAL_ENROLLMENT_BLOCK_HASH"
+  },
   "policy": {
     "expected_operator": "0xREVIEWED_OPERATOR",
     "gate_code_hash": "0xREVIEWED_DEPLOYED_GATE_CODE_HASH",
@@ -60,6 +64,22 @@ Service permits require the selected roster candidate's exact operator. Changing
 phase, reviewed code, or operator requires a new reviewed pool configuration;
 the pool freezes these values at initialization. No live deployment values or
 production VK are supplied by the examples.
+
+Every keeper configuration must contain `enrollment` with exactly
+`registry_rpc_file` and `block_hash`. The first
+is an absolute private connection-file path with `url` and `authorization`; the
+second is the independently reviewed canonical enrollment block for that journal.
+Use the same pin as its dispatch audit trust. This trusted configuration enables
+canonical historical account consent for the full roster in keeper, coordinator,
+wrapper and pool permit revalidation, including mixed EOA and ERC-1271 membership
+accounts. Fresh operator, sequencer, and wrapper signatures remain required.
+The coordinator authenticates that pin and the dispatcher's lane before a new
+native SNARK pick. It may reuse the verified immutable snapshot while running;
+it never obtains authority from a serialized journal or work-envelope flag.
+Existing uncertain native leases retain their reconciliation path.
+Offline `service.py` helpers and `keeper.prepare` retain their EOA account-signature
+checks when canonical context is omitted. Contract operators still require a
+separately implemented adapter.
 
 For an external SNARK stage, pool configuration must contain:
 
@@ -221,11 +241,15 @@ deployment or live GPU run is established by the local regression tests.
 
 `dispatcher_dir` may name a single initialized period journal, or a private
 parent containing one initialized journal per period (`5/`, `6/`, and so on).
-The coordinator selects the frozen/opening roster period before taking its signed
-snapshot. Retain older journals for control work using an older ready roster;
-create the next period's journal through the existing enrollment workflow and
-supply its independently reviewed audit trust pin to the operators. This lets the
-SNARK coordinator keep its state while enrollment moves between periods.
+The coordinator selects the frozen/opening roster period before acquiring new
+work and taking its signed snapshot. Its keeper pin must match that journal.
+Retain older journals, coordinator/wrapper state, and pool configurations until
+their pending work and uncertain allocations are reconciled. For a new period,
+create its journal through the enrollment workflow, prepare new reviewed keeper,
+coordinator/wrapper and pool configurations in fresh state directories, and supply
+the matching independently reviewed audit trust pin to the operators. The
+immutable configuration does not adopt a new journal's pin automatically. Do not
+run competing dispatchers or rewind old state to change a pin.
 
 ## Inspect the phase before offering rewarded FRI work
 

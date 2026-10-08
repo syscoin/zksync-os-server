@@ -17,6 +17,7 @@ import service as s
 import workflow_io as io
 import wrapper as w
 from test_keeper import NativeRpc, setup
+from test_dispatcher import Rpc as RegistryRpc
 from test_service import fixture, sign, a, h
 
 
@@ -103,6 +104,7 @@ class WrapperTests(unittest.TestCase):
         self.f["proposal"]["candidate_proof"] = self.roster["proofs"][0]
         self.keeper, self.request, item = setup(self.f)
         self.rpc = Chain(self.f, self.keeper, item)
+        self.registry_rpc = RegistryRpc(self.f["settings"], self.f["subscriptions"])
         for name in ("pool", "inbox", "rosters", "trust"):
             io.directory(self.root / name, create=True)
         for name in ("wallet", "registry-rpc"):
@@ -144,6 +146,15 @@ class WrapperTests(unittest.TestCase):
         self.audit_calls.append(copy.deepcopy((bundle, trust, allow_control)))
         return {"event_count": 2, "event_head": h(181), "assignment_cursor": h(182)}
 
+    def test_missing_keeper_enrollment_fails_before_wrapper_state_creation(self):
+        config = copy.deepcopy(self.config)
+        del config["keeper"]["enrollment"]
+        root = self.root / "unconfigured-wrapper"
+        with self.assertRaisesRegex(s.Error, "configured_enrollment_authority_required"):
+            w.initialize(root, config)
+        self.assertFalse(root.exists())
+        self.assertEqual(self.p.enqueues, [])
+
     def fri_check(self, root, executable, release, settings, evidence, payload):
         self.assertEqual(payload, self.f["fri_payload"])
         self.assertEqual(evidence, self.f["evidence"])
@@ -158,7 +169,7 @@ class WrapperTests(unittest.TestCase):
         self.result_checks.append(result_file)
 
     def runner(self):
-        return w.Wrapper(self.store, self.rpc, getattr(self, "registry_rpc", object()), self.wallet,
+        return w.Wrapper(self.store, self.rpc, self.registry_rpc, self.wallet,
                          lambda: self.rpc.now, fri_checker=self.fri_check)
 
     def publish(self, request=None, proof=None, mutate=None):

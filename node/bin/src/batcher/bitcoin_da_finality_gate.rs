@@ -31,6 +31,50 @@ enum BlobFinalityWaitContext {
     GatewayEdgeRef,
 }
 
+fn authenticate_recovered_blob(
+    blob: Vec<u8>,
+    version_hash: &str,
+) -> anyhow::Result<(Vec<u8>, String)> {
+    anyhow::ensure!(
+        !blob.is_empty() && blob.len() <= 2 * MAX_BLOB_SIZE,
+        "recovered Bitcoin DA blob {version_hash} has invalid size {}, expected raw data up to {MAX_BLOB_SIZE} bytes or bounded bare hex",
+        blob.len()
+    );
+    let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
+    // SYSCOIN: The RPC returns decoded data, but PoDA may return bare hex. Authenticate
+    // raw bytes first so valid hex-looking blobs are not silently decoded into other data.
+    if blob.len() <= MAX_BLOB_SIZE {
+        let recovered_hash = hex::encode(Blake2s256::digest(&blob));
+        if recovered_hash.eq_ignore_ascii_case(normalized_expected) {
+            return Ok((blob, recovered_hash));
+        }
+    }
+    let is_bare_hex = blob.len().is_multiple_of(2) && blob.iter().all(u8::is_ascii_hexdigit);
+    anyhow::ensure!(
+        blob.len() <= MAX_BLOB_SIZE || is_bare_hex,
+        "recovered Bitcoin DA blob {version_hash} has invalid size {}, expected raw data up to {MAX_BLOB_SIZE} bytes or bounded bare hex",
+        blob.len()
+    );
+    anyhow::ensure!(
+        is_bare_hex,
+        "recovered Bitcoin DA hash mismatch: expected {normalized_expected}; recovery bytes are not authenticated raw data or strict bare hex"
+    );
+    // SYSCOIN: Bound the wire representation before allocating, decode once, and
+    // require the same committed hash before reserving an attempt or spending funds.
+    let blob = hex::decode(blob).context("invalid recovered Bitcoin DA bare hex")?;
+    anyhow::ensure!(
+        !blob.is_empty() && blob.len() <= MAX_BLOB_SIZE,
+        "recovered Bitcoin DA blob {version_hash} has invalid decoded size {}",
+        blob.len()
+    );
+    let recovered_hash = hex::encode(Blake2s256::digest(&blob));
+    anyhow::ensure!(
+        recovered_hash.eq_ignore_ascii_case(normalized_expected),
+        "recovered Bitcoin DA hash mismatch: expected {normalized_expected}, got {recovered_hash}"
+    );
+    Ok((blob, recovered_hash))
+}
+
 impl BitcoinDaFinalityGate {
     pub fn new(
         config: BatcherConfig,
@@ -295,19 +339,10 @@ impl BitcoinDaFinalityGate {
                     "failed to fetch Bitcoin DA blob for Gateway edge ref {version_hash}: {err}"
                 ),
             })?;
-        // SYSCOIN: RPC/archive availability is not authentication. Reject corrupt recovery bytes
-        // before force_create_blob can spend wallet funds on a different publication.
-        anyhow::ensure!(
-            !blob.is_empty() && blob.len() <= MAX_BLOB_SIZE,
-            "recovered Bitcoin DA blob {version_hash} has invalid size {}, expected 1..={MAX_BLOB_SIZE}",
-            blob.len()
-        );
+        // SYSCOIN: Availability is not authentication; normalize only hash-bound recovery
+        // bytes before the durable attempt reservation and wallet publication boundary.
+        let (blob, recovered_hash) = authenticate_recovered_blob(blob, version_hash)?;
         let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
-        let recovered_hash = hex::encode(Blake2s256::digest(&blob));
-        anyhow::ensure!(
-            recovered_hash.eq_ignore_ascii_case(normalized_expected),
-            "recovered Bitcoin DA hash mismatch: expected {normalized_expected}, got {recovered_hash}"
-        );
         let attempt = self
             .storage
             .reserve_republication(
@@ -459,6 +494,70 @@ mod tests {
     };
 
     const ABC_HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+    const HEX_LOOKING_HASH: &str =
+        "d6ffd191d5851bd88ef4f0fffd051050a9e91c15346096a0e1f0a9afa50f34e5";
+
+    #[test]
+    fn recovery_authentication_preserves_raw_and_decodes_only_matching_hex() {
+        for raw in [b"abc".to_vec(), b"616263".to_vec(), vec![0, 255, 17]] {
+            let expected_hash = hex::encode(Blake2s256::digest(&raw));
+            let (recovered, hash) =
+                authenticate_recovered_blob(raw.clone(), &expected_hash).unwrap();
+            assert_eq!(recovered, raw);
+            assert_eq!(hash, expected_hash);
+        }
+        let raw = vec![0xde, 0xad, 0xbe, 0xef];
+        let expected_hash = hex::encode(Blake2s256::digest(&raw));
+        for wire in [
+            b"deadbeef".to_vec(),
+            b"DEADBEEF".to_vec(),
+            b"DeAdBeEf".to_vec(),
+        ] {
+            let (recovered, hash) =
+                authenticate_recovered_blob(wire, &format!("0x{}", expected_hash.to_uppercase()))
+                    .unwrap();
+            assert_eq!(recovered, raw);
+            assert_eq!(hash, expected_hash);
+        }
+    }
+
+    #[test]
+    fn recovery_authentication_preserves_decoded_limit_and_bounds_wire() {
+        let raw = vec![42; MAX_BLOB_SIZE];
+        let expected_hash = hex::encode(Blake2s256::digest(&raw));
+        for input in [raw.clone(), hex::encode(&raw).into_bytes()] {
+            let (recovered, hash) = authenticate_recovered_blob(input, &expected_hash).unwrap();
+            assert_eq!(recovered, raw);
+            assert_eq!(hash, expected_hash);
+        }
+        let oversized = vec![42; MAX_BLOB_SIZE + 1];
+        let oversized_hash = hex::encode(Blake2s256::digest(&oversized));
+        for input in [oversized.clone(), hex::encode(oversized).into_bytes()] {
+            assert!(authenticate_recovered_blob(input, &oversized_hash).is_err());
+        }
+    }
+
+    #[test]
+    fn recovery_authentication_refuses_malformed_mismatched_and_repeated_encoding() {
+        for input in [
+            Vec::new(),
+            b"corrupt".to_vec(),
+            b"61626".to_vec(),
+            b"0x616263".to_vec(),
+            b"616263\n".to_vec(),
+            b" 616263".to_vec(),
+            b"\"616263\"".to_vec(),
+            br#"{"data":"616263"}"#.to_vec(),
+            vec![255],
+            b"deadbeef".to_vec(),
+            b"363136323633".to_vec(),
+        ] {
+            assert!(authenticate_recovered_blob(input, ABC_HASH).is_err());
+        }
+        assert!(authenticate_recovered_blob(b"abc".to_vec(), "1234").is_err());
+        assert!(authenticate_recovered_blob(b"616263".to_vec(), "not-a-hash").is_err());
+        assert!(authenticate_recovered_blob(b"616263".to_vec(), &format!("0X{ABC_HASH}")).is_err());
+    }
 
     async fn recovery_rpc(
         finality: Option<Value>,
@@ -671,8 +770,16 @@ mod tests {
     // fallback, so a check moved after publication cannot silently regress this protection.
     #[tokio::test]
     async fn recovery_authenticates_blob_before_wallet_publication() {
-        let cases = [
+        let mut cases = vec![
             (b"abc".to_vec(), ABC_HASH.to_owned(), ABC_HASH, None, 1),
+            (b"616263".to_vec(), ABC_HASH.to_owned(), ABC_HASH, None, 1),
+            (
+                b"616263".to_vec(),
+                HEX_LOOKING_HASH.to_owned(),
+                HEX_LOOKING_HASH,
+                None,
+                1,
+            ),
             (
                 b"abc".to_vec(),
                 format!("0x{}", ABC_HASH.to_uppercase()),
@@ -682,6 +789,13 @@ mod tests {
             ),
             (
                 b"corrupt".to_vec(),
+                ABC_HASH.to_owned(),
+                ABC_HASH,
+                Some("recovered Bitcoin DA hash mismatch"),
+                0,
+            ),
+            (
+                b"363136323633".to_vec(),
                 ABC_HASH.to_owned(),
                 ABC_HASH,
                 Some("recovered Bitcoin DA hash mismatch"),
@@ -702,6 +816,13 @@ mod tests {
                 0,
             ),
             (
+                vec![b'0'; 2 * MAX_BLOB_SIZE + 1],
+                ABC_HASH.to_owned(),
+                ABC_HASH,
+                Some("invalid size"),
+                0,
+            ),
+            (
                 b"abc".to_vec(),
                 "1234".to_owned(),
                 ABC_HASH,
@@ -716,20 +837,49 @@ mod tests {
                 1,
             ),
         ];
+        cases.extend(
+            [
+                b"61626".to_vec(),
+                b"0x616263".to_vec(),
+                b"616263\n".to_vec(),
+                b" 616263".to_vec(),
+                b"\"616263\"".to_vec(),
+                br#"{"data":"616263"}"#.to_vec(),
+                vec![255],
+                b"deadbeef".to_vec(),
+            ]
+            .into_iter()
+            .map(|blob| {
+                (
+                    blob,
+                    ABC_HASH.to_owned(),
+                    ABC_HASH,
+                    Some("recovered Bitcoin DA hash mismatch"),
+                    0,
+                )
+            }),
+        );
         for (blob, expected_hash, wallet_hash, expected_error, expected_calls) in cases {
             let wallet_calls = Arc::new(AtomicUsize::new(0));
             let calls = wallet_calls.clone();
+            let expected_rpc_data = if expected_hash == HEX_LOOKING_HASH {
+                "363136323633"
+            } else {
+                "616263"
+            };
             let app = Router::new().fallback(
                 get(move || {
                     let blob = blob.clone();
-                    async move { blob }
+                    async move {
+                        ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], blob)
+                    }
                 })
                 .post(move |Json(request): Json<Value>| {
                     let calls = calls.clone();
                     async move {
                         if request["method"] == "syscoincreatenevmblob" {
                             calls.fetch_add(1, Ordering::SeqCst);
-                            assert_eq!(request["params"], json!(["616263", true, "blake2s"]));
+                            assert_eq!(request["params"], json!([expected_rpc_data, true, "blake2s"]));
                             Json(json!({"id": 1, "result": {"versionhash": wallet_hash}}))
                         } else {
                             assert_eq!(request["method"], "getnevmblobdata");
@@ -769,6 +919,29 @@ mod tests {
                 None => result.unwrap(),
             }
             assert_eq!(wallet_calls.load(Ordering::SeqCst), expected_calls);
+            assert_eq!(
+                std::fs::read_dir(storage_dir.path()).unwrap().count(),
+                expected_calls,
+                "invalid recovery must not consume a durable attempt"
+            );
+            if expected_calls != 0 {
+                let canonical_hash = expected_hash
+                    .strip_prefix("0x")
+                    .unwrap_or(&expected_hash)
+                    .to_ascii_lowercase();
+                let reservation = storage_dir
+                    .path()
+                    .join(format!("republish_{canonical_hash}_1"));
+                let metadata = std::fs::symlink_metadata(reservation).unwrap();
+                assert!(metadata.is_file());
+                assert_eq!(metadata.len(), 0);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+                    assert_eq!(metadata.nlink(), 1);
+                }
+            }
         }
     }
 }

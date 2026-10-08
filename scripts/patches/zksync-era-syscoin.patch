@@ -1,3 +1,15 @@
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs b/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
+@@ -51,0 +52,2 @@ pub async fn run(
++    // SYSCOIN: Preserve protected external governor selectors for both actions.
++    // The address-only wallet must not fall back to a missing YAML private key.
+@@ -56 +58 @@ pub async fn run(
+-                &Default::default(),
++                &_args.forge_args,
+@@ -68 +70 @@ pub async fn run(
+-                &Default::default(),
++                &_args.forge_args,
 diff --git a/core/lib/basic_types/src/network.rs b/core/lib/basic_types/src/network.rs
 index 3403ec404..d55f8e1d5 100644
 --- a/core/lib/basic_types/src/network.rs
@@ -53,7 +65,7 @@ index 7af8fab92..c4fd1b456 100644
 +# SYSCOIN: Keep generated signer material out of Forge argv and command logs.
 +tempfile.workspace = true
 diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
-index dbc8fd84c..6c8fa8b0d 100644
+index dbc8fd8..85b6a8d 100644
 --- a/zkstack_cli/crates/common/src/forge.rs
 +++ b/zkstack_cli/crates/common/src/forge.rs
 @@ -0,0 +1,2 @@
@@ -64,28 +76,35 @@ index dbc8fd84c..6c8fa8b0d 100644
 +    io::Write,
 @@ -3 +6,0 @@ use std::{
 -    str::FromStr,
-@@ -5,0 +9,3 @@ use std::{
+@@ -5,0 +9,4 @@ use std::{
 +#[cfg(unix)]
 +use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 +
-@@ -8 +14,4 @@ use ethers::{
++use anyhow::Context as _;
+@@ -8 +15,4 @@ use ethers::{
 -    core::types::Bytes,
 +    core::{
 +        rand::{thread_rng, RngCore},
 +        types::Bytes,
 +    },
-@@ -12 +21 @@ use ethers::{
+@@ -12 +22 @@ use ethers::{
 -    utils::{hex, hex::ToHexExt},
 +    utils::hex,
-@@ -15,0 +25 @@ use strum::Display;
+@@ -15,0 +26 @@ use strum::Display;
 +use tempfile::TempDir;
-@@ -22,0 +33,3 @@ use crate::{
+@@ -22,0 +34,3 @@ use crate::{
 +// SYSCOIN: Syscoin's 2.5-minute target can exceed Forge's 120-second default.
 +const SYSCOIN_BROADCAST_TIMEOUT_SECONDS: u64 = 1_800;
 +
-@@ -44,0 +58 @@ impl Forge {
+@@ -44,0 +59,51 @@ impl Forge {
 +            private_key: None,
-@@ -48,0 +63,58 @@ impl Forge {
++            // SYSCOIN: Existing deployment behavior is unchanged unless the
++            // explicit core-only recovery entry point opts in.
++            core_journal_only_resume: false,
++        }
++    }
++}
++
 +// SYSCOIN: Generated zkstack signers must never enter Forge argv or command
 +// logs. Give Forge a short-lived encrypted keystore through child-only env.
 +struct EphemeralForgeSigner {
@@ -129,7 +148,7 @@ index dbc8fd84c..6c8fa8b0d 100644
 +        {
 +            fs::set_permissions(&keystore_path, fs::Permissions::from_mode(0o600))?;
 +            fs::set_permissions(&password_path, fs::Permissions::from_mode(0o600))?;
-+        }
+@@ -45,0 +111,11 @@ impl Forge {
 +
 +        Ok(Self {
 +            _directory: directory,
@@ -141,12 +160,17 @@ index dbc8fd84c..6c8fa8b0d 100644
 +    fn apply<'a>(&self, cmd: Cmd<'a>) -> Cmd<'a> {
 +        cmd.env("ETH_KEYSTORE", &self.keystore_path)
 +            .env("ETH_PASSWORD", &self.password_path)
-+    }
-+}
-+
-@@ -53,0 +126 @@ pub struct ForgeScript {
+@@ -53,0 +130,2 @@ pub struct ForgeScript {
 +    private_key: Option<H256>,
-@@ -56,0 +130,28 @@ impl ForgeScript {
++    core_journal_only_resume: bool,
+@@ -56,0 +135,35 @@ impl ForgeScript {
++    // SYSCOIN: Recovery of an already-confirmed core deployment may consume
++    // its journal, never fall back to simulation or a fresh deployment.
++    pub fn with_core_journal_only_resume(mut self) -> Self {
++        self.core_journal_only_resume = true;
++        self
++    }
++
 +    // SYSCOIN: Forge does not infer tx.origin from an encrypted keystore. Bind
 +    // the final generated key's public address after all builder calls while
 +    // keeping the key itself out of argv and command logs.
@@ -175,54 +199,101 @@ index dbc8fd84c..6c8fa8b0d 100644
 +        }
 +    }
 +
-@@ -58,0 +160,4 @@ impl ForgeScript {
+@@ -58,0 +172,41 @@ impl ForgeScript {
++        // SYSCOIN: Keep this stronger execution policy private to the exact
++        // core script; every other existing Forge path retains its behavior.
++        if self.core_journal_only_resume
++            && (!self.args.resume
++                || self.script_path
++                    != Path::new("deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol"))
++        {
++            anyhow::bail!("core-journal-only execution requires the core script and --resume");
++        }
++        if self.core_journal_only_resume {
++            // SYSCOIN: The validated default journal must be the journal Forge
++            // actually consumes, not a caller-selected project/chain/signature.
++            for flag in PROHIBITED_ARGS.iter().copied().chain([
++                "--rpc-url",
++                "--fork-url",
++                "-f",
++                "--chain",
++                "--tc",
++                "--config-path",
++                "--broadcast-dir",
++                "--profile",
++                "--multi",
++            ]) {
++                if self.args.additional_args.iter().any(|arg| {
++                    argument_uses_flag(arg, flag)
++                            // SYSCOIN: Clap accepts attached values for short
++                            // options, including -fURL and -srun().
++                            || (flag.len() == 2 && arg.starts_with(flag))
++                }) {
++                    anyhow::bail!("core-journal-only forbids Forge context override {flag}");
++                }
++            }
++            if self.args.zksync {
++                anyhow::bail!("core-journal-only requires the native EVM journal, not --zksync");
++            }
++            self.base_path = fs::canonicalize(&self.base_path)?;
++        }
 +        // SYSCOIN: Reject caller-supplied raw credentials before building,
 +        // printing, or spawning a Forge command.
 +        self.args.reject_raw_secret_args()?;
 +        self.bind_private_key_sender();
-@@ -67,0 +173,6 @@ impl ForgeScript {
+@@ -67,0 +222,6 @@ impl ForgeScript {
 +        // SYSCOIN: one ephemeral signer spans the resume attempt and fallback run.
 +        let ephemeral_signer = self
 +            .private_key
 +            .as_ref()
 +            .map(EphemeralForgeSigner::new)
 +            .transpose()?;
-@@ -71,3 +182,7 @@ impl ForgeScript {
+@@ -71,4 +231,16 @@ impl ForgeScript {
 -            let res = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
 -                .with_piped_std_err()
 -                .run();
+-            if !res.resume_not_successful_because_has_not_began() {
 +            let mut cmd = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
 +                .with_piped_std_err();
++            if self.core_journal_only_resume {
++                // SYSCOIN: Pin the same project and broadcast directory used
++                // by the completed-journal preflight; ignore ambient overrides.
++                cmd = cmd
++                    .env("FOUNDRY_ROOT", &self.base_path)
++                    .env("FOUNDRY_PROFILE", "default")
++                    .env("FOUNDRY_BROADCAST", self.base_path.join("broadcast"));
++            }
 +            // SYSCOIN: inject only private child-process keystore paths.
 +            if let Some(signer) = &ephemeral_signer {
 +                cmd = signer.apply(cmd);
 +            }
 +            let res = cmd.run();
-@@ -93,0 +209,5 @@ impl ForgeScript {
++            if self.core_journal_only_resume || !res.resume_not_successful_because_has_not_began() {
+@@ -93,0 +266,5 @@ impl ForgeScript {
 +        // SYSCOIN: preserve the same private signer when resume falls back.
 +        if let Some(signer) = &ephemeral_signer {
 +            cmd = signer.apply(cmd);
 +        }
 +
-@@ -107 +227,2 @@ impl ForgeScript {
+@@ -107 +284,2 @@ impl ForgeScript {
 -        self.args.wallet_args_passed()
 +        // SYSCOIN: an in-memory signer satisfies the wallet requirement.
 +        self.private_key.is_some() || self.args.wallet_args_passed()
-@@ -130,0 +252,6 @@ impl ForgeScript {
+@@ -130,0 +309,6 @@ impl ForgeScript {
 +        // SYSCOIN: deployment journals are safety evidence; serialize every
 +        // broadcast so a predecessor must confirm successfully before its successor.
 +        self.args.add_arg(ForgeScriptArg::Slow);
 +        self.args.add_arg(ForgeScriptArg::Timeout {
 +            timeout: SYSCOIN_BROADCAST_TIMEOUT_SECONDS,
 +        });
-@@ -172,3 +299,3 @@ impl ForgeScript {
+@@ -172,3 +356,3 @@ impl ForgeScript {
 -        self.args.add_arg(ForgeScriptArg::PrivateKey {
 -            private_key: private_key.encode_hex(),
 -        });
 +        // SYSCOIN: retain signer identity in memory and materialize it only as
 +        // a private ephemeral keystore when Forge is spawned.
 +        self.private_key = Some(private_key);
-@@ -180,9 +307,3 @@ impl ForgeScript {
+@@ -180,9 +364,3 @@ impl ForgeScript {
 -        self.args.args.iter().find_map(|a| {
 -            if let ForgeScriptArg::PrivateKey { private_key } = a {
 -                let key = H256::from_str(private_key).unwrap();
@@ -235,20 +306,19 @@ index dbc8fd84c..6c8fa8b0d 100644
 +        self.private_key
 +            .as_ref()
 +            .map(|key| LocalWallet::from_bytes(key.as_bytes()).unwrap())
-@@ -231 +352,2 @@ const PROHIBITED_ARGS: [&str; 10] = [
+@@ -231 +409,2 @@ const PROHIBITED_ARGS: [&str; 10] = [
 -const WALLET_ARGS: [&str; 18] = [
 +// SYSCOIN: recognize every supported noninteractive Forge wallet selector.
 +const WALLET_ARGS: [&str; 22] = [
-@@ -237,0 +360 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -237,0 +417 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--mnemonic-passphrases",
-@@ -241,0 +365 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -241,0 +422 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--keystores",
-@@ -242,0 +367 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -242,0 +424 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--accounts",
-@@ -249,0 +375,12 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -249,0 +432 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--gcp",
-+];
-+
+@@ -251,0 +435,20 @@ const WALLET_ARGS: [&str; 18] = [
 +// SYSCOIN: These Forge selectors carry raw credentials. Passing them through
 +// additional_args would expose secrets in process argv and command/error logs.
 +const RAW_SECRET_ARGS: [&str; 6] = [
@@ -258,7 +328,8 @@ index dbc8fd84c..6c8fa8b0d 100644
 +    "--mnemonic-passphrases",
 +    "--mnenomic-passphrases",
 +    "--password",
-@@ -251,0 +389,9 @@ const WALLET_ARGS: [&str; 18] = [
++];
++
 +// SYSCOIN: Match exact, equals, or legacy single-token whitespace forms while
 +// avoiding prefix matches such as --password-file.
 +fn argument_uses_flag(argument: &str, flag: &str) -> bool {
@@ -268,22 +339,22 @@ index dbc8fd84c..6c8fa8b0d 100644
 +        })
 +}
 +
-@@ -262,4 +408 @@ pub enum ForgeScriptArg {
+@@ -262,4 +465 @@ pub enum ForgeScriptArg {
 -    #[strum(to_string = "private-key={private_key}")]
 -    PrivateKey {
 -        private_key: String,
 -    },
 +    // SYSCOIN: raw private keys live only in memory, never in rendered Forge arguments.
-@@ -274,0 +418,5 @@ pub enum ForgeScriptArg {
+@@ -274,0 +475,5 @@ pub enum ForgeScriptArg {
 +    // SYSCOIN: typed timeout for serialized deployment broadcasts.
 +    #[strum(to_string = "timeout={timeout}")]
 +    Timeout {
 +        timeout: u64,
 +    },
-@@ -329 +477 @@ pub struct ForgeScriptArgs {
+@@ -329 +534 @@ pub struct ForgeScriptArgs {
 -    /// e.g.: `zkstack init -a --private-key=<PRIVATE_KEY>`
 +    /// e.g.: `zkstack init -a --keystore=<PATH> --password-file=<PATH>`
-@@ -335,0 +484,17 @@ impl ForgeScriptArgs {
+@@ -335,0 +541,17 @@ impl ForgeScriptArgs {
 +    // SYSCOIN: Fail closed without ever formatting the rejected value. The
 +    // returned error names only the canonical flag, so the secret cannot leak.
 +    fn reject_raw_secret_args(&self) -> anyhow::Result<()> {
@@ -301,7 +372,7 @@ index dbc8fd84c..6c8fa8b0d 100644
 +        Ok(())
 +    }
 +
-@@ -434,3 +599,6 @@ impl ForgeScriptArgs {
+@@ -434,3 +656,74 @@ impl ForgeScriptArgs {
 -        self.additional_args
 -            .iter()
 -            .any(|arg| WALLET_ARGS.contains(&arg.as_ref()))
@@ -311,7 +382,75 @@ index dbc8fd84c..6c8fa8b0d 100644
 +                .iter()
 +                .any(|flag| argument_uses_flag(argument, flag))
 +        })
-@@ -484,0 +653,139 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
++    }
++
++    /// SYSCOIN: Migration's direct transaction sender is not a Forge script.
++    /// Do not forward build(), arbitrary execution overrides, or raw credentials.
++    pub fn protected_account_args(&self) -> anyhow::Result<Option<(Vec<String>, Address)>> {
++        self.reject_raw_secret_args()?;
++        if !self.wallet_args_passed() {
++            return Ok(None);
++        }
++        let mut values = std::collections::BTreeMap::new();
++        let mut index = 0;
++        while index < self.additional_args.len() {
++            let argument = &self.additional_args[index];
++            let (flag, attached) = argument
++                .split_once('=')
++                .map_or((argument.as_str(), None), |(flag, value)| {
++                    (flag, Some(value))
++                });
++            if !matches!(flag, "--account" | "--password-file" | "--sender") {
++                anyhow::bail!("protected migration sender accepts only account, password-file and sender arguments");
++            }
++            let value = if let Some(value) = attached {
++                value.to_owned()
++            } else {
++                index += 1;
++                self.additional_args
++                    .get(index)
++                    .filter(|value| !value.starts_with('-'))
++                    .context("missing protected migration wallet argument")?
++                    .clone()
++            };
++            if value.is_empty() || value.contains('\0') || values.insert(flag, value).is_some() {
++                anyhow::bail!("ambiguous protected migration wallet arguments");
++            }
++            index += 1;
++        }
++        let account = values
++            .get("--account")
++            .context("migration requires a named protected account")?;
++        if account == "."
++            || account == ".."
++            || account.starts_with('-')
++            || account.contains('/')
++            || account.contains('\\')
++        {
++            anyhow::bail!("migration account must be a single account name");
++        }
++        let password = values
++            .get("--password-file")
++            .context("migration requires a protected password file")?;
++        if !Path::new(password).is_absolute() {
++            anyhow::bail!("migration password file must be absolute");
++        }
++        let sender = values
++            .get("--sender")
++            .context("migration requires the authenticated public sender")?;
++        let sender = sender
++            .parse::<Address>()
++            .map_err(|_| anyhow::anyhow!("invalid migration public sender"))?;
++        Ok(Some((
++            vec![
++                "--account".into(),
++                account.clone(),
++                "--password-file".into(),
++                password.clone(),
++            ],
++            sender,
++        )))
+@@ -484,0 +778,231 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
 +
 +// SYSCOIN: Exercise the complete raw-credential boundary without invoking
 +// Forge, and ensure diagnostics never echo the supplied secret value.
@@ -326,6 +465,98 @@ index dbc8fd84c..6c8fa8b0d 100644
 +                .map(|argument| argument.to_string())
 +                .collect(),
 +            ..ForgeScriptArgs::default()
++        }
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn missing_core_journal_error_never_falls_back_to_fresh_broadcast() {
++        // SYSCOIN: Cmd reads the legitimate process-wide CLI configuration;
++        // initialize it before exercising the actual subprocess path.
++        crate::config::init_global_config(crate::config::GlobalConfig {
++            verbose: false,
++            chain_name: None,
++            ignore_prerequisites: false,
++        });
++        // SYSCOIN: Exercise the actual subprocess/error path rather than only
++        // asserting a source marker or simulating the fallback predicate.
++        let directory = tempfile::tempdir().unwrap();
++        let fake_forge = directory.path().join("forge");
++        fs::write(
++            &fake_forge,
++            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> calls\necho 'Deployment not found for chain' >&2\nexit 1\n",
++        )
++        .unwrap();
++        fs::set_permissions(&fake_forge, fs::Permissions::from_mode(0o700)).unwrap();
++        let shell = Shell::new().unwrap();
++        let _path = shell.push_env("PATH", directory.path());
++        let args = ForgeScriptArgs {
++            resume: true,
++            ..ForgeScriptArgs::default()
++        };
++        let result = Forge::new(directory.path())
++            .script(
++                Path::new("deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol"),
++                args,
++            )
++            .with_core_journal_only_resume()
++            .with_broadcast()
++            .run(&shell);
++        assert!(result.is_err());
++        let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
++        assert_eq!(calls.lines().count(), 1);
++        assert!(calls.contains("--resume"));
++    }
++
++    #[test]
++    fn core_journal_only_rejects_noncore_or_nonresume_before_spawning() {
++        let shell = Shell::new().unwrap();
++        for (script, resume) in [
++            (
++                "deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol",
++                false,
++            ),
++            ("deploy-scripts/ctm/DeployCTM.s.sol", true),
++        ] {
++            let args = ForgeScriptArgs {
++                resume,
++                ..ForgeScriptArgs::default()
++            };
++            let result = Forge::new(Path::new("."))
++                .script(Path::new(script), args)
++                .with_core_journal_only_resume()
++                .with_broadcast()
++                .run(&shell);
++            assert!(result
++                .unwrap_err()
++                .to_string()
++                .contains("requires the core script and --resume"));
++        }
++        for arguments in [
++            vec!["--rpc-url=https://unexpected.invalid"],
++            vec!["--fork-url", "https://unexpected.invalid"],
++            vec!["-f", "https://unexpected.invalid"],
++            vec!["-fhttps://unexpected.invalid"],
++            vec!["--chain=unexpected.invalid"],
++            vec!["--tc", "unexpected.invalid"],
++            vec!["--config-path=unexpected.invalid"],
++            vec!["-sunexpected.invalid"],
++            vec!["-Cunexpected.invalid"],
++            vec!["-Ounexpected.invalid"],
++        ] {
++            let mut args = forge_args(&arguments);
++            args.resume = true;
++            let result = Forge::new(Path::new("."))
++                .script(
++                    Path::new("deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol"),
++                    args,
++                )
++                .with_core_journal_only_resume()
++                .with_broadcast()
++                .run(&shell);
++            let error = result.unwrap_err().to_string();
++            assert!(error.contains("forbids Forge context override"));
++            assert!(!error.contains("unexpected.invalid"));
 +        }
 +    }
 +
@@ -484,7 +715,7 @@ index 67e80c6a7..d0c83b94f 100644
 +                H256::from_str(&value)
 +                    .expect("ZKSYS_ZK_TOKEN_ASSET_ID / ZK_TOKEN_ASSET_ID must be bytes32")
 diff --git a/zkstack_cli/crates/zkstack/src/admin_functions.rs b/zkstack_cli/crates/zkstack/src/admin_functions.rs
-index 0ffe0e96f..aab4fc375 100644
+index 0ffe0e96f..eff8fdab1 100644
 --- a/zkstack_cli/crates/zkstack/src/admin_functions.rs
 +++ b/zkstack_cli/crates/zkstack/src/admin_functions.rs
 @@ -3 +3,2 @@ use std::path::{Path, PathBuf};
@@ -504,7 +735,7 @@ index 0ffe0e96f..aab4fc375 100644
 +    // SYSCOIN: Reuse pinned generated bindings for ownership address discovery.
 +    abi::{BridgehubAbi, IL1NativeTokenVaultAbi, ADMINFUNCTIONSABI_ABI},
 +    commands::chain::admin_call_builder::{decode_admin_calls, AdminCall as DecodedAdminCall},
-@@ -37 +40,173 @@ lazy_static! {
+@@ -37 +40,200 @@ lazy_static! {
 -pub async fn accept_admin(
 +// SYSCOIN: Exact OZ Ownable2Step acceptOwnership selector used inside the
 +// ChainAdmin-wrapped call payload.
@@ -547,6 +778,23 @@ index 0ffe0e96f..aab4fc375 100644
 +        bail!("expected owner is not the target's pending owner");
 +    }
 +    Ok(true)
++}
++
++// SYSCOIN: DeployL1CoreContracts initializes the vault to the governor EOA
++// before transferring to that same EOA. Only its exact pending-owner match
++// permits direct acceptance cleanup; Governance keeps its stricter pre-state.
++fn direct_owner_acceptance_required(
++    current_owner: Address,
++    pending_owner: Address,
++    expected_owner: Address,
++) -> anyhow::Result<bool> {
++    if expected_owner != Address::zero()
++        && current_owner == expected_owner
++        && pending_owner == expected_owner
++    {
++        return Ok(true);
++    }
++    owner_acceptance_required(current_owner, pending_owner, expected_owner)
 +}
 +
 +// SYSCOIN: Permit only the clean terminal state, an already-pending retry, or
@@ -603,6 +851,16 @@ index 0ffe0e96f..aab4fc375 100644
 +    l1_rpc_url: &str,
 +) -> anyhow::Result<()> {
 +    let (current_owner, pending_owner) = owner_state(target_address, l1_rpc_url).await?;
++    ensure_owner_state_complete(current_owner, pending_owner, expected_owner)
++}
++
++// SYSCOIN: Check post-state independently of a successful acceptance receipt;
++// conditional script no-ops and ownership drift must still fail closed.
++fn ensure_owner_state_complete(
++    current_owner: Address,
++    pending_owner: Address,
++    expected_owner: Address,
++) -> anyhow::Result<()> {
 +    if current_owner != expected_owner || pending_owner != Address::zero() {
 +        bail!("ownership handoff did not reach the expected clean state");
 +    }
@@ -679,29 +937,29 @@ index 0ffe0e96f..aab4fc375 100644
 +// path so resume disabling and external wallet arguments cannot diverge.
 +#[allow(clippy::too_many_arguments)]
 +async fn execute_owner_calldata(
-@@ -40,3 +215,2 @@ pub async fn accept_admin(
+@@ -40,3 +242,2 @@ pub async fn accept_admin(
 -    admin: Address,
 -    governor: &Wallet,
 -    target_address: Address,
 +    wallet: &Wallet,
 +    wallet_owner: WalletOwner,
-@@ -44 +218,2 @@ pub async fn accept_admin(
+@@ -44 +245,2 @@ pub async fn accept_admin(
 -    l1_rpc_url: String,
 +    l1_rpc_url: &str,
 +    calldata: Bytes,
-@@ -46,3 +220,0 @@ pub async fn accept_admin(
+@@ -46,3 +247,0 @@ pub async fn accept_admin(
 -    // Resume for accept admin doesn't work properly. Foundry assumes that if signature of the function is the same,
 -    // than it's the same call, but because we are calling this function multiple times during the init process,
 -    // code assumes that doing only once is enough, but actually we need to accept admin multiple times
-@@ -51,4 +222,0 @@ pub async fn accept_admin(
+@@ -51,4 +249,0 @@ pub async fn accept_admin(
 -
 -    let calldata = ADMIN_FUNCTIONS
 -        .encode("chainAdminAcceptAdmin", (admin, target_address))
 -        .unwrap();
-@@ -61 +229 @@ pub async fn accept_admin(
+@@ -61 +256 @@ pub async fn accept_admin(
 -        .with_rpc_url(l1_rpc_url)
 +        .with_rpc_url(l1_rpc_url.to_owned())
-@@ -64 +232,69 @@ pub async fn accept_admin(
+@@ -64 +259,69 @@ pub async fn accept_admin(
 -    accept_ownership(shell, governor, forge).await
 +    execute_ownership_as(shell, wallet, wallet_owner, forge).await
 +}
@@ -772,7 +1030,7 @@ index 0ffe0e96f..aab4fc375 100644
 +        bail!("admin handoff did not reach the expected state");
 +    }
 +    Ok(())
-@@ -75,0 +312,7 @@ pub async fn accept_owner(
+@@ -75,0 +339,7 @@ pub async fn accept_owner(
 +    // SYSCOIN: Fail closed unless ownership is either already complete or is
 +    // still in the exact state required for the intended acceptance.
 +    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
@@ -780,10 +1038,10 @@ index 0ffe0e96f..aab4fc375 100644
 +        return Ok(());
 +    }
 +
-@@ -89 +332 @@ pub async fn accept_owner(
+@@ -89 +359 @@ pub async fn accept_owner(
 -        .with_rpc_url(l1_rpc_url)
 +        .with_rpc_url(l1_rpc_url.clone())
-@@ -92 +335,113 @@ pub async fn accept_owner(
+@@ -92 +362,113 @@ pub async fn accept_owner(
 -    accept_ownership(shell, governor, forge).await
 +    accept_ownership(shell, governor, forge).await?;
 +    ensure_owner_handoff_complete(target_address, governor_contract, &l1_rpc_url).await
@@ -844,7 +1102,7 @@ index 0ffe0e96f..aab4fc375 100644
 +    l1_rpc_url: String,
 +) -> anyhow::Result<()> {
 +    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
-+    if !owner_acceptance_required(current_owner, pending_owner, governor.address)? {
++    if !direct_owner_acceptance_required(current_owner, pending_owner, governor.address)? {
 +        return Ok(());
 +    }
 +    let calldata = ADMIN_FUNCTIONS
@@ -898,7 +1156,7 @@ index 0ffe0e96f..aab4fc375 100644
 +    )
 +    .await?;
 +    ensure_owner_handoff_complete(target_address, chain_admin, &l1_rpc_url).await
-@@ -348,0 +704,11 @@ async fn accept_ownership(
+@@ -348,0 +731,11 @@ async fn accept_ownership(
 +    forge: ForgeScript,
 +) -> anyhow::Result<()> {
 +    execute_ownership_as(shell, governor, WalletOwner::Governor, forge).await
@@ -910,23 +1168,23 @@ index 0ffe0e96f..aab4fc375 100644
 +    shell: &Shell,
 +    wallet: &Wallet,
 +    wallet_owner: WalletOwner,
-@@ -351 +717 @@ async fn accept_ownership(
+@@ -351 +744 @@ async fn accept_ownership(
 -    forge = fill_forge_private_key(forge, Some(governor), WalletOwner::Governor)?;
 +    forge = fill_forge_private_key(forge, Some(wallet), wallet_owner)?;
-@@ -382 +748,2 @@ pub struct AdminScriptOutput {
+@@ -382 +775,2 @@ pub struct AdminScriptOutput {
 -    pub calls: Vec<AdminCall>,
 +    // SYSCOIN: retain the upstream decoded-call type beside generated query bindings.
 +    pub calls: Vec<DecodedAdminCall>,
-@@ -535,0 +903,2 @@ pub async fn set_da_validator_pair(
+@@ -535,0 +930,2 @@ pub async fn set_da_validator_pair(
 +    // SYSCOIN: backport upstream 10d3bd2d's V32 AdminFunctions ABI.
 +    access_control_restriction: Address,
-@@ -544,0 +914 @@ pub async fn set_da_validator_pair(
+@@ -544,0 +941 @@ pub async fn set_da_validator_pair(
 +                access_control_restriction,
-@@ -811 +1181,2 @@ pub(crate) async fn finalize_migrate_to_gateway(
+@@ -811 +1208,2 @@ pub(crate) async fn finalize_migrate_to_gateway(
 -            "migrateChainToGateway",
 +            // SYSCOIN: backport upstream b8e4dbdc8's paired V32 cut-data selector fix.
 +            "migrateChainToGatewayWithCutData",
-@@ -998,0 +1370,103 @@ pub async fn start_migrate_chain_from_gateway(
+@@ -998,0 +1397,150 @@ pub async fn start_migrate_chain_from_gateway(
 +
 +// SYSCOIN: lock the state-aware ownership retry invariants.
 +#[cfg(test)]
@@ -952,6 +1210,53 @@ index 0ffe0e96f..aab4fc375 100644
 +        assert!(owner_acceptance_required(current, governor, governor).unwrap());
 +        assert!(owner_acceptance_required(current, Address::zero(), governor).is_err());
 +        assert!(owner_acceptance_required(current, Address::from_low_u64_be(3), governor).is_err());
++    }
++
++    #[test]
++    fn direct_same_owner_pending_acceptance_is_not_a_noop() {
++        let governor = Address::from_low_u64_be(1);
++        let other = Address::from_low_u64_be(2);
++
++        assert!(!direct_owner_acceptance_required(governor, Address::zero(), governor).unwrap());
++        assert!(direct_owner_acceptance_required(governor, governor, governor).unwrap());
++        assert!(direct_owner_acceptance_required(other, governor, governor).unwrap());
++        assert!(direct_owner_acceptance_required(governor, other, governor).is_err());
++        assert!(direct_owner_acceptance_required(other, Address::zero(), governor).is_err());
++        assert!(direct_owner_acceptance_required(other, other, governor).is_err());
++        // SYSCOIN: Do not broaden the Governance script's supported pre-state.
++        assert!(owner_acceptance_required(governor, governor, governor).is_err());
++        assert!(!direct_owner_acceptance_required(
++            Address::zero(),
++            Address::zero(),
++            Address::zero()
++        )
++        .unwrap());
++    }
++
++    #[test]
++    fn direct_same_owner_pending_acceptance_rejects_an_aliased_governor() {
++        let governor = Address::from_low_u64_be(1);
++        // SYSCOIN: The L1-to-L2 alias of 0x1 is a different authority, never
++        // an acceptable substitute for the authenticated direct governor.
++        let alias = Address::from([
++            0x11, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x12,
++        ]);
++
++        assert!(direct_owner_acceptance_required(governor, alias, governor).is_err());
++        assert!(direct_owner_acceptance_required(alias, alias, governor).is_err());
++        assert!(direct_owner_acceptance_required(governor, governor, alias).is_err());
++    }
++
++    #[test]
++    fn successful_acceptance_receipt_still_requires_clean_owner_post_state() {
++        let governor = Address::from_low_u64_be(1);
++        let other = Address::from_low_u64_be(2);
++
++        assert!(ensure_owner_state_complete(governor, Address::zero(), governor).is_ok());
++        assert!(ensure_owner_state_complete(governor, governor, governor).is_err());
++        assert!(ensure_owner_state_complete(governor, other, governor).is_err());
++        assert!(ensure_owner_state_complete(other, Address::zero(), governor).is_err());
++        assert!(ensure_owner_state_complete(other, governor, governor).is_err());
 +    }
 +
 +    #[test]
@@ -1031,14 +1336,34 @@ index 0ffe0e96f..aab4fc375 100644
 +    }
 +}
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-index 1a573180c..b0e0b9ce8 100644
+index 1a57318..8c342f1 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 @@ -9 +9,2 @@ use zkstack_cli_config::{ChainConfig, GatewayChainConfigPatch, ZkStackConfig, Zk
 -use zkstack_cli_types::L1BatchCommitmentMode;
 +// SYSCOIN: scope the lower validator float to Syscoin settlement networks.
 +use zkstack_cli_types::{L1BatchCommitmentMode, L1Network};
-@@ -170,0 +172,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
+@@ -22 +23 @@ use crate::{
+-        gateway::migrate_to_gateway_calldata::MigrateToGatewayContext, utils::send_tx,
++        gateway::migrate_to_gateway_calldata::MigrateToGatewayContext, utils::send_migration_tx,
+@@ -46,0 +48,2 @@ pub async fn run(args: MigrateToGatewayArgs, shell: &Shell) -> anyhow::Result<()
++    // SYSCOIN: Reject unsupported direct-sender selectors before calldata Forge.
++    args.forge_args.protected_account_args()?;
+@@ -99 +102,3 @@ pub async fn run(args: MigrateToGatewayArgs, shell: &Shell) -> anyhow::Result<()
+-    let receipt = send_tx(
++    // SYSCOIN: A protected account may own this governor without a YAML key.
++    let governor = chain_config.get_wallets_config()?.governor;
++    let receipt = send_migration_tx(
+@@ -104,5 +109,3 @@ pub async fn run(args: MigrateToGatewayArgs, shell: &Shell) -> anyhow::Result<()
+-        chain_config
+-            .get_wallets_config()?
+-            .governor
+-            .private_key_h256()
+-            .unwrap(),
++        &governor,
++        &args.forge_args,
++        chain_config.l1_network.chain_id(),
+@@ -170,0 +174,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
 +    // SYSCOIN: require a 1 SYS validator float while preserving upstream
 +    // minimums for Localhost and Ethereum test networks.
 +    let min_validator_balance = match chain_config.l1_network {
@@ -1046,7 +1371,7 @@ index 1a573180c..b0e0b9ce8 100644
 +        _ => U256::from(10).pow(19.into()),
 +    };
 +
-@@ -185 +193,2 @@ pub(crate) async fn get_migrate_to_gateway_context(
+@@ -185 +195,2 @@ pub(crate) async fn get_migrate_to_gateway_context(
 -        min_validator_balance: U256::from(10).pow(19.into()),
 +        // SYSCOIN: apply the network-scoped validator float selected above.
 +        min_validator_balance,
@@ -1779,31 +2104,99 @@ index 03451dd9e..a6b3a6346 100644
 +
 +    Ok(())
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs
-index 944aa4cc7..fb64b9a9d 100644
+index 944aa4cc7..959c842fd 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs
-@@ -196,0 +197,4 @@ pub struct InitCoreContractsArgs {
+@@ -196,0 +197,9 @@ pub struct InitCoreContractsArgs {
 +    /// Reconcile only persisted core/CTM ownership; never replay deployment.
 +    // SYSCOIN: Lost Forge journals must have a narrow recovery path.
 +    #[clap(long, default_value_t = false)]
 +    pub ownership_only: bool,
-@@ -209,0 +214 @@ impl InitCoreContractsArgs {
++    /// Resume only a fully confirmed core journal, then reconcile and persist core ownership.
++    // SYSCOIN: Namespace/source/receipt authentication belongs to a separately
++    // reviewed manifest preflight; this option never replays fresh deployment.
++    #[clap(long, default_value_t = false)]
++    pub core_journal_only: bool,
+@@ -199,0 +209,17 @@ impl InitCoreContractsArgs {
++    // SYSCOIN: Reject side effects before ecosystem dispatch can update
++    // submodules, compile contracts, prompt, or generate deployment inputs.
++    pub fn validate_core_journal_only_options(&self) -> anyhow::Result<()> {
++        if self.core_journal_only
++            && (!self.forge_args.resume
++                || !self.common.zksync_os
++                || self.common.update_submodules
++                || !self.common.skip_contract_compilation_override
++                || self.deploy_erc20 != Some(false)
++                || self.ownership_only
++                || self.dev)
++        {
++            anyhow::bail!("core-journal-only requires --resume, --zksync-os, --update-submodules false, --skip-contract-compilation-override true and --deploy-erc20 false; --ownership-only and --dev are forbidden");
++        }
++        Ok(())
++    }
++
+@@ -209,0 +236,2 @@ impl InitCoreContractsArgs {
 +            ownership_only,
-@@ -212 +217,5 @@ impl InitCoreContractsArgs {
++            core_journal_only,
+@@ -212 +240,5 @@ impl InitCoreContractsArgs {
 -        let deploy_erc20 = if self.dev {
 +        // SYSCOIN: Ownership recovery cannot prompt for or deploy unrelated
 +        // ERC20 contracts; force the one permissible value before prompting.
 +        let deploy_erc20 = if ownership_only {
 +            false
 +        } else if self.dev {
-@@ -229,0 +239 @@ impl InitCoreContractsArgs {
+@@ -229,0 +262,2 @@ impl InitCoreContractsArgs {
 +            ownership_only,
-@@ -240,0 +251,2 @@ pub struct InitCoreContractsArgsFinal {
++            core_journal_only,
+@@ -240,0 +275,3 @@ pub struct InitCoreContractsArgsFinal {
 +    // SYSCOIN: Preserve the narrow recovery policy through command dispatch.
 +    pub ownership_only: bool,
-@@ -250,0 +263,2 @@ impl From<EcosystemInitArgsFinal> for InitCoreContractsArgsFinal {
++    pub core_journal_only: bool,
+@@ -250,0 +288,44 @@ impl From<EcosystemInitArgsFinal> for InitCoreContractsArgsFinal {
 +            // SYSCOIN: Full ecosystem init is never implicitly narrowed.
 +            ownership_only: false,
++            core_journal_only: false,
++        }
++    }
++}
++
++// SYSCOIN: Keep recovery opt-in and reject every writer before dispatch.
++#[cfg(test)]
++mod syscoin_core_journal_option_tests {
++    use super::*;
++
++    #[test]
++    fn core_journal_only_requires_every_explicit_no_side_effect_option() {
++        let args = InitCoreContractsArgs::try_parse_from([
++            "init-core-contracts",
++            "--core-journal-only",
++            "--resume",
++            "--zksync-os",
++            "--update-submodules",
++            "false",
++            "--skip-contract-compilation-override",
++            "true",
++            "--deploy-erc20",
++            "false",
++        ])
++        .unwrap();
++        assert!(args.validate_core_journal_only_options().is_ok());
++        for index in 0..8 {
++            let mut invalid = args.clone();
++            match index {
++                0 => invalid.forge_args.resume = false,
++                1 => invalid.common.zksync_os = false,
++                2 => invalid.common.update_submodules = true,
++                3 => invalid.common.skip_contract_compilation_override = false,
++                4 => invalid.deploy_erc20 = Some(true),
++                5 => invalid.deploy_erc20 = None,
++                6 => invalid.ownership_only = true,
++                7 => invalid.dev = true,
++                _ => unreachable!(),
++            }
++            assert!(invalid.validate_core_journal_only_options().is_err());
++            invalid.core_journal_only = false;
++            assert!(invalid.validate_core_journal_only_options().is_ok());
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
 index 37cad6768..05c96b070 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
@@ -1953,12 +2346,47 @@ index 37cad6768..05c96b070 100644
 +}
 +
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs
-index 3b83dd97f..7bbee21f0 100644
+index 3b83dd97f..5cef7c0c9 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs
-@@ -1 +0,0 @@
+@@ -1 +1,15 @@
 -use anyhow::Context;
-@@ -11,5 +10,7 @@ use crate::{
++// SYSCOIN: Existing-journal recovery reads immutable inputs and validates the
++// complete journal before invoking a no-fallback core-only Forge path.
++use std::{
++    collections::HashSet,
++    fs::{self, OpenOptions},
++    io::Write,
++    path::Path,
++};
++
++#[cfg(unix)]
++use std::os::unix::fs::OpenOptionsExt;
++
++use anyhow::{bail, Context};
++use ethers::middleware::Middleware;
++use serde_json::Value;
+@@ -3 +17,6 @@ use xshell::Shell;
+-use zkstack_cli_common::{forge::ForgeScriptArgs, logger, spinner::Spinner};
++use zkstack_cli_common::{
++    ethereum::get_ethers_provider,
++    forge::{Forge, ForgeScriptArgs},
++    logger,
++    spinner::Spinner,
++};
+@@ -5,2 +24,9 @@ use zkstack_cli_config::{
+-    forge_interface::deploy_ecosystem::input::InitialDeploymentConfig,
+-    traits::SaveConfigWithBasePath, CoreContractsConfig, EcosystemConfig, ZkStackConfig,
++    forge_interface::{
++        deploy_ecosystem::{
++            input::{DeployL1Config, InitialDeploymentConfig},
++            output::DeployL1CoreContractsOutput,
++        },
++        script_params::DEPLOY_ECOSYSTEM_CORE_CONTRACTS_SCRIPT_PARAMS,
++    },
++    traits::{FileConfigWithDefaultName, ReadConfig, SaveConfigWithBasePath},
++    CoreContractsConfig, EcosystemConfig, ZkStackConfig,
+@@ -11,5 +37,7 @@ use crate::{
 -    admin_functions::{accept_admin, accept_owner},
 -    commands::ecosystem::{
 -        args::init::{InitCoreContractsArgs, InitCoreContractsArgsFinal},
@@ -1971,13 +2399,28 @@ index 3b83dd97f..7bbee21f0 100644
 +            common::{complete_core_owner_handoffs, deploy_erc20, deploy_l1_core_contracts},
 +            create_configs::{create_erc20_deployment_config, create_initial_deployments_config},
 +        },
-@@ -27,5 +27,0 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
+@@ -20,0 +49 @@ use crate::{
++    utils::forge::{fill_forge_private_key, WalletOwner},
+@@ -23,0 +53 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
++    args.validate_core_journal_only_options()?;
+@@ -27,5 +56,0 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
 -    let initial_deployment_config = match ecosystem_config.get_initial_deployment_config() {
 -        Ok(config) => config,
 -        Err(_) => create_initial_deployments_config(shell, &ecosystem_config.config)?,
 -    };
 -
-@@ -37,0 +34,29 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
+@@ -37,0 +63,40 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
++    if final_ecosystem_args.core_journal_only {
++        // SYSCOIN: This branch returns before every fresh input/deploy/CTM or
++        // ERC20 path. Only canonical typed persistence follows owner postchecks.
++        let contracts =
++            resume_confirmed_core_journal(shell, &final_ecosystem_args, &ecosystem_config).await?;
++        ensure_core_config_absent(&CoreContractsConfig::get_path_with_base_path(
++            &ecosystem_config.config,
++        ))?;
++        persist_recovered_core_config_new(&contracts, &ecosystem_config.config)?;
++        return Ok(());
++    }
 +    if final_ecosystem_args.ownership_only {
 +        // SYSCOIN: Authenticate persisted deployment state and execute only
 +        // state-gated ownership/admin handoffs. No deploy script is reachable.
@@ -2007,16 +2450,332 @@ index 3b83dd97f..7bbee21f0 100644
 +        Ok(config) => config,
 +        Err(_) => create_initial_deployments_config(shell, &ecosystem_config.config)?,
 +    };
-@@ -116,28 +141,3 @@ pub async fn deploy_ecosystem(
+@@ -67,0 +133,312 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
++// SYSCOIN: Require real, nonempty files without silently generating defaults.
++fn existing_core_file(path: &Path) -> anyhow::Result<Vec<u8>> {
++    let metadata = fs::symlink_metadata(path).context("required core recovery file is missing")?;
++    if !metadata.is_file() || metadata.len() == 0 {
++        bail!("core recovery file must be a nonempty regular nonsymlink file");
++    }
++    fs::read(path).context("failed to read required core recovery file")
++}
++
++// SYSCOIN: A core-only recovery must never overwrite a persisted CTM graph,
++// malformed config, or symlink; normal complete-graph repair owns that phase.
++fn ensure_core_config_absent(path: &Path) -> anyhow::Result<()> {
++    match fs::symlink_metadata(path) {
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
++        Err(error) => Err(error).context("cannot classify existing core config"),
++        Ok(_) => bail!("core-journal-only requires an absent persisted contracts config"),
++    }
++}
++
++// SYSCOIN: The early absence check is diagnostic, not an overwrite authority.
++// Serialize through the unchanged canonical YAML serializer first, then claim
++// exactly the canonical path atomically; any concurrent entry must survive.
++fn persist_recovered_core_config_new(
++    contracts: &CoreContractsConfig,
++    base_path: &Path,
++) -> anyhow::Result<()> {
++    let path = CoreContractsConfig::get_path_with_base_path(base_path);
++    let content = serde_yaml::to_string(contracts)?;
++    let mut options = OpenOptions::new();
++    options.write(true).create_new(true);
++    #[cfg(unix)]
++    options.mode(0o600);
++    let mut file = options
++        .open(path)
++        .context("core recovery config already exists or cannot be exclusively created")?;
++    file.write_all(content.as_bytes())
++        .context("failed writing newly claimed core recovery config")?;
++    file.sync_all()
++        .context("failed syncing newly claimed core recovery config")?;
++    Ok(())
++}
++
++// SYSCOIN: A complete local journal is necessary, not authoritative provenance.
++// The protected manifest preflight must independently bind source, input/output,
++// actor, calldata, canonical receipts and live code before opting into recovery.
++fn ensure_confirmed_core_journal(journal: &Value) -> anyhow::Result<()> {
++    let transactions = journal["transactions"]
++        .as_array()
++        .context("core journal has no transaction plan")?;
++    let receipts = journal["receipts"]
++        .as_array()
++        .context("core journal has no receipts")?;
++    let pending = journal["pending"]
++        .as_array()
++        .context("core journal has no pending list")?;
++    if transactions.is_empty() || transactions.len() != receipts.len() || !pending.is_empty() {
++        bail!("core-journal-only requires a fully confirmed journal with no pending transactions");
++    }
++    let mut expected = HashSet::new();
++    for transaction in transactions {
++        let hash = transaction["hash"]
++            .as_str()
++            .context("core journal transaction hash is absent")?;
++        let hash: ethers::types::H256 = hash
++            .parse()
++            .context("invalid core journal transaction hash")?;
++        if !expected.insert(hash) {
++            bail!("core journal contains duplicate transaction hashes");
++        }
++    }
++    for receipt in receipts {
++        let hash: ethers::types::H256 = receipt["transactionHash"]
++            .as_str()
++            .context("core journal receipt hash is absent")?
++            .parse()?;
++        if !expected.remove(&hash) || receipt["status"].as_str() != Some("0x1") {
++            bail!("core journal receipts are incomplete, unsuccessful or mismatched");
++        }
++    }
++    Ok(())
++}
++
++async fn resume_confirmed_core_journal(
++    shell: &Shell,
++    args: &InitCoreContractsArgsFinal,
++    ecosystem: &EcosystemConfig,
++) -> anyhow::Result<CoreContractsConfig> {
++    let foundry_path = ecosystem.path_to_foundry_scripts_for_ctm(args.vm_option);
++    ensure_core_config_absent(&CoreContractsConfig::get_path_with_base_path(
++        &ecosystem.config,
++    ))?;
++    let params = &DEPLOY_ECOSYSTEM_CORE_CONTRACTS_SCRIPT_PARAMS;
++    existing_core_file(&InitialDeploymentConfig::get_path_with_base_path(
++        &ecosystem.config,
++    ))?;
++    let input_bytes = existing_core_file(&params.input(&foundry_path))?;
++    let output_bytes = existing_core_file(&params.output(&foundry_path))?;
++    let initial = ecosystem
++        .get_initial_deployment_config()
++        .context("core recovery requires existing initial deployment config")?;
++    let wallets = ecosystem.get_wallets()?;
++    let deployer = wallets
++        .deployer
++        .as_ref()
++        .context("core recovery requires the existing deployer wallet")?;
++    let input = DeployL1Config::read(shell, params.input(&foundry_path))?;
++    let expected_input = DeployL1Config::new(
++        &wallets,
++        &initial,
++        ecosystem.era_chain_id,
++        args.support_l2_legacy_shared_bridge_test,
++    );
++    if serde_json::to_value(&input)? != serde_json::to_value(expected_input)? {
++        bail!("existing core deployment input differs from current authenticated configuration");
++    }
++    let output = DeployL1CoreContractsOutput::read(shell, params.output(&foundry_path))?;
++    let chain_id = get_ethers_provider(&args.l1_rpc_url)?.get_chainid().await?;
++    if chain_id != ethers::types::U256::from(ecosystem.l1_network.chain_id())
++        || chain_id != ethers::types::U256::from(output.l1_chain_id)
++        || u64::from(output.era_chain_id) != ecosystem.era_chain_id.as_u64()
++        || output.owner_address != wallets.governor.address
++        || output.deployer_addr != deployer.address
++        || output.contracts.create2_factory_salt != initial.create2_factory_salt
++        || initial
++            .create2_factory_addr
++            .is_some_and(|factory| factory != output.contracts.create2_factory_addr)
++    {
++        bail!("existing core output chain, actor or CREATE2 namespace differs");
++    }
++    let journal_path = foundry_path
++        .join("broadcast/DeployL1CoreContracts.s.sol")
++        .join(chain_id.to_string())
++        .join("run-latest.json");
++    let journal: Value = serde_json::from_slice(&existing_core_file(&journal_path)?)?;
++    ensure_confirmed_core_journal(&journal)?;
++    let forge = Forge::new(&foundry_path)
++        .script(&params.script(), args.forge_args.clone())
++        .with_ffi()
++        .with_rpc_url(args.l1_rpc_url.clone())
++        .with_core_journal_only_resume()
++        .with_broadcast();
++    fill_forge_private_key(forge, Some(deployer), WalletOwner::Deployer)?.run(shell)?;
++    // SYSCOIN: Resume must not replace the output consumed by this recovery.
++    if existing_core_file(&params.input(&foundry_path))? != input_bytes
++        || existing_core_file(&params.output(&foundry_path))? != output_bytes
++    {
++        bail!("core input or output bytes changed during journal-only recovery");
++    }
++    let mut contracts = CoreContractsConfig::default();
++    contracts.update_from_l1_output(&output);
++    complete_core_owner_handoffs(
++        shell,
++        &args.forge_args,
++        ecosystem,
++        &contracts,
++        &args.l1_rpc_url,
++        args.vm_option,
++    )
++    .await?;
++    Ok(contracts)
++}
++
++// SYSCOIN: Lock the complete-journal and no-generated-file prerequisites.
++#[cfg(test)]
++mod syscoin_core_journal_tests {
++    use super::*;
++    use serde_json::json;
++    use zkstack_cli_config::traits::SaveConfig;
++
++    fn complete_journal() -> Value {
++        let hash = format!("{:#x}", ethers::types::H256::from_low_u64_be(1));
++        json!({"transactions": [{"hash": hash}], "receipts": [{"transactionHash": hash, "status": "0x1"}], "pending": []})
++    }
++
++    fn new_test_directory(label: &str) -> std::path::PathBuf {
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap()
++            .as_nanos();
++        let directory = std::env::temp_dir().join(format!(
++            "zkstack-core-{label}-{}-{unique}",
++            std::process::id()
++        ));
++        fs::create_dir(&directory).unwrap();
++        directory
++    }
++
++    #[test]
++    fn core_config_save_is_create_only_and_matches_canonical_yaml_bytes() {
++        let directory = new_test_directory("canonical-save");
++        let path = CoreContractsConfig::get_path_with_base_path(&directory);
++        let contracts = CoreContractsConfig::default();
++        persist_recovered_core_config_new(&contracts, &directory).unwrap();
++        let expected = serde_yaml::to_string(&contracts).unwrap();
++        assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
++        let canonical_path = directory.join("canonical.yaml");
++        contracts
++            .save(&Shell::new().unwrap(), &canonical_path)
++            .unwrap();
++        assert_eq!(fs::read(&path).unwrap(), fs::read(&canonical_path).unwrap());
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            assert_eq!(
++                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
++                0o600
++            );
++        }
++        fs::remove_file(path).unwrap();
++        fs::remove_file(canonical_path).unwrap();
++        fs::remove_dir(directory).unwrap();
++    }
++
++    #[test]
++    fn concurrent_regular_empty_or_malformed_core_config_is_preserved() {
++        let directory = new_test_directory("concurrent-save");
++        let path = CoreContractsConfig::get_path_with_base_path(&directory);
++        let contracts = CoreContractsConfig::default();
++        let regular = serde_yaml::to_string(&contracts).unwrap();
++        for existing in [regular.as_str(), "", "malformed: ["] {
++            assert!(ensure_core_config_absent(&path).is_ok());
++            // SYSCOIN: Model another operator creating the entry after the
++            // early precheck, including a malformed or empty persisted graph.
++            fs::write(&path, existing).unwrap();
++            assert!(persist_recovered_core_config_new(&contracts, &directory).is_err());
++            assert_eq!(fs::read(&path).unwrap(), existing.as_bytes());
++            fs::remove_file(&path).unwrap();
++        }
++        fs::remove_dir(directory).unwrap();
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn concurrent_core_config_symlink_or_broken_link_is_preserved() {
++        let directory = new_test_directory("concurrent-link");
++        let path = CoreContractsConfig::get_path_with_base_path(&directory);
++        let target = directory.join("existing-target.yaml");
++        let missing_target = directory.join("missing-target.yaml");
++        let contracts = CoreContractsConfig::default();
++        fs::write(&target, "existing CTM graph").unwrap();
++        for link_target in [&target, &missing_target] {
++            assert!(ensure_core_config_absent(&path).is_ok());
++            std::os::unix::fs::symlink(link_target, &path).unwrap();
++            assert!(persist_recovered_core_config_new(&contracts, &directory).is_err());
++            assert_eq!(fs::read_link(&path).unwrap(), *link_target);
++            assert_eq!(fs::read(&target).unwrap(), b"existing CTM graph");
++            assert!(!missing_target.exists());
++            fs::remove_file(&path).unwrap();
++        }
++        fs::remove_file(target).unwrap();
++        fs::remove_dir(directory).unwrap();
++    }
++
++    #[test]
++    fn only_complete_successful_core_journals_are_eligible() {
++        let complete = complete_journal();
++        assert!(ensure_confirmed_core_journal(&complete).is_ok());
++        for invalid in [
++            json!({}),
++            json!({"transactions": [], "receipts": [], "pending": []}),
++            json!({"transactions": [{"hash": complete["transactions"][0]["hash"]}], "receipts": [], "pending": []}),
++            json!({"transactions": complete["transactions"], "receipts": complete["receipts"], "pending": [complete["transactions"][0]["hash"]]}),
++        ] {
++            assert!(ensure_confirmed_core_journal(&invalid).is_err());
++        }
++        for field in ["status", "transactionHash"] {
++            let mut invalid = complete.clone();
++            invalid["receipts"][0][field] = json!("0x0");
++            assert!(ensure_confirmed_core_journal(&invalid).is_err());
++        }
++        let mut duplicate = complete;
++        let transaction = duplicate["transactions"][0].clone();
++        let receipt = duplicate["receipts"][0].clone();
++        duplicate["transactions"]
++            .as_array_mut()
++            .unwrap()
++            .push(transaction);
++        duplicate["receipts"].as_array_mut().unwrap().push(receipt);
++        assert!(ensure_confirmed_core_journal(&duplicate).is_err());
++    }
++
++    #[test]
++    fn missing_empty_or_symlink_core_inputs_are_never_generated() {
++        let unique = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap()
++            .as_nanos();
++        let directory =
++            std::env::temp_dir().join(format!("zkstack-core-file-{}-{unique}", std::process::id()));
++        fs::create_dir(&directory).unwrap();
++        let path = directory.join("core-output.toml");
++        assert!(ensure_core_config_absent(&path).is_ok());
++        assert!(existing_core_file(&path).is_err());
++        assert!(!path.exists());
++        fs::write(&path, "").unwrap();
++        assert!(ensure_core_config_absent(&path).is_err());
++        assert!(existing_core_file(&path).is_err());
++        fs::write(&path, "existing").unwrap();
++        assert_eq!(existing_core_file(&path).unwrap(), b"existing");
++        #[cfg(unix)]
++        {
++            let link = directory.join("linked-output.toml");
++            std::os::unix::fs::symlink(&path, &link).unwrap();
++            assert!(existing_core_file(&link).is_err());
++            assert!(ensure_core_config_absent(&link).is_err());
++            fs::remove_file(link).unwrap();
++        }
++        fs::remove_file(path).unwrap();
++        fs::remove_dir(directory).unwrap();
++    }
++}
++
+@@ -116 +493,3 @@ pub async fn deploy_ecosystem(
 -    accept_owner(
--        shell,
++    // SYSCOIN: Core-only init must reach the same complete V32 ownership state
++    // as full ecosystem init before it reports success.
++    complete_core_owner_handoffs(
+@@ -118,6 +496,0 @@ pub async fn deploy_ecosystem(
 -        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
 -        contracts_config.l1.governance_addr,
 -        &ecosystem_config.get_wallets()?.governor,
 -        contracts_config
 -            .core_ecosystem_contracts
 -            .bridgehub_proxy_addr,
--        &forge_args,
+@@ -125,40 +498,4 @@ pub async fn deploy_ecosystem(
 -        l1_rpc_url.clone(),
 -    )
 -    .await?;
@@ -2036,15 +2795,12 @@ index 3b83dd97f..7bbee21f0 100644
 -    // Note, that there is no admin in L1 asset router, so we do
 -    // need to accept it
 -    accept_owner(
-+    // SYSCOIN: Core-only init must reach the same complete V32 ownership state
-+    // as full ecosystem init before it reports success.
-+    complete_core_owner_handoffs(
-@@ -145,4 +144,0 @@ pub async fn deploy_ecosystem(
+-        shell,
 -        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
 -        contracts_config.l1.governance_addr,
 -        &ecosystem_config.get_wallets()?.governor,
 -        contracts_config.bridges.shared.l1_address,
-@@ -150,15 +146,4 @@ pub async fn deploy_ecosystem(
+-        &forge_args,
 -        l1_rpc_url.clone(),
 -    )
 -    .await?;
@@ -2065,20 +2821,27 @@ index 3b83dd97f..7bbee21f0 100644
 +        &l1_rpc_url,
 +        vm_option,
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs
-index 1e9d41c4e..f4fb83c74 100644
+index 1e9d41c4e..6a241daff 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs
-@@ -89 +89,4 @@ impl EcosystemCommands {
+@@ -52,0 +53,4 @@ pub(crate) async fn run(shell: &Shell, args: EcosystemCommands) -> anyhow::Resul
++    // SYSCOIN: Validate the narrow mode before any source/compiler side effect.
++    if let EcosystemCommands::InitCoreContracts(core_args) = &args {
++        core_args.validate_core_journal_only_options()?;
++    }
+@@ -89 +93,4 @@ impl EcosystemCommands {
 -            EcosystemCommands::InitCoreContracts(args) => args.common.update_submodules,
 +            // SYSCOIN: Ownership-only recovery must not mutate source state.
 +            EcosystemCommands::InitCoreContracts(args) => {
-+                !args.ownership_only && args.common.update_submodules
++                !args.ownership_only && !args.core_journal_only && args.common.update_submodules
 +            }
-@@ -104 +107,3 @@ impl EcosystemCommands {
+@@ -104 +111,5 @@ impl EcosystemCommands {
 -                !args.common.skip_contract_compilation_override
 +                // SYSCOIN: Ownership-only recovery consumes the already
 +                // attested deployment scripts and never rebuilds artifacts.
-+                !args.ownership_only && !args.common.skip_contract_compilation_override
++                !args.ownership_only
++                    && !args.core_journal_only
++                    && !args.common.skip_contract_compilation_override
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs b/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs
 index 906491168..261790e70 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs
@@ -2146,3 +2909,212 @@ index b7b4dcdb2..2b9ad7a6f 100644
 -                tx_status as u8,
 -            ),
 +            ),),
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs b/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs
+index 4910f6e..accde6e 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs
+@@ -6 +6 @@ use ethers::{
+-    providers::{Http, Middleware, Provider},
++    providers::{Http, Middleware, PendingTransaction, Provider},
+@@ -8 +8 @@ use ethers::{
+-    types::{TransactionReceipt, TransactionRequest},
++    types::{Block, Transaction, TransactionReceipt, TransactionRequest},
+@@ -11 +11 @@ use ethers::{
+-use zkstack_cli_common::{logger, spinner::Spinner};
++use zkstack_cli_common::{forge::ForgeScriptArgs, logger, spinner::Spinner, wallets::Wallet};
+@@ -109,0 +110,195 @@ pub(crate) async fn send_tx(
++
++// SYSCOIN: Preserve generated-wallet behavior while allowing a null-key governor
++// to use the already authenticated protected account. Never retry an uncertain send.
++#[allow(clippy::too_many_arguments)]
++pub(crate) async fn send_migration_tx(
++    to: Address,
++    data: Vec<u8>,
++    value: U256,
++    l1_rpc_url: String,
++    wallet: &Wallet,
++    forge_args: &ForgeScriptArgs,
++    expected_chain_id: u64,
++    description: &str,
++) -> anyhow::Result<TransactionReceipt> {
++    let Some((account_args, sender)) = forge_args.protected_account_args()? else {
++        return send_tx(
++            to,
++            data,
++            value,
++            l1_rpc_url,
++            wallet
++                .private_key_h256()
++                .context("migration governor key or protected account is required")?,
++            description,
++        )
++        .await;
++    };
++    if sender != wallet.address {
++        anyhow::bail!("migration protected sender differs from governor");
++    }
++    let public = Command::new("cast")
++        .args(["wallet", "address"])
++        .args(&account_args)
++        .output()
++        .context("protected migration account lookup failed")?;
++    if !public.status.success() || public.stdout.len() > 128 {
++        anyhow::bail!("protected migration account lookup failed");
++    }
++    let derived = std::str::from_utf8(&public.stdout)
++        .ok()
++        .map(str::trim)
++        .filter(|value| value.starts_with("0x") && value.len() == 42)
++        .and_then(|value| value.parse::<Address>().ok());
++    if derived != Some(sender) {
++        anyhow::bail!("protected migration account address differs from governor");
++    }
++    let provider = Provider::<Http>::try_from(&l1_rpc_url)?;
++    if provider.get_chainid().await? != U256::from(expected_chain_id) {
++        anyhow::bail!("migration settlement chain identity differs");
++    }
++    let nonce = provider.get_transaction_count(sender, None).await?;
++    let pending = provider
++        .get_transaction_count(sender, Some(ethers::types::BlockNumber::Pending.into()))
++        .await?;
++    if nonce != pending {
++        anyhow::bail!("migration governor has pending transactions");
++    }
++    if provider.get_transaction_count(sender, None).await? != nonce
++        || provider
++            .get_transaction_count(sender, Some(ethers::types::BlockNumber::Pending.into()))
++            .await?
++            != nonce
++        || provider.get_chainid().await? != U256::from(expected_chain_id)
++    {
++        anyhow::bail!("migration spend state changed before submission");
++    }
++    let mut command = Command::new("cast");
++    command.args([
++        "send",
++        "--async",
++        "--rpc-url",
++        &l1_rpc_url,
++        "--from",
++        &format!("{sender:#x}"),
++        "--chain",
++        &expected_chain_id.to_string(),
++        "--nonce",
++        &nonce.to_string(),
++        "--value",
++        &value.to_string(),
++        "--data",
++        &format!("0x{}", hex::encode(&data)),
++    ]);
++    // SYSCOIN: Retain Syscoin's native legacy fee policy without forcing it on Ethereum.
++    if matches!(expected_chain_id, 57 | 5700) {
++        command.arg("--legacy");
++    }
++    command.arg(format!("{to:#x}")).args(&account_args);
++    let result = command
++        .output()
++        .context("protected migration send outcome uncertain; do not retry")?;
++    if !result.status.success() || result.stdout.len() > 128 {
++        anyhow::bail!("protected migration send outcome uncertain; do not retry");
++    }
++    let hash = std::str::from_utf8(&result.stdout)
++        .ok()
++        .map(str::trim)
++        .filter(|value| value.starts_with("0x") && value.len() == 66)
++        .and_then(|value| value.parse::<H256>().ok())
++        .context("protected migration send hash unavailable; do not retry")?;
++    logger::info(format!("Transaction sent! Hash: {hash:#x}"));
++    let receipt = tokio::time::timeout(
++        std::time::Duration::from_secs(1800),
++        PendingTransaction::new(hash, &provider),
++    )
++    .await
++    .context("migration receipt wait expired; audit original hash without retry")??
++    .context("migration receipt not found; audit original hash without retry")?;
++    let tx = provider
++        .get_transaction(hash)
++        .await?
++        .context("migration transaction unavailable")?;
++    let number = receipt
++        .block_number
++        .context("migration receipt is not mined")?;
++    let block = provider
++        .get_block(number)
++        .await?
++        .context("migration canonical block unavailable")?;
++    validate_migration_receipt(
++        &receipt,
++        &tx,
++        &block,
++        to,
++        &data,
++        value,
++        sender,
++        nonce,
++        expected_chain_id,
++        hash,
++    )?;
++    if provider.get_chainid().await? != U256::from(expected_chain_id) {
++        anyhow::bail!("migration settlement chain changed; do not retry");
++    }
++    if provider
++        .get_block(number)
++        .await?
++        .and_then(|block| block.hash)
++        != receipt.block_hash
++    {
++        anyhow::bail!("migration receipt block changed; do not retry");
++    }
++    logger::info(format!("Transaction {hash:#x} completed!"));
++    Ok(receipt)
++}
++
++// SYSCOIN: Cast success/hash alone is not a migration receipt. Keep the exact
++// signed intention bound to status, full transaction and indexed canonical block.
++#[allow(clippy::too_many_arguments)]
++fn validate_migration_receipt(
++    receipt: &TransactionReceipt,
++    tx: &Transaction,
++    block: &Block<H256>,
++    to: Address,
++    data: &[u8],
++    value: U256,
++    sender: Address,
++    nonce: U256,
++    expected_chain_id: u64,
++    hash: H256,
++) -> anyhow::Result<()> {
++    let index = receipt.transaction_index.as_u64() as usize;
++    if receipt.status != Some(ethers::types::U64::from(1))
++        || receipt.transaction_hash != hash
++        || receipt.from != sender
++        || receipt.to != Some(to)
++        || tx.hash != hash
++        || tx.from != sender
++        || tx.to != Some(to)
++        || tx.nonce != nonce
++        || tx.value != value
++        || tx.input.as_ref() != data
++        || tx.chain_id != Some(U256::from(expected_chain_id))
++        || tx.block_hash != receipt.block_hash
++        || tx.block_number != receipt.block_number
++        || tx.transaction_index != Some(receipt.transaction_index)
++        || receipt.block_number.is_none()
++        || block.number != receipt.block_number
++        || block.hash.is_none()
++        || block.hash != receipt.block_hash
++        || index >= block.transactions.len()
++        || block.transactions[index] != hash
++        || block
++            .transactions
++            .iter()
++            .filter(|value| **value == hash)
++            .count()
++            != 1
++    {
++        anyhow::bail!(
++            "migration receipt does not prove the intended canonical transaction; do not retry"
++        );
++    }
++    Ok(())
++}

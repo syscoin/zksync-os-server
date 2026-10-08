@@ -2,9 +2,10 @@
 """Drive a selected wrapper turn from the private native lease to node settlement."""
 
 import argparse
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import time
@@ -88,6 +89,7 @@ class Coordinator:
         self.rpc = rpc or k.rpc_for(self.keeper)
         self.wallet, self.relay_wallet = wallet, relay_wallet
         self.native = native or job.NativeNetwork()
+        self.registry_rpc, self.enrollment = None, None
         self.release = job.read_file(store.root / "release.json", job.MAX_MANIFEST, private=True)
         s.require(job.hash_bytes(self.release) == self.state["release_sha256"], "coordinator_release_changed")
 
@@ -110,6 +112,35 @@ class Coordinator:
         state = k.status(self.keeper, self.rpc, int(self.clock()), roster)
         return state, roster
 
+    def prepare(self, request, evidence, payload):
+        return k.prepare(self.settings, request, evidence, payload, enrollment=self.enrollment_for(request))
+
+    def enrollment_for(self, request):
+        self.enrollment = k.enrollment_for(self.keeper, request, self.registry_rpc, enrollment=self.enrollment)
+        return self.enrollment
+
+    @contextmanager
+    def dispatcher_for(self, chain):
+        period = chain["roster"]["period"]
+        journal_root = Path(self.config["dispatcher_dir"])
+        if not (journal_root / "state.json").exists():
+            journal_root = journal_root / str(period)
+        store = Store(io.directory(journal_root))
+        with store.lock("dispatcher.lock"):
+            state = io.private_json(store.root / "state.json")
+            s.require(state["period"] == period, "dispatcher_period_does_not_match_opening_roster")
+            s.require(state["enrollment"]["block_hash"] == self.keeper["enrollment"]["block_hash"],
+                      "enrollment_authority_anchor_mismatch")
+            if self.registry_rpc is None:
+                self.registry_rpc = k.registry_rpc_for(self.keeper)
+            dispatch = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc,
+                                               enrollment=self.enrollment)
+            lane = dispatch.state["lanes"].get(self.keeper["lane"])
+            s.require(lane is not None and lane["settings"] == self.settings
+                      and lane["endpoint"] == sentry.endpoint_url(self.config["endpoint"]), "dispatcher_lane_changed")
+            self.enrollment = dispatch.enrollment
+            yield dispatch
+
     def directory(self, identifier):
         return self.store.root / "jobs" / identifier
 
@@ -128,6 +159,18 @@ class Coordinator:
         op, directory = self.state["operations"][identifier], self.directory(identifier)
         if not execute:
             return "would_pick_native_snark"
+        lease = directory / op["lease"] if op["lease"] is not None else None
+        if lease is None or not os.path.lexists(lease / "authority.json"):
+            if lease is not None and os.path.lexists(lease):
+                sentry.require(all(entry.name == "release.json" or re.fullmatch(r"\.authority\.json\.[0-9a-f]{32}\.tmp", entry.name)
+                                   for entry in io.directory(lease).iterdir()),
+                               "pick_initialization_contains_unknown_artifacts")
+            # An existing uncertain pick keeps its reconciliation path. Every new native
+            # request first authenticates the configured journal and immutable enrollment.
+            chain, _ = self.status()
+            s.require(chain["mode"] == "service" and chain["service_active"], "service_activation_required")
+            with self.dispatcher_for(chain):
+                pass
         if op["lease"] is None:
             s.require(len(op["leases"]) < 256, "native_lease_attempt_limit")
             name = "lease-" + str(len(op["leases"]))
@@ -198,16 +241,8 @@ class Coordinator:
         if snapshot_path.exists():
             snapshot = io.private_json(snapshot_path)
         else:
-            journal_root = Path(self.config["dispatcher_dir"])
-            if not (journal_root / "state.json").exists():
-                journal_root = journal_root / str(chain["roster"]["period"])
-            store = Store(io.directory(journal_root))
-            with store.lock("dispatcher.lock"):
-                dispatch = dispatcher.Dispatcher(store, now=int(self.clock()))
+            with self.dispatcher_for(chain) as dispatch:
                 lane = self.keeper["lane"]
-                s.require(dispatch.state["lanes"][lane]["settings"] == self.settings
-                          and dispatch.state["lanes"][lane]["endpoint"] == sentry.endpoint_url(self.config["endpoint"]),
-                          "dispatcher_lane_changed")
                 start, end = payload["from_batch_number"], payload["to_batch_number"]
                 dispatch.network = self.native
                 authorization = sentry.authorization(self.config["native_auth_file"])
@@ -267,7 +302,7 @@ class Coordinator:
                    "manifest": {"payload": snapshot["manifest"], "sequencer_signature": manifest_signature},
                    "subscriptions": snapshot["subscriptions"], "duties": snapshot["duties"]}
         s.require(accepted["period"] == chain["roster"]["period"], "dispatcher_period_does_not_match_opening_roster")
-        k.prepare(self.settings, request, evidence, payload)
+        self.prepare(request, evidence, payload)
         bundle = {"request": request, "audit": {**snapshot["audit"], "sequencer_signature": audit_signature}}
         io.immutable_json(directory / "bundle.json", bundle)
         op["bundle"] = io.digest(bundle)
@@ -325,7 +360,8 @@ class Coordinator:
                 if action in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
                     return False
                 if action == "openPackage":
-                    call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open")
+                    call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open",
+                                          enrollment=self.enrollment_for(bundle["request"]))
                 elif action == "refreshPriorityCheckpoint":
                     call = k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
                 elif action == "publishPrefixWitness":
@@ -446,10 +482,11 @@ class Coordinator:
         if pending is not None:
             return pending
         if not chain["package_open"]:
-            produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open")
+            produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open",
+                                             enrollment=self.enrollment_for(bundle["request"]))
             return self.maintenance(identifier, produce(), produce, execute)
         request = k.rebind_request(self.settings, bundle["request"], chain, roster)
-        prepared = k.prepare(self.settings, request, evidence, payload)
+        prepared = self.prepare(request, evidence, payload)
         priority = r.priority_context(self.rpc, self.settings, {**self.keeper["policy"], "min_turn_seconds": 1},
                      {"sidecar": prepared}, chain["head"], {"blockHash": chain["head"]["hash"], "requireCanonical": True})
         r.check_anchor(self.rpc, self.settings, chain["head"])
@@ -495,7 +532,8 @@ class Coordinator:
                 if result["prepared"] is None:
                     continue
                 expected = s.prepare_package(self.settings, evidence, request["manifest"], request["subscriptions"],
-                              request["duties"], request["proposal"], proof, payload)
+                              request["duties"], request["proposal"], proof, payload,
+                              enrollment=self.enrollment_for(request))
                 if result["prepared"] != expected:
                     continue
                 s.verify_eoa(expected["wrapper_request"], result["wrapper_signature"])

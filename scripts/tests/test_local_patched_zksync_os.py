@@ -87,6 +87,40 @@ def harness_process_is_running(pid: int) -> bool:
         return True
 
 
+def harness_process_identity(pid: int) -> tuple[int, str] | None:
+    try:
+        fields = (
+            Path(f"/proc/{pid}/stat")
+            .read_text(encoding="utf-8")
+            .rsplit(")", 1)[1]
+            .split()
+        )
+        return int(fields[19]), fields[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+def harness_wait_for_process_exit(
+    identities: dict[int, int], timeout: float = 2
+) -> dict[int, str]:
+    # SYSCOIN: EOF can precede a SIGKILLed task's /proc zombie state. Observe
+    # bounded completion without signaling again or mistaking PID reuse for it.
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = {}
+        for pid, start_time in identities.items():
+            observed = harness_process_identity(pid)
+            if observed is not None and observed[0] == start_time:
+                if observed[1] not in {"Z", "X"}:
+                    remaining[pid] = observed[1]
+        if not remaining:
+            return remaining
+        remaining_time = deadline - time.monotonic()
+        if remaining_time <= 0:
+            return remaining
+        time.sleep(min(0.01, remaining_time))
+
+
 def run_bash_harness(
     command: str,
     env: dict[str, str],
@@ -2738,6 +2772,11 @@ class LauncherStaticTests(unittest.TestCase):
                         }}
                         gl_l1_broadcast_preflight() {{ record preflight; }}
                         refresh_l1_admin_wallet_funding() {{ record fund; }}
+                        gl_prepare_zkstack_admin_wallet_args() {{
+                          [ "$*" = "--migration-actors zksys" ] || return 91
+                          record select
+                          GL_ZKSTACK_ADMIN_WALLET_ARGS=()
+                        }}
                         gl_zkstack_pty() {{
                           record finalize
                           printf '%s\\n' DepositDoesNotExist
@@ -2769,9 +2808,9 @@ class LauncherStaticTests(unittest.TestCase):
 
         cases = (
             ("true", 23, "false", 0, "probe repair"),
-            ("false", 0, "false", 0, "probe preflight fund finalize repair"),
-            ("false", 23, "true", 0, "probe preflight fund finalize probe repair"),
-            ("false", 23, "false", 1, "probe preflight fund finalize probe"),
+            ("false", 0, "false", 0, "probe preflight fund select finalize repair"),
+            ("false", 23, "true", 0, "probe preflight fund select finalize probe repair"),
+            ("false", 23, "false", 1, "probe preflight fund select finalize probe"),
         )
         for precheck, finalize_rc, postcheck, expected_rc, expected in cases:
             with self.subTest(
@@ -3721,7 +3760,8 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
         bootstrap = (
             REPO_ROOT / "scripts" / "gateway-launch" / "zksys-l2-bootstrap.sh"
         ).read_text(encoding="utf-8")
-        self.assertEqual(bootstrap.count("gl_non_l1_cast"), 6)
+        # SYSCOIN: the receipt-capturing token prelude is also a non-L1 send.
+        self.assertEqual(bootstrap.count("gl_non_l1_cast"), 7)
         for bare_rpc_cast in ("  cast code --rpc-url", "  cast send \\", "  cast call \\"):
             self.assertNotIn(bare_rpc_cast, bootstrap)
 
@@ -4020,16 +4060,16 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69",
+            "7d71f570f16decd3e2cb40a702a3758265a31644dacc5417435e219a92b1345a",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69"',
-            'EXPECTED_PATCH_PATH_COUNT="27"',
-            'EXPECTED_PATCH_PATHS_SHA256="a6b6a8b3d2205b10e602f5a1463925ff9cd4f077b1b441c92a464a2f1cbdc985"',
-            'EXPECTED_PATCHED_TREE="2e4eed988d0014be40a7fcbdc0d9920229bfb56e"',
+            'EXPECTED_PATCH_SHA256="7d71f570f16decd3e2cb40a702a3758265a31644dacc5417435e219a92b1345a"',
+            'EXPECTED_PATCH_PATH_COUNT="29"',
+            'EXPECTED_PATCH_PATHS_SHA256="4d4061ae19f648b50e49d555aea27b151ad09a9905b9b5aa5c137eb4d720f2b9"',
+            'EXPECTED_PATCHED_TREE="f34f516cba3edb13522ac2a18db5b6161f1091cb"',
             'FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"',
             'FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8\'s V32 finish-migration tuple ABI."',
         ):
@@ -6837,7 +6877,9 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertLess(
             bootstrap.index('ZKSYS_L2_GAS_TANK_ADDRESS="$('), manifest_bind
         )
-        self.assertLess(manifest_bind, bootstrap.index("require_create2_deployer\n"))
+        # SYSCOIN: the token-only prelude has its own bound constructor graph;
+        # the complete graph still precedes the normal full-bootstrap sends.
+        self.assertLess(manifest_bind, bootstrap.rindex("require_create2_deployer\n"))
         self.assertIn('"schema_version": 2', bootstrap)
         self.assertIn('"derived_addresses":', bootstrap)
         self.assertIn('"init_code_hashes":', bootstrap)
@@ -10070,6 +10112,77 @@ exit 99
                     ],
                 )
 
+    def test_process_exit_observation_waits_for_delayed_exit(self) -> None:
+        clock = [10.0]
+
+        def advance(duration: float) -> None:
+            clock[0] += duration
+
+        with patch(
+            f"{__name__}.harness_process_identity",
+            side_effect=[(100, "R"), (100, "R"), (100, "Z")],
+        ) as observe, patch.object(
+            time, "monotonic", side_effect=lambda: clock[0]
+        ), patch.object(time, "sleep", side_effect=advance) as sleep, patch.object(
+            os, "kill"
+        ) as kill, patch.object(os, "killpg") as killpg:
+            self.assertEqual(harness_wait_for_process_exit({123: 100}, 0.1), {})
+            self.assertEqual(observe.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+            self.assertAlmostEqual(clock[0], 10.02)
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_process_exit_observation_keeps_lingering_process_failure(self) -> None:
+        clock = [10.0]
+
+        def advance(duration: float) -> None:
+            clock[0] += duration
+
+        with patch(
+            f"{__name__}.harness_process_identity", return_value=(100, "S")
+        ), patch.object(
+            time, "monotonic", side_effect=lambda: clock[0]
+        ), patch.object(time, "sleep", side_effect=advance) as sleep, patch.object(
+            os, "kill"
+        ) as kill, patch.object(os, "killpg") as killpg:
+            self.assertEqual(
+                harness_wait_for_process_exit({123: 100}, 0.025), {123: "S"}
+            )
+            self.assertEqual(sleep.call_count, 3)
+            self.assertAlmostEqual(clock[0], 10.025)
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_process_exit_observation_does_not_follow_reused_pid(self) -> None:
+        with patch(
+            f"{__name__}.harness_process_identity", return_value=(101, "S")
+        ), patch.object(time, "sleep") as sleep, patch.object(
+            os, "kill"
+        ) as kill, patch.object(os, "killpg") as killpg:
+            self.assertEqual(harness_wait_for_process_exit({123: 100}), {})
+            sleep.assert_not_called()
+            kill.assert_not_called()
+            killpg.assert_not_called()
+
+    def test_process_exit_observation_reports_a_live_linux_child(self) -> None:
+        if not sys.platform.startswith("linux"):
+            self.skipTest("requires Linux process identity observations")
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        try:
+            identity = harness_process_identity(process.pid)
+            self.assertIsNotNone(identity)
+            assert identity is not None
+            remaining = harness_wait_for_process_exit({process.pid: identity[0]}, 0.025)
+            self.assertEqual(set(remaining), {process.pid})
+            self.assertIsNone(process.poll())
+        finally:
+            process.kill()
+            process.wait(timeout=2)
+
     def test_owned_pty_cleans_nested_session_and_preserves_status(self) -> None:
         if not sys.platform.startswith("linux"):
             self.skipTest("requires Linux process/session semantics")
@@ -10210,10 +10323,17 @@ exit $?
                         start_new_session=True,
                     )
                     details: tuple[int, ...] | None = None
+                    identities: dict[int, int] = {}
                     try:
                         if action or mode == "return":
                             wait_file(ready, process)
                             details = tuple(map(int, info.read_text(encoding="utf-8").split(":")))
+                            for pid in (details[0], details[3], details[4]):
+                                observed = harness_process_identity(pid)
+                                if observed is not None:
+                                    identities[pid] = observed[0]
+                            if action:
+                                self.assertEqual(len(identities), 3)
                         if action in {"TERM", "INT"}:
                             os.killpg(process.pid, getattr(signal, f"SIG{action}"))
                         elif action == "KILL_PROXY":
@@ -10231,9 +10351,9 @@ exit $?
                             self.assertEqual(inner_pgid, inner_sid)
                             self.assertEqual(guard, inner_pgid)
                             self.assertNotEqual(command, inner_pgid)
-                            self.assertFalse(
-                                [pid for pid in (command, guard, child) if running(pid)]
-                            )
+                            before = heartbeat.read_bytes()
+                            self.assertFalse(harness_wait_for_process_exit(identities))
+                            self.assertEqual(heartbeat.read_bytes(), before)
                         self.assertFalse(hostile_marker.exists())
                         self.assertEqual(list(root.glob("gateway-pty-return.*")), [])
                         self.assertIsNone(sibling.poll())

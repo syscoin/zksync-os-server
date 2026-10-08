@@ -105,11 +105,12 @@ class DispatcherTests(unittest.TestCase):
         self.network = Network()
         self.store = d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 5,
                                   "https://trusted.example/", self.rpc)
-        self.dispatcher = d.Dispatcher(self.store, self.network, "Basic host-only", now=550)
+        self.dispatcher = d.Dispatcher(self.store, self.network, "Basic host-only", now=550, registry_rpc=self.rpc)
         self.account = self.f["subscription"]["account"]
 
     def reload(self, now=550):
-        self.dispatcher = d.Dispatcher(self.store, self.network, "Basic host-only", now=now)
+        self.dispatcher = d.Dispatcher(self.store, self.network, "Basic host-only", now=now,
+                                       registry_rpc=getattr(self, "registry_rpc", self.rpc))
         return self.dispatcher
 
     def ready(self, account=None, key="operator", expires=590):
@@ -142,6 +143,35 @@ class DispatcherTests(unittest.TestCase):
         proof = copy.deepcopy(self.f["proofs"][number - 1])
         signature = sign(self.dispatcher.proof_request(operation, proof), "operator")
         return proof, signature
+
+    def test_canonical_authority_is_required_before_dispatch_work(self):
+        before = (self.root / "state.json").read_bytes()
+        with self.assertRaisesRegex(s.Error, "registry_rpc_required"):
+            d.Dispatcher(self.store, self.network, "Basic host-only", now=550)
+        with patch.object(self.rpc, "call", return_value="0x1"), self.assertRaisesRegex(s.Error, "wrong_rpc_chain"):
+            d.Dispatcher(self.store, self.network, "Basic host-only", now=550, registry_rpc=self.rpc)
+        with self.assertRaisesRegex(s.Error, "authenticated_enrollment_authority_required"):
+            d.Dispatcher(self.store, self.network, "Basic host-only", now=550, registry_rpc=self.rpc,
+                         enrollment={"authenticated": True})
+        self.assertEqual(self.network.calls, [])
+        self.assertEqual((self.root / "state.json").read_bytes(), before)
+
+    def test_eoa_duty_in_complete_mixed_roster_survives_native_acceptance(self):
+        contract = copy.deepcopy(self.f["subscriptions"][0])
+        contract["subscription"].update(account=a(169), operator=self.account)
+        contract["signature"] = "0x1234"
+        subscriptions = [*self.f["subscriptions"], contract]
+        registry_rpc = Rpc(self.f["settings"], subscriptions)
+        store = d.initialize(Path(self.tmp.name) / "mixed", self.f["settings"], subscriptions, 5,
+                             "https://trusted.example/", registry_rpc)
+        self.dispatcher = d.Dispatcher(store, self.network, "Basic host-only", now=550, registry_rpc=registry_rpc)
+        operation = self.offered()
+        proof, signature = self.signed_proof(operation)
+        self.network.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
+        duty = s.read_json(self.dispatcher.directory(operation) / "duty.json", private=True)
+        self.assertEqual(duty["account"], self.account)
+        self.assertEqual(self.dispatcher.report()["accounts"][self.account]["native_accepted"], 1)
 
     def test_finalized_enrollment_checks_signature_membership_and_live_chain(self):
         self.assertTrue(self.rpc.anchors)
@@ -386,9 +416,9 @@ class DispatcherTests(unittest.TestCase):
         signed = {"subscription": sub, "signature": sign(s.subscription_request(self.f["settings"], sub), "wrapper")}
         subscriptions = [signed, *self.f["subscriptions"]]
         root = Path(self.tmp.name) / "two-accounts"
-        store = d.initialize(root, self.f["settings"], subscriptions, 5, "https://trusted.example/",
-                             Rpc(self.f["settings"], subscriptions))
-        self.dispatcher = d.Dispatcher(store, self.network, "Basic host-only", now=550)
+        registry_rpc = Rpc(self.f["settings"], subscriptions)
+        store = d.initialize(root, self.f["settings"], subscriptions, 5, "https://trusted.example/", registry_rpc)
+        self.dispatcher = d.Dispatcher(store, self.network, "Basic host-only", now=550, registry_rpc=registry_rpc)
         for account in sorted(self.dispatcher.subscriptions, reverse=True):
             self.ready(account, "operator" if account == self.account else "account")
         first = self.pick(1)
@@ -414,7 +444,7 @@ class SharedLaneDispatcherTests(unittest.TestCase):
         self.store = d.initialize(self.root, self.child["settings"], self.child["subscriptions"], 5,
                                   "https://child.example/", self.rpc,
                                   {"settings": self.gateway["settings"], "endpoint": "https://gateway.example/"})
-        self.dispatcher = d.Dispatcher(self.store, self.network, self.auth, now=550)
+        self.dispatcher = d.Dispatcher(self.store, self.network, self.auth, now=550, registry_rpc=self.rpc)
         self.account = self.child["subscription"]["account"]
 
     def ready(self):
@@ -445,7 +475,7 @@ class SharedLaneDispatcherTests(unittest.TestCase):
 
     def test_both_chains_share_slots_but_keep_batch_identity_endpoint_and_credentials(self):
         child = self.complete("child")
-        self.dispatcher = d.Dispatcher(self.store, self.network, self.auth, now=551)
+        self.dispatcher = d.Dispatcher(self.store, self.network, self.auth, now=551, registry_rpc=self.rpc)
         gateway = self.complete("gateway")
         operations = self.dispatcher.state["operations"]
         self.assertEqual(operations[child]["assignment"]["slot"], 0)
@@ -486,7 +516,7 @@ class SharedLaneDispatcherTests(unittest.TestCase):
 
     def test_credentials_and_readiness_must_bind_both_lanes(self):
         with self.assertRaisesRegex(s.Error, "lane_credentials_required"):
-            d.Dispatcher(self.store, self.network, "Basic one-ambiguous-credential", now=550)
+            d.Dispatcher(self.store, self.network, "Basic one-ambiguous-credential", now=550, registry_rpc=self.rpc)
         request = self.dispatcher.request(self.account, 590)
         signature = sign(request, "operator")
         request["work_scopes"][1]["chain_address"] = a(199)
