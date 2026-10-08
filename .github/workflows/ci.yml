@@ -15,6 +15,9 @@ concurrency:
 # Default environment variables
 env:
   CARGO_TERM_COLOR: always
+  # SYSCOIN: Use Git's pack handling for the large, attested local OS/Airbender
+  # repositories. This changes only fetch transport, not locked source identities.
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
   RUST_BACKTRACE: 1
   TEST_RESULTS_XML: 'test-results.xml'
   PROVER_GPU_TESTS: 'prover-gpu-tests'
