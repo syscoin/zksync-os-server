@@ -172,12 +172,32 @@ impl FilterRegistry {
             .filters
             .get(&id)
             .map(|entry| Arc::clone(entry.value()))
-            .ok_or(EthFilterError::FilterNotFound(id))?;
-        let mut entry = entry.lock().expect("filter lock poisoned");
+            .ok_or_else(|| EthFilterError::FilterNotFound(id.clone()))?;
+        self.poll_entry(id, entry, read_changes)
+    }
 
-        entry.last_poll_timestamp = Instant::now();
-        let (changes, next_block) = read_changes(entry.block, &entry.kind)?;
-        entry.block = next_block;
+    fn poll_entry<T>(
+        &self,
+        id: FilterId,
+        entry: Arc<Mutex<ActiveFilter>>,
+        read_changes: impl FnOnce(u64, &FilterKind) -> Result<(T, u64), EthFilterError>,
+    ) -> Result<T, EthFilterError> {
+        let mut active = entry.lock().expect("filter lock poisoned");
+        // SYSCOIN: Expiry may win after lookup but before this lock. Revalidate
+        // identity before activation; never renew or read a detached entry.
+        // Drop the short map guard before scanning. Cleanup uses try_lock, so
+        // this entry-to-map lock order cannot wait on a cleanup holding both.
+        let registered = self
+            .filters
+            .get(&id)
+            .is_some_and(|registered| Arc::ptr_eq(registered.value(), &entry));
+        if !registered {
+            return Err(EthFilterError::FilterNotFound(id));
+        }
+
+        active.last_poll_timestamp = Instant::now();
+        let (changes, next_block) = read_changes(active.block, &active.kind)?;
+        active.block = next_block;
         Ok(changes)
     }
 
@@ -360,6 +380,55 @@ mod tests {
             .unwrap();
         registry.clear_stale(Instant::now() + Duration::from_secs(31));
         assert!(registry.uninstall(&id));
+    }
+
+    #[test]
+    fn stale_removal_between_lookup_and_activation_does_not_return_changes() {
+        let registry = registry(1, 4);
+        let id = registry.install_with(|| FilterKind::Block, 8).unwrap();
+        let looked_up = Arc::clone(registry.filters.get(&id).unwrap().value());
+        let old_lease = looked_up.lock().unwrap().last_poll_timestamp;
+        // Reproduce the scheduling gap after lookup releases its map guard.
+        registry.clear_stale(Instant::now() + Duration::from_secs(61));
+        assert!(!registry.filters.contains_key(&id));
+        assert_eq!(registry.retained.load(Ordering::Acquire), 1);
+        let mut read_called = false;
+        let result = registry.poll_entry(id, Arc::clone(&looked_up), |start, _| {
+            read_called = true;
+            Ok(((), start + 1))
+        });
+        assert!(matches!(result, Err(EthFilterError::FilterNotFound(_))));
+        assert!(!read_called);
+        assert_eq!(looked_up.lock().unwrap().block, 8);
+        assert_eq!(looked_up.lock().unwrap().last_poll_timestamp, old_lease);
+        drop(looked_up);
+        assert_eq!(registry.retained.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn replacing_a_looked_up_entry_cannot_activate_the_old_entry() {
+        let registry = registry(2, 4);
+        let id = registry.install_with(|| FilterKind::Block, 8).unwrap();
+        let looked_up = Arc::clone(registry.filters.get(&id).unwrap().value());
+        registry.filters.insert(
+            id.clone(),
+            Arc::new(Mutex::new(ActiveFilter {
+                block: 99,
+                last_poll_timestamp: Instant::now(),
+                kind: FilterKind::Block,
+                _reservation: registry.reserve().unwrap(),
+            })),
+        );
+        let result = registry.poll_entry::<()>(id.clone(), Arc::clone(&looked_up), |_, _| {
+            panic!("a detached entry must not scan")
+        });
+        assert!(matches!(result, Err(EthFilterError::FilterNotFound(_))));
+        assert_eq!(looked_up.lock().unwrap().block, 8);
+        assert_eq!(registry.filters.get(&id).unwrap().lock().unwrap().block, 99);
+        drop(looked_up);
+        assert_eq!(registry.retained.load(Ordering::Acquire), 1);
+        assert!(registry.uninstall(&id));
+        assert_eq!(registry.retained.load(Ordering::Acquire), 0);
     }
 
     #[test]
