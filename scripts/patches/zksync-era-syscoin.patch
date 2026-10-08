@@ -1,3 +1,15 @@
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs b/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/manage_deposits.rs
+@@ -51,0 +52,2 @@ pub async fn run(
++    // SYSCOIN: Preserve protected external governor selectors for both actions.
++    // The address-only wallet must not fall back to a missing YAML private key.
+@@ -56 +58 @@ pub async fn run(
+-                &Default::default(),
++                &_args.forge_args,
+@@ -68 +70 @@ pub async fn run(
+-                &Default::default(),
++                &_args.forge_args,
 diff --git a/core/lib/basic_types/src/network.rs b/core/lib/basic_types/src/network.rs
 index 3403ec404..d55f8e1d5 100644
 --- a/core/lib/basic_types/src/network.rs
@@ -53,7 +65,7 @@ index 7af8fab92..c4fd1b456 100644
 +# SYSCOIN: Keep generated signer material out of Forge argv and command logs.
 +tempfile.workspace = true
 diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
-index dbc8fd84c..5b8715687 100644
+index dbc8fd8..85b6a8d 100644
 --- a/zkstack_cli/crates/common/src/forge.rs
 +++ b/zkstack_cli/crates/common/src/forge.rs
 @@ -0,0 +1,2 @@
@@ -64,31 +76,35 @@ index dbc8fd84c..5b8715687 100644
 +    io::Write,
 @@ -3 +6,0 @@ use std::{
 -    str::FromStr,
-@@ -5,0 +9,3 @@ use std::{
+@@ -5,0 +9,4 @@ use std::{
 +#[cfg(unix)]
 +use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 +
-@@ -8 +14,4 @@ use ethers::{
++use anyhow::Context as _;
+@@ -8 +15,4 @@ use ethers::{
 -    core::types::Bytes,
 +    core::{
 +        rand::{thread_rng, RngCore},
 +        types::Bytes,
 +    },
-@@ -12 +21 @@ use ethers::{
+@@ -12 +22 @@ use ethers::{
 -    utils::{hex, hex::ToHexExt},
 +    utils::hex,
-@@ -15,0 +25 @@ use strum::Display;
+@@ -15,0 +26 @@ use strum::Display;
 +use tempfile::TempDir;
-@@ -22,0 +33,3 @@ use crate::{
+@@ -22,0 +34,3 @@ use crate::{
 +// SYSCOIN: Syscoin's 2.5-minute target can exceed Forge's 120-second default.
 +const SYSCOIN_BROADCAST_TIMEOUT_SECONDS: u64 = 1_800;
 +
-@@ -44,0 +58,4 @@ impl Forge {
+@@ -44,0 +59,51 @@ impl Forge {
 +            private_key: None,
 +            // SYSCOIN: Existing deployment behavior is unchanged unless the
 +            // explicit core-only recovery entry point opts in.
 +            core_journal_only_resume: false,
-@@ -48,0 +66,58 @@ impl Forge {
++        }
++    }
++}
++
 +// SYSCOIN: Generated zkstack signers must never enter Forge argv or command
 +// logs. Give Forge a short-lived encrypted keystore through child-only env.
 +struct EphemeralForgeSigner {
@@ -132,7 +148,7 @@ index dbc8fd84c..5b8715687 100644
 +        {
 +            fs::set_permissions(&keystore_path, fs::Permissions::from_mode(0o600))?;
 +            fs::set_permissions(&password_path, fs::Permissions::from_mode(0o600))?;
-+        }
+@@ -45,0 +111,11 @@ impl Forge {
 +
 +        Ok(Self {
 +            _directory: directory,
@@ -144,13 +160,10 @@ index dbc8fd84c..5b8715687 100644
 +    fn apply<'a>(&self, cmd: Cmd<'a>) -> Cmd<'a> {
 +        cmd.env("ETH_KEYSTORE", &self.keystore_path)
 +            .env("ETH_PASSWORD", &self.password_path)
-+    }
-+}
-+
-@@ -53,0 +129,2 @@ pub struct ForgeScript {
+@@ -53,0 +130,2 @@ pub struct ForgeScript {
 +    private_key: Option<H256>,
 +    core_journal_only_resume: bool,
-@@ -56,0 +134,35 @@ impl ForgeScript {
+@@ -56,0 +135,35 @@ impl ForgeScript {
 +    // SYSCOIN: Recovery of an already-confirmed core deployment may consume
 +    // its journal, never fall back to simulation or a fresh deployment.
 +    pub fn with_core_journal_only_resume(mut self) -> Self {
@@ -186,7 +199,7 @@ index dbc8fd84c..5b8715687 100644
 +        }
 +    }
 +
-@@ -58,0 +171,41 @@ impl ForgeScript {
+@@ -58,0 +172,41 @@ impl ForgeScript {
 +        // SYSCOIN: Keep this stronger execution policy private to the exact
 +        // core script; every other existing Forge path retains its behavior.
 +        if self.core_journal_only_resume
@@ -228,14 +241,14 @@ index dbc8fd84c..5b8715687 100644
 +        // printing, or spawning a Forge command.
 +        self.args.reject_raw_secret_args()?;
 +        self.bind_private_key_sender();
-@@ -67,0 +221,6 @@ impl ForgeScript {
+@@ -67,0 +222,6 @@ impl ForgeScript {
 +        // SYSCOIN: one ephemeral signer spans the resume attempt and fallback run.
 +        let ephemeral_signer = self
 +            .private_key
 +            .as_ref()
 +            .map(EphemeralForgeSigner::new)
 +            .transpose()?;
-@@ -71,4 +230,16 @@ impl ForgeScript {
+@@ -71,4 +231,16 @@ impl ForgeScript {
 -            let res = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
 -                .with_piped_std_err()
 -                .run();
@@ -256,31 +269,31 @@ index dbc8fd84c..5b8715687 100644
 +            }
 +            let res = cmd.run();
 +            if self.core_journal_only_resume || !res.resume_not_successful_because_has_not_began() {
-@@ -93,0 +265,5 @@ impl ForgeScript {
+@@ -93,0 +266,5 @@ impl ForgeScript {
 +        // SYSCOIN: preserve the same private signer when resume falls back.
 +        if let Some(signer) = &ephemeral_signer {
 +            cmd = signer.apply(cmd);
 +        }
 +
-@@ -107 +283,2 @@ impl ForgeScript {
+@@ -107 +284,2 @@ impl ForgeScript {
 -        self.args.wallet_args_passed()
 +        // SYSCOIN: an in-memory signer satisfies the wallet requirement.
 +        self.private_key.is_some() || self.args.wallet_args_passed()
-@@ -130,0 +308,6 @@ impl ForgeScript {
+@@ -130,0 +309,6 @@ impl ForgeScript {
 +        // SYSCOIN: deployment journals are safety evidence; serialize every
 +        // broadcast so a predecessor must confirm successfully before its successor.
 +        self.args.add_arg(ForgeScriptArg::Slow);
 +        self.args.add_arg(ForgeScriptArg::Timeout {
 +            timeout: SYSCOIN_BROADCAST_TIMEOUT_SECONDS,
 +        });
-@@ -172,3 +355,3 @@ impl ForgeScript {
+@@ -172,3 +356,3 @@ impl ForgeScript {
 -        self.args.add_arg(ForgeScriptArg::PrivateKey {
 -            private_key: private_key.encode_hex(),
 -        });
 +        // SYSCOIN: retain signer identity in memory and materialize it only as
 +        // a private ephemeral keystore when Forge is spawned.
 +        self.private_key = Some(private_key);
-@@ -180,9 +363,3 @@ impl ForgeScript {
+@@ -180,9 +364,3 @@ impl ForgeScript {
 -        self.args.args.iter().find_map(|a| {
 -            if let ForgeScriptArg::PrivateKey { private_key } = a {
 -                let key = H256::from_str(private_key).unwrap();
@@ -293,20 +306,19 @@ index dbc8fd84c..5b8715687 100644
 +        self.private_key
 +            .as_ref()
 +            .map(|key| LocalWallet::from_bytes(key.as_bytes()).unwrap())
-@@ -231 +408,2 @@ const PROHIBITED_ARGS: [&str; 10] = [
+@@ -231 +409,2 @@ const PROHIBITED_ARGS: [&str; 10] = [
 -const WALLET_ARGS: [&str; 18] = [
 +// SYSCOIN: recognize every supported noninteractive Forge wallet selector.
 +const WALLET_ARGS: [&str; 22] = [
-@@ -237,0 +416 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -237,0 +417 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--mnemonic-passphrases",
-@@ -241,0 +421 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -241,0 +422 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--keystores",
-@@ -242,0 +423 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -242,0 +424 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--accounts",
-@@ -249,0 +431,12 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -249,0 +432 @@ const WALLET_ARGS: [&str; 18] = [
 +    "--gcp",
-+];
-+
+@@ -251,0 +435,20 @@ const WALLET_ARGS: [&str; 18] = [
 +// SYSCOIN: These Forge selectors carry raw credentials. Passing them through
 +// additional_args would expose secrets in process argv and command/error logs.
 +const RAW_SECRET_ARGS: [&str; 6] = [
@@ -316,7 +328,8 @@ index dbc8fd84c..5b8715687 100644
 +    "--mnemonic-passphrases",
 +    "--mnenomic-passphrases",
 +    "--password",
-@@ -251,0 +445,9 @@ const WALLET_ARGS: [&str; 18] = [
++];
++
 +// SYSCOIN: Match exact, equals, or legacy single-token whitespace forms while
 +// avoiding prefix matches such as --password-file.
 +fn argument_uses_flag(argument: &str, flag: &str) -> bool {
@@ -326,22 +339,22 @@ index dbc8fd84c..5b8715687 100644
 +        })
 +}
 +
-@@ -262,4 +464 @@ pub enum ForgeScriptArg {
+@@ -262,4 +465 @@ pub enum ForgeScriptArg {
 -    #[strum(to_string = "private-key={private_key}")]
 -    PrivateKey {
 -        private_key: String,
 -    },
 +    // SYSCOIN: raw private keys live only in memory, never in rendered Forge arguments.
-@@ -274,0 +474,5 @@ pub enum ForgeScriptArg {
+@@ -274,0 +475,5 @@ pub enum ForgeScriptArg {
 +    // SYSCOIN: typed timeout for serialized deployment broadcasts.
 +    #[strum(to_string = "timeout={timeout}")]
 +    Timeout {
 +        timeout: u64,
 +    },
-@@ -329 +533 @@ pub struct ForgeScriptArgs {
+@@ -329 +534 @@ pub struct ForgeScriptArgs {
 -    /// e.g.: `zkstack init -a --private-key=<PRIVATE_KEY>`
 +    /// e.g.: `zkstack init -a --keystore=<PATH> --password-file=<PATH>`
-@@ -335,0 +540,17 @@ impl ForgeScriptArgs {
+@@ -335,0 +541,17 @@ impl ForgeScriptArgs {
 +    // SYSCOIN: Fail closed without ever formatting the rejected value. The
 +    // returned error names only the canonical flag, so the secret cannot leak.
 +    fn reject_raw_secret_args(&self) -> anyhow::Result<()> {
@@ -359,7 +372,7 @@ index dbc8fd84c..5b8715687 100644
 +        Ok(())
 +    }
 +
-@@ -434,3 +655,6 @@ impl ForgeScriptArgs {
+@@ -434,3 +656,74 @@ impl ForgeScriptArgs {
 -        self.additional_args
 -            .iter()
 -            .any(|arg| WALLET_ARGS.contains(&arg.as_ref()))
@@ -369,7 +382,75 @@ index dbc8fd84c..5b8715687 100644
 +                .iter()
 +                .any(|flag| argument_uses_flag(argument, flag))
 +        })
-@@ -484,0 +709,231 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
++    }
++
++    /// SYSCOIN: Migration's direct transaction sender is not a Forge script.
++    /// Do not forward build(), arbitrary execution overrides, or raw credentials.
++    pub fn protected_account_args(&self) -> anyhow::Result<Option<(Vec<String>, Address)>> {
++        self.reject_raw_secret_args()?;
++        if !self.wallet_args_passed() {
++            return Ok(None);
++        }
++        let mut values = std::collections::BTreeMap::new();
++        let mut index = 0;
++        while index < self.additional_args.len() {
++            let argument = &self.additional_args[index];
++            let (flag, attached) = argument
++                .split_once('=')
++                .map_or((argument.as_str(), None), |(flag, value)| {
++                    (flag, Some(value))
++                });
++            if !matches!(flag, "--account" | "--password-file" | "--sender") {
++                anyhow::bail!("protected migration sender accepts only account, password-file and sender arguments");
++            }
++            let value = if let Some(value) = attached {
++                value.to_owned()
++            } else {
++                index += 1;
++                self.additional_args
++                    .get(index)
++                    .filter(|value| !value.starts_with('-'))
++                    .context("missing protected migration wallet argument")?
++                    .clone()
++            };
++            if value.is_empty() || value.contains('\0') || values.insert(flag, value).is_some() {
++                anyhow::bail!("ambiguous protected migration wallet arguments");
++            }
++            index += 1;
++        }
++        let account = values
++            .get("--account")
++            .context("migration requires a named protected account")?;
++        if account == "."
++            || account == ".."
++            || account.starts_with('-')
++            || account.contains('/')
++            || account.contains('\\')
++        {
++            anyhow::bail!("migration account must be a single account name");
++        }
++        let password = values
++            .get("--password-file")
++            .context("migration requires a protected password file")?;
++        if !Path::new(password).is_absolute() {
++            anyhow::bail!("migration password file must be absolute");
++        }
++        let sender = values
++            .get("--sender")
++            .context("migration requires the authenticated public sender")?;
++        let sender = sender
++            .parse::<Address>()
++            .map_err(|_| anyhow::anyhow!("invalid migration public sender"))?;
++        Ok(Some((
++            vec![
++                "--account".into(),
++                account.clone(),
++                "--password-file".into(),
++                password.clone(),
++            ],
++            sender,
++        )))
+@@ -484,0 +778,231 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
 +
 +// SYSCOIN: Exercise the complete raw-credential boundary without invoking
 +// Forge, and ensure diagnostics never echo the supplied secret value.
@@ -1255,14 +1336,34 @@ index 0ffe0e96f..eff8fdab1 100644
 +    }
 +}
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-index 1a573180c..b0e0b9ce8 100644
+index 1a57318..8c342f1 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 @@ -9 +9,2 @@ use zkstack_cli_config::{ChainConfig, GatewayChainConfigPatch, ZkStackConfig, Zk
 -use zkstack_cli_types::L1BatchCommitmentMode;
 +// SYSCOIN: scope the lower validator float to Syscoin settlement networks.
 +use zkstack_cli_types::{L1BatchCommitmentMode, L1Network};
-@@ -170,0 +172,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
+@@ -22 +23 @@ use crate::{
+-        gateway::migrate_to_gateway_calldata::MigrateToGatewayContext, utils::send_tx,
++        gateway::migrate_to_gateway_calldata::MigrateToGatewayContext, utils::send_migration_tx,
+@@ -46,0 +48,2 @@ pub async fn run(args: MigrateToGatewayArgs, shell: &Shell) -> anyhow::Result<()
++    // SYSCOIN: Reject unsupported direct-sender selectors before calldata Forge.
++    args.forge_args.protected_account_args()?;
+@@ -99 +102,3 @@ pub async fn run(args: MigrateToGatewayArgs, shell: &Shell) -> anyhow::Result<()
+-    let receipt = send_tx(
++    // SYSCOIN: A protected account may own this governor without a YAML key.
++    let governor = chain_config.get_wallets_config()?.governor;
++    let receipt = send_migration_tx(
+@@ -104,5 +109,3 @@ pub async fn run(args: MigrateToGatewayArgs, shell: &Shell) -> anyhow::Result<()
+-        chain_config
+-            .get_wallets_config()?
+-            .governor
+-            .private_key_h256()
+-            .unwrap(),
++        &governor,
++        &args.forge_args,
++        chain_config.l1_network.chain_id(),
+@@ -170,0 +174,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
 +    // SYSCOIN: require a 1 SYS validator float while preserving upstream
 +    // minimums for Localhost and Ethereum test networks.
 +    let min_validator_balance = match chain_config.l1_network {
@@ -1270,7 +1371,7 @@ index 1a573180c..b0e0b9ce8 100644
 +        _ => U256::from(10).pow(19.into()),
 +    };
 +
-@@ -185 +193,2 @@ pub(crate) async fn get_migrate_to_gateway_context(
+@@ -185 +195,2 @@ pub(crate) async fn get_migrate_to_gateway_context(
 -        min_validator_balance: U256::from(10).pow(19.into()),
 +        // SYSCOIN: apply the network-scoped validator float selected above.
 +        min_validator_balance,
@@ -2808,3 +2909,212 @@ index b7b4dcdb2..2b9ad7a6f 100644
 -                tx_status as u8,
 -            ),
 +            ),),
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs b/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs
+index 4910f6e..accde6e 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/utils.rs
+@@ -6 +6 @@ use ethers::{
+-    providers::{Http, Middleware, Provider},
++    providers::{Http, Middleware, PendingTransaction, Provider},
+@@ -8 +8 @@ use ethers::{
+-    types::{TransactionReceipt, TransactionRequest},
++    types::{Block, Transaction, TransactionReceipt, TransactionRequest},
+@@ -11 +11 @@ use ethers::{
+-use zkstack_cli_common::{logger, spinner::Spinner};
++use zkstack_cli_common::{forge::ForgeScriptArgs, logger, spinner::Spinner, wallets::Wallet};
+@@ -109,0 +110,195 @@ pub(crate) async fn send_tx(
++
++// SYSCOIN: Preserve generated-wallet behavior while allowing a null-key governor
++// to use the already authenticated protected account. Never retry an uncertain send.
++#[allow(clippy::too_many_arguments)]
++pub(crate) async fn send_migration_tx(
++    to: Address,
++    data: Vec<u8>,
++    value: U256,
++    l1_rpc_url: String,
++    wallet: &Wallet,
++    forge_args: &ForgeScriptArgs,
++    expected_chain_id: u64,
++    description: &str,
++) -> anyhow::Result<TransactionReceipt> {
++    let Some((account_args, sender)) = forge_args.protected_account_args()? else {
++        return send_tx(
++            to,
++            data,
++            value,
++            l1_rpc_url,
++            wallet
++                .private_key_h256()
++                .context("migration governor key or protected account is required")?,
++            description,
++        )
++        .await;
++    };
++    if sender != wallet.address {
++        anyhow::bail!("migration protected sender differs from governor");
++    }
++    let public = Command::new("cast")
++        .args(["wallet", "address"])
++        .args(&account_args)
++        .output()
++        .context("protected migration account lookup failed")?;
++    if !public.status.success() || public.stdout.len() > 128 {
++        anyhow::bail!("protected migration account lookup failed");
++    }
++    let derived = std::str::from_utf8(&public.stdout)
++        .ok()
++        .map(str::trim)
++        .filter(|value| value.starts_with("0x") && value.len() == 42)
++        .and_then(|value| value.parse::<Address>().ok());
++    if derived != Some(sender) {
++        anyhow::bail!("protected migration account address differs from governor");
++    }
++    let provider = Provider::<Http>::try_from(&l1_rpc_url)?;
++    if provider.get_chainid().await? != U256::from(expected_chain_id) {
++        anyhow::bail!("migration settlement chain identity differs");
++    }
++    let nonce = provider.get_transaction_count(sender, None).await?;
++    let pending = provider
++        .get_transaction_count(sender, Some(ethers::types::BlockNumber::Pending.into()))
++        .await?;
++    if nonce != pending {
++        anyhow::bail!("migration governor has pending transactions");
++    }
++    if provider.get_transaction_count(sender, None).await? != nonce
++        || provider
++            .get_transaction_count(sender, Some(ethers::types::BlockNumber::Pending.into()))
++            .await?
++            != nonce
++        || provider.get_chainid().await? != U256::from(expected_chain_id)
++    {
++        anyhow::bail!("migration spend state changed before submission");
++    }
++    let mut command = Command::new("cast");
++    command.args([
++        "send",
++        "--async",
++        "--rpc-url",
++        &l1_rpc_url,
++        "--from",
++        &format!("{sender:#x}"),
++        "--chain",
++        &expected_chain_id.to_string(),
++        "--nonce",
++        &nonce.to_string(),
++        "--value",
++        &value.to_string(),
++        "--data",
++        &format!("0x{}", hex::encode(&data)),
++    ]);
++    // SYSCOIN: Retain Syscoin's native legacy fee policy without forcing it on Ethereum.
++    if matches!(expected_chain_id, 57 | 5700) {
++        command.arg("--legacy");
++    }
++    command.arg(format!("{to:#x}")).args(&account_args);
++    let result = command
++        .output()
++        .context("protected migration send outcome uncertain; do not retry")?;
++    if !result.status.success() || result.stdout.len() > 128 {
++        anyhow::bail!("protected migration send outcome uncertain; do not retry");
++    }
++    let hash = std::str::from_utf8(&result.stdout)
++        .ok()
++        .map(str::trim)
++        .filter(|value| value.starts_with("0x") && value.len() == 66)
++        .and_then(|value| value.parse::<H256>().ok())
++        .context("protected migration send hash unavailable; do not retry")?;
++    logger::info(format!("Transaction sent! Hash: {hash:#x}"));
++    let receipt = tokio::time::timeout(
++        std::time::Duration::from_secs(1800),
++        PendingTransaction::new(hash, &provider),
++    )
++    .await
++    .context("migration receipt wait expired; audit original hash without retry")??
++    .context("migration receipt not found; audit original hash without retry")?;
++    let tx = provider
++        .get_transaction(hash)
++        .await?
++        .context("migration transaction unavailable")?;
++    let number = receipt
++        .block_number
++        .context("migration receipt is not mined")?;
++    let block = provider
++        .get_block(number)
++        .await?
++        .context("migration canonical block unavailable")?;
++    validate_migration_receipt(
++        &receipt,
++        &tx,
++        &block,
++        to,
++        &data,
++        value,
++        sender,
++        nonce,
++        expected_chain_id,
++        hash,
++    )?;
++    if provider.get_chainid().await? != U256::from(expected_chain_id) {
++        anyhow::bail!("migration settlement chain changed; do not retry");
++    }
++    if provider
++        .get_block(number)
++        .await?
++        .and_then(|block| block.hash)
++        != receipt.block_hash
++    {
++        anyhow::bail!("migration receipt block changed; do not retry");
++    }
++    logger::info(format!("Transaction {hash:#x} completed!"));
++    Ok(receipt)
++}
++
++// SYSCOIN: Cast success/hash alone is not a migration receipt. Keep the exact
++// signed intention bound to status, full transaction and indexed canonical block.
++#[allow(clippy::too_many_arguments)]
++fn validate_migration_receipt(
++    receipt: &TransactionReceipt,
++    tx: &Transaction,
++    block: &Block<H256>,
++    to: Address,
++    data: &[u8],
++    value: U256,
++    sender: Address,
++    nonce: U256,
++    expected_chain_id: u64,
++    hash: H256,
++) -> anyhow::Result<()> {
++    let index = receipt.transaction_index.as_u64() as usize;
++    if receipt.status != Some(ethers::types::U64::from(1))
++        || receipt.transaction_hash != hash
++        || receipt.from != sender
++        || receipt.to != Some(to)
++        || tx.hash != hash
++        || tx.from != sender
++        || tx.to != Some(to)
++        || tx.nonce != nonce
++        || tx.value != value
++        || tx.input.as_ref() != data
++        || tx.chain_id != Some(U256::from(expected_chain_id))
++        || tx.block_hash != receipt.block_hash
++        || tx.block_number != receipt.block_number
++        || tx.transaction_index != Some(receipt.transaction_index)
++        || receipt.block_number.is_none()
++        || block.number != receipt.block_number
++        || block.hash.is_none()
++        || block.hash != receipt.block_hash
++        || index >= block.transactions.len()
++        || block.transactions[index] != hash
++        || block
++            .transactions
++            .iter()
++            .filter(|value| **value == hash)
++            .count()
++            != 1
++    {
++        anyhow::bail!(
++            "migration receipt does not prove the intended canonical transaction; do not retry"
++        );
++    }
++    Ok(())
++}

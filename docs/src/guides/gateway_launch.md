@@ -162,6 +162,31 @@ the intended edge governor in its own wallet file. Operator, blob/prove/execute
 operator, fee-account and token-multiplier-setter roles retain generated keys.
 Missing, empty or malformed supplied keys never fall back to an external account.
 
+<!-- SYSCOIN: CLI source adoption and deposit management retain protected custody. -->
+Pause and unpause deposit commands use the same authenticated governor account
+selector as initialization. Both the launcher and the pinned Syscoin zkstack
+patch must forward that selector; an address-only governor must never fall back
+to a null YAML private key. When adopting a CLI patch update, attest the complete
+new postimage and rebuild the normal zkstack release/stamp before resuming an
+existing launch. The upstream CLI revision and deployment-input fingerprint do
+not change for this selector fix, but both the CLI build fingerprint and native
+prebuilt-input digest include the patch. Rebuild the canonical native binary and
+its normal stamp, then run the config-bound help check before publication; never
+manually restamp an old binary. Preserve the existing checkpoints and mined
+receipts; do not edit a fingerprint or replay a completed transaction to make an
+old binary pass.
+
+<!-- SYSCOIN: Migration consumes a wider actor set than deposit management. -->
+External migration signing currently supports protected named accounts only.
+Before pause, migrate and finalize, the launcher authenticates the chain and
+ecosystem governor/deployer roles together, including any inline-key roles.
+All four must match the one globally forwarded external selector; other external
+backends and distinct role addresses are refused before the first pause.
+Generated-only roles keep their individual keys and existing behavior. The direct
+migration send uses one explicit nonce and validates the intended transaction's
+successful canonical receipt before the unchanged priority-operation wait; an
+uncertain send must be audited by its original hash, never automatically retried.
+
 ## Canonical command
 
 Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `L1_RPC_URL`):

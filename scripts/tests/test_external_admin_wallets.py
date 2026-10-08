@@ -221,6 +221,138 @@ else: raise SystemExit(92)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), [])
 
+    def set_ecosystem_administrators(self, deployer=None, governor=None):
+        path = self.gateway / "configs/wallets.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump({"deployer": deployer or self.external(),
+                                        "governor": governor or self.external()}))
+        path.chmod(0o600)
+
+    def migration_preflight(self, marker, **overrides):
+        source = (ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh").read_text()
+        guard = next(line.strip() for line in source.splitlines()
+                     if line.strip().startswith("gl_prepare_zkstack_admin_wallet_args --migration-actors "))
+        return self.run_shell('EDGE_CHAIN_NAME=gateway; ' + guard + '; touch "$BROADCAST_MARKER"',
+                              BROADCAST_MARKER=str(marker), **overrides)
+
+    def test_migration_four_matching_null_roles_select_one_account_before_pause(self):
+        # This is an explicit synthetic role fixture, not the actual 81293 receipt.
+        self.set_ecosystem_administrators()
+        marker = self.root / "pause"
+        result = self.migration_preflight(marker)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+        calls = [json.loads(line) for line in (self.root / "cast-args.jsonl").read_text().splitlines()]
+        self.assertEqual(len(calls), 4)
+        selected = self.run_shell('gl_authenticate_chain_wallet_roles --print-forge-args --migration-actors gateway')
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertEqual(json.loads(selected.stdout)[-4:],
+                         ["--additional-args", "--sender", "--additional-args", ADMIN])
+
+    def test_migration_every_distinct_or_missing_actor_refuses_before_pause(self):
+        for area, role in (("chain", "governor"), ("chain", "deployer"),
+                           ("ecosystem", "governor"), ("ecosystem", "deployer")):
+            with self.subTest(area=area, role=role):
+                chain = {"deployer": self.external(), "governor": self.external()}
+                ecosystem = {"deployer": self.external(), "governor": self.external()}
+                (chain if area == "chain" else ecosystem)[role] = self.generated()
+                self.write_wallet(chain)
+                self.set_ecosystem_administrators(**ecosystem)
+                marker = self.root / "pause"
+                result = self.migration_preflight(marker)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must match every requested", result.stderr)
+                self.assertFalse(marker.exists())
+        self.write_wallet({"governor": self.external()})
+        self.set_ecosystem_administrators()
+        result = self.migration_preflight(self.root / "pause")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing deployer", result.stderr)
+
+    def test_migration_unsupported_external_backend_refuses_before_account_lookup(self):
+        self.set_ecosystem_administrators()
+        for backend in ("private-key", "keystore", "ledger", "trezor", "aws", "gcp"):
+            with self.subTest(backend=backend):
+                result = self.migration_preflight(self.root / "pause",
+                                                  EDGE_GATEWAY_GOVERNOR_SIGNER=backend)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "pause").exists())
+                self.assertFalse((self.root / "cast-args.jsonl").exists())
+
+    def test_migration_generated_roles_keep_empty_selector(self):
+        self.write_wallet({"deployer": self.generated(), "governor": self.generated()})
+        self.set_ecosystem_administrators(self.generated(), self.generated())
+        result = self.run_shell('gl_prepare_zkstack_admin_wallet_args --migration-actors gateway; '
+                                'printf "%s\\n" "${#GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "0")
+        self.assertFalse((self.root / "cast-args.jsonl").exists())
+
+    def test_migration_distinct_generated_roles_keep_individual_keys(self):
+        # Synthetic generated roles must not acquire a shared account selector.
+        second = {"address": "0x" + "66" * 20, "private_key": "0x" + "00" * 31 + "02"}
+        cast = self.bin / "cast"
+        cast.write_text(cast.read_text().replace(
+            "print('0x'+'00'*12+os.environ['GENERATED_ADDRESS'][2:])",
+            "print('0x'+'00'*12+('66'*20 if args[1].startswith('0xc6047f') else os.environ['GENERATED_ADDRESS'][2:]))"))
+        self.write_wallet({"deployer": self.generated(), "governor": second})
+        self.set_ecosystem_administrators(second, self.generated())
+        result = self.run_shell('gl_authenticate_chain_wallet_roles --print-forge-args --migration-actors gateway')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [])
+        self.assertFalse((self.root / "cast-args.jsonl").exists())
+
+    def test_migration_fixed_group_cannot_omit_or_choose_roles(self):
+        self.set_ecosystem_administrators()
+        for args in ("--migration-actors gateway governor", "--migration-actors --conversion-actors gateway",
+                     "--migration-actors --ecosystem-only governor"):
+            with self.subTest(args=args):
+                result = self.run_shell('gl_prepare_zkstack_admin_wallet_args ' + args)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_migration_and_finalize_actual_call_sites_forward_safe_selector(self):
+        self.set_ecosystem_administrators()
+        source = (ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh").read_text()
+        guard = next(line.strip() for line in source.splitlines()
+                     if line.strip().startswith("gl_prepare_zkstack_admin_wallet_args --migration-actors "))
+        self.assertLess(source.index(guard), source.index('configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}"'))
+        self.assertLess(source.index(guard), source.index("zkstack chain pause-deposits "))
+        for command, wrapper, output in (("migrate-to-gateway", "gl_zkstack_private_pty", "migrate_output"),
+                                         ("finalize-chain-migration-to-gateway", "gl_zkstack_pty", "finalize_output")):
+            with self.subTest(command=command):
+                start = source.index(wrapper + " zkstack chain gateway " + command + " ")
+                invocation = source[start:source.index('2>&1)', start)]
+                marker = self.root / "migration-args.json"
+                if marker.exists(): marker.unlink()
+                record = '''
+EDGE_CHAIN_NAME=gateway; GATEWAY_CHAIN_NAME=gateway; L1_RPC_URL=http://fixture.invalid; GATEWAY_RPC_URL=http://fixture-gateway.invalid
+gl_zkstack_private_pty() { gl_zkstack_pty "$@"; }
+gl_zkstack_pty() {
+  python3 - "$@" <<'PY'
+import json,os,sys
+with open(os.environ['MIGRATION_ARGS_LOG'],'x') as output: json.dump(sys.argv[1:],output)
+PY
+}
+'''
+                result = self.run_shell(record + guard + '\n' + invocation + '\n', MIGRATION_ARGS_LOG=str(marker))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = json.loads(marker.read_text())
+                self.assertEqual(args[:4], ["zkstack", "chain", "gateway", command])
+                self.assertIn("--additional-args", args)
+                self.assertIn("--account", args)
+                self.assertIn(str(self.password.resolve()), args)
+                self.assertNotIn("--private-key", args)
+
+    def test_migration_reauthenticates_fixed_group_after_every_funding_refresh(self):
+        source = (ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh").read_text()
+        for action in ("zkstack chain pause-deposits", "zkstack chain gateway migrate-to-gateway",
+                       "zkstack chain gateway finalize-chain-migration-to-gateway"):
+            with self.subTest(action=action):
+                before = source[:source.index(action)]
+                refresh = before.rindex('refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"')
+                selection = before.rindex('gl_prepare_zkstack_admin_wallet_args --migration-actors "${EDGE_CHAIN_NAME}"')
+                self.assertGreater(selection, refresh)
+
     def test_relative_password_remains_bound_after_forge_changes_directory(self):
         relative = self.gateway / "admin.password"
         relative.write_text("selected-fixture\n")
@@ -245,6 +377,86 @@ else: raise SystemExit(92)
                                 'printf "%s\\n" "$#"')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "3")
+
+    def deposit_command(self, action, **overrides):
+        # SYSCOIN: Exercise the actual launcher call sites, but replace the PTY
+        # boundary with an argv recorder; no zkstack, Forge or RPC is invoked.
+        log = self.root / "deposit-args.json"
+        if log.exists():
+            log.unlink()
+        source = (ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh").read_text()
+        if action == "pause":
+            body = source.split('  pause_output=""\n', 1)[1].split('  migrate_output=""\n', 1)[0]
+        else:
+            body = source.split("ensure_deposits_unpaused() {\n", 1)[1].split("\n}\n\nrefresh_l1_admin_wallet_funding()", 1)[0]
+            body = 'ensure_deposits_unpaused() {\n' + body + '\n}\nensure_deposits_unpaused gateway\n'
+        command = '''
+EDGE_CHAIN_NAME=gateway; L1_RPC_URL=http://fixture.invalid
+gl_l1_broadcast_preflight() { :; }
+refresh_l1_admin_wallet_funding() { :; }
+gl_zkstack_pty() {
+  python3 - "$@" <<'PY'
+import json,os,sys
+with open(os.environ['DEPOSIT_ARGS_LOG'], 'x') as output:
+    json.dump(sys.argv[1:], output)
+PY
+}
+''' + body
+        return self.run_shell(command, DEPOSIT_ARGS_LOG=str(self.root / "deposit-args.json"), **overrides)
+
+    def test_pause_and_unpause_forward_authenticated_null_governor_account(self):
+        self.set_ecosystem_administrators()
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                log = self.root / "deposit-args.json"
+                if log.exists():
+                    log.unlink()
+                result = self.deposit_command(action)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(log.read_text()),
+                    ["zkstack", "chain", action + "-deposits", "--chain", "gateway",
+                     "--l1-rpc-url", "http://fixture.invalid", "--additional-args", "--account",
+                     "--additional-args", "v32-admin", "--additional-args", "--password-file",
+                     "--additional-args", str(self.password.resolve()), "--additional-args", "--sender",
+                     "--additional-args", ADMIN, "-v"])
+
+    def test_pause_and_unpause_reject_account_mismatch_before_pty(self):
+        self.set_ecosystem_administrators()
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                result = self.deposit_command(action, CAST_ACCOUNT_ADDRESS="0x" + "33" * 20)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("address/account mismatch", result.stderr)
+                self.assertFalse((self.root / "deposit-args.json").exists())
+
+    def test_pause_and_unpause_generated_governor_preserve_empty_selector(self):
+        self.write_wallet({"governor": self.generated(), "deployer": self.generated()})
+        self.set_ecosystem_administrators(self.generated(), self.generated())
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                log = self.root / "deposit-args.json"
+                if log.exists():
+                    log.unlink()
+                result = self.deposit_command(action)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(log.read_text()),
+                    ["zkstack", "chain", action + "-deposits", "--chain", "gateway",
+                     "--l1-rpc-url", "http://fixture.invalid", "-v"])
+
+    def test_pause_and_unpause_do_not_allow_raw_key_backend(self):
+        self.set_ecosystem_administrators()
+        for action in ("pause", "unpause"):
+            with self.subTest(action=action):
+                result = self.deposit_command(action, EDGE_GATEWAY_GOVERNOR_SIGNER="private-key")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.root / "deposit-args.json").exists())
+
+    def test_pause_fresh_group_refuses_inline_role_overridden_by_external_account(self):
+        self.set_ecosystem_administrators(self.generated(), self.external())
+        result = self.deposit_command("pause")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must match every requested", result.stderr)
+        self.assertFalse((self.root / "deposit-args.json").exists())
 
     def test_protected_account_password_files_reject_permissions_links_and_absence(self):
         for path in (self.account, self.password):

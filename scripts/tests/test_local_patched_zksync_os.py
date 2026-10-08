@@ -2772,6 +2772,11 @@ class LauncherStaticTests(unittest.TestCase):
                         }}
                         gl_l1_broadcast_preflight() {{ record preflight; }}
                         refresh_l1_admin_wallet_funding() {{ record fund; }}
+                        gl_prepare_zkstack_admin_wallet_args() {{
+                          [ "$*" = "--migration-actors zksys" ] || return 91
+                          record select
+                          GL_ZKSTACK_ADMIN_WALLET_ARGS=()
+                        }}
                         gl_zkstack_pty() {{
                           record finalize
                           printf '%s\\n' DepositDoesNotExist
@@ -2803,9 +2808,9 @@ class LauncherStaticTests(unittest.TestCase):
 
         cases = (
             ("true", 23, "false", 0, "probe repair"),
-            ("false", 0, "false", 0, "probe preflight fund finalize repair"),
-            ("false", 23, "true", 0, "probe preflight fund finalize probe repair"),
-            ("false", 23, "false", 1, "probe preflight fund finalize probe"),
+            ("false", 0, "false", 0, "probe preflight fund select finalize repair"),
+            ("false", 23, "true", 0, "probe preflight fund select finalize probe repair"),
+            ("false", 23, "false", 1, "probe preflight fund select finalize probe"),
         )
         for precheck, finalize_rc, postcheck, expected_rc, expected in cases:
             with self.subTest(
@@ -4055,16 +4060,16 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "e70c41e20e5f9f9c09aae50b099c3e1b424b1c1ff152d19bd931145a04214f19",
+            "7d71f570f16decd3e2cb40a702a3758265a31644dacc5417435e219a92b1345a",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="e70c41e20e5f9f9c09aae50b099c3e1b424b1c1ff152d19bd931145a04214f19"',
-            'EXPECTED_PATCH_PATH_COUNT="27"',
-            'EXPECTED_PATCH_PATHS_SHA256="a6b6a8b3d2205b10e602f5a1463925ff9cd4f077b1b441c92a464a2f1cbdc985"',
-            'EXPECTED_PATCHED_TREE="fee8eef6504d8fd7550f5c5092749e7d4c903495"',
+            'EXPECTED_PATCH_SHA256="7d71f570f16decd3e2cb40a702a3758265a31644dacc5417435e219a92b1345a"',
+            'EXPECTED_PATCH_PATH_COUNT="29"',
+            'EXPECTED_PATCH_PATHS_SHA256="4d4061ae19f648b50e49d555aea27b151ad09a9905b9b5aa5c137eb4d720f2b9"',
+            'EXPECTED_PATCHED_TREE="f34f516cba3edb13522ac2a18db5b6161f1091cb"',
             'FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"',
             'FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8\'s V32 finish-migration tuple ABI."',
         ):
