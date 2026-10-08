@@ -823,6 +823,9 @@ explorer into a public Gateway RPC passthrough.
 The verifier compatibility default is `v1.10.3`, not a floating `latest` image.
 Set `SMART_CONTRACT_VERIFIER_IMAGE` to a reviewed digest or an exact cached image
 ID; for a cached-only rollout also set `SMART_CONTRACT_VERIFIER_PULL_POLICY=never`.
+The normal `deploy-remote.sh` forwards these overrides and
+`SMART_CONTRACT_VERIFIER_SOLC_LIST_URL` to both remote Compose invocations;
+unset or empty values retain the instance env-file settings or Compose defaults.
 A tag, registry manifest digest, and local image ID are different identities:
 do not substitute one for another without checking the resulting image.
 Preserve the old image/configuration, recreate only `smart-contract-verifier`

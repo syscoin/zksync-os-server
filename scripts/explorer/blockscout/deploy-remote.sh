@@ -60,7 +60,8 @@ quote_remote_argument() {
   done
   printf "%s'" "${value}"
 }
-remote_command="bash -s -- $(quote_remote_argument "${REMOTE_DIR}") $(quote_remote_argument "${INSTANCE}") $(quote_remote_argument "${PROJECT_NAME}") $(quote_remote_argument "${API_SENSITIVE_ENDPOINTS_KEY_B64}")"
+# SYSCOIN: Compose runs remotely, so local verifier overrides must cross SSH too.
+remote_command="bash -s -- $(quote_remote_argument "${REMOTE_DIR}") $(quote_remote_argument "${INSTANCE}") $(quote_remote_argument "${PROJECT_NAME}") $(quote_remote_argument "${API_SENSITIVE_ENDPOINTS_KEY_B64}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_IMAGE:-}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_PULL_POLICY:-}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_SOLC_LIST_URL:-}")"
 ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_command}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
@@ -68,6 +69,17 @@ remote_dir="$1"
 instance="$2"
 project_name="$3"
 api_sensitive_endpoints_key="$(printf '%s' "$4" | base64 -d)"
+
+# SYSCOIN: Export only supplied overrides; otherwise retain env-file/default values.
+if [[ -n "$5" ]]; then
+  export SMART_CONTRACT_VERIFIER_IMAGE="$5"
+fi
+if [[ -n "$6" ]]; then
+  export SMART_CONTRACT_VERIFIER_PULL_POLICY="$6"
+fi
+if [[ -n "$7" ]]; then
+  export SMART_CONTRACT_VERIFIER_SOLC_LIST_URL="$7"
+fi
 
 cd "${remote_dir}"
 
