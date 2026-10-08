@@ -1182,8 +1182,9 @@ def materialize_chain(
                     else []
                 ),
                 f"  bitcoin_da_rpc_url: {os.environ['BITCOIN_DA_RPC_URL']}",
-                f"  bitcoin_da_rpc_user: '{os.environ['BITCOIN_DA_RPC_USER']}'",
-                f"  bitcoin_da_rpc_password: '{os.environ['BITCOIN_DA_RPC_PASSWORD']}'",
+                # SYSCOIN: match cookie refresh encoding for byte-exact check-only after help/start.
+                f"  bitcoin_da_rpc_user: {yaml_scalar(os.environ['BITCOIN_DA_RPC_USER'])}",
+                f"  bitcoin_da_rpc_password: {yaml_scalar(os.environ['BITCOIN_DA_RPC_PASSWORD'])}",
                 f"  bitcoin_da_poda_url: {os.environ['BITCOIN_DA_PODA_URL']}",
                 f"  bitcoin_da_wallet_name: {os.environ['BITCOIN_DA_WALLET_NAME']}",
                 f"  bitcoin_da_address_label: {os.environ['BITCOIN_DA_ADDRESS_LABEL']}",
