@@ -2,6 +2,13 @@
 
 Gateway + edge launch is now a **single canonical command** with checkpointed resume and explicit repair.
 
+<!-- SYSCOIN: Distinguish expected PoW cadence from actual transaction failure. -->
+Tanenbaum's expected L1 block interval is about **150 seconds (2.5 minutes)**,
+with normal proof-of-work variance. An unchanged head for a few minutes is not
+alone evidence of a stalled miner. Track the known transaction, canonical block
+hash and required confirmation depth; do not resubmit a broadcast merely because
+the launcher is waiting.
+
 ## Host prerequisites
 
 Install the host toolchain before starting the launcher. The launcher can
@@ -938,6 +945,37 @@ succeeded but receipt recording was interrupted, rerun the prelude with
 `ZKSYS_TOKEN_DEPLOYMENT_TX_HASH` set to that exact transaction hash; its sender,
 factory, calldata, value, chain and canonical block are checked before recovery.
 Do not substitute an unrelated successful transaction or use `now + 86400`.
+
+<!-- SYSCOIN: Terminal file/transport failures do not undo successful transactions. -->
+Treat a bootstrap's final exit status separately from its on-chain summary.
+If deployments and role wiring succeeded but the last config write failed,
+preserve the receipts, token anchor, bootstrap manifest and original error.
+Do **not** rerun deployment or role-grant calls to repair that file. Revalidate
+the successful canonical receipts, proxy bindings, roles and application-bound
+gas-tank runtime, then use `_contracts_yaml_scalar.py` under the normal launch
+lock to persist only `l2.zksys_gas_tank_addr`. It preserves unrelated bytecode,
+comments and scalar spellings; a full `safe_load`/`safe_dump` can turn enormous
+hexadecimal bytecode into decimal integers and fail Python's digit limit.
+Unsupported YAML shapes fail without replacing the file. Do not disable that
+limit, rewrite the whole YAML, alter the issuance anchor, or mark an unverified
+checkpoint passed. Keep named encrypted accounts and owner-only password files;
+never put raw wallet keys in command arguments.
+
+For Blockscout's normal `deploy-remote.sh`, an unset or empty
+`API_SENSITIVE_ENDPOINTS_KEY` keeps the existing protected remote secret.
+The SSH transport preserves all four arguments, including that empty value;
+a shell/transport failure after upload is not proof that Compose started.
+Check the actual Compose result and API before declaring deployment complete,
+and do not rotate an existing API or database secret just to resume it.
+Mainnet requires its own current source/artifact, signer, chain, receipt and
+configuration qualification; mock-testnet completion does not establish mainnet
+readiness.
+
+Before funding a deployment, quote the sender's native operating reserve,
+wrapped settlement fees and bridge canary together. A protocol fee is available
+for reuse only after its actual collection is canonically confirmed; do not
+count the same reserve twice. Keep faucet principal in its separate allocation.
+
 - The membership registry mirrors NEVM facts from the L1 `0x62` precompile and exposes the active Sentry Node address set for offchain diffing. The L1 registry bridge derives each Sentry Node's seniority-weighted reward weight from raw Syscoin collateral age (`nNEVMStartBlock + block.number - collateralHeight`) and sends that final weight to L2. For mainnet, use effective post-NEVM seniority thresholds `210240` and `525600` blocks with levels `3500` and `10000` bps. Native SYS staking is handled by the L2 staking vault.
 - Reward weight increases are not active immediately: native SYS deposits, Sentry Node additions, and Sentry Node seniority increases are queued for `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` periods and require the account to call `activatePendingWeight()` after the delay. Weight decreases and removals apply immediately. This prevents a stake or Sentry weight increase submitted just before a period boundary from earning the completed period.
 - The issuer uses a fixed remaining-cap curve: 20% in schedule year 1, 12% in year 2, 8% in year 3, then 5% per year afterward. Each annual amount is released pro-rata over `ZKSYS_ISSUER_PERIODS_PER_YEAR` periods, so scheduled issuance approaches but never exceeds the 210M zkSYS cap.

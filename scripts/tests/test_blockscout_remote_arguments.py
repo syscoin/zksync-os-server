@@ -1,0 +1,68 @@
+"""SYSCOIN: Exercise OpenSSH's joined remote command, including its empty fourth arg."""
+import base64
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE = (ROOT / "scripts/explorer/blockscout/deploy-remote.sh").read_text()
+FUNCTION = re.search(r"quote_remote_argument\(\) \{.*?\n\}", SOURCE, re.S).group()
+REMOTE_SCRIPT = SOURCE.split("<<'REMOTE_SCRIPT'\n", 1)[1].split("\nREMOTE_SCRIPT", 1)[0]
+
+
+def command(arguments):
+    code = FUNCTION + '\nprintf "bash -s --"\nfor arg in "$@"; do printf " %s" "$(quote_remote_argument "$arg")"; done\n'
+    return subprocess.check_output(["bash", "-c", code, "test", *arguments], text=True)
+
+
+class RemoteArgumentTests(unittest.TestCase):
+    def test_empty_fourth_survives_openssh_join_and_remote_shell(self):
+        args = ["/tmp/a b's directory", "zksys", "blockscout-zksys", ""]
+        result = subprocess.run(["bash", "-c", command(args)], input=b'printf "%s\\0" "$@"\n', capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(b"\0")[:-1], [x.encode() for x in args])
+
+    def test_original_join_loses_empty_argument(self):
+        result = subprocess.run(["bash", "-c", "bash -s -- /tmp/zksys zksys blockscout-zksys "], input=b'set -u\nprintf "%s" "$4"\n', capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"unbound variable", result.stderr)
+
+    def test_source_uses_one_quoted_remote_command(self):
+        self.assertIn('"${REMOTE_HOST}" "${remote_command}"', SOURCE)
+        self.assertIn('quote_remote_argument "${API_SENSITIVE_ENDPOINTS_KEY_B64}"', SOURCE)
+
+    def remote(self, key):
+        with tempfile.TemporaryDirectory() as directory:
+            remote = Path(directory) / "a b's blockscout"
+            (remote / "envs").mkdir(parents=True)
+            (remote / "envs/zksys.env").write_text("COMPOSE_PROFILES=user-ops\n")
+            secret = remote / "envs/zksys.secrets.env"
+            old = b"POSTGRES_PASSWORD=synthetic-only\nSECRET_KEY_BASE=synthetic-only\nAPI_SENSITIVE_ENDPOINTS_KEY=keep-test-value\n"
+            secret.write_bytes(old); secret.chmod(0o600)
+            binaries = Path(directory) / "bin"; binaries.mkdir()
+            docker = binaries / "docker"
+            docker.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$TEST_DOCKER_CALLS"\n')
+            docker.chmod(0o700)
+            calls = Path(directory) / "docker-calls"
+            env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], TEST_DOCKER_CALLS=str(calls))
+            encoded = base64.b64encode(key.encode()).decode()
+            result = subprocess.run(["bash", "-c", command([str(remote), "zksys", "blockscout-zksys", encoded])], input=REMOTE_SCRIPT, text=True, capture_output=True, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(calls.read_text().splitlines()), 2)
+            self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
+            return old, secret.read_bytes()
+
+    def test_empty_key_keeps_existing_secret_file_bytes(self):
+        before, after = self.remote("")
+        self.assertEqual(after, before)
+
+    def test_nonempty_key_updates_only_selected_secret(self):
+        before, after = self.remote("new-synthetic-only")
+        self.assertEqual(after, before.replace(b"API_SENSITIVE_ENDPOINTS_KEY=keep-test-value", b"API_SENSITIVE_ENDPOINTS_KEY=new-synthetic-only"))
+
+
+if __name__ == "__main__":
+    unittest.main()

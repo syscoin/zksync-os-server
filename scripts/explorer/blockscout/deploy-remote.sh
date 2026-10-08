@@ -49,8 +49,19 @@ cp \"\${tmp_dir}\"/proxy/assets/* \"\${remote_dir}/proxy/assets/\"
 cp \"\${tmp_dir}/envs/\${instance}.env\" \"\${remote_dir}/envs/\${instance}.env\"
 '"
 
-ssh "${ssh_opts[@]}" "${REMOTE_HOST}" bash -s -- \
-  "${REMOTE_DIR}" "${INSTANCE}" "${PROJECT_NAME}" "${API_SENSITIVE_ENDPOINTS_KEY_B64}" <<'REMOTE_SCRIPT'
+# SYSCOIN: OpenSSH joins command arguments before the remote shell parses them.
+# Quote each value there too: local quotes alone lose an empty optional API key.
+quote_remote_argument() {
+  local value="$1" escaped_quote="'\\''"
+  printf "'"
+  while [[ "${value}" == *"'"* ]]; do
+    printf '%s%s' "${value%%\'*}" "${escaped_quote}"
+    value="${value#*\'}"
+  done
+  printf "%s'" "${value}"
+}
+remote_command="bash -s -- $(quote_remote_argument "${REMOTE_DIR}") $(quote_remote_argument "${INSTANCE}") $(quote_remote_argument "${PROJECT_NAME}") $(quote_remote_argument "${API_SENSITIVE_ENDPOINTS_KEY_B64}")"
+ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_command}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 remote_dir="$1"
