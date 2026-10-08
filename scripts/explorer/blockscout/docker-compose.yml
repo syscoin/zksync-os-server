@@ -132,8 +132,10 @@ services:
       - backend-dets:/app/dets
 
   smart-contract-verifier:
-    image: ghcr.io/blockscout/smart-contract-verifier:${SMART_CONTRACT_VERIFIER_TAG:-latest}
-    pull_policy: always
+    # SYSCOIN: v1.11 requires a separately configured isolated compiler runner.
+    # Keep the working compatibility release; allow an exact operator image pin.
+    image: ${SMART_CONTRACT_VERIFIER_IMAGE:-ghcr.io/blockscout/smart-contract-verifier:${SMART_CONTRACT_VERIFIER_TAG:-v1.10.3}}
+    pull_policy: ${SMART_CONTRACT_VERIFIER_PULL_POLICY:-always}
     platform: linux/amd64
     restart: always
     environment:
@@ -143,7 +145,8 @@ services:
       SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED: "true"
       SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR: /tmp/solidity-compilers
       SMART_CONTRACT_VERIFIER__SOLIDITY__REFRESH_VERSIONS_SCHEDULE: 0 0 * * * * *
-      SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL: https://binaries.soliditylang.org/linux-amd64/list.json
+      # SYSCOIN: Keep the official checksum list while supporting hosts without CDN egress.
+      SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL: ${SMART_CONTRACT_VERIFIER_SOLC_LIST_URL:-https://raw.githubusercontent.com/ethereum/solc-bin/gh-pages/linux-amd64/list.json}
       SMART_CONTRACT_VERIFIER__VYPER__ENABLED: "false"
       SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED: "false"
 

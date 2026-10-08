@@ -819,6 +819,26 @@ admin IPs. The Gateway Blockscout env hides RPC docs/links and disables the
 Next.js proxy so the public explorer API remains available without turning the
 explorer into a public Gateway RPC passthrough.
 
+<!-- SYSCOIN: Verifier image updates are operational changes, not automatic safe upgrades. -->
+The verifier compatibility default is `v1.10.3`, not a floating `latest` image.
+Set `SMART_CONTRACT_VERIFIER_IMAGE` to a reviewed digest or an exact cached image
+ID; for a cached-only rollout also set `SMART_CONTRACT_VERIFIER_PULL_POLICY=never`.
+The normal `deploy-remote.sh` forwards these overrides and
+`SMART_CONTRACT_VERIFIER_SOLC_LIST_URL` to both remote Compose invocations;
+unset or empty values retain the instance env-file settings or Compose defaults.
+A tag, registry manifest digest, and local image ID are different identities:
+do not substitute one for another without checking the resulting image.
+Preserve the old image/configuration, recreate only `smart-contract-verifier`
+with `--no-deps`, and confirm both stable health and a successful verification
+of actual deployed bytecode against its original sources/compiler settings.
+Verifier `v1.11` requires an explicitly configured isolated compiler runner;
+do not fix its disabled-execution error by enabling development-only native
+execution or mounting the application's host Docker socket. A future verifier
+upgrade must qualify the supported isolated-runner deployment separately.
+The official `ethereum/solc-bin` mirror supplies the default compiler checksum
+list and binaries. `SMART_CONTRACT_VERIFIER_SOLC_LIST_URL` can select a different
+reviewed official list when needed; retain compiler checksum verification.
+
 The generated `start-node.sh` now preflights the open-file limit before starting the node:
 
 - it tries to raise `ulimit -n` to `1048576`
