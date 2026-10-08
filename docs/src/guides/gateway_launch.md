@@ -2,6 +2,10 @@
 
 Gateway + edge launch is now a **single canonical command** with checkpointed resume and explicit repair.
 
+For an operator-authorized replacement of an existing public testnet, use the
+[fresh testnet procedure](#fresh-public-testnet-replacement) before the normal
+launch command. It is not a mainnet reset or upgrade procedure.
+
 <!-- SYSCOIN: Distinguish expected PoW cadence from actual transaction failure. -->
 Tanenbaum's expected L1 block interval is about **150 seconds (2.5 minutes)**,
 with normal proof-of-work variance. An unchanged head for a few minutes is not
@@ -137,6 +141,900 @@ export FUNDER_PASSWORD_FILE="$HOME/.foundry/funder.password"
 If using a separate Gateway governor signer for migration repairs, import it as
 another Foundry account (for example `governor`) and set
 `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor`.
+
+## Fresh public testnet replacement
+
+<!-- SYSCOIN: A destructive testnet reset needs its own inventory and acceptance
+record; SSH authentication, resumable launch, and mainnet rollout are not equivalent. -->
+
+Replacing v31 with a fresh v32 testnet discards the old Gateway/edge history and
+dependent indexes. Obtain explicit reset authorization and record the chosen
+proving mode before stopping services. Preserve wallets and signer access even
+when the old chain does not need to be retained. A local reset cannot erase old
+contracts or escrow on the persistent Tanenbaum L1.
+
+### Operator and source preflight
+
+1. Inventory the sequencer, external-node/explorer, faucet, portal and bridge
+   hosts. Record service/container owners, actual config paths, RPC routing,
+   chain IDs, database/volume names, free disk and the running source identity.
+   A host may serve more than one of these roles.
+2. Check SSH and privileged access independently on every relevant host:
+
+   ```bash
+   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+     -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'id -un'
+   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+     -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'sudo -n -l'
+   ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+     -i "$SSH_KEY_PATH" "$REMOTE_HOST" 'passwd -S'
+   ```
+
+   A private SSH key authenticates the SSH account; it does not grant sudo.
+   Inspect the allowed commands, not only group membership. Resolve a password
+   prompt or missing deployment privileges through the operator's approved
+   administrative access before an unattended reset. Do not bypass sudo with
+   privileged containers or infer root permission from Docker access.
+   `passwd -S` reports account status, not a password: `P` is usable, `NP` means
+   no password is configured and `L` is locked. A key-only SSH login can work
+   while password-based sudo is unavailable. Use the approved account-password
+   setup/recovery path; the SSH key cannot reveal an account password.
+3. Pin the server, Core/Geth and client source revisions, upstream patch trees,
+   compiler versions and deterministic deployment inputs. Use a clean release
+   checkout; do not pull over unrelated local changes. Read the current source
+   namespace/address plan instead of copying an old CREATE2 salt or governor.
+   Mock proving does not waive the immutable Gateway DA target/relay or gas-tank
+   address checks. Stop for reviewed repinning if a fresh deployment differs.
+4. Locate the actual wallet YAML, encrypted Foundry accounts and password-file
+   references. Store required wallet files outside the reset workspace, with
+   private permissions, and verify public signer addresses and live balances on
+   root chain 5700. An isolated chain-31337 test receipt is not that balance.
+   Preserve the required Core DA wallet separately. Do not commit secret values,
+   credentialed RPC URLs, host inventories or private operator paths.
+5. Load the current signer configuration explicitly. Tanenbaum defaults to
+   encrypted account/keystore signing; do not carry raw private-key environment
+   variables from an old command. Generated prover configs still require a
+   password of at least 32 characters, even for this mock-proof deployment.
+
+<!-- SYSCOIN: Documentation follows the reviewed helper fixes without duplicating
+their implementation in the runbook change. -->
+Use the reviewed launch helpers, including the administrator authentication and
+receipt-anchor changes in [server PR #333](https://github.com/syscoin/zksync-os-server/pull/333).
+This runbook update does not itself add those code changes. For an external
+encrypted administrator, set all three signer families explicitly; for example:
+
+```bash
+export FUNDER_SIGNER=account
+export FUNDER_ACCOUNT_NAME=launch-admin
+export FUNDER_PASSWORD_FILE=/secure/operator/launch-admin.password
+export DEPLOYER_SIGNER=account
+export DEPLOYER_ACCOUNT_NAME=launch-admin
+export DEPLOYER_PASSWORD_FILE=/secure/operator/launch-admin.password
+export EDGE_GATEWAY_GOVERNOR_SIGNER=account
+export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=launch-admin
+export EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE=/secure/operator/launch-admin.password
+unset FUNDER_PRIVATE_KEY DEPLOYER_PRIVATE_KEY EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY
+cast wallet address --account "$DEPLOYER_ACCOUNT_NAME" \
+  --password-file "$DEPLOYER_PASSWORD_FILE"
+```
+
+Use an absolute, owner-only regular password-file path: Forge changes working
+directory. Public YAML addresses with `private_key: null` are supported only
+for authenticated governor/deployer roles, not generated runtime operators.
+The helpers verify every requested role against the decrypted account and
+forward an explicit Forge `--sender` bound to that authenticated address.
+Account selection alone was insufficient for pinned Forge 0.1.5. Address
+derivation receives only account selectors, not Forge's `--sender` option.
+Gateway conversion checks its chain deployer, chain governor and ecosystem
+governor together; one global external selector must match all three actual
+actors. Distinct generated-key administrators remain supported when no external
+selector is forwarded. Do not bypass a role mismatch with an arbitrary sender
+or an ambient wallet environment variable.
+
+### Confirmation progress and broadcast recovery
+
+<!-- SYSCOIN: Slow root confirmations are not permission to erase a broadcast
+journal or re-run a deterministic deployment from scratch. -->
+The current Tanenbaum rehearsal uses a **150-second block target** and its
+canonical core deployment sequence contains **43 transactions**. These are
+observed/configured rehearsal inputs, not a fixed ETA or a universal deployment
+transaction count. Sequential receipt waits, actual block cadence and required
+confirmations can make a healthy run appear quiet for several minutes. Inspect
+the recorded transaction hashes, canonical receipts, sender's latest/pending
+nonce and launcher progress before diagnosing a failure. Do not start a second
+deployment or stop a progressing broadcast because a wall-clock estimate elapsed.
+
+<!-- SYSCOIN: Cast's submission wait is separate from the root block cadence
+and RPC request timeout; preserve submitted transactions after a timeout. -->
+For the dated 2.5-minute Tanenbaum lane, the pinned Linux `cast send --help`
+confirms that `ETH_TIMEOUT` controls transaction confirmation waiting. Set
+`export ETH_TIMEOUT=1800` in the reviewed invocation environment before a new
+broadcast; this does not change gas pricing, finality or the RPC request timeout.
+A Cast timeout does not prove that its transaction failed or disappeared.
+Reconcile its hash and canonical receipt before selecting a supported remainder;
+do not automatically retry the whole helper.
+
+Distinguish these recovery cases before changing any checkpoint or artifact:
+
+| Evidence | Permitted next step |
+| --- | --- |
+| Verified pre-broadcast failure: no submitted transaction, no new latest/pending sender nonce, no deployment receipts or code, and no partially broadcast deployment output | Correct the diagnosed selector/configuration problem and retain the evidence. The absent-graph recovery below permits only an explicit same-input invocation of the canonical deployment helper; checkpoint repair/revalidation follows only after the full live graph exists. A missing output file alone is not proof that nothing was broadcast. |
+| Any transaction submitted, confirmed or pending; a changed sender nonce; or a partial deployment/broadcast artifact | Preserve the entire checkpoint, Forge broadcast journal, inputs, hashes and receipts. Reconcile the exact sequence using supported repair/resume; do not reset, replay or reconstruct an apparently fresh deployment automatically. |
+
+<!-- SYSCOIN: A blocked L1 checkpoint's ownership-only repair cannot create a
+missing graph; this narrow no-broadcast recovery is not a partial-journal replay. -->
+For the verified no-broadcast/absent-graph case, the current blocked
+`gl.l1_ecosystem_deployed` repair uses ownership-only recovery and rejects a
+missing graph. Do not delete its checkpoint or artifacts to manufacture freshness.
+After recording the no-broadcast evidence and approving the diagnosed fix,
+retain the exact network, source, namespace/salt, wallet/admin inputs and invoke
+the canonical helper explicitly with the already validated launch environment:
+
+```bash
+GATEWAY_ECOSYSTEM_RESUME_FIRST=false \
+  bash scripts/gateway-launch/gateway-deploy-l1.sh
+```
+
+This helper still authenticates the serialized launch context and rejects an
+existing partial/invalid graph; it is not a bypass. Only once the complete live
+graph exists, use supported checkpoint repair/revalidation and then resume the
+launcher. **Never use this fresh-helper recovery for a submitted, pending or
+partially broadcast journal**, even when its normal output file is absent.
+
+An `eth_call` from an owner address proves call compatibility, not possession of
+its signing credential. Do not treat that simulation as a custody or broadcast
+receipt. Keep the live deployment status in the private operator record; this
+guide does not infer full-ecosystem or public acceptance from Core receipts.
+
+### Confirmed Core journal interrupted before CTM initialization
+
+<!-- SYSCOIN: Core-only continuation is an explicit reviewed journal recovery,
+not the fresh absent-graph invocation or a complete-graph ownership-only repair. -->
+A successful Core deployment can be followed by an interrupted administrator
+handoff before zkstack persists `configs/contracts.yaml`. A missing config does
+not make that graph absent. Preserve the Core inputs/output, original journals,
+receipts and checkpoint; do not invoke the fresh-helper recovery above.
+
+The reviewed CLI in PR #333 exposes the narrow
+`ecosystem init-core-contracts --core-journal-only --resume` entry point. Before
+using it, independently bind a protected recovery manifest and exact invocation
+to the selected network/genesis, source and artifact identities, unchanged
+initial deployment config and Core input/output bytes, complete journal,
+actor/nonces/calldata, canonical successful receipts, full deployed runtimes,
+proxy slots and administrator state. Authenticate the wallet selectors and
+qualify the actual CLI binary and its normal build stamp separately. Hold the
+canonical launcher lifecycle lock and repeat those checks immediately before
+execution; neither journal presence nor a receipt claimed inside it is sufficient.
+
+This mode requires an absent contracts config, existing input/output and a
+complete Core journal with no failed or pending receipts. The reviewed
+invocation includes `--zksync-os`, `--update-submodules false`,
+`--skip-contract-compilation-override true`, `--deploy-erc20 false` and
+`--support-l2-legacy-shared-bridge-test false`, with the authenticated root RPC
+and external wallet selectors. It never regenerates inputs, deploys CTM
+contracts, or falls back to a fresh Core script after a resume error, including
+a missing journal.
+The existing state-gated handoffs run after the fixed Core resume. Only the
+exact same-owner pending transfer to the authenticated governor EOA may use
+the pinned direct acceptance path; foreign and aliased successors remain errors.
+
+Require clean owner/pending-owner postchecks before the canonical typed Core
+config is saved. The reviewed writer uses the unchanged YAML serializer and
+owner-only, exclusive creation followed by file sync. An existing regular file,
+empty/malformed config, symlink or broken link is never overwritten. A write or
+sync failure can leave a newly created partial config: stop and inspect it,
+rather than deleting it or retrying against an assumed absent path. Retain all
+original journals and verify that Core input/output bytes did not change.
+
+<!-- SYSCOIN: Dated receipt evidence records completed scope without upgrading
+a Core-only observation to CTM, launch, finality or funding authorization. -->
+The 2026-10-06/07 Tanenbaum rehearsal used release
+`d8d5cc2fbb8db13109d68897431e610b59788491` for this continuation. At canonical
+block 985288, the independent post-Core audit found 61 successful receipts,
+zero failed or pending receipts, unchanged prior 59 commitments and no replay
+of the original 43 Core transactions. The only new handoffs were:
+
+| Administrator nonce | Action | Canonical transaction |
+| --- | --- | --- |
+| 69 | Bridgehub `setPendingAdmin` + `acceptAdmin`, atomically via ChainAdmin | `0x7cc634145f32528cd10b6590eb85ded56e8cf6ef68d452c4b1150e60f51cb70b` |
+| 70 | NativeTokenVault direct `acceptOwnership()` | `0xd52db01f32eef2fa6ca933032192a2fe9ad772f347d65e1f8e0b82b2642857ac` |
+
+Both had at least two canonical confirmations at that snapshot; this is not a
+consensus-finalized assertion. The persisted Core-only config was mode `0600`,
+SHA256 `edf1728bcd4552c04d00b084254a12fb8025b294b5d60c3b1d8587d3e6907339`,
+with CTM absent. The retained audit digest is
+`a00079746ad8b7584652494d96af55f93397b8756a7a99a3cc08f3079401c71f`.
+These are dated evidence identifiers, not inputs to copy into a new deployment.
+This qualification does not complete CTM registration, checkpoint repair,
+Gateway settlement, funding, service installation or public acceptance.
+
+### Restore canonical context before a separate fresh CTM deployment
+
+<!-- SYSCOIN: The canonical asset-ID derivation is an in-process dependency;
+operator-provided overrides must remain rejected by launch fingerprint guards. -->
+On Tanenbaum/mainnet, CTM initialization requires the derived
+`ZKSYS_ZK_TOKEN_ASSET_ID` (with `ZK_TOKEN_ASSET_ID` as its exported alias).
+The normal `gateway-deploy-l1.sh` performs this derivation before invoking
+zkstack. A standalone CTM command after Core-only recovery does not inherit
+that earlier shell process's exported value. In this rehearsal, its absence
+caused an initialization panic **before broadcast**: latest/pending nonce
+remained 71 and no CTM journal, input or output was created. A panic or missing
+output alone is not sufficient proof; establish that full no-broadcast evidence
+before correcting context and invoking the separate fresh CTM command.
+
+Keep both asset-ID variables **unset in protected operator launch environment
+files**. Do not insert a copied constant or relax their preflight/fingerprint
+rejection. Derive the value in-process from the authenticated canonical source
+after validating the launch context. The reviewed function is
+`derive_and_export_zksys_zk_token_asset_id()` in
+`scripts/gateway-launch/gateway-deploy-l1.sh` (source SHA256
+`9ec03f7df3fac8093fa8f0bb8a4fdfd25eaf427a8de57825b8f2fd3d24e1dc10`
+for the d8 rehearsal). Bind its normalization helpers, exact
+`forge inspect --no-metadata` bytecodes and toolchain, canonical `0x4e59...`
+deployer, three selected salts, token admin, token name/symbol/decimals and
+edge-chain ID. Record the resulting ProxyAdmin, implementation, proxy address
+and full preimages without changing canonical deployment artifacts.
+
+The asset ID is `keccak256(abi.encode(edgeChainId, L2NativeTokenVault,
+derivedZksysTokenProxy))`, where the v32 vault is
+`0x0000000000000000000000000000000000010004`. It is not the native SYS asset
+ID and does not use Root or Gateway chain ID. The token proxy is still a
+deterministic **future** L2 address; this derivation does not deploy the token,
+start issuance, attest live token code or authorize its use as a value recipient.
+
+Do not source the entire deployment script to evade its partial-graph guard.
+Any recovery harness must be independently reviewed, exact-source/hash-bound
+to only the required derivation functions and retain normal source, signer,
+artifact and lifecycle-lock checks. It is not a generic launcher feature or
+permission for broad replay. Ordinary fresh launches need no such harness.
+The standalone process must also carry the effective Solidity CREATE2 salt,
+not only the outer launcher's `GATEWAY_CREATE2_FACTORY_SALT`. The approved
+2026-10-07 Tanenbaum context explicitly binds these distinct variables:
+
+```bash
+export GATEWAY_CREATE2_FACTORY_SALT=0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0
+export CREATE2_FACTORY_SALT=0x7a7ae2cf64eaa133584178cf81c0c2f0b2eafd0b5eb5d05c208760eb00459fb0
+export LEGACY_GOV_SALT=0x0000000000000000000000000000000000000000000000000000000000000000
+```
+
+These are dated testnet inputs, not mainnet defaults. Require both CREATE2
+values to equal the normalized existing initial deployment salt. Keep the
+legacy governance operation salt separate; do not substitute a script default,
+rewrite the existing input, or copy a dry-run artifact into the live namespace.
+Omitting the effective salt from the recovery invocation was the launch
+operator's context error, not an upstream vulnerability.
+
+The unchanged CLI checks global prerequisites before CTM command dispatch.
+A sanitized execution `PATH` must retain the qualified Cargo route: this
+rehearsal uses `/home/ubuntu/.cargo/bin` alongside the pinned Foundry and system
+tools. Validate the installed Cargo/rustup proxy and normal prerequisite checks;
+do not add `--ignore-prerequisites`, install a replacement toolchain, or source
+an ambient Cargo shell environment to bypass the failure.
+
+After rechecking the qualified Core graph, no-broadcast CTM evidence and
+current nonce, run the separate canonical fresh CTM initialization with the
+derived value in that process, **without a resume flag**. If anything was
+submitted, stop and reconcile its actual journal instead of assuming this case.
+
+CTM initialization and `ecosystem register-ctm` are distinct steps. Source-bind
+their inputs/calldata, canonical receipts, CREATE2/runtime/proxy/immutable
+identities, explicit testnet verifier mode, owners and Bridgehub registration.
+Only after the complete registered graph satisfies the existing live probes
+may supported checkpoint repair/revalidation run. Never manufacture a passed
+checkpoint. The actual CTM receipts and whole-graph qualification remain
+separate operator evidence; this section does not assert they have passed.
+
+### Dated recovery findings and non-final CTM status
+
+<!-- SYSCOIN: Separate a genuine runtime compatibility defect from test-only
+observation changes and operator invocation mistakes; none imply live adoption. -->
+The DA recovery mismatch is real: the pinned SDK can return a public-cloud
+response as bare ASCII hex, while the d8 recovery gate authenticates those
+wire bytes as though they were the decoded blob. A successful HTTP retrieval
+therefore does not establish usable authenticated recovery data. The later
+reviewed [4726 source](https://github.com/syscoin/zksync-os-server/commit/4726f87e205a5869250dc3aefc2ce0f6ead1fed8)
+corrects this by authenticating raw bytes first, then
+allowing one bounded strict bare-hex decode only when it matches the same
+committed Blake2s digest, before attempt reservation or wallet publication.
+It does not change the pinned SDK, finality policy or republish controls.
+At that dated checkpoint, this source was **not live-adopted**; the later
+Gateway-only adoption/build milestone is recorded below. Edge builds and stamps
+remain separate requirements. Do not republish the confirmed DA readiness marker.
+
+The issuance chain-ID normalization in the same reviewed release is also a
+genuine launcher correctness fix: a configured/persisted hexadecimal edge
+chain ID must be normalized before token-prelude sends, and receipt-anchor comparisons
+must treat its decimal/hex aliases as the same chain while keeping every other
+manifest binding strict. This preserves the receipt-timestamp-plus86400 policy;
+it neither changes the issuance schedule nor establishes live token deployment.
+
+The CI process-exit observation change is **test-only**: a bounded two-second
+observer lets an already signalled owned task reach its terminal process state,
+checks its start identity and still rejects a live child. It does not fix or
+relax a runtime cleanup timeout. The default-salt omission above and the
+missing Cargo `PATH` below are launch-operator errors, not upstream security
+findings.
+
+The first normal CTM invocation, capsule `f3e6e15c`, failed in the global Cargo
+prerequisite gate before CTM dispatch. Independent reconciliation found zero
+submissions, latest/pending administrator nonce 76 and no normal CTM
+input/output/broadcast/cache namespace. Preserve that failed intent and all
+diagnostics. The corrected capsule `02b03df1` was separately reviewed and
+explicitly approved with a distinct intent namespace; it is not an automatic
+retry or permission to erase/reuse the first intent. At this dated checkpoint,
+its signed **35 deployment transactions plus seven owner/admin handoffs** are
+observed with canonical successful `status=1` receipts for administrator nonces
+76 through 117; latest/pending nonce is 118. This progress observation is not
+the full source, runtime, poststate or registration qualification.
+
+The original guard session `87536` actually exited with code **1**, observed at
+`2026-10-07T04:46:53Z`. The underlying normal CLI exit status is unknown, and
+the original `completed.json` is absent. Preserve the failed intent, normal
+journals and diagnostics: successful transactions do not permit fabricating
+an exit-zero/completion record or retrying the deployment. Separate CTM,
+registration and Registry qualification remain required; no full ROOT
+ecosystem, service cutover or public-testnet completion is claimed.
+
+An additional offline reproduction found a false failure in the operator's
+Python postcheck, not in the contracts: the pinned Rust YAML serializer emits
+large hex payload Strings unquoted, while Python's generic safe reader coerces
+them to integers. Preserve the original invocation and its ordinary transaction
+sequence. Qualify the resulting state through a separately reviewed,
+read-only exact-text/schema-aware check; never replay transactions or fabricate
+the original guard's completion/exit result to satisfy a later registration gate.
+
+<!-- SYSCOIN: Dated operator reconciliation distinguishes file metadata and
+raw-artifact provenance from canonical receipts and complete live qualification. -->
+Post-exit inspection found six public AdminFunctions journal JSON files and
+six corresponding private-cache JSON files at mode `0664`. One exact,
+identity-bound operation tightened those **12 files only** to `0600`, preserving
+their bytes, hashes, inodes, sizes and modification times. It did not reset or
+remove journals, change sender nonces, or modify contracts. A subsequent
+metadata-only capture passed at `2026-10-07T04:56:36Z`; that capture is not a
+receipt, runtime, ownership or whole-graph audit.
+
+The first separate read-only reconciliation was **unqualified**. It stopped
+before full receipt/poststate qualification because 21 unique L1 artifact
+JSON files have different raw SHA256 identities from the original source plan.
+All compared deployment calldata, runtime, constructor, initializer and
+source-unit summaries matched; those summaries do not establish equality of
+the complete artifact JSON. No checked preserved candidate recovered an
+original recorded raw artifact hash. Serialization-only equivalence is
+therefore **unproven**; the raw-hash mismatch alone is not evidence of a
+contract vulnerability or proof failure.
+
+The subsequent independent current-artifact qualification passed: genuine
+capture `d3eb3e5e` and separately activated result `effafb83`, both with exit
+zero, bind all 48 full raw artifacts, complete source/compiler context and the
+42 canonical transactions. The final snapshot was ROOT block 985489 with 80
+confirmations for the last receipt and next administrator nonce 118. All
+853 function selectors and 239 physical source units were independently
+checked. Fees for those 42 unique receipts were booked once.
+
+<!-- SYSCOIN: Compiler metadata projection and source-derived event checks are
+operator qualifications, not changes to contracts or already signed payloads. -->
+Canonical raw Solc metadata is authoritative; parsed Foundry metadata has a
+narrow, explicitly checked projection for empty ABI arrays and empty remapping
+contexts. Preserve both complete representations without claiming full JSON
+equality. Exact handoff checks were also corrected against contract source and
+actual receipts: fresh CTM administration starts at zero, and ChainAdmin
+multicalls emit their own audit event. Nonces 113 and 117 have exactly three and
+two ordered logs respectively. The signed deployment and handoff bytes did
+not change.
+
+This qualifies current CTM source, artifacts, receipts and state only. Retain
+the original raw-hash mismatch and unknown CLI exit as historical limitations;
+do not rewrite pins,
+restore a fabricated artifact, replay any of the 42 transactions, manufacture
+the original completion record or manually mark a checkpoint passed. Nonce
+118 alone is not authorization to run registration; a separate source-bound
+normal registration invocation and receipt/poststate qualification are required.
+The original failed guard's completion stays absent.
+
+<!-- SYSCOIN: A later independent registration qualification does not rewrite
+the original wrapper exit, manufacture its completion or authorize replay. -->
+The distinct registration invocation submitted two successful transactions at
+nonces 118 and 119, but its wrapper exited with an error and its normal CLI exit
+remains unknown. A later independent read-only qualification, `e583eb9d`, passed
+at ROOT block 985519 with 27 confirmations for the last receipt. It binds the
+complete current RegisterCTM artifact and all 64 source units, rechecks the
+whole contracts/CLI source context before and after, and verifies both canonical
+receipts, exact ordered events, bidirectional registry entries and preserved
+Core/CTM configuration and checkpoint state. The two unique receipt fees were
+booked once; do not resend either transaction or fabricate the missing original
+completion. This independently qualifies registration only; the later Registry
+and Root checkpoint milestones below do not establish public-service acceptance.
+
+<!-- SYSCOIN: A source-preserved remainder completes the missing transaction
+without replaying ownership handshakes or rewriting the failed invocation. -->
+The later normal ownership/Registry invocation submitted successful rows
+120–122, then its wrapper exited **1** when stock Cast timed out waiting for the
+implementation receipt. The underlying helper's exact exit remains unknown,
+and that original intent's completion marker remains absent. A separately
+accepted read-only audit, `8ace1206`, qualified the three canonical receipts and
+exact existing implementation at ROOT block 985546, with latest/pending nonce
+123. Their **11,246,562,718 wei** in fees were booked once.
+
+Do not rerun the whole ownership helper for this remainder: the pinned normal
+ownership path emits two admin handshakes on each invocation, even when those
+admins are already accepted. The reviewed temporary operator instead extracted
+only the byte-exact reusable Registry function definitions and original context,
+factory, private-inspection/trap and encrypted-account preparation from the
+existing helper. It kept fresh source, custody, config, exact existing
+ProxyAdmin/implementation, empty-proxy, nonce, fee and lifecycle-lock gates, then
+called the stock Registry function once with `ETH_TIMEOUT=1800`. It neither
+changed production code nor replayed rows 120–122.
+
+That remainder invocation, session `18572`, exited zero and its accepted result
+`02c08317` qualifies all four canonical rows **120–123**, exact Registry
+runtime/proxy/initializer readbacks and the single Registry-address config
+delta at ROOT block **985556**, with next administrator nonce **124**. The
+proxy-only nonce 123 receipt added **6,114,086,867 wei** in new fees; do not charge
+the already-booked first three again. The original failed invocation and unknown
+helper exit remain unchanged, and this Registry result did not advance a
+checkpoint or qualify services.
+
+<!-- SYSCOIN: A successful already-valid repair is not proof that a future
+repair's fallback has been atomically disabled by an earlier readiness probe. -->
+The subsequent normal Root checkpoint repair, session `66941` with output
+`62c0f18f`, exited zero and reported `gl.l1_ecosystem_deployed` already valid and
+marked repaired. No ownership fallback or new broadcast was observed in that
+invocation. Its initial readiness preprobe does **not** atomically disable the
+repair's fallback; retain normal live validation and never assume a later repair
+is incapable of broadcasting.
+
+<!-- SYSCOIN: Generated runtime-config permissions do not authorize replay
+of a chain initialization that already submitted transactions. -->
+The next Gateway prefix, session `11030`, reported successful chain
+initialization, then exited one when the strict metadata check rejected its
+generated chain `contracts.yaml` mode `0664`. The exact owned regular file was
+tightened to `0600`, preserving its content, inode, size and modification time.
+The existing local schema normalization and admin/readiness checks were then
+completed separately. Normal checkpoint repair, session `58944`, exited zero
+and reported `gl.gateway_chain_inited` already valid and marked repaired.
+Initialization was not replayed. The later schema normalization intentionally
+updates schema fields; it is distinct from the earlier content-preserving mode
+repair. This is not a recursive chmod instruction or a source-file mode policy.
+Pinned zkstack copies template permission bits and later saves preserve them;
+the original remote template's mode was not measured. Do not assume every
+template has mode `0664` or that another chain must encounter the same failure.
+
+<!-- SYSCOIN: Shared administrator roles require one deduplicated reserve
+top-up, not duplicate funding or another chain initialization. -->
+The following continuation, session `44668`, stopped before settlement or new
+transactions at the funding checkpoint's live balance check. The shared
+Root/Gateway deployer and governor had **10.098799201732923023 TSYS** against the
+deduplicated **11-TSYS** target. The reviewed normal repair explicitly selects
+Root plus Gateway wallets, permits only that administrator's
+**0.901200798267076977-TSYS** deficit within a one-TSYS top-up bound, and preserves
+the separate **3,000-TSYS** faucet allocation. Its single funder nonce 8 transfer
+is `0xc71669ffc05c07838cf7d2eee6aa63c3d448126b6e8913eb1b9d881a6c98bc44`;
+retain this known hash instead of resending it during the expected Tanenbaum
+confirmation interval. Once funding validates, the normal launcher revalidates
+and skips completed initialization, then continues to `gl.gateway_settlement`.
+Funding, settlement and public-service completion require their actual results;
+none is inferred from starting this recovery. Gateway/Edge readiness, the fresh
+native bridge route and public-service acceptance are not yet claimed.
+
+<!-- SYSCOIN: Dated Gateway-only milestones are not Edge/kernel/public/proof acceptance. -->
+The later 2026-10-07 continuation completed the normal Root/Gateway-init repairs
+and Gateway settlement prefix. The RPC-backed `inspect(string,string)` mock
+inspection checked the complete CTM calculation against the actual preparation
+TOML, root snapshot, namespace and immutable guest target/relay. It remains a
+mock-testnet check, not real-proof attestation or independent-host reproduction.
+After fast-forward adoption of `4726f87e`, normal Gateway config repair, release
+build and config-bound `--help` passed in `69257` (`b5d6323c`); no Edge build/start.
+
+Import `_common.sh` **once per shell**; readonly `GL_DIR` rejects a second import.
+The post-fast-forward failure stays preserved; continue already-adopted source,
+without another merge. Stream SSH scripts via a separate descriptor (FD3) and
+give child stdin `/dev/null`, preventing it from consuming the script/footer.
+Retain actual exit, logs and final source/fingerprint checks.
+
+The later normal reserve repair topped up the administrator once: funder nonce 9,
+`0x97220ed2b7720931972aac0ebb1dbfa6f2bb46c35b69d36d3a771799d54e6db4`,
+transferred **9.37394307428 TSYS** and had three canonical confirmations at its
+audit snapshot. Its **1,050,000,147,000 wei** fee and the other ten administrator
+groups' **2,542,915,667,076,977 wei** fees are booked once, separately from value.
+The operator subsequently approved fresh bridge core and **750-TSYS** operations;
+the protected **3,000-TSYS** faucet allocation and **0.05-ETH** Sepolia cap remain.
+No additional transfer or bridge-contract write is claimed at this milestone.
+
+Prestart tightening changed **18 files and 18 task directories**, preserving
+bytes, hashes, inodes, sizes, modification times and executable bits; no binary
+copy, stamp rewrite or shared-parent change occurred. Original check `94370`
+remains failed. After a RAM-only two-line quote/whole-YAML-equivalence diagnosis,
+unchanged stock Gateway repair and fresh checks passed (`36832`, `b2c6ee62`).
+Do not run help/cookie refresh again before fresh bindings. Post-regeneration
+measurement `15759` found all 26 inputs/22 directories non-writable by others,
+with source/native/stamp hashes unchanged. Durable formatter alignment is only
+proposed, not implemented; source pins are unchanged. This does not complete
+Edge, kernel publication, Gateway first boot, bridge validation or public launch.
+
+For this disposable testnet rollout, the operator has accepted the explicit
+legacy manual-deposit risk described below and selected a clean fresh native
+bridge route using the existing contracts. Those decisions do not establish
+receipt, route or public-service acceptance; the deployment is not complete.
+
+### Retire old onchain deposit entry points
+
+<!-- SYSCOIN: A disposable L2 database does not make persistent L1 governance,
+external collateral or undelivered deposits disposable. -->
+Before destructive retirement, inventory the old Bridgehub's registered chain
+list, diamonds, ChainAdmins, Governance and their actual signer custody. Keep
+decryptable/restorable controller credentials and verify their derived public
+addresses against live owners. SSH/sudo, an available newly deployed governor,
+TSYS balances and a successful owner-address simulation do not establish old
+contract control. Missing old signing authority is a strict stop for mainnet,
+and is never implicit permission to retire an accepting deposit endpoint.
+
+<!-- SYSCOIN: Disposable-testnet deprecation is an explicit operator exception,
+not an onchain pause claim or a mainnet custody/retirement shortcut. -->
+For a disposable **testnet only**, the operator may explicitly approve a
+different boundary: deprecate the old unpaused contracts, replace official
+clients/endpoints and publish that direct manual deposits to those exact old
+contracts can still be accepted and may remain unprocessed or unrecoverable on
+the retired chain. Record the specific addresses/chain IDs, the retirement
+boundary and accepted manual-deposit risk. Do not claim old onchain intake
+stopped or reset shared external contracts and collateral. The treatment of
+existing claims must be explicit, and this exception can never be copied to
+mainnet. The operator explicitly accepted this exception for the current
+v31-to-v32 testnet replacement.
+Official old UI/routes still must be disabled; old contracts are **not claimed
+paused**. General authorization to wipe databases alone is not sufficient for
+another rollout.
+
+<!-- SYSCOIN: This explicitly disposable rollout does not preserve or replay
+v31 claims; the normal paused-retirement procedure below remains for other launches. -->
+For this replacement, v31 rollup/queue/order/history preservation or migration
+is not a launch prerequisite. Retire the exact old official routes and workers;
+do not replay old messages or credit old backing to v32. Leave shared L1/Sepolia
+contracts, collateral and validator/relayer history untouched. This is an
+explicit testnet discard decision, not a completed mainnet claim-reconciliation
+procedure.
+
+For the normal paused-retirement path, prefer the deployed per-chain
+`pauseDepositsBeforeInitiatingMigration()` route when its admin/CTM authority
+is available. Bind its selector and runtime to the
+old release, inspect the actual pause delay, and verify `depositsPaused()` rather
+than assuming a source-only function or zero-delay setting. For the reviewed
+v31 Tanenbaum deployment the delay is zero. Pausing the migrated edge on ROOT
+also queues a free service transaction through the old Gateway to set the mirror
+pause. Request the edge pause **before** pausing the ROOT Gateway. Keep the old
+nodes live until that service executes, both pause flags are verified, active
+queues drain and committed/verified/executed batch counts agree. The ROOT edge's
+post-migration ingress mirror is not the active Gateway execution queue; compare
+their totals, start indexes and priority roots instead of misreading its raw size.
+
+A fallback `pause()` on the **dedicated old Bridgehub instance** is appropriate
+only after proving its complete scope is exactly the two retired Tanenbaum
+chains (57001 and 57057), verifying the deployed deposit guards, and establishing
+that withdrawal/proof forwarding remains available. It is not permission to
+pause shared AssetRouter/Nullifier contracts or another ecosystem. The reviewed
+old Governance has zero minimum delay but still requires a scheduled operation:
+`scheduleTransparent(operation, 0)` followed by `execute(operation)`.
+`executeInstant` also requires a pending/scheduled operation; it is not an
+unscheduled shortcut. Use only verified owner custody and approved exact targets.
+
+For the normal paused-retirement path, pause the old source fast-path ingress
+as well, then reconcile deployment-to-pause event windows, canonical old-L2
+receipts, escrow paid/used state and queue
+processing boundaries. Worker ledgers alone can omit historical orders. Preserve
+cancellation, reimbursement and reserve/liability records; never replay a
+cancelled or reimbursed message against the new Bridgehub. Preserve unchanged
+Tanenbaum/Sepolia state, external collateral and shared validator/relayer history.
+The operator-authorized discard covers v31 rollup databases and indexes, not
+those shared assets. For paused retirement, repeat final queue/event checks
+after onchain intake is closed. Under a separately approved testnet exception,
+follow its recorded claim/discard boundary, close official/fast-path intake and
+explicitly acknowledge that later manual legacy deposits can still arrive.
+
+<!-- SYSCOIN: Clean testnet replacement must not require new production contract
+logic just to retain an obsolete route's collateral or one-time peer bindings. -->
+An existing collateralized NativeIngress proxy has no Bridgehub setter in the
+reviewed old implementation. Its original initializer already accepts a
+Bridgehub, so a fresh proxy can target the new ecosystem without adding a setter
+or upgrading the old proxy. The operator narrowed the earlier rebind approval
+to simple operations and selected this fresh route. The staged setter candidate
+is unused; old proxy/admin/implementation, backing and Sepolia synthetic supply
+remain untouched.
+
+Deploy fresh GasVault/NativeIngress instances, a new Sepolia synthetic router
+with **zero initial supply**, route-specific pause/timelock/aggregation modules
+and a fresh paused fast-path pair using the original contract logic. Attest any
+reused shared Mailboxes/validators/relayer without resetting their history or
+policy. Do not retarget one-time timelock or fast-path peer bindings, manually
+mint synthetic supply, move old backing or credit it to the new route.
+
+The current Sepolia fee-plus-value ceiling remains **0.05 ETH**; an offer to
+provide more testnet ETH does not raise it automatically. Obtain actual bounded
+transaction estimates before signing. New native sponsorship, canaries and
+fast-path inventory must fit the approved operating allocation, not the
+separate faucet reserve. The documented 1,000-wSYS example minimum is not a
+requirement to spend 1,000 TSYS: use reviewed smaller testnet limits or obtain
+additional funding approval.
+
+Fresh addresses alone are not acceptance. Require reciprocal new-router
+enrollment, actual owner/code/asset readbacks, route preflight and authenticated
+canonical credit through the new Root/Gateway/edge before enabling the UI or
+fast lane. Keep new routes closed until these checks pass. UI closure alone does
+not block direct calls to old source contracts.
+
+### Exact reset inventory
+
+Stop the identified owners and verify their processes have exited before
+removing chain-derived state. Record the resolved targets; do not perform a
+wildcard home-directory cleanup or global Docker pruning.
+
+| Component | Fresh-reset scope | Preserve |
+| --- | --- | --- |
+| Gateway and edge | Obsolete ecosystem workspace, both complete runtime database/recovery trees and the exact matching launch checkpoint namespace | External wallet YAML, signer/keystore material, required deployment inputs |
+| zkSYS external nodes | Both configured public/debug database and recovery trees | Peer identities, private config inputs and build prerequisites |
+| Blockscout | Exact Gateway/zkSYS project database, Redis and backend DETS volumes | Compiler caches, secrets, TLS and branding |
+| Faucet and applications | Old-chain nonce/rate caches, contract/start-block configuration and explicitly identified L2-derived worker state | Faucet wallet, application secrets and unrelated chain history |
+| Tanenbaum L1 | Not part of the discarded rollup | Core/Geth datastore, DA wallet and root-L1 funds/history |
+
+Fresh checkpoint state is normally beside `GATEWAY_DIR`, under
+`.gateway-launch-state/<sha256(realpath(GATEWAY_DIR))>`; a supported legacy
+deployment can instead have state inside `GATEWAY_DIR/.gateway-launch`.
+Resolve the active path with `gl_checkpoint_state_dir` before reset. Deleting
+`gateway` alone is not sufficient, and deleting the entire sibling namespace
+can destroy another deployment's state.
+
+`deploy-zksys-en-rpc.sh` rebuilds/reconfigures nodes but does not clear their old
+databases. Blockscout `deploy-remote.sh` recreates services but retains chain
+indexes. Both require the explicit, inventoried reset above. Keep bridge ingress
+paused while old L2 routes are replaced; do not erase unchanged Tanenbaum,
+Sepolia, external checkpoint or shared queue history as a side effect.
+
+### Explicit mock-testnet launch
+
+Load the approved wallet, namespace, admin and RPC inputs described below, then
+select the complete testnet verifier mode:
+
+```bash
+export PROTOCOL_VERSION=v32.0
+export SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER=true
+export PROVER_MODE=no-proofs
+export GATEWAY_PROVER_MODE=no-proofs
+export EDGE_PROVER_MODE=no-proofs
+unset MIGRATE_EDGE REUSE_ECOSYSTEM
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
+```
+
+`PROVER_MODE=no-proofs` alone is not sufficient. The explicit mock flag and all
+three modes must agree. Use the actual Tanenbaum root chain 5700 and the
+canonical Gateway/zkSYS chain configuration, not a local fork masquerading as a
+public launch. Do not populate the blocked canonical local-chain fixture.
+
+The staged invocation omits migration while the independent
+`GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS` pin is acquired and verified from the
+deployment record. Once that pin and the launch identity gates pass, resume:
+
+```bash
+unset GATEWAY_WALLET_CREATION GATEWAY_WALLET_PATH
+# SYSCOIN: Keep approved edge in-file selectors and EDGE_REUSE_GATEWAY_GOVERNOR=false
+# while the fresh edge is absent.
+bash scripts/gateway-launch/run-gateway-launch.sh \
+  --l1 tanenbaum --reuse-ecosystem --migrate-edge
+```
+
+Clear edge wallet-creation inputs only when reusing an already created edge.
+Until then, retain the exact protected edge in-file path/creation inputs and
+`EDGE_REUSE_GATEWAY_GOVERNOR=false`; do not discard its selected custody.
+`--migrate-edge` transitions the newly initialized edge to Gateway settlement;
+it does not mean retaining or migrating the old v31 chain. Keep the proving
+mode and deterministic inputs unchanged across retries. Use the checkpoint
+repair procedure for a diagnosed failure, not manual checkpoint deletion.
+
+### Independently derive and then attest the wrapped-token pin
+
+<!-- SYSCOIN: Published genesis bytes, not mutable Forge output or an RPC-selected
+recipient, determine the wrapped native-token CREATE2 identity. -->
+Derive the pin before using it as a native-value recipient. Preserve the exact
+reviewed genesis JSON/hash, source routing, proxy creation/runtime bytes,
+constructor inputs and CREATE2 preimage in the deployment record. The proxy
+creation bytes must come from the **published genesis** implementation, not
+whatever `contracts/out` currently contains after a different build/profile.
+The reviewed v32 seed embeds a 4,171-byte proxy creation blob in the initial
+GenesisUpgrade runtime at `0x10001`; its observed byte offset is 7,381. Those
+numbers identify this reviewed seed, not a rule for future releases: validate
+the genesis hash and a unique, aligned bytecode match before extraction.
+
+For this source route, `ComplexUpgrader` at `0x800f` remains the EVM CREATE2
+caller through delegatecalls, with salt zero. ABI-encode the proxy constructor
+`(logic, admin, data)` using implementation `0x10007`, the independently recorded
+aliased ROOT Governance, and `initializeV3(name, symbol, assetRouter,
+nativeTokenSentinel, baseTokenAssetId)` from the reviewed native-token inputs.
+The current Tanenbaum initializer uses `Wrapped Syscoin`/`WSYS`, asset router
+`0x10003`, native sentinel `0x1`, and the native asset ID derived from ROOT chain
+5700, native token vault `0x10004` and that sentinel. Apply ordinary EVM CREATE2
+to the **exact extracted creation bytes plus ABI constructor data**. The
+ecosystem namespace salt selects ROOT Governance; it is not the wrapped-token
+CREATE2 salt, and Gateway chain ID is not an extra constructor-preimage field.
+Source inspection must also exclude an intervening force-replacement/reset of
+the seeded implementation or native-token-vault state during conversion.
+
+A narrowly checked Solidity IPFS-metadata comparison may establish source
+correspondence and locate that unique embedded blob. It must never normalize,
+strip or substitute metadata in the CREATE2 preimage or in live code acceptance:
+the actual published bytes are the identity. A mutable Forge artifact with only
+a different metadata digest can produce a different address and must be rejected.
+Do not copy this rehearsal's address, Governance alias, asset ID or extracted
+offset into a mainnet launch; rederive from its reviewed source and deployment.
+
+After fresh Gateway startup and conversion, verify the chain/genesis identity,
+ROOT Governance/native-asset bindings, NTV `WETH_TOKEN()` at `0x10004` and
+GWAssetTracker `wrappedZKToken()` at `0x10010` against the independent pin. Also
+attest exact proxy runtime bytes, EIP-1967 implementation/admin slots, exact
+implementation code and token name/symbol/decimals/bridge/vault/asset getters.
+Only then supply the pin for settlement-fee funding/migration. A source-derived
+record is **not live attestation**; any mismatch stops use instead of replacing
+the pin with a value discovered from the RPC receiving the transaction.
+
+### Contract and client deployment
+
+After the chain is live, run `zksys-l2-bootstrap.sh` for the current token,
+ProxyAdmin, membership/weight registries, issuer, native staking vault and
+canonical gas tank. Verify all proxy, role, receiver and immutable runtime
+bindings. The persisted tank authority ends the first-boot exception; do not
+disable its startup gate after bootstrap.
+
+<!-- SYSCOIN: Explorer publication must reproduce this deployment, not a prior
+testnet's addresses or a verification helper's default compiler. -->
+Publish tokenomics sources using the actual bootstrap manifest and build
+profile. Reproduce each manifest init-code hash including its constructor
+arguments, then compare the entire live runtime (with the deployed immutable
+values) before submitting standard JSON through the explorer's normal
+verification API. Record the compiler, optimizer, viaIR, EVM version and
+metadata settings from those reproduced artifacts; do not assume the defaults
+in a legacy verification script match the release. Read back the explorer's
+verified status and proxy implementation, and distinguish partial verification
+from full verification. Source publication is not a replacement for role,
+state, transaction or positive-credit GasTank acceptance.
+
+<!-- SYSCOIN: Anchor the approved issuance policy to a verified token receipt;
+never publish a wall-clock guess or silently advance the original start. -->
+`ZKSYS_ISSUER_START_TIME` is an absolute future Unix timestamp, bound in the
+bootstrap manifest before broadcasts. For the approved exact 24-hour
+post-token-deployment policy, use the receipt-anchor helper from PR #333:
+leave that variable unset, run `zksys-l2-bootstrap.sh --token-prelude`, then run
+the full bootstrap. It records and revalidates the exact token proxy deployment
+receipt and derives start from its canonical block timestamp plus 86,400 seconds.
+Persist the receipt/prelude/bootstrap manifests and later `startTime()` readback;
+an interrupted recording may recover only that exact attested deployment hash.
+Do not recompute the time on retries, use `now + 86400`, reuse v31's past value
+or publish a start before its receipt/readback exists. Complete initial issuer
+deployment before the anchored start; otherwise its initializer reverts. Never
+roll the anchor forward: retries of an already deployed issuer retain the original
+start. Defaults remain daily periods, a 365-day schedule year and a three-period
+positive-weight activation delay.
+
+<!-- SYSCOIN: Distinguish the schedule anchor from an accrued positive reward. -->
+The start timestamp is not an immediate mint: the issuer accounts for completed
+periods. With 86,400-second periods, the first positive scheduled amount is
+available no earlier than `startTime() + 86400`, and only legitimate active
+weight can receive it. Before the start, a normal stake can queue weight for
+period zero; call `activatePendingWeight()` through the ordinary account path.
+After the start, positive-weight changes use the configured activation delay.
+Record the actual weight, distribution, claim and token-funded GasTank
+transaction separately. Do not qualify a positive-credit GasTank test using
+an artificial clock, ad-hoc token mint or invented credit. If the first period
+has not elapsed, report that acceptance item as pending rather than complete.
+
+<!-- SYSCOIN: This rehearsal delegates the mandatory Pali suite to the wallet,
+not a duplicate server-side deployment. -->
+For this public rehearsal the Pali wallet's Advanced settings owns deployment
+and attestation of its nine mandatory infrastructure contracts, starting with
+canonical EntryPoint v0.9. The server must not duplicate that suite. EntryPoint's
+official artifact profile is optimizer 1,000,000, viaIR and default IPFS metadata;
+Pali account/validator/recovery/factory artifacts use their separate optimizer-200,
+metadata-free profile and matching wallet constants in
+[the contracts guide](https://github.com/syscoin/zksync-os-server/blob/main/contracts/README.md).
+Do not redeploy legacy custom EntryPoints/paymasters or use stale `contracts/out`.
+An explicitly selected helper-based deployment is a different workflow: its
+keystore interface uses `DEPLOYER_ACCOUNT` with `DEPLOYER_SIGNER` unset, unlike
+the launcher. Map that environment separately and do not claim it deploys the
+whole wallet suite. Supply exact hashes to `check-pali-deployment.sh` and attest
+factory/EntryPoint/validator relationships, not only explorer verification.
+
+Inventory Multicall3 and other required standard infrastructure separately.
+For canonical `0xcA11bde05977b3631167028862bE2a173976CA11`, follow the
+[official deployment instructions](https://github.com/mds1/multicall3#new-deployments),
+check the deployer nonce and signed transaction gas limit, fund minimally and
+verify the exact deployed runtime. Its publicly compromised deployment EOA is
+not the project funding wallet. Opt-in service-V1 proof/reward contracts are not
+enabled by token bootstrap and are not automatically part of mock proving.
+
+Refresh EN source/build stamps, sequencer enode and direct RPC inputs, both
+explorers, token branding, wallet, portal, bridge routes/start blocks and faucet
+configuration from the new deployment outputs. Reset the faucet's in-memory
+nonce state and fund its preserved dispenser on the new chain before opening
+it. Old v31 faucet balances do not carry into the fresh chain; do not grant an
+ad-hoc ZKSYS mint role to seed it.
+
+### Persistent sequencer handoff (dated testnet reference)
+
+<!-- SYSCOIN: Reproducible staging assets do not authorize service cutover or
+replace canonical migration ownership, configuration, source or app guards. -->
+The [2026-10-06 Tanenbaum reference assets](reference-assets/v32-public-tanenbaum-20261006/INSTALLATION-GATES.md)
+pin source `f638db92e5c5ea31507e089b61f122fd95cf9083` and the explicitly dated
+fresh runtime. They include two inactive systemd templates, a guarded edge
+adapter recipe, eight offline tests and a staging record. **They are mock-testnet
+references, not installed services or a completed launch. Never blindly copy
+their paths, chain IDs, no-proofs flags or deployment inputs to mainnet.**
+
+<!-- SYSCOIN: Preserve historical staging evidence rather than relabeling its
+source or copied binary stamp as a newly qualified release. -->
+That f638 bundle is a historical snapshot, **not installable against the later
+d8 recovery release**. Before service installation, independently review an
+updated bundle against the final approved source and private-validation gates,
+regenerate normal build stamps and record actual final artifact hashes. The d8
+CLI and Gateway native binary were rebuilt and qualified through the normal
+helpers; this neither restamps the f638 references nor authorizes node start.
+
+Follow the linked gates in order using the final reviewed bundle: source the
+exact protected `launch.env.sh`, export `ZKSYNC_OS_SERVER_PATH` to its matching
+approved checkout, and preserve the same approved deployment inputs.
+Require the fresh canonical contracts/configs,
+normal edge `build-prebuilt` and config-bound `exec-prebuilt -- --help` before
+generating the adapter. Record actual final binary/stamp/script hashes; copied
+Cargo caches and earlier Gateway hashes are not new build attestations.
+
+The adapter preserves every canonical prefix byte (cookie refresh, context,
+exact config path and execute-operator FD9 lock) and changes only the terminal
+edge runner mode to `exec-prebuilt`. Source, binary, protocol, app and context
+checks still run. Gateway uses its unmodified generated prebuilt start script.
+Neither service may start while canonical migration/repair owns its temporary
+Gateway process: finish/revalidate migration and final configs, confirm all
+owned jobs exited and listeners are free, then obtain the explicit cutover and
+installation approval. Attest Gateway before edge; recheck exact PID/socket,
+genesis, live postimages and settlement bindings, not chain ID alone. The
+references do not weaken old-deposit retirement or external-collateral gates.
+
+Reviewed reference-asset SHA256 values:
+
+| Reference asset | SHA256 |
+| --- | --- |
+| [Gateway unit](reference-assets/v32-public-tanenbaum-20261006/zksys-v32-gateway.service) | `757028d30fbbaef6c0812f4d4aa71e3d9b23d3a03f09c094a1e080a0502722ce` |
+| [Edge unit](reference-assets/v32-public-tanenbaum-20261006/zksys-v32-edge.service) | `8d284e7f88d1b60a97ea5662c84a348843d7e2311418f075878bd13e0aaecfca` |
+| [Adapter recipe](reference-assets/v32-public-tanenbaum-20261006/generate-edge-prebuilt-adapter.py) | `a44ce5c40a309f224cf0cceaf8443d03af417683da05d57130df40b9a04f179c` |
+| [Offline tests](reference-assets/v32-public-tanenbaum-20261006/test-edge-prebuilt-adapter.py) | `38b12b6da896d9a0147750ccbe400b9ed0d81c60e435821a82a57b3f8bafb790` |
+
+### Acceptance record and mainnet boundary
+
+Keep an operator-only record of actual commands, pinned inputs, resolved reset
+targets, approvals, failures and repairs. Keep proposed/not-run checks separate
+from completed checks. Publish the final chain identities, contract address/
+runtime manifest, successful transaction receipts and issuance start without
+publishing secrets or credentialed endpoints.
+
+Before declaring the public replacement complete, verify:
+
+- Root/Gateway/edge chain and genesis identities, explicit testnet verifier
+  marker and compiled address bindings agree.
+- Both nodes and DA are healthy and mock batches commit/prove/execute; do not
+  report this as real SNARK verification.
+- Token/registry/issuer/staking/gas-tank wiring and current Pali/native-gas and
+  tank-backed account flows pass their deployment checks.
+- Both ENs sync the new chain and use the direct sequencer upstream, both
+  explorers index fresh state, and clients/bridge/faucet use the new addresses.
+- Intended public endpoints work while Gateway/debug/admin/prover boundaries
+  retain their access restrictions. An ordinary restart uses the attested
+  binaries without rebuilding or reusing stale stamps.
+- Public endpoints identify the release as a fresh mock-proof testnet.
+
+Mainnet is a separate rollout: this destructive reset and mock verifier recipe
+are forbidden there. Require production proofs and the current deployed
+verifier/VK, chainlocked finality, reviewed governance/activation and asset
+reconciliation, durable encrypted off-host recovery, and an approved cutover/
+rollback plan. Do not copy testnet one-confirmation, custody or reset choices
+into a mainnet launch. A completed mock-testnet rehearsal does not close those
+release gates. Before destroying any old runtime or removing hot keys, prove
+continued signing ability for its deposit administrator and Governance; retain
+the corresponding encrypted recovery credentials and test their restoration.
+Do not repeat a testnet's missing-old-owner custody gap in mainnet retirement.
+## External administrator signing and patched CLI
 
 <!-- SYSCOIN: Keep release administrators in supported encrypted accounts,
 without substituting external keys for generated runtime operators. -->
@@ -481,6 +1379,28 @@ if settlement must progress without application traffic; it is opt-in and needs 
 
 ## Start nodes after successful launch
 
+<!-- SYSCOIN: First Gateway boot precedes Edge creation in the canonical
+launcher; deployment staging must follow that producer/consumer ordering. -->
+The canonical launcher's first supervised Gateway start is an earlier,
+Gateway-only lifecycle step: it generates Gateway configs with
+`MATERIALIZE_EDGE_CONFIG=false`, starts Gateway, then initializes/migrates Edge.
+Both final config sets are generated only afterward. A first-boot prestart
+gate must bind the exact reviewed source and Gateway config/genesis/start script,
+canonical native binary and source stamp; it cannot require not-yet-generated
+final Edge artifacts. Keep the later service-publication gate separate and
+strict: both final native/config/genesis identities, completed migration and
+serialized acceptance still need qualification before public cutover.
+
+When only Gateway config generation needs repair, the supported
+`gateway-launch-repair.sh --l1 tanenbaum repair gl.os_configs_gateway` route
+generates and live-validates that Gateway-only output without starting Gateway.
+Do not manufacture a passed checkpoint or fake Edge artifacts to satisfy
+prestart. An operator staging gate that demands final Edge output before this
+first Gateway start is an ordering error, not a protocol defect or a reason to
+bypass the canonical lifecycle. Source/build ancestor permissions and ordinary
+Cargo binary/stamp provenance must also qualify before installing a staged
+publisher; a packet or syntax test alone is not deployment readiness.
+
 ```bash
 "$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"
 "$GATEWAY_DIR/os-server-configs/zksys/start-node.sh"
@@ -525,14 +1445,19 @@ $GATEWAY_DIR/os-server-configs/gateway/config.yaml
 $GATEWAY_DIR/os-server-configs/zksys/config.yaml
 ```
 
+<!-- SYSCOIN: Distinct ecosystem/old governance keys are required custody, not
+redundant files that may be deleted after checking only runtime operators. -->
 The final `config.yaml` files contain the operator private keys used by the
-running nodes. The chain-scoped `wallets.yaml` files contain the deployer,
-governor, fee, and operator wallet keys needed for repair/governance/migration
-work. Avoid backing up root or duplicate wallet files such as
+running nodes. The chain-scoped `wallets.yaml` files contain deployer, governor,
+fee and operator keys needed for repair/governance/migration. Inventory ROOT
+Governance and chain deposit-admin ownership separately: an ecosystem/root
+wallet or an external encrypted account may hold a distinct controller key not
+present in a chain wallet. Include every such required signer in the encrypted
+recovery plan and verify its restored address. Avoid merely duplicate files such as
 `$GATEWAY_DIR/configs/wallets.yaml`, `$GATEWAY_DIR.wallets.yaml`, hidden
-`.*wallets.yaml` copies, or `*.backup` files unless you are intentionally making
-a broader forensic archive; exporting extra unrelated keys increases confusion
-and recovery risk.
+`.*wallets.yaml` copies or `*.backup` files only after proving that they contain
+no unique required controller. Exporting unrelated keys increases recovery risk;
+omitting a distinct old Governance key can make safe deposit retirement impossible.
 
 ```bash
 (
@@ -547,6 +1472,7 @@ trap 'rm -f "$secret_list"' EXIT
 
 shopt -s nullglob
 secret_paths=(
+  "$GATEWAY_DIR"/configs/wallets.yaml
   "$GATEWAY_DIR"/chains/gateway/configs/wallets.yaml
   "$GATEWAY_DIR"/chains/zksys/configs/wallets.yaml
   "$GATEWAY_DIR"/os-server-configs/gateway/config.yaml
@@ -580,8 +1506,11 @@ printf 'encrypted backup created: %s\n' "$backup_archive"
 ```
 
 Keep the encrypted archive and its passphrase separated. The command exits on
-backup or verification failure; do not delete source keys unless it completes
-successfully and the encrypted backup has been copied to durable storage.
+backup or verification failure. Listing the archive is not a signer-restoration
+test: explicitly include any externally referenced controller wallet/account,
+restore/decrypt it securely and compare its derived address to every required
+old/current onchain owner. Do not delete source keys unless those checks pass
+and the encrypted backup has been copied to durable storage.
 
 After copying that backup off the hot host, remove launch-time wallet files,
 duplicate wallet copies, and Foundry signer material. Do not remove final
