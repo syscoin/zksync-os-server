@@ -4,15 +4,15 @@ use alloy::primitives::U128;
 use alloy::rpc::types::{Filter, FilterId};
 use dashmap::DashMap;
 use std::num::NonZeroU32;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 use tokio::time::MissedTickBehavior;
 
 /// An active installed filter
 #[derive(Debug)]
 pub(crate) struct ActiveFilter {
-    /// At which block the filter was polled last.
+    /// The first block not yet returned by a successful change poll.
     pub(crate) block: u64,
     /// Last time this filter was polled.
     pub(crate) last_poll_timestamp: Instant,
@@ -51,10 +51,10 @@ impl FilterKind {
     }
 }
 
-/// Manages the set of installed filters: install, advance, uninstall, and stale-filter eviction.
+/// Manages installed filters, serialized change polls, and stale-filter eviction.
 #[derive(Clone)]
 pub(crate) struct FilterRegistry {
-    filters: Arc<DashMap<FilterId, ActiveFilter>>,
+    filters: Arc<DashMap<FilterId, Arc<Mutex<ActiveFilter>>>>,
     stale_filter_ttl: Duration,
     // SYSCOIN: Count reservations atomically across clones; map length checks race with installs.
     retained: Arc<AtomicUsize>,
@@ -114,23 +114,23 @@ impl FilterRegistry {
         })
     }
 
-    /// Installs a new filter, recording `latest_block` as the starting point for change polling.
+    /// Installs a new filter with the first block to include in change polling.
     /// SYSCOIN: Reserve shared capacity before constructing the kind, particularly listeners.
     pub(crate) fn install_with(
         &self,
         make_kind: impl FnOnce() -> FilterKind,
-        latest_block: u64,
+        start_block: u64,
     ) -> Result<FilterId, EthFilterError> {
         let reservation = self.reserve()?;
         let id = FilterId::Str(format!("0x{:x}", U128::random()));
         self.filters.insert(
             id.clone(),
-            ActiveFilter {
-                block: latest_block,
+            Arc::new(Mutex::new(ActiveFilter {
+                block: start_block,
                 last_poll_timestamp: Instant::now(),
                 kind: make_kind(),
                 _reservation: reservation,
-            },
+            })),
         );
         Ok(id)
     }
@@ -146,7 +146,9 @@ impl FilterRegistry {
         let entry = self
             .filters
             .get(id)
+            .map(|entry| Arc::clone(entry.value()))
             .ok_or_else(|| EthFilterError::FilterNotFound(id.clone()))?;
+        let entry = entry.lock().expect("filter lock poisoned");
         entry
             .kind
             .as_log_filter()
@@ -154,34 +156,36 @@ impl FilterRegistry {
             .ok_or_else(|| EthFilterError::FilterNotFound(id.clone()))
     }
 
-    /// Advances the filter's block pointer to `latest_block + 1` and returns
-    /// `Some((start_block, kind))` — the range to scan and the filter kind.
-    /// Returns `None` when there are no new blocks since the last poll.
-    pub(crate) fn advance(
+    // SYSCOIN: Serialize a filter's polls and commit its cursor only after a successful scan.
+    // Use an entry lock so disk scans never hold a shared registry shard lock.
+    // Idle polls still renew the lease, and pending notifications do not depend on a new block.
+    pub(crate) fn poll<T>(
         &self,
         id: FilterId,
-        latest_block: u64,
-    ) -> Result<Option<(u64, FilterKind)>, EthFilterError> {
-        let mut entry = self
+        read_changes: impl FnOnce(u64, &FilterKind) -> Result<(T, u64), EthFilterError>,
+    ) -> Result<T, EthFilterError> {
+        let entry = self
             .filters
-            .get_mut(&id)
+            .get(&id)
+            .map(|entry| Arc::clone(entry.value()))
             .ok_or(EthFilterError::FilterNotFound(id))?;
+        let mut entry = entry.lock().expect("filter lock poisoned");
 
-        if entry.block > latest_block {
-            return Ok(None);
-        }
-
-        // Advance the stored block to `latest_block + 1` so the next poll starts from there.
-        let mut start_block = latest_block + 1;
-        std::mem::swap(&mut entry.block, &mut start_block);
         entry.last_poll_timestamp = Instant::now();
-
-        Ok(Some((start_block, entry.kind.clone())))
+        let (changes, next_block) = read_changes(entry.block, &entry.kind)?;
+        entry.block = next_block;
+        Ok(changes)
     }
 
     /// Evicts filters that have not been polled within `stale_filter_ttl`.
     pub(crate) fn clear_stale(&self, now: Instant) {
         self.filters.retain(|id, filter| {
+            // SYSCOIN: A currently executing poll is active; never wait for its disk scan here.
+            let filter = match filter.try_lock() {
+                Ok(filter) => filter,
+                Err(TryLockError::WouldBlock) => return true,
+                Err(TryLockError::Poisoned(_)) => panic!("filter lock poisoned"),
+            };
             let is_valid = (now - filter.last_poll_timestamp) < self.stale_filter_ttl;
             if !is_valid {
                 tracing::trace!(?id, "evicting stale filter");
@@ -289,7 +293,11 @@ mod tests {
             kind: FilterKind::Block,
             _reservation: registry.reserve().unwrap(),
         };
-        drop(registry.filters.insert(id.clone(), replacement));
+        drop(
+            registry
+                .filters
+                .insert(id.clone(), Arc::new(Mutex::new(replacement))),
+        );
         assert_eq!(registry.retained.load(Ordering::Acquire), 1);
         assert!(registry.uninstall(&id));
         assert_eq!(registry.retained.load(Ordering::Acquire), 0);
@@ -330,5 +338,112 @@ mod tests {
             Err(EthFilterError::FilterCriteriaTooLarge { max_terms: 3 })
         ));
         registry.bounded_log_filter(Filter::default()).unwrap();
+    }
+
+    #[test]
+    fn idle_polls_renew_the_filter_lease() {
+        let registry = registry(1, 4);
+        let id = registry.install_with(|| FilterKind::Block, 8).unwrap();
+        registry
+            .filters
+            .get(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .last_poll_timestamp = Instant::now() - Duration::from_secs(30);
+        registry
+            .poll(id.clone(), |start, _| Ok(((), start)))
+            .unwrap();
+        registry.clear_stale(Instant::now() + Duration::from_secs(31));
+        assert!(registry.uninstall(&id));
+    }
+
+    #[test]
+    fn an_in_flight_poll_does_not_block_eviction_or_uninstall() {
+        let registry = registry(1, 4);
+        let id = registry.install_with(|| FilterKind::Block, 8).unwrap();
+        let entry = Arc::clone(registry.filters.get(&id).unwrap().value());
+        let guard = entry.lock().unwrap();
+        registry.clear_stale(Instant::now() + Duration::from_secs(61));
+        assert!(registry.uninstall(&id));
+        assert_eq!(registry.retained.load(Ordering::Acquire), 1);
+        drop(guard);
+        drop(entry);
+        assert_eq!(registry.retained.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn failed_scans_do_not_consume_changes() {
+        let registry = registry(1, 4);
+        let id = registry.install_with(|| FilterKind::Block, 7).unwrap();
+        let result = registry.poll::<()>(id.clone(), |_, _| {
+            Err(EthFilterError::QueryExceedsMaxBlocks(1))
+        });
+        assert!(result.is_err());
+        assert_eq!(registry.filters.get(&id).unwrap().lock().unwrap().block, 7);
+        let start = registry
+            .poll(id.clone(), |start, _| Ok((start, 9)))
+            .unwrap();
+        assert_eq!(start, 7);
+        assert_eq!(registry.filters.get(&id).unwrap().lock().unwrap().block, 9);
+    }
+
+    #[test]
+    fn pending_notifications_are_drained_without_new_blocks() {
+        let registry = registry(1, 4);
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        let id = registry
+            .install_with(
+                || {
+                    FilterKind::PendingTransaction(PendingTransactionKind::Hashes(
+                        PendingTransactionsReceiver::new(receiver),
+                    ))
+                },
+                8,
+            )
+            .unwrap();
+        for expected in [B256::repeat_byte(1), B256::repeat_byte(2)] {
+            sender.try_send(expected).unwrap();
+            let changes = registry
+                .poll(id.clone(), |start, kind| {
+                    let FilterKind::PendingTransaction(pending) = kind else {
+                        panic!("expected pending filter");
+                    };
+                    Ok((pending.drain(), start))
+                })
+                .unwrap();
+            let alloy::rpc::types::FilterChanges::Hashes(hashes) = changes else {
+                panic!("expected pending hashes");
+            };
+            assert_eq!(hashes, vec![expected]);
+            assert_eq!(registry.filters.get(&id).unwrap().lock().unwrap().block, 8);
+        }
+    }
+
+    #[test]
+    fn concurrent_polls_cannot_return_the_same_cursor() {
+        let registry = registry(1, 4);
+        let id = registry.install_with(|| FilterKind::Block, 7).unwrap();
+        let start = Arc::new(Barrier::new(9));
+        let mut cursors = std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..8)
+                .map(|_| {
+                    let registry = registry.clone();
+                    let id = id.clone();
+                    let start = start.clone();
+                    scope.spawn(move || {
+                        start.wait();
+                        registry.poll(id, |cursor, _| Ok((cursor, cursor + 1)))
+                    })
+                })
+                .collect();
+            start.wait();
+            tasks
+                .into_iter()
+                .map(|task| task.join().unwrap().unwrap())
+                .collect::<Vec<_>>()
+        });
+        cursors.sort_unstable();
+        assert_eq!(cursors, (7..15).collect::<Vec<_>>());
     }
 }

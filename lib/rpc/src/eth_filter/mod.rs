@@ -52,7 +52,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterNamespace<RpcStora
         let latest_block = self.storage.repository().get_latest_block();
         // SYSCOIN: The kind factory runs only after the shared reservation succeeds.
         self.registry
-            .install_with(make_kind, latest_block)
+            .install_with(make_kind, latest_block.saturating_add(1))
             .to_rpc_result()
     }
 
@@ -62,16 +62,12 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterNamespace<RpcStora
     ) -> EthFilterResult<FilterChanges<Transaction<L2Envelope>>> {
         let latest_block = self.storage.repository().get_latest_block();
 
-        // start_block is the block from which we should start fetching changes, the next block from
-        // the last time changes were polled, in other words the best block at last poll + 1.
-        // Returns None when there are no new blocks since the last poll.
-        let Some((start_block, kind)) = self.registry.advance(id, latest_block)? else {
-            return Ok(FilterChanges::Empty);
-        };
-
-        match kind {
-            FilterKind::PendingTransaction(filter) => Ok(filter.drain()),
+        self.registry.poll(id, |start_block, kind| match kind {
+            FilterKind::PendingTransaction(filter) => Ok((filter.drain(), start_block)),
             FilterKind::Block => {
+                if start_block > latest_block {
+                    return Ok((FilterChanges::Empty, start_block));
+                }
                 let mut block_hashes = Vec::new();
                 for block_number in start_block..=latest_block {
                     let Some(block) = self
@@ -83,26 +79,26 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterNamespace<RpcStora
                     };
                     block_hashes.push(B256::from(block.header.hash_slow()));
                 }
-                Ok(FilterChanges::Hashes(block_hashes))
+                Ok((
+                    FilterChanges::Hashes(block_hashes),
+                    latest_block.saturating_add(1),
+                ))
             }
             FilterKind::Log(filter) => {
-                let (from_block_number, to_block_number) = match filter.block_option {
-                    FilterBlockOption::Range {
-                        from_block,
-                        to_block,
-                    } => self.resolve_range(from_block, to_block)?,
-                    FilterBlockOption::AtBlockHash(_) => {
-                        // blockHash is equivalent to fromBlock = toBlock = the block number with
-                        // hash blockHash
-                        // get_logs_in_block_range is inclusive
-                        (start_block, latest_block)
-                    }
-                };
-                let logs =
-                    self.get_logs_in_block_range(*filter, from_block_number, to_block_number)?;
-                Ok(FilterChanges::Logs(logs))
+                // SYSCOIN: The stored cursor, not the original fromBlock, bounds every later poll.
+                let (from, to) =
+                    log_changes_range(filter, start_block, latest_block, |block_id| {
+                        self.storage
+                            .resolve_block_number(block_id)?
+                            .ok_or(EthFilterError::BlockNotFound(block_id))
+                    })?;
+                if from > to {
+                    return Ok((FilterChanges::Empty, start_block));
+                }
+                let logs = self.get_logs_in_block_range((**filter).clone(), from, to)?;
+                Ok((FilterChanges::Logs(logs), to.saturating_add(1)))
             }
-        }
+        })
     }
 
     fn filter_logs_impl(&self, id: FilterId) -> EthFilterResult<Vec<Log>> {
@@ -182,7 +178,20 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterApiServer
     fn new_filter(&self, filter: Filter) -> RpcResult<FilterId> {
         // SYSCOIN: Bound installed criteria without changing stateless eth_getLogs queries.
         let filter = self.registry.bounded_log_filter(filter).to_rpc_result()?;
-        self.install_filter(|| FilterKind::Log(Box::new(filter)))
+        // SYSCOIN: Resolve a dynamic lower bound once, so delayed polls cannot skip new blocks.
+        let start_block = log_filter_start(
+            &filter,
+            self.storage.repository().get_latest_block(),
+            |block_id| {
+                self.storage
+                    .resolve_block_number(block_id)?
+                    .ok_or(EthFilterError::BlockNotFound(block_id))
+            },
+        )
+        .to_rpc_result()?;
+        self.registry
+            .install_with(|| FilterKind::Log(Box::new(filter)), start_block)
+            .to_rpc_result()
     }
 
     fn new_block_filter(&self) -> RpcResult<FilterId> {
@@ -226,6 +235,42 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthFilterApiServer
     }
 }
 
+// SYSCOIN: Keep the original filter intact for eth_getFilterLogs; only change polling uses a cursor.
+fn log_filter_start(
+    filter: &Filter,
+    latest_block: BlockNumber,
+    resolve: impl FnOnce(BlockId) -> EthFilterResult<BlockNumber>,
+) -> EthFilterResult<BlockNumber> {
+    match filter.block_option {
+        FilterBlockOption::Range { from_block, .. } => match from_block.unwrap_or_default() {
+            BlockNumberOrTag::Latest | BlockNumberOrTag::Pending => Ok(latest_block),
+            block => resolve(block.into()),
+        },
+        FilterBlockOption::AtBlockHash(hash) => resolve(hash.into()),
+    }
+}
+
+fn log_changes_range(
+    filter: &Filter,
+    start_block: BlockNumber,
+    latest_block: BlockNumber,
+    resolve: impl FnOnce(BlockId) -> EthFilterResult<BlockNumber>,
+) -> EthFilterResult<(BlockNumber, BlockNumber)> {
+    match filter.block_option {
+        FilterBlockOption::Range { to_block, .. } => {
+            let end = match to_block.unwrap_or_default() {
+                BlockNumberOrTag::Latest | BlockNumberOrTag::Pending => latest_block,
+                block => resolve(block.into())?.min(latest_block),
+            };
+            Ok((start_block, end))
+        }
+        FilterBlockOption::AtBlockHash(hash) => {
+            let block = resolve(hash.into())?;
+            Ok((start_block.max(block), latest_block.min(block)))
+        }
+    }
+}
+
 type EthFilterResult<T> = Result<T, EthFilterError>;
 
 /// Errors that can occur in the handler implementation
@@ -259,4 +304,108 @@ pub enum EthFilterError {
 
     #[error(transparent)]
     RepositoryError(#[from] RepositoryError),
+}
+
+#[cfg(test)]
+// SYSCOIN: Changes must advance independently of the original, reusable eth_getFilterLogs range.
+mod tests {
+    use super::*;
+    use std::num::NonZeroU32;
+    use std::time::Duration;
+
+    #[test]
+    fn dynamic_lower_bound_is_captured_at_installation() {
+        let filter = Filter::default();
+        let start = log_filter_start(&filter, 10, |_| panic!("latest is already known")).unwrap();
+        assert_eq!(start, 10);
+        assert_eq!(
+            log_changes_range(&filter, start, 13, |_| panic!("latest is already known")).unwrap(),
+            (10, 13)
+        );
+        assert_eq!(
+            log_changes_range(&filter, 14, 17, |_| panic!("latest is already known")).unwrap(),
+            (14, 17)
+        );
+        assert_eq!(filter, Filter::default());
+    }
+
+    #[test]
+    fn historical_changes_are_not_replayed() {
+        let registry = FilterRegistry::new(
+            Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
+            NonZeroU32::new(4).unwrap(),
+        );
+        let filter = Filter::new().from_block(2u64);
+        let start = log_filter_start(&filter, 4, |_| Ok(2)).unwrap();
+        let id = registry
+            .install_with(|| FilterKind::Log(Box::new(filter.clone())), start)
+            .unwrap();
+        for (head, expected) in [(4, vec![2, 3, 4]), (4, vec![]), (5, vec![5])] {
+            let changes = registry
+                .poll(id.clone(), |cursor, _| {
+                    let (from, to) = log_changes_range(&filter, cursor, head, |_| {
+                        panic!("latest is already known")
+                    })?;
+                    if from > to {
+                        return Ok((Vec::new(), cursor));
+                    }
+                    Ok(((from..=to).collect::<Vec<_>>(), to + 1))
+                })
+                .unwrap();
+            assert_eq!(changes, expected);
+        }
+        assert_eq!(registry.get_log_filter(&id).unwrap(), filter);
+    }
+
+    #[test]
+    fn finality_upper_bound_does_not_consume_unfinalized_blocks() {
+        let filter = Filter::new()
+            .from_block(2u64)
+            .to_block(BlockNumberOrTag::Finalized);
+        assert_eq!(
+            log_changes_range(&filter, 2, 10, |_| Ok(4)).unwrap(),
+            (2, 4)
+        );
+        assert_eq!(
+            log_changes_range(&filter, 5, 10, |_| Ok(4)).unwrap(),
+            (5, 4)
+        );
+        assert_eq!(
+            log_changes_range(&filter, 5, 12, |_| Ok(6)).unwrap(),
+            (5, 6)
+        );
+    }
+
+    #[test]
+    fn future_and_fixed_upper_bounds_do_not_replay() {
+        let filter = Filter::new().from_block(10u64).to_block(12u64);
+        assert_eq!(log_filter_start(&filter, 5, |_| Ok(10)).unwrap(), 10);
+        assert_eq!(
+            log_changes_range(&filter, 10, 5, |_| Ok(12)).unwrap(),
+            (10, 5)
+        );
+        assert_eq!(
+            log_changes_range(&filter, 10, 11, |_| Ok(12)).unwrap(),
+            (10, 11)
+        );
+        assert_eq!(
+            log_changes_range(&filter, 13, 20, |_| Ok(12)).unwrap(),
+            (13, 12)
+        );
+    }
+
+    #[test]
+    fn block_hash_filter_includes_its_block_only_once() {
+        let filter = Filter::new().at_block_hash(B256::repeat_byte(1));
+        assert_eq!(log_filter_start(&filter, 10, |_| Ok(3)).unwrap(), 3);
+        assert_eq!(
+            log_changes_range(&filter, 3, 10, |_| Ok(3)).unwrap(),
+            (3, 3)
+        );
+        assert_eq!(
+            log_changes_range(&filter, 4, 11, |_| Ok(3)).unwrap(),
+            (4, 3)
+        );
+    }
 }
