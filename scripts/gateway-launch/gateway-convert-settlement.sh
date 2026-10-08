@@ -33,6 +33,9 @@ gl_bind_gateway_launch_context
 gl_assert_gateway_chain_config_matches_expected
 gl_l1_broadcast_preflight
 conversion_deployer="$(gl_authenticate_chain_wallet_roles --print-addresses "${GATEWAY_CHAIN_NAME}" deployer)"
+# SYSCOIN: The shared Forge selector reaches the chain deployer, chain governor
+# and ecosystem governor, including filterer setup and conversion ownership.
+gl_prepare_zkstack_admin_wallet_args --conversion-actors "${GATEWAY_CHAIN_NAME}"
 # SYSCOIN: Persist the one transient whitelist principal before conversion.
 # Wallet rotation must never hide an interrupted run's still-privileged deployer.
 gl_bind_gateway_conversion_deployer "${conversion_deployer}"
@@ -163,10 +166,12 @@ PY
 
 gl_zkstack_pty zkstack chain gateway create-tx-filterer \
   --chain "${GATEWAY_CHAIN_NAME}" \
-  --l1-rpc-url "${L1_RPC_URL}"
+  --l1-rpc-url "${L1_RPC_URL}" \
+  ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"}
 gl_zkstack_pty zkstack chain gateway convert-to-gateway \
   --chain "${GATEWAY_CHAIN_NAME}" \
-  --l1-rpc-url "${L1_RPC_URL}"
+  --l1-rpc-url "${L1_RPC_URL}" \
+  ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"}
 
 gl_probe_gateway_settlement_ready ||
   gl_die "Gateway conversion completed but live settlement postconditions are not ready"

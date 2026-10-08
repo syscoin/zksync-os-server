@@ -29,13 +29,15 @@ gl_assert_gateway_chain_config_matches_expected
 # broadcast. Fresh patched zkstack output materializes exact zero sentinels.
 gl_assert_chain_contracts_da_preinit_safe "${GATEWAY_CHAIN_NAME}"
 gl_l1_broadcast_preflight
+gl_prepare_zkstack_admin_wallet_args "${GATEWAY_CHAIN_NAME}" deployer governor
 gl_prepare_gateway_chain_init_contract_artifacts
 
 gl_zkstack_private_pty zkstack chain init \
   --chain "${GATEWAY_CHAIN_NAME}" \
   --no-genesis \
   --deploy-paymaster false \
-  --l1-rpc-url "${L1_RPC_URL}"
+  --l1-rpc-url "${L1_RPC_URL}" \
+  ${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]+"${GL_ZKSTACK_ADMIN_WALLET_ARGS[@]}"}
 
 if [ -f "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml" ]; then
   gl_secure_generated_wallet_file "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"

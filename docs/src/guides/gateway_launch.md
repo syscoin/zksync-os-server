@@ -76,6 +76,11 @@ The migration repair journal accepts this pinned build (and the audited
 vanilla Foundry 1.7.1 fallback) only; changing Forge requires re-auditing its
 sequence persistence and resume behavior.
 
+<!-- SYSCOIN: Fetch implementation changes do not change locked source or artifact checks. -->
+For fresh native builds, `export CARGO_NET_GIT_FETCH_WITH_CLI=true` uses standard
+Git for large prepared Airbender repositories. This avoids repeated embedded-Git
+history repacking; retain the normal source, lockfile and binary-stamp checks.
+
 Cache the Solidity and ZKsync Solidity compilers used by the v32 contracts
 before the first offline
 launch. Both `run-gateway-launch.sh` and `gateway-launch-repair.sh` default
@@ -126,6 +131,37 @@ If using a separate Gateway governor signer for migration repairs, import it as
 another Foundry account (for example `governor`) and set
 `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor`.
 
+<!-- SYSCOIN: Keep release administrators in supported encrypted accounts,
+without substituting external keys for generated runtime operators. -->
+An imported administrator may be recorded in the ecosystem/chain wallet YAML
+with its public `address` and an explicit `private_key: null` for the
+`governor` and `deployer` roles only. Select `DEPLOYER_SIGNER=account` and
+`EDGE_GATEWAY_GOVERNOR_SIGNER=account`, with each role's explicit
+`*_ACCOUNT_NAME` and `*_PASSWORD_FILE`. Both files must be owner-only regular
+files; named accounts must reside in Foundry's default keystore directory.
+The helper derives each public account address and requires an exact match to
+the corresponding YAML role before forwarding zkstack's supported repeated
+`--additional-args` Forge selectors. Its one global selector must match every
+administrator role used by that command; distinct administrator identities
+cannot share a single selector. Conflicting ambient wallet selectors are
+rejected rather than inherited.
+
+<!-- SYSCOIN: Pinned Forge scripts require an explicit, authenticated sender. -->
+The forwarded Forge arguments include `--sender` bound to that authenticated
+administrator; the address-derivation command receives only account selectors.
+
+<!-- SYSCOIN: Bind every conversion actor and preserve protected file identity. -->
+Gateway conversion checks the chain deployer, chain governor and ecosystem
+governor together before either filterer setup or conversion. Generated-only
+administrators may remain distinct because no external selector is forwarded.
+Validated password paths become absolute before Forge changes working directory.
+
+Use `EDGE_REUSE_GATEWAY_GOVERNOR=false` for an address-only administrator:
+the raw-key governor copier deliberately remains generated-key-only. Supply
+the intended edge governor in its own wallet file. Operator, blob/prove/execute
+operator, fee-account and token-multiplier-setter roles retain generated keys.
+Missing, empty or malformed supplied keys never fall back to an external account.
+
 ## Canonical command
 
 Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `L1_RPC_URL`):
@@ -149,11 +185,102 @@ Run from a `zksync-os-server` clone:
 cd /path/to/zksync-os-server
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
+export ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK=840000
 export PROVER_API_AUTH_PASSWORD=...
 export FUNDER_SIGNER=account
 export FUNDER_ACCOUNT_NAME=funder
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum --migrate-edge
 ```
+
+<!-- SYSCOIN: Registry proofs convert Core heights using the selected network's activation. -->
+Tanenbaum Core uses NEVM activation height **840000**; mainnet uses **1317500**.
+Select the matching bridge input before the first checkpoint fingerprint and
+verify its deployed `nevmStartBlock()` getter. Do not copy the mainnet default
+into the testnet launch.
+
+### Confirmed core deployment interrupted before CTM initialization
+
+<!-- SYSCOIN: Keep partial-core recovery separate from fresh replay and the
+persisted complete-graph ownership-only repair route. -->
+Core transactions may all succeed before a later ownership handoff fails and
+before zkstack persists `configs/contracts.yaml`. Do not reset checkpoints or
+rerun a fresh ecosystem deployment. The complete-graph `--ownership-only`
+repair is not appropriate when the core config and CTM have not been persisted.
+
+First bind a protected, independently reviewed recovery manifest to the exact
+source/artifact identities, existing initial deployment config, unchanged core
+input/output, complete Forge journal, actor/nonce/calldata commitments, canonical
+successful receipts, deployed runtimes and proxy slots. Recheck the live chain,
+genesis, nonce and receipt canonicality immediately before execution. A journal
+file's presence or self-reported successful receipts are not authentication.
+Separately qualify the patched CLI binary and its build stamp; historical core
+evidence does not automatically qualify a newly built CLI.
+
+Only for an authenticated, fully confirmed core journal, the explicit narrow
+entry point is:
+
+```bash
+# Existing qualified ecosystem working directory and authenticated external
+# wallet selectors must be supplied by the reviewed operator invocation.
+zkstack ecosystem init-core-contracts \
+  --core-journal-only --resume --zksync-os \
+  --update-submodules false --skip-contract-compilation-override true \
+  --deploy-erc20 false --support-l2-legacy-shared-bridge-test false \
+  --l1-rpc-url "$L1_RPC_URL"
+```
+
+This mode requires an absent persisted contracts config, existing input/output,
+and a complete journal with no pending
+or failed receipts. It never generates deployment inputs, updates submodules,
+rebuilds the deployment bundle, deploys ERC20/CTM contracts, or falls back to a
+fresh core script after **any** Forge resume error, including a missing journal.
+The fixed core-script resume is followed by the normal state-gated owner/admin
+handoffs and clean owner/pending-owner postchecks; only then is the canonical
+typed core config persisted. The final save serializes with the unchanged
+canonical YAML serializer and exclusively creates the canonical config path
+with owner-only permissions, then syncs the file. Any regular file, empty or
+malformed config, symlink or broken link created after the early absence check
+is preserved and causes recovery to fail; it is never overwritten. Core
+input/output bytes must remain unchanged.
+An exact same-owner pending transfer to the authenticated governor EOA is cleared
+through the pinned direct acceptance function; foreign or aliased pending owners
+remain errors. This is not a blanket acceptance of pending successors.
+
+Retain receipts and all original journals. Initialize and register the CTM through
+its separate canonical command only after the core graph is qualified. Use the
+supported launcher checkpoint repair/revalidation after the complete registered
+graph satisfies its existing guards; do not manufacture a passed checkpoint or
+claim this core-only step completed the whole ecosystem. Recovery manifests and
+invocation capsules must use the selected network's reviewed identities; never
+copy a Tanenbaum actor, salt, genesis or receipt set into a mainnet operation.
+
+### Mock Gateway graph inspection
+
+<!-- SYSCOIN: This RPC-backed probe is not the historical real-verifier offline attestation. -->
+For an explicitly authorized mock Tanenbaum replacement, the separate
+`scripts/keygen/gateway-identity/DeriveMockGatewayIdentity.s.sol` inspector calls
+the canonical `GatewayVotePreparation.initializeConfig` and the complete
+`GatewayCTMDeployerHelper.calculateAddresses`. It verifies the published guest
+target/relay and critical namespace addresses from the fresh root and actual
+Gateway preparation TOML. Use the explicit `inspect(string,string)` selector,
+without `--broadcast`, and retain the exact source/input/artifact hashes and root
+block. The output labels its scope as RPC-backed mock inspection, not production
+proof attestation or independent-host reproduction.
+
+Compile a byte-identical copy inside an owner-private ignored Era
+`l1-contracts/script-out/` inspection directory, using the default pinned
+Cancun profile and separate harness `--out` / `--cache-path`. Keep canonical
+deployment `out/` unchanged. Use the normal project remappings; an external
+absolute script plus ad-hoc remappings can duplicate imported source units.
+Supply a new input with schema `syscoin-v32-mock-gateway-inspection-input-v1`,
+the actual `preparation_config_path`, `bridgehub`, representative chain ID,
+expected root Governance, salt, Era ID, factory, timelock/relay and critical
+deployer addresses from the selected namespace. The inherited `run` entry point
+is not the inspection route. An upstream `--only-save-calldata` conversion is
+also not read-only: its vote-preparation stage still broadcasts.
+
+Finish this check and live collision/address validation before discarding the
+old rollup runtime. No mock flag permits bypassing immutable guest bindings.
 
 Mainnet:
 
@@ -714,7 +841,8 @@ work and bind recovery to one verifier mode. -->
 | `ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 reward weight registry implementation/proxy deployments; the proxy address is wired as the membership registry receiver |
 | `ZKSYS_L2_ISSUER_IMPL_SALT` / `ZKSYS_L2_ISSUER_PROXY_SALT` | Optional bytes32 salts for deterministic L2 issuer implementation/proxy deployments; the proxy address receives the token minter role |
 | `ZKSYS_L2_STAKING_VAULT_IMPL_SALT` / `ZKSYS_L2_STAKING_VAULT_PROXY_SALT` | Optional bytes32 salts for deterministic L2 native SYS staking vault implementation/proxy deployments; the proxy address receives the reward weight updater role |
-| `ZKSYS_ISSUER_START_TIME` | Required by L2 bootstrap; UNIX timestamp when algorithmic zkSYS issuance periods begin |
+| `ZKSYS_ISSUER_START_TIME` | UNIX timestamp when algorithmic zkSYS issuance periods begin; required for absolute-time bootstrap, or derived from the recorded token receipt after `--token-prelude` |
+| `ZKSYS_TOKEN_DEPLOYMENT_TX_HASH` | Recovery-only exact token-proxy deployment transaction hash when `--token-prelude` found an existing token but its receipt anchor was not durably recorded |
 | `ZKSYS_ISSUER_PERIOD_SECONDS` | Issuance period length; defaults to `86400`; must multiply with `ZKSYS_ISSUER_PERIODS_PER_YEAR` to exactly `365 days` |
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
 | `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` | Reward-weight activation delay for positive native stake and Sentry Node weight changes; defaults to `3` periods and must be `1..7` |
@@ -758,6 +886,33 @@ work and bind recovery to one verifier mode. -->
 - The prover API is plain HTTP and loopback-only in the node process. Internet-reachable provers must use the generated buffering HTTPS vhost, which forwards Basic Auth while draining each complete bounded response independently of client pace.
 - `GATEWAY_CREATE2_FACTORY_SALT` is fingerprint-bound. Changing it requires a fresh deployment directory or an explicit operator reset of both launcher state and the corresponding deployment artifacts; clearing checkpoint JSON alone is unsafe.
 - After the chain is live, run `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the canonical L2 zkSYS `ProxyAdmin`, transparent proxy, implementation, membership fact registry, reward weight registry, algorithmic issuer, and zkSYS gas tank with deterministic CREATE2 salts, then wire issuer minting, membership-to-weight callbacks, weight-to-issuer callbacks, optional L1 registry bridge authority, and burn rights for the gas tank (`burnSurplus()`). The script verifies the final role and receiver wiring before exiting and records the gas tank address as `l2.zksys_gas_tank_addr`. That persisted, attested value is also the durable launch-policy transition: the next canonical edge-chain main-node start requires the exact gas-tank runtime to exist in the latest local state, and no operator-supplied `SYSCOIN_REQUIRE_GAS_TANK=0` can keep the first-boot exception active. That address must equal the immutable address already bound to the canonical application and VK; changing it requires rebuilding the app and verifier artifacts. The token admin receives role-admin authority for recovery and later governance transfer, but not direct `MINTER_ROLE` / `BURNER_ROLE`.
+
+<!-- SYSCOIN: Exact receipt-relative issuance is an operator policy, not an
+estimated wall-clock timestamp or a contract bytecode change. -->
+For issuance beginning exactly 24 hours after the canonical **token proxy**
+deployment, leave `ZKSYS_ISSUER_START_TIME` unset and run:
+
+```bash
+scripts/gateway-launch/zksys-l2-bootstrap.sh --token-prelude
+scripts/gateway-launch/zksys-l2-bootstrap.sh
+```
+
+The first command binds and deploys only the proxy admin, token implementation
+and token proxy, then records the successful exact CREATE2 transaction and its
+canonical block timestamp. The second command revalidates that receipt and
+sets issuance start to its timestamp plus **86,400 seconds** before deriving
+and binding the remaining bootstrap graph. It must complete issuer deployment
+before that start time; an expired anchor is not silently moved forward.
+The token receipt, rather than the later issuer receipt or operator wall clock,
+is the recorded timing anchor. Existing absolute-time bootstrap remains available.
+
+Preserve `zksys-token-prelude.json`, `zksys-token-receipt.json` and the complete
+bootstrap manifest in the private launch checkpoint directory. Retries reuse
+the exact anchor and reject changed inputs or reorged receipts. If deployment
+succeeded but receipt recording was interrupted, rerun the prelude with
+`ZKSYS_TOKEN_DEPLOYMENT_TX_HASH` set to that exact transaction hash; its sender,
+factory, calldata, value, chain and canonical block are checked before recovery.
+Do not substitute an unrelated successful transaction or use `now + 86400`.
 - The membership registry mirrors NEVM facts from the L1 `0x62` precompile and exposes the active Sentry Node address set for offchain diffing. The L1 registry bridge derives each Sentry Node's seniority-weighted reward weight from raw Syscoin collateral age (`nNEVMStartBlock + block.number - collateralHeight`) and sends that final weight to L2. For mainnet, use effective post-NEVM seniority thresholds `210240` and `525600` blocks with levels `3500` and `10000` bps. Native SYS staking is handled by the L2 staking vault.
 - Reward weight increases are not active immediately: native SYS deposits, Sentry Node additions, and Sentry Node seniority increases are queued for `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` periods and require the account to call `activatePendingWeight()` after the delay. Weight decreases and removals apply immediately. This prevents a stake or Sentry weight increase submitted just before a period boundary from earning the completed period.
 - The issuer uses a fixed remaining-cap curve: 20% in schedule year 1, 12% in year 2, 8% in year 3, then 5% per year afterward. Each annual amount is released pro-rata over `ZKSYS_ISSUER_PERIODS_PER_YEAR` periods, so scheduled issuance approaches but never exceeds the 210M zkSYS cap.
