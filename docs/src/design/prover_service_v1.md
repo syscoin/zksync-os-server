@@ -301,7 +301,8 @@ capabilities. The adapter is an EOA/file-handoff workflow with one journal per
 sequencer/period/phase, not a public worker server. Its fixed snapshot is bounded
 to 256 enrolled accounts and 2,000 retained attempts. The entire eligible roster's
 quota must fit that attempt limit; initialization rejects
-an impossible assessment. Reserve additional retry capacity operationally.
+an impossible assessment. Reserve additional capacity for retries and continued
+work after the credit quota operationally.
 Enrollment and quota sizing against the actual network are release requirements.
 Enrollment must precede initialization; later applicants wait for the next assessment snapshot
 and receive no failure mark. An active journal must never be reset to add them. A trusted sequencer can still omit
@@ -314,6 +315,16 @@ successes and indicates whether each account received its full quota. Sparse
 demand creates neither synthetic failures nor admission credit. The bonus lane
 continues to require the specified genuine accepted work; protocol-level policy
 for comparing availability under insufficient demand remains a launch decision.
+
+The quota caps credit opportunities, not work distribution. Ready operators remain
+in the same round-robin allocation after exhausting those opportunities. Subsequent
+assignments carry `slot == duties_per_round` as an uncredited marker. The operator
+signs the same proof-bound `DutySuccessV1` receipt and native verification remains
+mandatory; the receipt is retained and audited but excluded from the rewarded
+report. The audit authenticates every accepted proof, including uncredited ones,
+and refuses to treat an unrelated unassigned batch as post-quota work. No ban for
+declining further work is implemented. The journal's enrollment, period and
+retained-attempt limits still apply.
 
 The read-only `/v1/SNARK/{from}/{to}/evidence` endpoint exports canonical stored
 batch/output preimages from retained proof metadata. It has the existing bounded

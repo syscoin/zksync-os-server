@@ -44,7 +44,8 @@ def struct_values(fields, value):
     return tuple(value[k] for k, _ in fields)
 
 
-def fixture(execution_chain_id="0x23a", registry_chain_id="0x23a", settlement_chain_id="0x1644", chain_address=None):
+def fixture(execution_chain_id="0x23a", registry_chain_id="0x23a", settlement_chain_id="0x1644", chain_address=None,
+            batch_count=2):
     addresses = {role: s.cast("wallet", "address", "--private-key", key).lower() for role, key in KEYS.items()}
     settings = {"schema_version": 1, "execution_chain_id": execution_chain_id, "registry_chain_id": registry_chain_id,
                 "chain_address": chain_address or a(17), "settlement_chain_id": settlement_chain_id,
@@ -62,7 +63,7 @@ def fixture(execution_chain_id="0x23a", registry_chain_id="0x23a", settlement_ch
                 "dependencyRootsRollingHash": h(32), "l2LogsTreeRoot": h(33), "timestamp": "0x1",
                 "commitment": h(34)}
     batches = []
-    for number in (1, 2):
+    for number in range(1, batch_count + 1):
         output = {"firstBlockTimestamp": 100 + number, "lastBlockTimestamp": 110 + number, "daScheme": "0x0",
                   "daCommitment": h(40 + number), "l1TxCount": "0x1", "l2TxCount": hex(number + 2),
                   "priorityOperationsHash": h(45), "l2LogsRoot": h(46), "upgradeTxHash": s.ZERO,
@@ -81,7 +82,7 @@ def fixture(execution_chain_id="0x23a", registry_chain_id="0x23a", settlement_ch
                "sequencer": settings["sequencer"], "period": 5, "previous_cursor": h(60),
                "subscription_snapshot_hash": s.keccak(s.canonical(subscriptions)), "assignments": [], "retries": []}
     proofs, authorities = [], []
-    for number in (1, 2):
+    for number in range(1, batch_count + 1):
         token = h(70 + number)
         proof = {"batch_number": number, "vk_hash": settings["vk_hash"],
                  "proof": base64.b64encode(bytes([number]) * 96).decode()}
@@ -91,29 +92,32 @@ def fixture(execution_chain_id="0x23a", registry_chain_id="0x23a", settlement_ch
         assignment = {"assignment_id": h(80 + number), "account": subscription["account"],
                       "subscription_hash": request["struct_hash"], "batch_number": number,
                       "statement_hash": statements[number]["statement"], "lease_commitment": s.keccak(s.raw_hex(token)),
-                      "attempt": 1, "slot": number - 1, "period": 5}
+                      "attempt": 1, "slot": min(number - 1, settings["duties_per_round"]), "period": 5}
         payload["assignments"].append(assignment)
         proofs.append(proof)
         authorities.append(authority)
     manifest = {"payload": payload, "sequencer_signature": sign(s.manifest_request(settings, payload), "sequencer")}
-    duties = []
+    duties, receipts = [], []
     for authority, proof in zip(authorities, proofs):
-        duty_request = s.prepare_duty(settings, evidence, manifest, subscriptions, authority, proof)
-        duties.append({**duty_request["typed_data"]["message"], "operatorSignature": sign(duty_request, "operator")})
+        duty_request = s.prepare_receipt(settings, evidence, manifest, subscriptions, authority, proof)
+        receipt = {**duty_request["typed_data"]["message"], "operatorSignature": sign(duty_request, "operator")}
+        receipts.append(receipt)
+        if receipt["slot"] < settings["duties_per_round"]:
+            duties.append(receipt)
     candidate = {"index": 0, "account": a(90), "operator": addresses["wrapper"], "beneficiary": a(91)}
     accepted = {"domainVersion": 1, "policyHash": settings["policy_hash"], "chainId": settings["execution_chain_id"],
-                "chainAddress": settings["chain_address"], "parent": h(92), "batchFrom": 1, "batchTo": 2,
+                "chainAddress": settings["chain_address"], "parent": h(92), "batchFrom": 1, "batchTo": batch_count,
                 "protocolVersion": 32, "vkHash": settings["vk_hash"], "period": 5,
                 "rosterRoot": s.wrapper_leaf(candidate), "turn": 3, "sequencer": settings["sequencer"],
                 "sequencerBeneficiary": a(93), "wrapper": candidate["operator"], "wrapperBeneficiary": candidate["beneficiary"]}
     proposal = {"mode": "service", "accepted_package": accepted, "candidate": candidate, "candidate_proof": []}
-    snark = {"from_batch_number": 1, "to_batch_number": 2, "vk_hash": settings["vk_hash"],
+    snark = {"from_batch_number": 1, "to_batch_number": batch_count, "vk_hash": settings["vk_hash"],
              "proof": base64.b64encode(bytes(range(32)) * 44).decode()}
-    fri_payload = {"from_batch_number": 1, "to_batch_number": 2, "vk_hash": settings["vk_hash"],
+    fri_payload = {"from_batch_number": 1, "to_batch_number": batch_count, "vk_hash": settings["vk_hash"],
                    "fri_proofs": [proof["proof"] for proof in proofs]}
     return {"settings": settings, "subscription": subscription, "subscriptions": subscriptions, "evidence": evidence,
             "manifest": manifest, "proofs": proofs, "authorities": authorities, "duties": duties, "proposal": proposal,
-            "snark": snark, "fri_payload": fri_payload}
+            "snark": snark, "fri_payload": fri_payload, "receipts": receipts}
 
 
 def prepare(f):
@@ -328,6 +332,29 @@ class ServiceTests(unittest.TestCase):
         self.f["manifest"]["sequencer_signature"] = "0x"
         with self.assertRaisesRegex(s.Error, "eoa_signature_required"):
             prepare(self.f)
+
+    def test_post_quota_receipts_can_be_signed_but_cannot_add_reward_credit(self):
+        f = fixture(batch_count=6)
+        offered = s.prepare_offered_duty(f["settings"], f["evidence"], f["manifest"], f["subscriptions"], f["proofs"][4])
+        accepted = s.prepare_receipt(f["settings"], f["evidence"], f["manifest"], f["subscriptions"],
+                                     f["authorities"][4], f["proofs"][4])
+        self.assertEqual(offered["digest"], accepted["digest"])
+        self.assertEqual(accepted["typed_data"]["message"]["slot"], 4)
+        with self.assertRaisesRegex(s.Error, "uncredited_assignment_not_rewardable"):
+            s.prepare_duty(f["settings"], f["evidence"], f["manifest"], f["subscriptions"], f["authorities"][4], f["proofs"][4])
+        prepared = prepare(f)
+        self.assertEqual(len(prepared["sidecar"]["batch_outputs"]), 6)
+        self.assertEqual(len(prepared["sidecar"]["duties"]), 4)
+        f["duties"].append(f["receipts"][4])
+        with self.assertRaisesRegex(s.Error, "uncredited_assignment_not_rewardable"):
+            prepare(f)
+
+    def test_assignment_slot_above_uncredited_marker_is_rejected(self):
+        f = fixture(batch_count=6)
+        f["manifest"]["payload"]["assignments"][4]["slot"] = 5
+        f["manifest"]["sequencer_signature"] = sign(s.manifest_request(f["settings"], f["manifest"]["payload"]), "sequencer")
+        with self.assertRaisesRegex(s.Error, "invalid_assignment_duty"):
+            prepare(f)
 
     def test_offered_duty_uses_same_digest_without_exported_lease_or_acceptance_claim(self):
         request = s.prepare_offered_duty(self.f["settings"], self.f["evidence"], self.f["manifest"],

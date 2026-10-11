@@ -95,6 +95,13 @@ permits its durable accepted duty. A proxy response, rental result, or signature
 alone cannot admit work or earn bonus. The selected wrapper verifies these native
 FRIs again as part of the aggregate input before endorsing a SNARK package.
 
+The same rental and signed-result handoff continues after the account's credit
+quota. An assignment with `slot == duties_per_round` is explicitly uncredited:
+its `DutySuccessV1` signature authenticates the proof receipt, but the coordinator
+excludes it from the on-chain duty report. The wrapper audit still checks its
+assignment history, native acceptance and exact proof hash. Reaching the quota
+does not stop work distribution or create additional service bonus.
+
 For service SNARK compute, the external pool requires a current selected-wrapper
 permit. The automated coordinator authenticates the wrapper's signed result,
 checks the native SNARK, and submits the retained original lease through

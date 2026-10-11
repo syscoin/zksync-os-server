@@ -368,7 +368,8 @@ allocation authority. The adapter supports up to 256 enrolled accounts and 2,000
 retained assignment attempts per journal; its commands hold an exclusive process
 lock. Initialization requires the full eligible account count times its shared
 quota to fit that limit, counting the child/Gateway quota once. Deployment sizing
-must also leave retry headroom and stay within the enrollment bound. Fair
+must also leave headroom for retries and continued work after the credit quota,
+and stay within the enrollment bound. Fair
 allocation assumes the trusted sequencer preserves authenticated
 readiness requests and delivers its signed offers; the journal does not prove
 that a malicious sequencer has withheld neither. This is a trusted dispatcher,
@@ -422,8 +423,17 @@ Registration or readiness earns
 no credit. Authenticated ready accounts receive nonempty native batches in sorted
 account round-robin order, one outstanding assignment per account. No job,
 unregistered identities, expired readiness, and empty work consume no service
-opportunity. A signed offer consumes one opportunity; `report` distinguishes the
-number offered from native successes and says whether the whole quota was offered.
+opportunity. The first quota of signed offers consumes the account's credit
+opportunities. Ready operators continue receiving assignments in the same
+round-robin order after that quota; the quota caps credit, not proving work.
+Those assignments use `slot == duties_per_round` as an uncredited marker and
+retain the same signatures, native verification, lease and retry checks. Their
+accepted receipts are audited but excluded from the rewarded duty report.
+`report` distinguishes offered credit opportunities from native successes and
+says whether the whole quota was offered. Operators choose when to sign readiness;
+this adapter does not implement bans for declining further work.
+Upgrade the dispatcher, service tools and wrapper audit together before exporting
+post-quota work; older tools reject the uncredited assignment marker.
 Sparse demand is not an asserted service failure and never creates synthetic
 successes or reward weight.
 
@@ -470,7 +480,8 @@ operator duty signing and package construction. Remote endpoints require HTTPS;
 plain HTTP is limited to loopback native APIs.
 
 The shared Runpod [pool](../prover-rental/pool-README.md) can enqueue this stripped
-payload and evidence in its external-input mode. It returns a proof artifact
+payload and evidence in its external-input mode, including uncredited work after
+the quota. It returns a proof artifact
 without acquiring or submitting another native lease. The dispatcher remains the
 sole owner of its origin lease and signed duty slot.
 
@@ -492,9 +503,12 @@ python3 scripts/prover-service/dispatcher.py --execute --state /private/service-
 ```
 
 Only the native verifier's accepted disposition, or recovery of exactly the same
-retained proof and canonical metadata, produces `duty.json`. The private job folder
-also retains the exact submission and `authority.json` accepted evidence consumed
-by `service.py prepare-duty`. Never export that authority, `picked-wire.json`,
+retained proof and canonical metadata, produces `duty.json`. For post-quota work,
+this file is an authenticated uncredited receipt and must not enter the rewarded
+duty report. The private job folder
+also retains the exact submission and `authority.json` accepted evidence; the
+`service.py duty` command accepts only credit-bearing assignments. Never export
+that authority, `picked-wire.json`,
 `submission.json`, the BasicAuth secret, or the state journal: they contain live
 capabilities. `export` copies an allowlist and includes the signed duty only after
 native acceptance. Native FRI acceptance remains separate from on-chain package
@@ -522,8 +536,10 @@ For a multi-batch package, `manifest-request --operations job-000000 job-000001
 --output package-manifest-request.json` returns the exact combined payload and
 sequencer signing request, including retry history. Assemble its signed manifest
 as `{"payload": ..., "sequencer_signature": "0x..."}` and pass it with the retained
-accepted duties, signed dispatch audit, and canonical native evidence to the
+accepted credit-bearing duties, signed dispatch audit, and canonical native evidence to the
 package workflow. The wrapper checks the native proofs before endorsement.
+The audit retains all accepted receipts, including post-quota work; the rewarded
+duties list contains only slots below `duties_per_round`.
 Do not count an older assignment as a second duty for the same batch.
 All operations in one package must belong to the same execution lane; the tool
 rejects a mixed-chain manifest. Each lane uses its own gate, parent, native proof,

@@ -8,7 +8,7 @@ import audit
 import dispatcher as d
 import service as s
 import test_dispatcher as td
-from test_service import sign, h, a, KEYS
+from test_service import sign, h, a, KEYS, fixture
 
 
 class AuditTests(unittest.TestCase):
@@ -39,11 +39,15 @@ class AuditTests(unittest.TestCase):
         journal_id = bundle["journal_id"]
         duties = [s.read_json(self.dispatcher.store.root / key / "duty.json", private=True)
                   for key, op in self.dispatcher.state["operations"].items()
-                  if op["status"] == "accepted" and start <= op["assignment"]["batch_number"] <= end]
+                  if op["status"] == "accepted" and start <= op["assignment"]["batch_number"] <= end
+                  and op["assignment"]["slot"] < self.f["settings"]["duties_per_round"]]
         trust = {"schema_version": 1, "journal_id": journal_id, "enrollment_block_hash": h(100),
                  "minimum_checkpoint": {"event_count": 0, "event_head": journal_id, "assignment_cursor": journal_id},
                  "required_readiness": [], "required_duties": []}
-        evidence = self.f["evidence"] if (start, end) == (1, 2) else self.evidence(start)
+        evidence = copy.deepcopy(self.f["evidence"])
+        if start > 1:
+            evidence["previous_batch"] = evidence["batches"][start - 2]["stored"]
+        evidence["batches"] = evidence["batches"][start - 1:end]
         return {"settings": self.f["settings"], "evidence": evidence, "manifest": manifest,
                 "subscriptions": self.dispatcher.state["subscriptions"], "duties": duties,
                 "fri_payload": {"from_batch_number": start, "to_batch_number": end,
@@ -76,6 +80,104 @@ class AuditTests(unittest.TestCase):
         self.store = d.initialize(self.root, self.f["settings"], subscriptions, 5, "https://trusted.example/", self.rpc)
         self.reload()
         return subscription["account"]
+
+    def quota(self, count):
+        self.f["settings"]["duties_per_round"] = count
+        self.root = Path(self.tmp.name) / f"quota-{count}"
+        self.rpc = td.Rpc(self.f["settings"], self.f["subscriptions"])
+        self.store = d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 5,
+                                  "https://trusted.example/", self.rpc)
+        self.reload()
+
+    def test_accepted_work_continues_after_quota_without_extra_reward_credit(self):
+        self.quota(1)
+        self.accepted(1)
+        overflow = self.accepted(2)
+        package = self.package(1, 2)
+        receipt = s.read_json(self.root / overflow / "duty.json", private=True)
+        package["trust"]["required_duties"] = [receipt]
+        result = audit.verify_package(**package)
+        self.assertEqual(receipt["slot"], 1)
+        self.assertEqual(result["accounts"][self.account]["offered_opportunities"], 1)
+        self.assertEqual(len(result["required_duties"]), 1)
+        self.assertEqual(len(package["manifest"]["payload"]["assignments"]), 2)
+        self.assertEqual(result["unrewarded_batches"], [2])
+        self.assertEqual(result["unrewarded_reason"], "quota_exhausted")
+
+    def test_one_prover_completes_six_batches_with_only_four_rewarded_duties(self):
+        self.f = fixture(batch_count=6)
+        self.quota(4)
+        operations = [self.accepted(number) for number in range(1, 7)]
+        package = self.package(1, 6)
+        receipts = [s.read_json(self.root / operation / "duty.json", private=True) for operation in operations]
+        package["trust"]["required_duties"] = receipts
+        result = audit.verify_package(**package)
+        self.assertEqual([receipt["slot"] for receipt in receipts], [0, 1, 2, 3, 4, 4])
+        self.assertEqual(len(package["manifest"]["payload"]["assignments"]), 6)
+        self.assertEqual(len(result["required_duties"]), 4)
+        self.assertEqual(result["unrewarded_batches"], [5, 6])
+        self.assertEqual(result["accounts"][self.account]["offered_opportunities"], 4)
+
+    def test_overflow_receipt_cannot_be_added_to_reward_report(self):
+        self.quota(1)
+        self.accepted(1)
+        overflow = self.accepted(2)
+        package = self.package(1, 2)
+        package["duties"].append(s.read_json(self.root / overflow / "duty.json", private=True))
+        with self.assertRaisesRegex(s.Error, "accepted_duties_incomplete"):
+            audit.verify_package(**package)
+
+    def test_uncredited_accepted_receipt_still_binds_the_exact_native_proof(self):
+        self.quota(1)
+        self.accepted(1)
+        self.accepted(2)
+        package = self.package(1, 2)
+        package["fri_payload"]["fri_proofs"][1] = base64.b64encode(bytes([200]) * 96).decode()
+        with self.assertRaisesRegex(s.Error, "accepted_duty_native_proof_changed"):
+            audit.verify_package(**package)
+
+    def test_accepted_overflow_does_not_wait_for_an_unready_peer_to_exhaust(self):
+        self.quota(1)
+        other = self.two_accounts()
+        self.accepted(1)
+        self.accepted(2)
+        result = audit.verify_package(**self.package(2, 2))
+        self.assertEqual(result["accounts"][other]["offered_opportunities"], 0)
+        self.assertEqual(result["required_duties"], [])
+        self.assertEqual(result["zero_duty_reason"], "quota_exhausted")
+        self.assertEqual(result["unrewarded_batches"], [2])
+
+    def test_quota_of_one_account_cannot_bypass_an_unassigned_nonempty_batch(self):
+        self.quota(1)
+        self.two_accounts()
+        self.accepted(1)
+        with self.assertRaisesRegex(s.Error, "nonempty_batch_without_service_duty_wait"):
+            audit.verify_package(**self.package(1, 2))
+
+    def test_overflow_retry_preserves_authentication_without_extra_credit(self):
+        self.quota(1)
+        self.accepted(1)
+        rejected = self.offered(2)
+        proof, signature = self.invalid_proof(rejected, 2)
+        self.network.responses.append((422, {"x-syscoin-prover-disposition": "rejected"}, b""))
+        self.dispatcher.submit(rejected, proof, signature)
+        overflow = self.accepted(2, token=h(199))
+        package = self.package(1, 2)
+        result = audit.verify_package(**package)
+        receipt = s.read_json(self.root / overflow / "duty.json", private=True)
+        self.assertEqual((receipt["slot"], receipt["attempt"]), (1, 2))
+        self.assertEqual(result["accounts"][self.account]["offered_opportunities"], 1)
+        self.assertEqual(len(result["required_duties"]), 1)
+        self.assertEqual(package["manifest"]["payload"]["retries"][0]["reason"], "invalid")
+
+    def test_known_overflow_receipt_cannot_be_omitted_by_an_earlier_checkpoint(self):
+        self.quota(1)
+        self.accepted(1)
+        earlier = self.package(1, 1)
+        overflow = self.accepted(2)
+        earlier["trust"]["required_duties"] = [s.read_json(self.root / overflow / "duty.json", private=True)]
+        with self.assertRaisesRegex(s.Error, "known_accepted_duty_omitted"):
+            audit.verify_package(**earlier)
 
     def test_full_history_replays_and_contains_no_host_capabilities(self):
         first, second = self.accepted(), self.accepted(2)

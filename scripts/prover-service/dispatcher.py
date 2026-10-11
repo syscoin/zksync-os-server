@@ -191,9 +191,8 @@ class Dispatcher:
         s.verify_eoa(expected, signature)
         account = message["account"]
         entry = self.state["accounts"][account]
-        s.require((entry["ready"] is None or entry["ready"]["request"]["typed_data"]["message"]["expiresAt"] <= self.now)
-                  and entry["offered"] < self.settings["duties_per_round"],
-                  "request_already_pending_or_quota_offered")
+        s.require(entry["ready"] is None or entry["ready"]["request"]["typed_data"]["message"]["expiresAt"] <= self.now,
+                  "request_already_pending")
         s.require(not any(op["account"] == account and op["status"] in
                           ("pick_pending", "picked", "offered", "submission_pending")
                           for op in self.state["operations"].values()), "account_has_live_job")
@@ -368,7 +367,8 @@ class Dispatcher:
         s.verify_eoa(self.offer_request(operation), signature)
         manifest = {"payload": self.manifest_payload([operation]), "sequencer_signature": signature}
         if op["status"] == "picked":
-            self.state["accounts"][op["account"]]["offered"] += 1
+            account = self.state["accounts"][op["account"]]
+            account["offered"] = min(account["offered"] + 1, self.settings["duties_per_round"])
             self.record("offered", {"operation": operation, "sequencer_signature": signature})
             op["offer_signature"] = signature
         elif "offer_signature" in op:
@@ -397,7 +397,7 @@ class Dispatcher:
         directory = self.directory(operation)
         authority["status"] = "accepted"
         atomic_json(directory / "authority.json", authority)
-        request = s.prepare_duty(self.lane(operation)["settings"], s.read_json(directory / "evidence.json", private=True),
+        request = s.prepare_receipt(self.lane(operation)["settings"], s.read_json(directory / "evidence.json", private=True),
                                  s.read_json(directory / "manifest.json", private=True), self.state["subscriptions"],
                                  authority, proof, enrollment=self.enrollment)
         s.verify_eoa(request, signature)
@@ -554,6 +554,12 @@ class Dispatcher:
                                        "quota": self.settings["duties_per_round"],
                                        "quota_offered": data["offered"] == self.settings["duties_per_round"],
                                        "native_accepted": sum(op["account"] == account and op["status"] == "accepted"
+                                                       for op in self.state["operations"].values()),
+                                       "credited_accepted": sum(op["account"] == account and op["status"] == "accepted"
+                                                       and op["assignment"]["slot"] < self.settings["duties_per_round"]
+                                                       for op in self.state["operations"].values()),
+                                       "uncredited_accepted": sum(op["account"] == account and op["status"] == "accepted"
+                                                       and op["assignment"]["slot"] == self.settings["duties_per_round"]
                                                        for op in self.state["operations"].values())}
                              for account, data in self.state["accounts"].items()}}
 

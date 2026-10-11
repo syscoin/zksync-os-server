@@ -24,6 +24,12 @@ require an EN: it authenticates canonical native commitments, verifies the exact
 FRIs on CPU, checks the returned native SNARK, and audits signed dispatch history
 before endorsing. Selection and wrapping add no duty points, fee entitlement, or bonus weight.
 
+FRI credit quotas do not stop assignments. Ready operators continue receiving
+work after their credit opportunities are exhausted, using the same authenticated
+handoff with `slot == duties_per_round`. These accepted receipts remain in the
+dispatch audit but must be omitted from the rewarded `duties` report. Operators
+control their readiness; declining post-quota work has no implemented ban rule.
+
 ## Pin the trusted host
 
 Keep one mode-0600 keeper configuration per lane, phase, and enrollment journal:
@@ -388,11 +394,12 @@ nonce already owned by the automatic coordinator.
    Obtain `/prover-jobs/v1/SNARK/{from}/{to}/evidence` for the exact returned range.
    The native `payload.json` contains the actual FRI proofs selected by the node.
 
-2. Collect the exact accepted FRI duties, signed manifest, and subscriptions for
+2. Collect the exact accepted credit-bearing FRI duties, signed manifest, and subscriptions for
    that range. Construct `request.json` with the four keys `proposal`, `manifest`,
    `subscriptions`, and `duties`. `proposal` uses the same shape as `service.py
    package`: `mode`, `accepted_package` without generated manifest/report/proof
    hashes, `candidate`, and `candidate_proof`. A control request uses empty duties.
+   Post-quota receipts stay in the dispatch audit and must not enter `duties`.
    The chosen candidate must be a valid member of the committed roster; opening
    clears its wrapper fields and does not select a winner from supplied data.
 

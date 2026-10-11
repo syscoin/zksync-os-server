@@ -259,21 +259,22 @@ class Coordinator:
                     s.require(operation["status"] not in audit.LIVE, "wait_for_dispatcher_range_reconciliation")
                 manifest = dispatch.range_manifest_payload(lane, start, end)
                 bundle = dispatch.audit_payload(lane, start, end)
-                duties = []
-                if not chain["control_work"]:
-                    for key, operation in dispatch.state["operations"].items():
-                        if operation["lane"] == lane and operation["status"] == "accepted" and operation["assignment"] is not None \
-                                and start <= operation["assignment"]["batch_number"] <= end:
-                            duties.append(io.private_json(dispatch.directory(key) / "duty.json"))
+                accepted_receipts = []
+                for key, operation in dispatch.state["operations"].items():
+                    if operation["lane"] == lane and operation["status"] == "accepted" and operation["assignment"] is not None \
+                            and start <= operation["assignment"]["batch_number"] <= end:
+                        accepted_receipts.append(io.private_json(dispatch.directory(key) / "duty.json"))
+                duties = [] if chain["control_work"] else [duty for duty in accepted_receipts
+                            if duty["slot"] < self.settings["duties_per_round"]]
                 statements = s.validate_evidence(self.settings, evidence)
-                credited = {duty["batchNumber"] for duty in duties}
-                exhausted = all(account["offered"] == self.settings["duties_per_round"]
+                covered = {duty["batchNumber"] for duty in accepted_receipts}
+                exhausted = all(account["offered"] >= self.settings["duties_per_round"]
                                 for account in dispatch.state["accounts"].values())
-                s.require(chain["control_work"] or exhausted or all(statement["count"] == 0 or number in credited
+                s.require(chain["control_work"] or exhausted or all(statement["count"] == 0 or number in covered
                           for number, statement in statements.items()), "wait_for_nonempty_service_duties")
                 hashes = {number: s.keccak(s.decode_proof(proof))
                           for number, proof in zip(statements, payload["fri_proofs"])}
-                s.require(all(duty["friProofHash"] == hashes[duty["batchNumber"]] for duty in duties),
+                s.require(all(duty["friProofHash"] == hashes[duty["batchNumber"]] for duty in accepted_receipts),
                           "accepted_duty_native_payload_changed")
                 for event in bundle["events"]:
                     if event["kind"] == "rejected":

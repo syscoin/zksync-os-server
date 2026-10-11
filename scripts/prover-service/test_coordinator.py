@@ -41,6 +41,16 @@ class Wallet:
         raise AssertionError(method)
 
 
+class RangeProofRpc(ProofRpc):
+    def call(self, method, params):
+        value = super().call(method, params)
+        if method == "eth_call" and params[0]["data"] == "0x" + r.selector("work()").hex():
+            count = sum(s.uint(output["l1TxCount"]) for output in self.item["sidecar"]["batch_outputs"])
+            data = s.raw_hex(value)
+            value = "0x" + (data[:-96] + s.word(max(4, count)) + s.word(count) + s.word(count)).hex()
+        return value
+
+
 class CoordinatorTests(unittest.TestCase):
     setUpClass = classmethod(td.DispatcherTests.setUpClass.__func__)
     reload = td.DispatcherTests.reload
@@ -95,6 +105,42 @@ class CoordinatorTests(unittest.TestCase):
         self.controller = c.Coordinator(self.control_store, self.rpc, self.wallet, self.relay_wallet,
                                         self.native, clock=lambda: self.now)
         return self.controller
+
+    def continuous_dispatch(self, unready_peer=False, quota=1, batch_count=2):
+        if batch_count != 2:
+            self.f = fixture(batch_count=batch_count)
+            self.f["proposal"]["accepted_package"]["rosterRoot"] = self.roster["root"]
+            self.f["proposal"]["candidate_proof"] = self.roster["proofs"][0]
+        self.f["settings"]["duties_per_round"] = quota
+        if unready_peer:
+            subscription = copy.deepcopy(self.f["subscription"])
+            subscription["account"] = s.cast("wallet", "address", "--private-key", KEYS["wrapper"]).lower()
+            subscription["operator"] = self.account
+            self.f["subscriptions"].append({"subscription": subscription,
+                "signature": sign(s.subscription_request(self.f["settings"], subscription), "wrapper")})
+        self.root = self.base / "continuous-dispatcher"
+        self.rpc = td.Rpc(self.f["settings"], self.f["subscriptions"])
+        self.registry_rpc = self.rpc
+        self.network = td.Network()
+        self.store = td.d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 5,
+                                     "https://trusted.example/", self.rpc)
+        self.f["subscriptions"] = s.read_json(self.root / "state.json", private=True)["subscriptions"]
+        self.reload()
+        operations = [self.accepted(number) for number in range(1, batch_count + 1)]
+        manifest = self.dispatcher.range_manifest_payload("child", 1, batch_count)
+        self.f["manifest"] = {"payload": manifest,
+                              "sequencer_signature": sign(s.manifest_request(self.f["settings"], manifest), "sequencer")}
+        self.f["duties"] = [io.private_json(self.dispatcher.directory(operation) / "duty.json")
+                             for operation in operations if self.dispatcher.state["operations"][operation]["assignment"]["slot"] < quota]
+        self.registry_rpc = self.rpc
+        keeper, _, item = setup(self.f)
+        keeper["policy"]["expected_operator"] = self.f["settings"]["sequencer"]
+        self.rpc = RangeProofRpc(self.f, keeper, item)
+        self.rpc.opened = False
+        self.native = td.Network()
+        self.config = {**self.config, "keeper": keeper, "dispatcher_dir": str(self.root)}
+        self.control_store = c.initialize(self.base / "continuous-control", self.config)
+        self.controller_reload()
 
     def acquired(self):
         self.native.responses += [(200, {}, {**self.f["fri_payload"], "lease_token": h(180)}),
@@ -175,7 +221,8 @@ class CoordinatorTests(unittest.TestCase):
             "chain_address": settings["chain_address"], "gate": settings["proof_gate"], "gate_code_hash": limits["gate_code_hash"],
             "coordinator": settings["coordinator"], "coordinator_code_hash": limits["coordinator_code_hash"],
             "policy_hash": settings["policy_hash"], "production_vk_hash": settings["vk_hash"], "sequencer": settings["sequencer"],
-            "timelock": a(132), "required_confirmations": 2, "batch_from": 1, "batch_to": 2,
+            "timelock": a(132), "required_confirmations": 2, "batch_from": 1,
+            "batch_to": self.f["snark"]["to_batch_number"],
             "proof_data": prepared["proof_data"], "batch_outputs": prepared["sidecar"]["batch_outputs"]})
         return root
 
@@ -199,6 +246,36 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(checked["required_duties"], request["duties"])
         self.assertEqual(len(request["duties"]), 2)
         self.assertEqual(self.controller.state["operations"][identifier]["bundle"], io.digest(bundle))
+
+    def test_snapshot_keeps_overflow_assignments_and_receipts_without_rewarding_them(self):
+        self.continuous_dispatch()
+        _, bundle = self.frozen()
+        request = bundle["request"]
+        journal = bundle["audit"]["journal_id"]
+        trust = {"schema_version": 1, "journal_id": journal, "enrollment_block_hash": h(100),
+                 "minimum_checkpoint": {"event_count": 0, "event_head": journal, "assignment_cursor": journal},
+                 "required_readiness": [], "required_duties": []}
+        checked = audit.verify_package(self.f["settings"], self.f["evidence"], request["manifest"],
+                    request["subscriptions"], request["duties"], bundle["audit"], trust, self.registry_rpc,
+                    fri_payload=self.f["fri_payload"])
+        self.assertEqual(len(request["duties"]), 1)
+        self.assertEqual(len(request["manifest"]["payload"]["assignments"]), 2)
+        self.assertEqual(sum(event["kind"] == "accepted" for event in bundle["audit"]["events"]), 2)
+        self.assertEqual(checked["unrewarded_batches"], [2])
+
+    def test_snapshot_checks_native_proof_hash_even_for_uncredited_overflow(self):
+        self.continuous_dispatch()
+        self.f["fri_payload"]["fri_proofs"][1] = base64.b64encode(bytes([200]) * 96).decode()
+        identifier = self.acquired()
+        chain, roster_artifact = self.controller.status()
+        with self.assertRaisesRegex(s.Error, "accepted_duty_native_payload_changed"):
+            self.controller.snapshot(identifier, chain, roster_artifact, True)
+
+    def test_snapshot_accepts_exact_overflow_work_while_a_peer_remains_unready(self):
+        self.continuous_dispatch(unready_peer=True)
+        _, bundle = self.frozen()
+        self.assertEqual(len(bundle["request"]["duties"]), 1)
+        self.assertEqual(sorted(account["offered"] for account in self.dispatcher.state["accounts"].values()), [0, 1])
 
     def test_automatic_delivery_keeps_native_capabilities_private_and_restart_is_idempotent(self):
         identifier, _ = self.frozen()
@@ -253,6 +330,35 @@ class CoordinatorTests(unittest.TestCase):
         self.assertTrue(result["written"])
         self.assertTrue((publication / "relay.json").is_file())
         self.assertIsNone(self.controller.state["active"])
+        self.assertEqual(self.controller.state["operations"][identifier]["status"], "settled")
+
+    def test_one_prover_six_batches_reach_confirmed_settlement_with_four_rewarded_duties(self):
+        self.continuous_dispatch(quota=4, batch_count=6)
+        identifier, bundle = self.frozen()
+        request = bundle["request"]
+        self.assertEqual(len(request["duties"]), 4)
+        self.assertEqual(len(request["manifest"]["payload"]["assignments"]), 6)
+        self.assertEqual(sum(event["kind"] == "accepted" for event in bundle["audit"]["events"]), 6)
+        work = self.controller.step(True)
+        prepared = self.returned(work)
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        submission = json.loads(self.native.calls[-1][2])
+        self.assertEqual((submission["from_batch_number"], submission["to_batch_number"]), (1, 6))
+        publication = self.publication(prepared)
+        self.rpc.item["digest"] = prepared["sequencer_request"]["digest"]
+        staged = self.controller_reload().step(True)
+        self.assertEqual(staged["next_action"], "relay_dual_endorsed_package")
+        relay = r.Relay(self.f["settings"], self.config["relay_policy"], self.rpc,
+                        store=r.Store(self.control_store.root / "relay"))
+        self.rpc.item = relay.load_artifact(staged["operation_id"])
+        self.assertEqual(self.controller_reload().step(True)["status"], "broadcast")
+        self.rpc.accept_receipt()
+        self.assertEqual(self.controller_reload().step(True)["status"], "mined_unconfirmed")
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.assertTrue(self.controller_reload().step(True)["written"])
+        self.assertTrue((publication / "relay.json").is_file())
         self.assertEqual(self.controller.state["operations"][identifier]["status"], "settled")
 
     def test_late_proof_is_reused_for_new_turn_endorsement(self):

@@ -455,7 +455,7 @@ def validate_manifest(settings, manifest, subscriptions, evidence, allow_empty=F
         subscription = by_hash.get(item["subscription_hash"])
         require(subscription and subscription["account"] == item["account"], "assignment_subscription_mismatch")
         require(item["period"] == payload["period"] and 0 < uint(item["attempt"], 32)
-                and uint(item["slot"], 16) < settings["duties_per_round"], "invalid_assignment_duty")
+                and uint(item["slot"], 16) <= settings["duties_per_round"], "invalid_assignment_duty")
         batch = evidence.get(uint(item["batch_number"], 64))
         require(batch and batch["statement"] == item["statement_hash"], "assignment_statement_mismatch")
         assignments[item["assignment_id"]] = item
@@ -508,7 +508,7 @@ def prepare_offered_duty(settings, evidence, manifest, subscriptions, proof, *, 
     return {**request, "native_acceptance": "pending"}
 
 
-def prepare_duty(settings, evidence, manifest, subscriptions, authority, proof, *, enrollment=None):
+def prepare_receipt(settings, evidence, manifest, subscriptions, authority, proof, *, enrollment=None):
     request, assignment = offered_duty(settings, evidence, manifest, subscriptions, proof, enrollment=enrollment)
     require(authority.get("schema_version") == 1 and authority.get("stage") == "FRI"
             and authority.get("status") == "accepted" and authority.get("vk_hash") == settings["vk_hash"],
@@ -523,6 +523,13 @@ def prepare_duty(settings, evidence, manifest, subscriptions, authority, proof, 
     import hashlib
     require(authority.get("submission_sha256") == hashlib.sha256(canonical(original_wire)).hexdigest(),
             "native_accepted_proof_bytes_mismatch")
+    return request
+
+
+def prepare_duty(settings, evidence, manifest, subscriptions, authority, proof, *, enrollment=None):
+    request = prepare_receipt(settings, evidence, manifest, subscriptions, authority, proof, enrollment=enrollment)
+    require(request["typed_data"]["message"]["slot"] < settings["duties_per_round"],
+            "uncredited_assignment_not_rewardable")
     return request
 
 
@@ -588,6 +595,7 @@ def prepare_package(settings, evidence, manifest, subscriptions, duties, proposa
     seen, slots = set(), set()
     for duty in duties:
         encode_duty(duty)
+        require(uint(duty["slot"], 16) < settings["duties_per_round"], "uncredited_assignment_not_rewardable")
         number = duty["batchNumber"]
         assignment = assignments.get(number)
         require(assignment and number not in seen, "duplicate_or_unassigned_duty")

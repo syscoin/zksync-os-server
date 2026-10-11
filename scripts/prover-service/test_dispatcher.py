@@ -121,8 +121,8 @@ class DispatcherTests(unittest.TestCase):
 
     def evidence(self, number=1):
         evidence = copy.deepcopy(self.f["evidence"])
-        if number == 2:
-            evidence["previous_batch"] = evidence["batches"][0]["stored"]
+        if number > 1:
+            evidence["previous_batch"] = evidence["batches"][number - 2]["stored"]
         evidence["batches"] = [evidence["batches"][number - 1]]
         return evidence
 
@@ -172,6 +172,35 @@ class DispatcherTests(unittest.TestCase):
         duty = s.read_json(self.dispatcher.directory(operation) / "duty.json", private=True)
         self.assertEqual(duty["account"], self.account)
         self.assertEqual(self.dispatcher.report()["accounts"][self.account]["native_accepted"], 1)
+
+    def test_mixed_canonical_roster_keeps_proving_after_credit_quota(self):
+        self.f["settings"]["duties_per_round"] = 1
+        contract = copy.deepcopy(self.f["subscriptions"][0])
+        contract["subscription"].update(account=a(169), operator=self.account)
+        contract["signature"] = "0x1234"
+        subscriptions = [*self.f["subscriptions"], contract]
+        registry_rpc = Rpc(self.f["settings"], subscriptions)
+        store = d.initialize(Path(self.tmp.name) / "mixed-overflow", self.f["settings"], subscriptions, 5,
+                             "https://trusted.example/", registry_rpc)
+        self.dispatcher = d.Dispatcher(store, self.network, "Basic host-only", now=550, registry_rpc=registry_rpc)
+        operations, receipts = [], []
+        for number in (1, 2):
+            operation = self.offered(number)
+            proof, signature = self.signed_proof(operation, number)
+            self.network.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+            self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
+            operations.append(operation)
+            receipts.append(s.read_json(self.dispatcher.directory(operation) / "duty.json", private=True))
+        self.assertEqual([receipt["slot"] for receipt in receipts], [0, 1])
+        report = self.dispatcher.report()["accounts"]
+        self.assertEqual((report[self.account]["credited_accepted"], report[self.account]["uncredited_accepted"]), (1, 1))
+        self.assertEqual(report[contract["subscription"]["account"]]["offered_opportunities"], 0)
+        payload = self.dispatcher.manifest_payload(operations)
+        manifest = {"payload": payload, "sequencer_signature": sign(s.manifest_request(self.f["settings"], payload), "sequencer")}
+        prepared = s.prepare_package(self.f["settings"], self.f["evidence"], manifest, subscriptions, receipts[:1],
+                    self.f["proposal"], self.f["snark"], self.f["fri_payload"], enrollment=self.dispatcher.enrollment)
+        self.assertEqual(len(prepared["sidecar"]["duties"]), 1)
+        self.assertEqual(len(prepared["sidecar"]["batch_outputs"]), 2)
 
     def test_finalized_enrollment_checks_signature_membership_and_live_chain(self):
         self.assertTrue(self.rpc.anchors)
@@ -329,6 +358,59 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
         self.assertEqual(len(self.network.calls), count)
         self.assertEqual(self.dispatcher.report()["accounts"][self.account]["native_accepted"], 1)
+
+    def test_single_prover_keeps_processing_six_batches_with_four_credited_duties(self):
+        self.f = fixture(batch_count=6)
+        operations = []
+        for number in range(1, 7):
+            operation = self.offered(number)
+            proof, signature = self.signed_proof(operation, number)
+            self.network.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+            self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
+            self.reload()
+            operations.append(operation)
+        report = self.dispatcher.report()["accounts"][self.account]
+        self.assertEqual(report["native_accepted"], 6)
+        self.assertEqual(report["credited_accepted"], 4)
+        self.assertEqual(report["uncredited_accepted"], 2)
+        self.assertEqual(report["offered_opportunities"], 4)
+        receipts = [s.read_json(self.root / operation / "duty.json", private=True) for operation in operations]
+        self.assertEqual([receipt["slot"] for receipt in receipts], [0, 1, 2, 3, 4, 4])
+        payload = self.dispatcher.manifest_payload(operations)
+        manifest = {"payload": payload, "sequencer_signature": sign(s.manifest_request(self.f["settings"], payload), "sequencer")}
+        prepared = s.prepare_package(self.f["settings"], self.f["evidence"], manifest, self.f["subscriptions"],
+                                     receipts[:4], self.f["proposal"], self.f["snark"], self.f["fri_payload"])
+        completed = s.complete_package(self.f["settings"], prepared, sign(prepared["sequencer_request"], "sequencer"),
+                                       sign(prepared["wrapper_request"], "wrapper"))
+        self.assertEqual(completed["accepted_package"]["batchTo"], 6)
+        self.assertEqual(len(completed["batch_outputs"]), 6)
+        self.assertEqual(len(completed["duties"]), 4)
+
+    def test_post_quota_submission_recovery_preserves_lease_and_no_extra_credit(self):
+        self.f = fixture(batch_count=5)
+        for number in range(1, 5):
+            operation = self.offered(number)
+            proof, signature = self.signed_proof(operation, number)
+            self.network.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+            self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
+        operation = self.offered(5)
+        assignment = copy.deepcopy(self.dispatcher.state["operations"][operation]["assignment"])
+        proof, signature = self.signed_proof(operation, 5)
+        self.network.responses.append((503, {}, b""))
+        with self.assertRaisesRegex(s.Error, "uncertain"):
+            self.dispatcher.submit(operation, proof, signature)
+        changed = {**proof, "proof": base64.b64encode(b"different").decode()}
+        with self.assertRaisesRegex(s.Error, "submission_bytes_changed"):
+            self.dispatcher.submit(operation, changed, sign(self.dispatcher.proof_request(operation, changed), "operator"))
+        self.reload()
+        self.network.responses += [(200, {}, {"from_batch_number": 5, "to_batch_number": 5,
+                                             "vk_hash": proof["vk_hash"], "fri_proofs": [proof["proof"]]}),
+                                   (200, {}, self.evidence(5))]
+        self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
+        self.assertEqual(self.dispatcher.state["operations"][operation]["assignment"], assignment)
+        self.assertEqual(self.dispatcher.report()["accounts"][self.account]["credited_accepted"], 4)
+        self.assertEqual(self.dispatcher.report()["accounts"][self.account]["uncredited_accepted"], 1)
+        self.assertEqual(sum("FRI/submit" in item[0] for item in self.network.calls), 5)
 
     def test_ambiguous_submit_recovers_only_exact_retained_native_proof_and_metadata(self):
         operation = self.offered()

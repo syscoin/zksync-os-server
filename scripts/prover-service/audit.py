@@ -162,7 +162,6 @@ class Replay:
             s.verify_eoa(expected, payload["signature"])
             s.require((entry["ready"] is None or
                        entry["ready"]["request"]["typed_data"]["message"]["expiresAt"] <= at)
-                      and entry["offered"] < self.settings["duties_per_round"]
                       and not any(op["account"] == account and op["status"] in LIVE for op in self.operations.values()),
                       "audit_duplicate_or_busy_readiness")
             entry["ready"], entry["nonce"] = payload, entry["nonce"] + 1
@@ -222,10 +221,11 @@ class Replay:
                         "batch_number": item["batch_number"], "statement_hash": item["statement_hash"],
                         "lease_commitment": item["lease_commitment"],
                         "attempt": previous[1]["assignment"]["attempt"] + 1 if previous else 1,
-                        "slot": self.accounts[account]["offered"], "period": self.identity["period"]}
+                        "slot": min(self.accounts[account]["offered"], self.settings["duties_per_round"]),
+                        "period": self.identity["period"]}
             expected["assignment_id"] = s.keccak(s.canonical(
                 {"journal_id": self.journal_id, "operation": operation, **expected}))
-            s.require(item == expected and item["slot"] < self.settings["duties_per_round"], "audit_assignment_changed")
+            s.require(item == expected, "audit_assignment_changed")
             op.update(status="picked", assignment=item, previous=previous[0] if previous else None,
                       previous_cursor=self.cursor, transaction_count=payload["transaction_count"])
             self.accounts[account]["ready"] = None
@@ -242,7 +242,8 @@ class Replay:
             manifest = self.manifest([operation], op["lane"])
             s.verify_eoa(s.manifest_request(self.lanes[op["lane"]]["settings"], manifest),
                          payload["sequencer_signature"])
-            self.accounts[op["account"]]["offered"] += 1
+            account = self.accounts[op["account"]]
+            account["offered"] = min(account["offered"] + 1, self.settings["duties_per_round"])
             op["status"] = "offered"
         elif kind == "submission_started":
             s.exact(payload, ("operation", "duty"))
@@ -346,23 +347,28 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
     expected_manifest = replay.manifest(relevant, lane)
     s.require(manifest["payload"] == expected_manifest, "audit_package_assignments_or_retries_incomplete")
     s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True, enrollment=enrollment)
-    expected_duties = [replay.operations[key]["duty"] for key in relevant if replay.operations[key]["status"] == "accepted"]
-    s.require(all(duty["friProofHash"] == proof_hashes[duty["batchNumber"]] for duty in expected_duties),
+    accepted_receipts = [replay.operations[key]["duty"] for key in relevant
+                         if replay.operations[key]["status"] == "accepted"]
+    # Removing reward credit must not let the sequencer substitute an operator's accepted proof.
+    s.require(all(duty["friProofHash"] == proof_hashes[duty["batchNumber"]] for duty in accepted_receipts),
               "audit_accepted_duty_native_proof_changed")
+    expected_duties = [duty for duty in accepted_receipts if duty["slot"] < settings["duties_per_round"]]
     s.require(type(duties) is list and len(duties) == len(expected_duties)
               and sorted(map(s.canonical, duties)) == sorted(map(s.canonical, expected_duties)),
               "audit_package_accepted_duties_incomplete")
     credited = {duty["batchNumber"] for duty in expected_duties}
+    covered = {duty["batchNumber"] for duty in accepted_receipts}
     unrewarded = [number for number, statement in statements.items() if statement["count"] > 0 and number not in credited]
-    exhausted = all(account["offered"] == settings["duties_per_round"] for account in replay.accounts.values())
-    s.require(not unrewarded or allow_control or exhausted, "audit_nonempty_batch_without_service_duty_wait")
+    uncovered = [number for number, statement in statements.items() if statement["count"] > 0 and number not in covered]
+    exhausted = all(account["offered"] >= settings["duties_per_round"] for account in replay.accounts.values())
+    s.require(not uncovered or allow_control or exhausted, "audit_nonempty_batch_without_service_duty_wait")
     zero_duty_reason = None
     if not expected_duties:
         if allow_control:
             zero_duty_reason = "control"
         elif all(statement["count"] == 0 for statement in statements.values()):
             zero_duty_reason = "empty_native_range"
-        elif exhausted:
+        elif exhausted or not uncovered:
             zero_duty_reason = "quota_exhausted"
         s.require(zero_duty_reason is not None, "audit_no_accepted_duties_wait")
     return {"journal_id": journal_id, "event_count": len(events), "event_head": head,

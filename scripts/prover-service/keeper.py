@@ -87,6 +87,7 @@ def prepare(settings, request, evidence, payload, *, enrollment=None):
     seen, slots = set(), set()
     for duty in duties:
         s.encode_duty(duty)
+        s.require(s.uint(duty["slot"], 16) < settings["duties_per_round"], "uncredited_assignment_not_rewardable")
         number = duty["batchNumber"]
         assignment = assignments.get(number)
         s.require(assignment and number not in seen, "duplicate_or_unassigned_duty")

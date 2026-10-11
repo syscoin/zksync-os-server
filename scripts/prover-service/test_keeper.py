@@ -182,6 +182,14 @@ class KeeperTests(unittest.TestCase):
         self.rpc.frozen_override = s.struct_hash("AcceptedPackageV1", s.PACKAGE, k.normalized(accepted))
         self.assertTrue(self.permit()["state"]["control_work"])
 
+    def test_uncredited_receipt_cannot_authorize_extra_reward_in_compute_package(self):
+        f = fixture(batch_count=6)
+        request = {key: f[key] for key in ("proposal", "manifest", "subscriptions", "duties")}
+        self.assertEqual(len(k.prepare(f["settings"], request, f["evidence"], f["fri_payload"])["duties"]), 4)
+        request["duties"] = f["receipts"]
+        with self.assertRaisesRegex(s.Error, "uncredited_assignment_not_rewardable"):
+            k.prepare(f["settings"], request, f["evidence"], f["fri_payload"])
+
     def test_open_and_repair_use_independent_cast_calldata_and_zero_proof_wrapper(self):
         for action in ("open", "repair"):
             result = k.package_call(self.config, self.rpc, self.request, self.f["evidence"], self.f["fri_payload"], 1000, action)
