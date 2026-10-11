@@ -1,13 +1,13 @@
 # Generated Era sources and separate canonical fixture certification
 
 The overlay, manifest and read-only checker bind the newly generated Security100
-verifier to the reviewed source tree containing the native priority observation
+verifier to the reviewed source tree containing the paused-deposit guard and native priority observation
 getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source
-tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`, and generated tree
-`76af1dc7837a5c1cb1d1098ee75bb3c03a65ffae`. Only four exact paths are overlaid.
+tree `08bc65200c2813c818573aeae85d74d206e24b77`, and generated tree
+`3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3`. Only four exact paths are overlaid.
 All 278 inventory identities and retained FFLONK remain unchanged; only the hash
 and length fields of the PLONK verifier and its Gateway deployer may change.
-The manifest binds completed current contract generation separately from the
+The manifest binds the targeted Admin inventory refresh separately from the
 pending current proof/EVM qualification and explicitly historical evidence.
 The bundle is not a live fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
@@ -15,7 +15,27 @@ bytes and absence of the generated source copy; the manifest binds
 all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
-## Current contract generation; proof qualification pending
+## Paused-deposit guard; retained verifier generation and pending proof qualification
+
+`permanentlyAllowPriorityMode()` now rejects a nonzero deposit-pause timestamp
+with the existing `NotCompatibleWithPriorityMode` error, matching the reverse
+migration-pause guard. ABI and storage declarations are unchanged. Regressions
+use real priority requests and migration pause/unpause calls, including an empty
+queue and failed-opt-in recovery. The stock executor fixture now consistently
+selects its already-allowed Syscoin DA scheme and mocks empty Ethereum blob
+arrays; these are test-only corrections.
+
+Pinned before/after EVM and zk builds reproduced the prior AdminFacet inventory
+row exactly and refreshed its five changed fields. Only AdminFacet bytecodes
+changed in the compiled closure; both ABIs matched. Runtime size is 22,490 bytes,
+up from 22,432. The targeted result has SHA-256
+`1b0865801dd8bd8ca31b4d8459f43bd057076c21363cef98b34847b4aa94d554`.
+The other 277 inventory rows, verifier/key and genesis bytes are retained, not
+newly regenerated. This is not a full inventory, storage-layout, proof or live
+deployment qualification. The previous complete generation receipt remains
+unchanged under `historical_pre_paused_guard_contract_generation_provenance`,
+bound to its original source tree `264d98e758c3a032942dfb08ee7d87a3f46288b4`
+and candidate tree `76af1dc7837a5c1cb1d1098ee75bb3c03a65ffae`.
 
 The candidate preserves the reproduced Syscoin guest tree
 `6935489bdbc7b1ed31e608677d1b2418b10691b5` and binds the rebuilt proving circuits'
@@ -30,9 +50,11 @@ Both generated PLONK copies have SHA-256
 the scheduler key has SHA-256
 `c3cec62f1b8d47ad23773bcf4906b1779ac1a2be58f9b7ce01f69956c0924a23`.
 The generated overlay has SHA-256
-`1dd60c89994b54dd1dcd1482d048958864a151a83bb8f9a0ef6fde85ad541af6`.
+`7f670e876b272d6123d227f4eb76a31ab203369019452faac873a23e87afe764`.
+Only its inventory pre/postimage Git blob header changed for the Admin refresh;
+the verifier/key delta bytes did not change.
 
-The actual contract-generation result, SHA-256
+The retained pre-guard contract-generation result, SHA-256
 `2973ac60ac2d18d3c3aa9f55d43af3b8c89b8ea8118657d0a6bb9701559bd828`,
 records four passing native PLONK generator tests, generation from this new key,
 the full `recompute_hashes.sh` build/recomputation, successful

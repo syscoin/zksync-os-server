@@ -6,22 +6,22 @@ index 7e1d9037d..71702e655 100644
 +# SYSCOIN: track the exact V32 compact Edge-DA relay deployment manifest.
 +!l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd18..b5de446cd 100644
+index a0200fd18..934720bd7 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
 -    "zkBytecodeHash": "0x01000681430b50cf58ac6268220767ba361480c1c9630f00f1b5fad6aad6d1de",
-+    "zkBytecodeHash": "0x01000681222f18566feefdfd49ea76b2c32f8c6359b0cb2311899b696b1cab38",
++    "zkBytecodeHash": "0x01000681773d037ea0e9042e563c195244247e1f369eac1bf73423ff3c226aae",
 @@ -746 +746 @@
 -    "evmBytecodeHash": "0xd82a2cb279e2f74b918cda3c6913ef187494f9bf18e7fa9cadf32112264e8116",
-+    "evmBytecodeHash": "0xb120df789fe9488f5d8afea81a2cedf2fb3f5672f17b0f52211f6ae9c5bca10e",
++    "evmBytecodeHash": "0x3b83a29445c23347797e2a09ec694a3de1e9672f466f34de778ff0814e957e0b",
 @@ -748,3 +748,3 @@
 -    "evmDeployedBytecodeHash": "0x008089eb8772a53bb30b1f15621508612eba06991f2aa98bba882681e45ce412",
 -    "evmDeployedBytecodeBlakeHash": "0xbcc160f051b65d4dec825475503382d81cffdc296ba5610384e421eeebd1a8fe",
 -    "evmDeployedBytecodeLength": 22512
-+    "evmDeployedBytecodeHash": "0xceb5326dd20bca3c1fb6b888c0999e3bc7761e9e70ae271df6866d7080d3df4a",
-+    "evmDeployedBytecodeBlakeHash": "0xd0e0b90152e994018099ed81c0bc7190947df7f05ded636c061f8cfe85757464",
-+    "evmDeployedBytecodeLength": 22432
++    "evmDeployedBytecodeHash": "0x2bacea0c59544314e21714624db4af1e72909f8441c01f6ed28e772cab25c2d0",
++    "evmDeployedBytecodeBlakeHash": "0x1c20bb26f87848232928ebcfeb787fd2a96c418cdedf4267e2d8c96744bb4015",
++    "evmDeployedBytecodeLength": 22490
 @@ -774 +774 @@
 -    "zkBytecodeHash": "0x0100008122a3b2a0c8c105d07f0193b35f26f7aab2324decae9d54c523c5c950",
 +    "zkBytecodeHash": "0x010000817a75ea80986073074477c0ce73d811c7cf87eb03b9823314bd46d219",
@@ -1555,7 +1555,7 @@ index d4ce4bdae..b1bb7af37 100644
 +// 0x05dc7af9
 +error SyscoinEdgeDARefsRootMismatch(bytes32 expectedRoot, bytes32 actualRoot);
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
-index 8cae1a630..c2e82f3ce 100644
+index 8cae1a630..e4622b987 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 @@ -17,2 +17,2 @@ import {
@@ -1573,6 +1573,11 @@ index 8cae1a630..c2e82f3ce 100644
 -        // The cap must not exceed the ZKsync OS block gas limit: a higher value will halt the block production.
 -        if (_newMaxTxGasLimit > ZKSYNC_OS_MAX_BLOCK_GAS_LIMIT) {
 +        if (_newMaxTxGasLimit > ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT) {
+@@ -421,0 +424,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
++        // SYSCOIN: Match the migration pause guard; Priority Mode requires an open priority-request path.
++        if (s.pausedDepositsTimestamp != 0) {
++            revert NotCompatibleWithPriorityMode();
++        }
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 index b8d073a5b..a73e7f3bb 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
@@ -4331,27 +4336,152 @@ index 631f8f7dc..3d2ca8dd1 100644
 +            IVerifier(address(executor)),
 +            address(this)
 +        );
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
+index b5800169e..2e8b79cbd 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
+@@ -7 +6,0 @@ import {IL1DAValidator, L1DAValidatorOutput} from "contracts/state-transition/ch
+-import {IExecutor, TOTAL_BLOBS_IN_COMMITMENT} from "contracts/state-transition/chain-interfaces/IExecutor.sol";
+@@ -10,0 +10 @@ import {
++    NotCompatibleWithPriorityMode,
+@@ -19,0 +20,2 @@ import {L2TransactionRequestDirect} from "contracts/core/bridgehub/IBridgehubBas
++import {IAdmin} from "contracts/state-transition/chain-interfaces/IAdmin.sol";
++import {IMigrator} from "contracts/state-transition/chain-interfaces/IMigrator.sol";
+@@ -25,0 +28,65 @@ contract PriorityModeExecutorTest is ExecutorTest {
++    // SYSCOIN: A real timestamped request and migration pause must not permit irreversible opt-in.
++    function testFuzz_revertWhen_permanentlyAllowPriorityMode_depositsPaused(uint32 _delay) public {
++        _requestPriorityOp();
++        uint256 queueSize = getters.getPriorityQueueSize();
++        uint256 firstUnprocessed = getters.getFirstUnprocessedPriorityTx();
++        address filterer = getters.getTransactionFilterer();
++        vm.prank(owner);
++        migrator.pauseDepositsBeforeInitiatingMigration();
++        // Cover immediate and long-standing pauses without changing the migration delay.
++        vm.warp(block.timestamp + _delay);
++
++        vm.recordLogs();
++        vm.prank(owner);
++        vm.expectRevert(NotCompatibleWithPriorityMode.selector);
++        admin.permanentlyAllowPriorityMode();
++        assertEq(vm.getRecordedLogs().length, 0, "rejected opt-in must not emit events");
++        assertEq(getters.getPriorityQueueSize(), queueSize, "priority queue must remain unchanged");
++        assertEq(getters.getFirstUnprocessedPriorityTx(), firstUnprocessed);
++        assertEq(getters.getTransactionFilterer(), filterer);
++        vm.expectRevert(PriorityModeIsNotAllowed.selector);
++        admin.activatePriorityMode();
++
++        // A failed opt-in must also retain the pause, and must not prevent the normal recovery flow.
++        vm.expectEmit(address(migrator));
++        emit IMigrator.DepositsUnpaused(l2ChainId);
++        vm.prank(owner);
++        migrator.unpauseDeposits();
++        _requestPriorityOp();
++        assertEq(getters.getPriorityQueueSize(), queueSize + 1);
++        vm.expectEmit(address(admin));
++        emit IAdmin.PriorityModeAllowed();
++        vm.prank(owner);
++        admin.permanentlyAllowPriorityMode();
++    }
++
++    function test_revertWhen_permanentlyAllowPriorityMode_depositsPausedEmptyQueue() public {
++        vm.prank(owner);
++        migrator.pauseDepositsBeforeInitiatingMigration();
++        vm.prank(owner);
++        vm.expectRevert(NotCompatibleWithPriorityMode.selector);
++        admin.permanentlyAllowPriorityMode();
++        assertEq(getters.getPriorityQueueSize(), 0);
++        vm.expectRevert(PriorityModeIsNotAllowed.selector);
++        admin.activatePriorityMode();
++    }
++
++    function test_permanentlyAllowPriorityMode_afterUnpause() public {
++        _requestPriorityOp();
++        vm.prank(owner);
++        migrator.pauseDepositsBeforeInitiatingMigration();
++        vm.prank(owner);
++        migrator.unpauseDeposits();
++
++        vm.expectEmit(address(admin));
++        emit IAdmin.PriorityModeAllowed();
++        vm.prank(owner);
++        admin.permanentlyAllowPriorityMode();
++        vm.expectRevert(PriorityModeRequiresPermanentRollup.selector);
++        admin.activatePriorityMode();
++
++        vm.prank(owner);
++        vm.expectRevert(NotCompatibleWithPriorityMode.selector);
++        migrator.pauseDepositsBeforeInitiatingMigration();
++    }
++
+@@ -160,2 +227,3 @@ contract PriorityModeExecutorTest is ExecutorTest {
+-        bytes32[] memory blobHashes = new bytes32[](TOTAL_BLOBS_IN_COMMITMENT);
+-        bytes32[] memory blobCommitments = new bytes32[](TOTAL_BLOBS_IN_COMMITMENT);
++        // SYSCOIN: Compact Bitcoin-DA fixtures do not carry Ethereum blob arrays.
++        bytes32[] memory blobHashes = new bytes32[](0);
++        bytes32[] memory blobCommitments = new bytes32[](0);
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
-index 57e1a62a0..8c04303da 100644
+index 57e1a62a0..d61e22d61 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 @@ -16,0 +17,2 @@ import {ETH_TOKEN_ADDRESS, TESTNET_COMMIT_TIMESTAMP_NOT_OLDER} from "contracts/c
 +// SYSCOIN: zkOS executor fixtures use the canonical compact-DA validator/scheme pair.
 +import {SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME} from "contracts/common/SyscoinConfig.sol";
-@@ -267 +269,4 @@ contract ExecutorTest is UtilsCallMockerTest {
+@@ -28,0 +31 @@ import {AdminFacet} from "contracts/state-transition/chain-deps/facets/Admin.sol
++import {MigratorFacet} from "contracts/state-transition/chain-deps/facets/Migrator.sol";
+@@ -60,0 +64 @@ contract ExecutorTest is UtilsCallMockerTest {
++    MigratorFacet internal migrator;
+@@ -128 +132 @@ contract ExecutorTest is UtilsCallMockerTest {
+-        bytes4[] memory selectors = new bytes4[](33);
++        bytes4[] memory selectors = new bytes4[](34);
+@@ -162,0 +167 @@ contract ExecutorTest is UtilsCallMockerTest {
++        selectors[i++] = getters.getTransactionFilterer.selector;
+@@ -178,0 +184,8 @@ contract ExecutorTest is UtilsCallMockerTest {
++    // SYSCOIN: Exercise the real migration pause/unpause boundary in Priority Mode regressions.
++    function getMigratorSelectors() private view returns (bytes4[] memory) {
++        bytes4[] memory selectors = new bytes4[](2);
++        selectors[0] = migrator.pauseDepositsBeforeInitiatingMigration.selector;
++        selectors[1] = migrator.unpauseDeposits.selector;
++        return selectors;
++    }
++
+@@ -253 +266 @@ contract ExecutorTest is UtilsCallMockerTest {
+-        // dummyBridgehub.setChainAssetHandler(address(chainAssetHandler));
++        dummyBridgehub.setChainAssetHandler(address(chainAssetHandler));
+@@ -267 +280,4 @@ contract ExecutorTest is UtilsCallMockerTest {
 -        rollupL1DAValidator = Utils.deployL1RollupDAValidatorBytecode();
 +        // SYSCOIN: Route zkOS fixtures through the direct Bitcoin-DA validator while retaining Era coverage.
 +        rollupL1DAValidator = isZKsyncOS()
 +            ? Utils.deploySyscoinL1DAValidatorZKsyncOSBytecode()
 +            : Utils.deployL1RollupDAValidatorBytecode();
-@@ -272 +277,5 @@ contract ExecutorTest is UtilsCallMockerTest {
+@@ -272 +288,5 @@ contract ExecutorTest is UtilsCallMockerTest {
 -        rollupDAManager.updateDAPair(rollupL1DAValidator, L2_DA_COMMITMENT_SCHEME, true);
 +        rollupDAManager.updateDAPair(
 +            rollupL1DAValidator,
 +            isZKsyncOS() ? SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME : L2_DA_COMMITMENT_SCHEME,
 +            true
 +        );
-@@ -430,0 +440,3 @@ contract ExecutorTest is UtilsCallMockerTest {
+@@ -277,0 +298 @@ contract ExecutorTest is UtilsCallMockerTest {
++        migrator = new MigratorFacet(block.chainid, true);
+@@ -339 +360 @@ contract ExecutorTest is UtilsCallMockerTest {
+-        Diamond.FacetCut[] memory facetCuts = new Diamond.FacetCut[](5);
++        Diamond.FacetCut[] memory facetCuts = new Diamond.FacetCut[](6);
+@@ -369,0 +391,6 @@ contract ExecutorTest is UtilsCallMockerTest {
++        facetCuts[5] = Diamond.FacetCut({
++            facet: address(migrator),
++            action: Diamond.Action.Add,
++            isFreezable: true,
++            selectors: getMigratorSelectors()
++        });
+@@ -384,0 +412 @@ contract ExecutorTest is UtilsCallMockerTest {
++        migrator = MigratorFacet(address(diamondProxy));
+@@ -391 +419,5 @@ contract ExecutorTest is UtilsCallMockerTest {
+-        admin.setDAValidatorPair(address(rollupL1DAValidator), L2_DA_COMMITMENT_SCHEME);
++        // SYSCOIN: Match the DA pair allowed by the fixture's RollupDAManager above.
++        admin.setDAValidatorPair(
++            address(rollupL1DAValidator),
++            isZKsyncOS() ? SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME : L2_DA_COMMITMENT_SCHEME
++        );
+@@ -430,0 +463,3 @@ contract ExecutorTest is UtilsCallMockerTest {
 +            // SYSCOIN: Default fixtures carry no compact edge references unless a test supplies them explicitly.
 +            edgeDARefsInput: "",
 +            edgeDARefsRoot: bytes32(0),

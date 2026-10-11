@@ -2,11 +2,11 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "264d98e758c3a032942dfb08ee7d87a3f46288b4",
-  "candidate_tree": "76af1dc7837a5c1cb1d1098ee75bb3c03a65ffae",
-  "source_patch_sha256": "0cac53c803b502e67c4a14ccf8eef4f0f576a0430fa0ee007276becbf124e2c6",
-  "source_applicator_sha256": "503341ef094f5a5b6b7766906a53a6eda99615cdb0437f98aa563cb8b7fa029d",
-  "overlay_sha256": "1dd60c89994b54dd1dcd1482d048958864a151a83bb8f9a0ef6fde85ad541af6",
+  "reviewed_source_tree": "08bc65200c2813c818573aeae85d74d206e24b77",
+  "candidate_tree": "3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3",
+  "source_patch_sha256": "f095498adc428c686cbdf3c35f7449380fb5ddc2ac6bc9c5d8dc2bc2e0fe889d",
+  "source_applicator_sha256": "ff45c84709a2d65990128e7ce68468b46ae8756208fe3451c62f466e14e8a772",
+  "overlay_sha256": "7f670e876b272d6123d227f4eb76a31ab203369019452faac873a23e87afe764",
   "overlay_size": 120679,
   "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
   "inventory_rows": 278,
@@ -17,7 +17,7 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "59c81b689951f540aa52b6009564986d6877a7e6ad3ed3bac3a591c4effa6767"
+      "sha256": "47bc12d4a2858aa63dd43f0656cfa9e9bc853d10e0ec4020f63a89d8d777985d"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
@@ -40,6 +40,18 @@
   "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
+    "status": "completed_targeted_admin_inventory_refresh",
+    "result_sha256": "1b0865801dd8bd8ca31b4d8459f43bd057076c21363cef98b34847b4aa94d554",
+    "reviewed_source_tree": "08bc65200c2813c818573aeae85d74d206e24b77",
+    "candidate_tree": "3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3",
+    "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
+    "changed_inventory_rows": ["l1-contracts/AdminFacet"],
+    "baseline_inventory_row_reproduced": true,
+    "evm_and_zk_abi_unchanged": true,
+    "full_contract_hash_recomputation_passed": false,
+    "scope": "Pinned Foundry, EVM Solc and zk compiler before/after builds reproduce the prior AdminFacet row exactly and refresh its five changed fields for the paused-deposit guard. Only AdminFacet bytecodes change within the compiled 46-EVM/39-zk artifact closure; the other 277 inventory rows, verifier/key and genesis bytes are retained, not newly regenerated or requalified. No complete storage-layout, fresh proof/EVM proof acceptance, deployment, settlement, fixture or public rollout qualification is asserted."
+  },
+  "historical_pre_paused_guard_contract_generation_provenance": {
     "status": "completed_contract_generation_only",
     "result_sha256": "2973ac60ac2d18d3c3aa9f55d43af3b8c89b8ea8118657d0a6bb9701559bd828",
     "runner_sha256": "072dd8ab2b2daae88e922736697d9d918ae7a4aacaced176f891515f8304714b",
