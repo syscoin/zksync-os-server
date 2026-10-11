@@ -186,10 +186,11 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_snapshot_reuses_authenticated_immutable_enrollment(self):
         identifier = self.acquired()
-        count = len(self.registry_rpc.anchors)
+        count = len(self.registry_rpc.views)
         chain, artifact = self.controller.status()
         self.controller.snapshot(identifier, chain, artifact, True)
-        self.assertEqual(len(self.registry_rpc.anchors), count)
+        self.assertTrue(all(signature == "isRoundFinalized(uint256)"
+                            for signature in self.registry_rpc.views[count:]))
 
     def frozen(self):
         identifier = self.acquired()
@@ -594,7 +595,7 @@ class CoordinatorTests(unittest.TestCase):
         identifier = self.acquired()
         chain, artifact = self.controller.status()
         bundle = self.controller.snapshot(identifier, chain, artifact, True)
-        registry_reads = len(self.registry_rpc.anchors)
+        registry_reads = len(self.registry_rpc.views)
         opening = {}
         package_call, stage, wallet_call = k.package_call, c.transactions.Transactions.stage, self.wallet.call
 
@@ -630,7 +631,8 @@ class CoordinatorTests(unittest.TestCase):
                          else "wait_for_fresh_preflight")
         self.assertEqual(len([call for call in self.wallet.calls if call[0] == "eth_signTransaction"]), int(after_sign))
         self.assertEqual(self.rpc.sent, [])
-        self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+        self.assertTrue(all(signature == "isRoundFinalized(uint256)"
+                            for signature in self.registry_rpc.views[registry_reads:]))
         reason = "enrollment_authority_anchor_mismatch" if binding == "pin" else "enrollment_authority_scope_mismatch"
         with self.assertRaisesRegex(s.Error, reason):
             self.controller.enrollment_for(opening["request"])
@@ -648,7 +650,8 @@ class CoordinatorTests(unittest.TestCase):
             self.assertEqual(operations, {result["operation_id"]: retained})
             self.assertEqual(len([call for call in self.wallet.calls if call[0] == "eth_signTransaction"]), 1)
             self.assertEqual(self.rpc.sent, [])
-            self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+            self.assertTrue(all(signature == "isRoundFinalized(uint256)"
+                            for signature in self.registry_rpc.views[registry_reads:]))
         else:
             for field in ("unsigned_transaction", "raw_transaction", "transaction_hash"):
                 self.assertIsNone(retained[field])

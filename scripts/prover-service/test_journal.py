@@ -23,6 +23,24 @@ class JournalTests(unittest.TestCase):
     def reload(self):
         self.state = journal.load(self.path, list_fields=("audit.events",))
 
+    def test_optional_map_attachment_is_read_only_until_transactional_save(self):
+        self.state["operations"]["accepted"] = {"status": "accepted", "assignment": {"batch_number": 1}}
+        with patch.object(journal, "MAX_ROWS", 1):
+            self.save()
+        self.state.database.close()
+        database = self.path.with_name(self.path.name + ".sqlite3")
+        before = {path: path.read_bytes() for path in (self.path, database)}
+        loaded = journal.load(self.path, map_fields=("operations", "known_receipts"), list_fields=("audit.events",))
+        self.assertEqual(loaded["known_receipts"], {})
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        loaded["known_receipts"]["receipt"] = {"lane": "child", "assignment": {"batch_number": 1}, "duty": {"slot": 0}}
+        journal.save(self.path, loaded, map_fields=("operations", "known_receipts"), list_fields=("audit.events",))
+        loaded.database.close()
+        reloaded = journal.load(self.path, map_fields=("operations", "known_receipts"), list_fields=("audit.events",))
+        self.assertEqual(reloaded["known_receipts"]["receipt"]["duty"], {"slot": 0})
+        self.assertEqual(reloaded["operations"]["accepted"]["status"], "accepted")
+        reloaded.database.close()
+
     def test_interrupted_marker_publication_recovers_committed_rows_and_counters(self):
         self.state["operations"]["pending"] = {"status": "submission_pending", "lease": "original"}
         self.state["nonce"] = 7
@@ -35,9 +53,33 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.state["operations"]["pending"]["lease"], "original")
         self.assertEqual(list(self.state["audit"]["events"]), [{"event": "retained"}])
         self.state["nonce"] = 8
+        with patch.object(journal, "_atomic", side_effect=OSError("interrupted again")):
+            with self.assertRaises(OSError):
+                self.save()
+        self.reload()
+        self.assertEqual(self.state["nonce"], 8)
         self.save()
         self.reload()
         self.assertEqual(self.state["nonce"], 8)
+        marker = s.read_json(self.path, private=True)
+        self.assertEqual((marker["schema_version"], marker["storage_version"], marker["nonce"]), (2, 2, 8))
+        self.state.database.close()
+        self.path.with_name(self.path.name + ".sqlite3").unlink()
+        with self.assertRaisesRegex(s.Error, "journal_database_missing"):
+            self.reload()
+
+    def test_same_process_retries_interrupted_marker_without_resetting_history(self):
+        self.state["operations"]["pending"] = {"status": "submission_pending", "lease": "original"}
+        with patch.object(journal, "MAX_ROWS", 1), patch.object(journal, "_atomic", side_effect=OSError("interrupted")):
+            with self.assertRaises(OSError):
+                self.save()
+        self.state["nonce"] = 9
+        self.save()
+        self.assertFalse(self.state.marker_pending)
+        self.reload()
+        self.assertEqual(self.state["nonce"], 9)
+        self.assertEqual(self.state["operations"]["pending"]["lease"], "original")
+        self.assertEqual(s.read_json(self.path, private=True)["storage_version"], 2)
 
     def test_database_transaction_rolls_back_history_and_scheduling_together(self):
         self.state["operations"]["pending"] = {"status": "offered", "lease": "original"}

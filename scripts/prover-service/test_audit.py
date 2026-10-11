@@ -1,6 +1,8 @@
 import base64
 import copy
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +11,37 @@ import dispatcher as d
 import service as s
 import test_dispatcher as td
 from test_service import sign, h, a, KEYS, fixture
+
+
+class EpochRpc(td.Rpc):
+    def __init__(self, settings, subscriptions):
+        super().__init__(settings, subscriptions)
+        self.blocks, self.closed = {}, set()
+        self.advance(550, 100, subscriptions)
+
+    def advance(self, timestamp, byte, subscriptions):
+        self.block = {"hash": h(byte), "number": hex(byte), "timestamp": hex(timestamp)}
+        self.blocks[h(byte)] = (copy.deepcopy(self.block), copy.deepcopy(subscriptions))
+        self.subscriptions = subscriptions
+
+    def call(self, method, params):
+        if method == "eth_getBlockByNumber":
+            if params[0] in ("latest", "finalized"):
+                return copy.deepcopy(self.block)
+            return next(copy.deepcopy(block) for block, _ in self.blocks.values() if block["number"] == params[0])
+        if method == "eth_getBlockByHash":
+            return copy.deepcopy(self.blocks[params[0]][0])
+        return super().call(method, params)
+
+    def contract(self, address, signature, values, anchor):
+        if signature == "isRoundFinalized(uint256)":
+            return s.word(int(values[0] in self.closed))
+        previous = self.subscriptions
+        self.subscriptions = self.blocks[anchor][1]
+        try:
+            return super().contract(address, signature, values, h(100))
+        finally:
+            self.subscriptions = previous
 
 
 class AuditTests(unittest.TestCase):
@@ -27,6 +60,122 @@ class AuditTests(unittest.TestCase):
         self.network.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
         self.dispatcher.submit(operation, proof, signature)
         return operation
+
+    def epoch_package(self, *, closed=(), duplicate=False, retry=False, control=False, only_old=False):
+        generation = getattr(self, "epoch_generation", 0) + 1
+        self.epoch_generation = generation
+        self.rpc = EpochRpc(self.f["settings"], self.f["subscriptions"])
+        self.root = Path(self.tmp.name) / f"epoch-five-{generation}"
+        self.store = d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 5,
+                                  "https://trusted.example/", self.rpc)
+        self.reload()
+        if retry:
+            operation = self.offered(1)
+            proof, signature = self.invalid_proof(operation, 1)
+            self.network.responses.append((422, {"x-syscoin-prover-disposition": "rejected"}, b""))
+            self.dispatcher.submit(operation, proof, signature)
+        else:
+            self.accepted(1)
+        old = self.package(1, 2)
+        old_authority = self.dispatcher.enrollment
+        self.rpc.advance(650, 101, self.f["subscriptions"])
+        self.root = Path(self.tmp.name) / f"epoch-six-{generation}"
+        self.store = d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 6,
+                                  "https://trusted.example/", self.rpc)
+        self.reload(650)
+        if not only_old:
+            for number in ((1, 2) if retry else (1,) if duplicate else (2,)):
+                self.ready(expires=690)
+                operation = self.pick(number, token=h(170 + number))
+                self.dispatcher.authorize(operation, sign(self.dispatcher.offer_request(operation), "sequencer"))
+                proof, signature = self.signed_proof(operation, number)
+                self.network.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+                self.dispatcher.submit(operation, proof, signature)
+        current = self.package(1, 2)
+        current["trust"]["enrollment_block_hash"] = h(101)
+        self.rpc.closed = set(closed)
+        current_id = current["bundle"]["journal_id"]
+        authorities = {old["bundle"]["journal_id"]: old_authority, current_id: self.dispatcher.enrollment}
+        group = s.EnrollmentGroup(self.f["settings"], authorities, current_id, self.rpc)
+        parts = sorted((old, current), key=lambda part: part["bundle"]["journal_id"])
+        contexts = [{"journal_id": part["bundle"]["journal_id"], "manifest": part["manifest"],
+                     "subscriptions": part["subscriptions"]} for part in parts]
+        subscriptions = s.aggregate_subscriptions(self.f["settings"], contexts)
+        payload = {"schema_version": 2, "chain_id": self.f["settings"]["execution_chain_id"],
+                   "chain_address": self.f["settings"]["chain_address"], "sequencer": self.f["settings"]["sequencer"],
+                   "period": 6, "current_journal_id": current_id,
+                   "subscription_snapshot_hash": s.keccak(s.canonical(subscriptions)), "contexts": contexts}
+        proposal = copy.deepcopy(self.f["proposal"])
+        proposal["accepted_package"]["period"] = 6
+        audit_contexts, projected, trusts = [], [], {}
+        for part in parts:
+            key = part["bundle"]["journal_id"]
+            rewards = [] if control or not group.rewardable(key) else part["duties"]
+            projected.extend(rewards)
+            part["trust"]["required_duties"] = part["duties"]
+            trusts[key] = part["trust"]
+            audit_contexts.append({"journal_id": key, "request": {"proposal": proposal, "manifest": part["manifest"],
+                                   "subscriptions": part["subscriptions"], "duties": rewards}, "bundle": part["bundle"]})
+        return {"settings": self.f["settings"], "evidence": current["evidence"],
+                "manifest": {"payload": payload, "sequencer_signature": sign(s.manifest_request(self.f["settings"], payload), "sequencer")},
+                "subscriptions": subscriptions, "duties": projected, "fri_payload": current["fri_payload"],
+                "bundle": {"schema_version": 3, "period": 6, "current_journal_id": current_id, "contexts": audit_contexts},
+                "trust": trusts, "rpc": self.rpc, "enrollment": group}
+
+    def test_multiple_period_audits_apply_native_coverage_once(self):
+        package = self.epoch_package()
+        result = audit.verify_package(**package)
+        self.assertEqual(result["covered_batches"], [1, 2])
+        self.assertEqual(sorted(duty["period"] for duty in result["required_duties"]), [5, 6])
+        self.assertEqual(len(result["contexts"]), 2)
+
+    def test_closed_historical_receipt_keeps_provenance_without_reward(self):
+        package = self.epoch_package(closed=(5,))
+        result = audit.verify_package(**package)
+        self.assertEqual([duty["period"] for duty in result["required_duties"]], [6])
+        self.assertEqual(result["unrewarded_reasons"][1], "round_closed")
+        package["fri_payload"]["fri_proofs"][0] = base64.b64encode(bytes([199]) * 96).decode()
+        with self.assertRaisesRegex(s.Error, "accepted_duty_native_proof_changed"):
+            audit.verify_package(**package)
+
+    def test_control_package_keeps_all_historical_provenance_without_reward(self):
+        result = audit.verify_package(**self.epoch_package(control=True), allow_control=True)
+        self.assertEqual(result["covered_batches"], [1, 2])
+        self.assertEqual(result["required_duties"], [])
+        self.assertEqual(result["zero_duty_reason"], "control")
+
+    def test_cross_period_duplicate_acceptance_rejected_but_terminal_retry_allowed(self):
+        with self.assertRaisesRegex(s.Error, "aggregate_duplicate_accepted_batch"):
+            audit.verify_package(**self.epoch_package(duplicate=True))
+        package = self.epoch_package(retry=True)
+        result = audit.verify_package(**package)
+        self.assertEqual(result["covered_batches"], [1, 2])
+        self.assertEqual([duty["period"] for duty in result["required_duties"]], [6, 6])
+
+    def test_closed_historical_period_cannot_skip_current_workers_but_closed_current_can(self):
+        package = self.epoch_package(closed=(5,), only_old=True)
+        with self.assertRaisesRegex(s.Error, "without_service_duty_wait"):
+            audit.verify_package(**package)
+        package["rpc"].closed.add(6)
+        group = package["enrollment"]
+        package["enrollment"] = s.EnrollmentGroup(package["settings"], group.authorities,
+                                                   group.current_journal_id, package["rpc"])
+        result = audit.verify_package(**package)
+        self.assertEqual(result["zero_duty_reason"], "round_closed")
+        self.assertEqual(result["required_duties"], [])
+
+    def test_single_closed_service_package_settles_without_credit_and_retains_receipts(self):
+        self.accepted(1)
+        package = self.package(1, 2)
+        original = self.rpc.contract
+        with patch.object(self.rpc, "contract", side_effect=lambda address, signature, values, anchor:
+                          s.word(1) if signature == "isRoundFinalized(uint256)" else original(address, signature, values, anchor)):
+            with self.assertRaisesRegex(s.Error, "closed_duty_period"):
+                audit.verify_package(**package)
+            package["duties"] = []
+            result = audit.verify_package(**package)
+        self.assertEqual(result["zero_duty_reason"], "round_closed")
+        self.assertEqual(len(result["accepted_receipts"]), 1)
 
     def package(self, start=1, end=None):
         if end is None:
@@ -176,6 +325,47 @@ class AuditTests(unittest.TestCase):
         bundle = {"schema_version": 2, "events": descriptor}
         self.assertEqual(sum(1 for _ in audit.iter_events(bundle, root)), audit.MAX_EVENTS + 1)
         self.assertEqual(list(audit.iter_events(bundle, root))[-1], {"index": audit.MAX_EVENTS})
+
+    def test_segment_publication_recovers_process_exit_before_and_after_rename(self):
+        script = """
+import os
+from pathlib import Path
+import sys
+import audit
+
+original = os.replace
+def interrupted(source, destination, *args, **kwargs):
+    if str(destination).endswith('.jsonl'):
+        if sys.argv[2] == 'before':
+            os._exit(73)
+        original(source, destination, *args, **kwargs)
+        os._exit(73)
+    return original(source, destination, *args, **kwargs)
+
+audit.SEGMENT_EVENTS = 1
+os.replace = interrupted
+audit.export_events([{'index': index} for index in range(3)], Path(sys.argv[1]))
+"""
+        events = [{"index": index} for index in range(3)]
+        for phase in ("before", "after"):
+            with self.subTest(phase=phase):
+                root = Path(self.tmp.name) / ("exit-archive-" + phase)
+                process = subprocess.run([sys.executable, "-c", script, str(root), phase],
+                                         cwd=Path(__file__).parent, capture_output=True, timeout=15)
+                self.assertEqual(process.returncode, 73, process.stderr.decode())
+                first = root / "0000000000000000.jsonl"
+                if phase == "after":
+                    self.assertEqual(first.stat().st_nlink, 1)
+                else:
+                    self.assertFalse(first.exists())
+                with patch.object(audit, "SEGMENT_EVENTS", 1):
+                    descriptor = audit.export_events(events, root)
+                self.assertEqual(list(audit.iter_events({"schema_version": 2, "events": descriptor}, root)), events)
+                self.assertTrue(all(path.stat().st_nlink == 1 for path in root.iterdir()))
+                retained = first.read_bytes()
+                with self.assertRaisesRegex(s.Error, "audit_event_segment_changed"):
+                    audit.publish_segment(first, b'{"index":99}\n')
+                self.assertEqual(first.read_bytes(), retained)
 
     def rehash(self, bundle):
         head = bundle["journal_id"]

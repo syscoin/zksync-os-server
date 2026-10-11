@@ -37,9 +37,14 @@ def configuration(value):
     s.require(p["rpc_timeout_seconds"] <= 30, "rpc_timeout_too_large")
     r.Rpc(value["rpc_url"], timeout=p["rpc_timeout_seconds"])
     enrollment = value["enrollment"]
-    s.exact(enrollment, ("registry_rpc_file", "block_hash"))
+    s.require(type(enrollment) is dict and set(enrollment) in
+              ({"registry_rpc_file", "block_hash"}, {"registry_rpc_file", "block_hash", "audit_trust_dir"}),
+              "unexpected_or_missing_fields")
     s.require(os.path.isabs(enrollment["registry_rpc_file"]), "absolute_registry_rpc_file_required")
     s.nonzero(enrollment["block_hash"])
+    if "audit_trust_dir" in enrollment:
+        import workflow_io
+        workflow_io.directory(enrollment["audit_trust_dir"])
     return value
 
 
@@ -56,6 +61,33 @@ def registry_rpc_for(config):
 
 def enrollment_for(config, request, registry_rpc=None, *, enrollment=None):
     configuration(config)
+    payload = request["manifest"]["payload"]
+    if payload.get("schema_version") == 2:
+        if enrollment is None:
+            import workflow_io
+            from pathlib import Path
+            s.require("audit_trust_dir" in config["enrollment"], "aggregate_audit_trust_directory_required")
+            contexts = payload["contexts"]
+            s.require(type(contexts) is list and 0 < len(contexts) <= 101, "invalid_manifest_contexts")
+            connection = registry_rpc or registry_rpc_for(config)
+            authorities = {}
+            for context in contexts:
+                key = s.nonzero(context["journal_id"])
+                s.require(key not in authorities, "duplicate_manifest_context")
+                trust = workflow_io.private_json(Path(config["enrollment"]["audit_trust_dir"]) / (key[2:] + ".json"))
+                s.require(trust.get("schema_version") == 1 and trust.get("journal_id") == key,
+                          "aggregate_audit_trust_identity_mismatch")
+                pin = s.nonzero(trust["enrollment_block_hash"])
+                if key == payload["current_journal_id"]:
+                    s.require(pin == config["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
+                authorities[key] = s.EnrollmentAuthority(config["settings"], context["subscriptions"],
+                            context["manifest"]["payload"]["period"], connection, pin)
+            enrollment = s.EnrollmentGroup(config["settings"], authorities, payload["current_journal_id"], connection)
+        s.require(type(enrollment) is s.EnrollmentGroup, "authenticated_enrollment_group_required")
+        enrollment.check_aggregate(config["settings"], payload["contexts"], payload["period"], payload["current_journal_id"])
+        s.require(enrollment.authorities[enrollment.current_journal_id].block_hash == config["enrollment"]["block_hash"],
+                  "enrollment_authority_anchor_mismatch")
+        return enrollment
     if enrollment is not None:
         s.require(type(enrollment) is s.EnrollmentAuthority, "configured_enrollment_authority_required")
         s.require(enrollment.block_hash == config["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
@@ -89,7 +121,7 @@ def prepare(settings, request, evidence, payload, *, enrollment=None):
         s.encode_duty(duty)
         s.require(s.uint(duty["slot"], 16) < settings["duties_per_round"], "uncredited_assignment_not_rewardable")
         number = duty["batchNumber"]
-        assignment = assignments.get(number)
+        assignment = s.assignment_for(assignments, number, duty)
         s.require(assignment and number not in seen, "duplicate_or_unassigned_duty")
         for source, dest in (("account", "account"), ("subscriptionHash", "subscription_hash"), ("period", "period"),
                              ("slot", "slot"), ("attempt", "attempt"), ("assignmentId", "assignment_id"),
@@ -126,6 +158,8 @@ def prepare(settings, request, evidence, payload, *, enrollment=None):
         s.require(candidate is None and proposal["candidate_proof"] == [] and accepted["rosterRoot"] == s.ZERO
                   and accepted["turn"] == 0 and accepted["wrapper"] == s.ZERO_ADDRESS
                   and accepted["wrapperBeneficiary"] == s.ZERO_ADDRESS, "invalid_bootstrap_compute")
+    for duty in duties:
+        s.require_rewardable_duty(enrollment, duty, proposal["mode"])
     return {"mode": proposal["mode"], "accepted_package": accepted, "duties": duties,
             "batch_outputs": [batch["output"] for batch in evidence["batches"]],
             "candidate": candidate, "candidate_proof": proposal["candidate_proof"]}
@@ -176,7 +210,7 @@ def base_context(config, rpc, evidence, now):
     return head, anchor, call
 
 
-def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True):
+def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True, *, enrollment=None):
     s.require(0 < s.uint(runtime, 32) <= 86400, "invalid_compute_runtime")
     head, anchor, call = base_context(config, rpc, evidence, now)
     settings, limits = config["settings"], config["policy"]
@@ -220,6 +254,12 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True):
                       "opening_roster_mismatch")
             control = bool(int.from_bytes(transition, "big"))
     s.require(not control or not prepared["duties"], "control_work_must_have_empty_report")
+    if mode == "service" and prepared["duties"]:
+        registry_rpc = enrollment.rpc if type(enrollment) in (s.EnrollmentAuthority, s.EnrollmentGroup) \
+            else registry_rpc_for(config)
+        for period in {duty["period"] for duty in prepared["duties"]}:
+            s.require(period <= accepted["period"], "future_duty_period")
+            s.require(not s.round_closed(settings, registry_rpc, period), "closed_duty_period")
     priority = None
     if require_open:
         priority = r.priority_context(rpc, settings, {**limits, "min_turn_seconds": runtime + limits["reserve_seconds"]},
@@ -234,9 +274,10 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True):
 
 
 def permit(config, rpc, request, evidence, payload, now, runtime, *, enrollment=None):
+    enrollment = enrollment_for(config, request, enrollment=enrollment)
     prepared = prepare(config["settings"], request, evidence, payload,
-                       enrollment=enrollment_for(config, request, enrollment=enrollment))
-    state = inspect(config, rpc, prepared, evidence, now, runtime)
+                       enrollment=enrollment)
+    state = inspect(config, rpc, prepared, evidence, now, runtime, enrollment=enrollment)
     return {"schema_version": 1, "configuration_sha256": sha(config), "lane": config["lane"],
             "payload_sha256": sha(payload), "evidence_sha256": sha(evidence), "request": request,
             "runtime_seconds": runtime, "state": state}
@@ -268,11 +309,11 @@ def unsigned_call(rpc, settings, limits, head, anchor, account, target, signatur
 
 def package_call(config, rpc, request, evidence, payload, now, action, *, enrollment=None):
     s.require(action in ("open", "repair"), "invalid_package_action")
-    prepared = prepare(config["settings"], request, evidence, payload,
-                       enrollment=enrollment_for(config, request, enrollment=enrollment))
+    enrollment = enrollment_for(config, request, enrollment=enrollment)
+    prepared = prepare(config["settings"], request, evidence, payload, enrollment=enrollment)
     # Repairs preserve the old draw even if the clock has rolled to another roster.
     if action == "open":
-        inspect(config, rpc, prepared, evidence, now, 1, require_open=False)
+        inspect(config, rpc, prepared, evidence, now, 1, require_open=False, enrollment=enrollment)
     head, anchor, _ = base_context(config, rpc, evidence, now)
     method = action + ("BootstrapPackage" if prepared["mode"] == "bootstrap" else "Package")
     return unsigned_call(rpc, config["settings"], config["policy"], head, anchor, config["settings"]["sequencer"],

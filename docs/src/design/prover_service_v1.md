@@ -483,3 +483,24 @@ shared cross-chain quota accounting, and nonrewarded control-proof recovery.
 Reserved proxy storage layouts are preserved. Existing versioned replay wire
 formats and the guest are unchanged. This is an engineering review with focused
 regression tests, not an independent third-party security audit or launch signoff.
+
+### Continuous dispatch and boundary settlement
+
+Reward opportunity counters cap credit, not work eligibility. Authenticated ready
+operators remain eligible for round-robin FRI assignment after their quota, with
+one outstanding assignment per account and the same native lease/acceptance checks.
+Further accepted receipts remain auditable without extra reward credit. Journals
+retain monotonic allocation state and complete indexed/segmented history without
+a lifetime assignment-count cutoff.
+
+A service wrapper package may contain duties from an earlier service period. Each
+duty retains its original subscription, period and quota slot, and can earn credit
+only before that original period's existing receipt-grace deadline. Future-period
+credits are rejected. Independent wrapper audits exclude bootstrap-journal receipts
+from service reward reports; the signed duty fields do not encode journal phase.
+Expired receipts still bind the native FRI proof bytes and batch coverage. Each
+participating journal is independently audited under its own canonical enrollment
+anchor and pinned checkpoint; current-period quota exhaustion governs uncovered
+native work. A report whose historical credits expire while wrapping is repaired
+through the existing package repair mechanism, without redrawing its roster or
+resetting its deadlines.

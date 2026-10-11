@@ -7,6 +7,7 @@ import copy
 import hashlib
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -26,7 +27,7 @@ import pool
 import sentry
 from runpod import Store, atomic_json, read_private_json
 
-JOURNAL_FIELDS = ("jobs", "checkpoints")
+JOURNAL_FIELDS = ("jobs", "checkpoints", "known_receipts")
 TERMINAL = ("returned", "expired", "obsolete", "rejected")
 LIVE = ("received", "computing")
 
@@ -60,7 +61,8 @@ def initialize(root, config):
         io.directory(root / name, create=True)
     io.immutable_json(root / "configuration.json", config)
     journal.save(root / "wrapper.json", {"schema_version": 1, "configuration_sha256": io.digest(config),
-                                        "checkpoints": {}, "jobs": {}, "last_status": None}, map_fields=JOURNAL_FIELDS)
+                                        "checkpoints": {}, "jobs": {}, "known_receipts": {}, "last_status": None},
+                 map_fields=JOURNAL_FIELDS)
     return Store(root)
 
 
@@ -117,6 +119,7 @@ class Wrapper:
         self.store, self.clock = store, clock
         self.config = configuration(io.private_json(store.root / "configuration.json"))
         self.state = journal.load(store.root / "wrapper.json", map_fields=JOURNAL_FIELDS)
+        self.state.setdefault("known_receipts", {})
         s.require(self.state["schema_version"] == 1
                   and self.state["configuration_sha256"] == io.digest(self.config), "wrapper_configuration_changed")
         self.keeper = self.config["keeper"]
@@ -141,30 +144,98 @@ class Wrapper:
     def audited(self, body, chain_state, execute, payload, event_root=None):
         bundle = body["audit"]
         s.require(type(bundle) is dict, "signed_dispatch_audit_required")
-        journal_id = s.nonzero(bundle["journal_id"])
+        start, end = payload["from_batch_number"], payload["to_batch_number"]
+        known = {}
+        for _, observed in journal.range_items(self.state["known_receipts"], body["lane"], start, end):
+            known.setdefault(observed["journal_id"], []).append(observed["duty"])
+        def require_receipts(key, trust):
+            if key in known:
+                duties = {s.canonical(duty): duty for duty in trust.get("required_duties", [])}
+                duties.update((s.canonical(duty), duty) for duty in known[key])
+                trust = {**trust, "required_duties": list(duties.values())}
+            return trust
+        aggregate = bundle.get("schema_version") == 3
+        if aggregate:
+            s.require(type(bundle["contexts"]) is list and 0 < len(bundle["contexts"]) <= 101,
+                      "invalid_aggregate_audit_contexts")
+            keys = [s.nonzero(context["journal_id"]) for context in bundle["contexts"]]
+            s.require(keys == sorted(set(keys)), "aggregate_audit_contexts_changed")
+            trust = {key: require_receipts(key, self.audit_trust(key)) for key in keys}
+            s.require(set(known) <= set(keys), "aggregate_known_duty_context_omitted")
+            for path in Path(self.config["audit_trust_dir"]).iterdir():
+                if re.fullmatch(r"[0-9a-f]{64}\.json", path.name):
+                    key = "0x" + path.stem
+                    if key not in trust:
+                        other = self.audit_trust(key)
+                        if any(start <= duty["batchNumber"] <= end for duty in other.get("required_duties", [])):
+                            trust[key] = other
+            enrollment = self.enrollment(body["request"])
+        else:
+            journal_id = s.nonzero(bundle["journal_id"])
+            s.require(set(known) <= {journal_id}, "aggregate_known_duty_context_omitted")
+            trust = require_receipts(journal_id, self.audit_trust(journal_id))
+            for path in Path(self.config["audit_trust_dir"]).iterdir():
+                if re.fullmatch(r"[0-9a-f]{64}\.json", path.name) and "0x" + path.stem != journal_id:
+                    other = self.audit_trust("0x" + path.stem)
+                    s.require(not any(start <= duty["batchNumber"] <= end for duty in other.get("required_duties", [])),
+                              "aggregate_known_duty_context_omitted")
+        request = body["request"]
+        archive = {"event_root": event_root} if bundle.get("schema_version") in (2, 3) else {}
+        group = {"enrollment": enrollment} if aggregate else {}
+        result = audit.verify_package(self.settings, body["evidence"], request["manifest"], request["subscriptions"],
+                    request["duties"], bundle, trust, self.registry_rpc, fri_payload=payload,
+                    allow_control=chain_state["control_work"], **archive, **group)
+        if execute:
+            for context in result["contexts"] if aggregate else [{**result, "journal_id": journal_id}]:
+                self.state["checkpoints"][context["journal_id"]] = {key: context[key] for key in
+                                                      ("event_count", "event_head", "assignment_cursor")}
+                for duty in context.get("accepted_receipts", []):
+                    observed = {"journal_id": context["journal_id"], "lane": context["lane"],
+                                "assignment": {"batch_number": duty["batchNumber"]}, "duty": duty, "status": "accepted"}
+                    self.state["known_receipts"][io.digest(observed)] = observed
+            self.save()
+        return result
+
+    def audit_trust(self, journal_id):
+        s.nonzero(journal_id)
         trust = io.private_json(Path(self.config["audit_trust_dir"]) / (journal_id[2:] + ".json"))
-        previous = self.state["checkpoints"].get(journal_id)
+        previous = journal.peek(self.state["checkpoints"], journal_id)
         if previous:
             count = trust["minimum_checkpoint"]["event_count"]
             if count == previous["event_count"]:
                 s.require(trust["minimum_checkpoint"] == previous, "independent_checkpoint_conflict")
             elif count < previous["event_count"]:
                 trust = {**trust, "minimum_checkpoint": previous}
-        request = body["request"]
-        archive = {"event_root": event_root} if bundle.get("schema_version") == 2 else {}
-        result = audit.verify_package(self.settings, body["evidence"], request["manifest"], request["subscriptions"],
-                    request["duties"], bundle, trust, self.registry_rpc, fri_payload=payload,
-                    allow_control=chain_state["control_work"], **archive)
-        if execute:
-            self.state["checkpoints"][journal_id] = {key: result[key] for key in
-                                                    ("event_count", "event_head", "assignment_cursor")}
-            self.save()
-        return result
+        return trust
 
     def pool(self):
         return pool.Pool(Store(Path(self.config["pool_dir"])), clock=self.clock, service_rpc=self.rpc)
 
     def enrollment(self, request):
+        payload = request["manifest"]["payload"]
+        if payload.get("schema_version") == 2:
+            contexts = payload["contexts"]
+            s.require(type(contexts) is list and 0 < len(contexts) <= 101, "invalid_manifest_contexts")
+            authorities = {}
+            previous = self.enrollment_authority
+            for context in contexts:
+                key = s.nonzero(context["journal_id"])
+                s.require(key not in authorities, "duplicate_manifest_context")
+                pin = self.audit_trust(key)["enrollment_block_hash"]
+                if key == payload["current_journal_id"]:
+                    s.require(pin == self.keeper["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
+                old = previous.authorities.get(key) if type(previous) is s.EnrollmentGroup else None
+                if old is not None and old.block_hash == pin:
+                    old.check(self.settings, context["subscriptions"], context["manifest"]["payload"]["period"])
+                    authorities[key] = old
+                else:
+                    authorities[key] = s.EnrollmentAuthority(self.settings, context["subscriptions"],
+                            context["manifest"]["payload"]["period"], self.registry_rpc, pin)
+            group = s.EnrollmentGroup(self.settings, authorities, payload["current_journal_id"], self.registry_rpc)
+            self.enrollment_authority = k.enrollment_for(self.keeper, request, self.registry_rpc, enrollment=group)
+            return self.enrollment_authority
+        if type(self.enrollment_authority) is not s.EnrollmentAuthority:
+            self.enrollment_authority = None
         self.enrollment_authority = k.enrollment_for(self.keeper, request, self.registry_rpc,
                                                     enrollment=self.enrollment_authority)
         return self.enrollment_authority
@@ -174,6 +245,9 @@ class Wrapper:
         stage = lane["stages"]["SNARK"]
         s.require(stage["acquisition"] == "external" and stage["service"] == self.keeper,
                   "wrapper_pool_service_configuration_changed")
+        if body["request"]["manifest"]["payload"].get("schema_version") == 2:
+            s.require(self.keeper["enrollment"].get("audit_trust_dir") == self.config["audit_trust_dir"],
+                      "wrapper_pool_audit_trust_directory_mismatch")
         s.require(body["lane"] == self.keeper["lane"]
                   and stage["release_sha256"] == body["release_sha256"], "wrapper_release_or_lane_changed")
         raw = job.read_file(p.store.root / self.keeper["lane"] / "SNARK" / "release.json", job.MAX_MANIFEST, private=True)
@@ -195,7 +269,7 @@ class Wrapper:
         p = self.pool()
         runtime, release = self.pool_policy(p, body)
         runtime = 1 if body["proof"] is not None else runtime
-        k.inspect(self.keeper, self.rpc, prepared, body["evidence"], self.clock(), runtime)
+        k.inspect(self.keeper, self.rpc, prepared, body["evidence"], self.clock(), runtime, enrollment=enrollment)
         if not execute:
             return {"action": "would_verify_and_handle_selected_turn", "work_hash": work_hash}
         if work_hash not in self.state["jobs"]:
@@ -232,6 +306,57 @@ class Wrapper:
         self.save()
         return {"action": "queued_selected_snark", "work_hash": work_hash, "pool_operation": operation}
 
+    def authenticated_work(self, directory):
+        envelope = io.private_json(directory / "work.json")
+        payload = io.private_json(directory / "payload.json", io.MAX_PAYLOAD)
+        work_hash = io.validate_work(self.settings, envelope, payload)
+        s.require(directory.name == work_hash[2:], "work_directory_hash_mismatch")
+        body = envelope["body"]
+        request = body["request"]
+        s.exact(request, ("proposal", "manifest", "subscriptions", "duties"))
+        proposal = request["proposal"]
+        s.exact(proposal, ("mode", "accepted_package", "candidate", "candidate_proof"))
+        accepted = proposal["accepted_package"]
+        fields = [(key, kind) for key, kind in s.PACKAGE if key not in ("manifestHash", "reportHash", "proofHash")]
+        s.encode_fields(fields, accepted)
+        s.require(body["lane"] == self.keeper["lane"] and proposal["mode"] == "service", "work_lane_or_phase_changed")
+        for key, expected in (("domainVersion", 1), ("protocolVersion", 32),
+                ("chainId", self.settings["execution_chain_id"]), ("chainAddress", self.settings["chain_address"]),
+                ("policyHash", self.settings["policy_hash"]), ("vkHash", self.settings["vk_hash"]),
+                ("sequencer", self.settings["sequencer"])):
+            s.require(accepted[key] == expected, "work_package_scope_changed")
+        return work_hash, body, payload
+
+    def retire_unstarted(self, work_hash, entry, state, roster, execute):
+        directory = self.store.root / "jobs" / work_hash[2:]
+        actual, body, payload = self.authenticated_work(directory)
+        s.require(actual == work_hash, "work_directory_hash_mismatch")
+        accepted = body["request"]["proposal"]["accepted_package"]
+        settled = accepted["batchTo"] < state["next_native_batch"]
+        past_turn = False
+        if not settled and state["mode"] == "service" and state["package_open"] \
+                and s.uint(accepted["turn"], 32) < state["current_turn"]:
+            try:
+                k.rebind_request(self.settings, body["request"], state, roster)
+                past_turn = True
+            except s.Error as error:
+                if str(error) != "request_frozen_commitments_changed":
+                    raise
+        if not settled and not past_turn:
+            return False
+        # An old turn number alone cannot retire a different or repaired package, and
+        # unverified range metadata cannot release a retained job's capacity.
+        enrollment = self.enrollment(body["request"])
+        try:
+            k.prepare(self.settings, body["request"], body["evidence"], payload, enrollment=enrollment)
+        except s.Error as error:
+            if str(error) != "closed_duty_period":
+                raise
+        if execute:
+            entry.update(status="obsolete", last_error=None)
+            self.save()
+        return True
+
     def finish(self, work_hash, proof, execute):
         entry = self.state["jobs"][work_hash]
         directory = self.store.root / "jobs" / work_hash[2:]
@@ -251,20 +376,27 @@ class Wrapper:
         current, roster = self.status()
         prepared, signature = None, "0x"
         enrollment = self.enrollment(body["request"])
-        original = k.prepare(self.settings, body["request"], body["evidence"], payload, enrollment=enrollment)
-        unchanged = current["frozen_package"] == k.normalized(original["accepted_package"])
-        if unchanged and current["mode"] == "service" and current["package_open"] and current["local_operator_selected"]:
-            rebound = k.rebind_request(self.settings, body["request"], current, roster)
-            if rebound == body["request"]:
-                self.audited(body, current, execute, payload, directory / "audit-events")
-                request = body["request"]
-                prepared = s.prepare_package(self.settings, body["evidence"], request["manifest"], request["subscriptions"],
-                                             request["duties"], request["proposal"], proof, payload, enrollment=enrollment)
-                k.inspect(self.keeper, self.rpc, k.prepare(self.settings, request, body["evidence"], payload,
-                                                        enrollment=enrollment),
-                          body["evidence"], self.clock(), 1)
-                signature = io.typed_signature(self.store.root / "signatures", prepared["wrapper_request"],
-                                                self.signing_wallet(), execute)
+        try:
+            original = k.prepare(self.settings, body["request"], body["evidence"], payload, enrollment=enrollment)
+            unchanged = current["frozen_package"] == k.normalized(original["accepted_package"])
+            if unchanged and current["mode"] == "service" and current["package_open"] and current["local_operator_selected"]:
+                rebound = k.rebind_request(self.settings, body["request"], current, roster)
+                if rebound == body["request"]:
+                    self.audited(body, current, execute, payload, directory / "audit-events")
+                    request = body["request"]
+                    prepared = s.prepare_package(self.settings, body["evidence"], request["manifest"], request["subscriptions"],
+                                                 request["duties"], request["proposal"], proof, payload, enrollment=enrollment)
+                    k.inspect(self.keeper, self.rpc, k.prepare(self.settings, request, body["evidence"], payload,
+                                                            enrollment=enrollment),
+                              body["evidence"], self.clock(), 1, enrollment=enrollment)
+                    signature = io.typed_signature(self.store.root / "signatures", prepared["wrapper_request"],
+                                                    self.signing_wallet(), execute)
+        except s.Error as error:
+            if str(error) != "closed_duty_period":
+                raise
+            # The proven native input survives a reward-window closure. The coordinator
+            # can repair the report and reuse these bytes without another SNARK job.
+            prepared, signature = None, "0x"
         result = {"schema_version": 1, "work_hash": work_hash, "proof": proof,
                   "prepared": prepared, "wrapper_signature": signature}
         result_signature = io.typed_signature(self.store.root / "signatures",
@@ -292,9 +424,17 @@ class Wrapper:
             self.save()
 
     def recover(self, execute):
+        current = None
         for work_hash, entry in journal.status_items(self.state["jobs"], LIVE):
             entry = self.state["jobs"][work_hash]
             try:
+                directory = self.store.root / "jobs" / work_hash[2:]
+                if entry["status"] == "received" and entry["pool_operation"] is None \
+                        and not (directory / "proof.json").exists() and not (directory / "result.json").exists():
+                    if current is None:
+                        current = self.status()
+                    if self.retire_unstarted(work_hash, entry, *current, execute):
+                        continue
                 result = self.recover_job(work_hash, entry, execute)
                 if result is not None:
                     return result
@@ -355,19 +495,26 @@ class Wrapper:
             entry = journal.peek(self.state["jobs"], "0x" + directory.name)
             if entry and entry["status"] in (*TERMINAL, "computing"):
                 continue
-            entries.append(directory)
-            s.require(len(entries) <= 1024, "wrapper_inbox_capacity")
+            try:
+                work_hash, body, _ = self.authenticated_work(directory)
+                accepted = body["request"]["proposal"]["accepted_package"]
+                if s.uint(accepted["turn"], 32) != state["current_turn"] \
+                        or accepted["wrapper"] != self.keeper["policy"]["expected_operator"]:
+                    continue
+                rebound = k.rebind_request(self.settings, body["request"], state, roster)
+                s.require(rebound == body["request"], "work_not_for_current_local_turn")
+                entries.append(directory)
+                s.require(len(entries) <= 1024, "wrapper_inbox_capacity")
+            except (s.Error, job.Error, OSError, ValueError, TypeError, KeyError) as error:
+                if isinstance(error, s.Error) and str(error) == "wrapper_inbox_capacity":
+                    raise
+                self.failure("0x" + directory.name, error, execute)
         for directory in sorted(entries):
             work_hash = "0x" + directory.name
             try:
                 s.nonzero(work_hash)
                 entry = self.state["jobs"].get(work_hash)
                 if entry and entry["status"] in (*TERMINAL, "computing"):
-                    continue
-                envelope = io.private_json(directory / "work.json")
-                proposal = envelope["body"]["request"]["proposal"]
-                accepted = proposal["accepted_package"]
-                if accepted["turn"] != state["current_turn"] or accepted["wrapper"] != self.keeper["policy"]["expected_operator"]:
                     continue
                 return self.receive(directory, state, roster, execute)
             except (s.Error, job.Error, OSError, ValueError, TypeError, KeyError) as error:

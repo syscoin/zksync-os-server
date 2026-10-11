@@ -42,7 +42,8 @@ Keep one mode-0600 keeper configuration per lane, phase, and enrollment journal:
   "settings": { "...": "the complete service.py configuration for this lane" },
   "enrollment": {
     "registry_rpc_file": "/trusted/child-registry-rpc.json",
-    "block_hash": "0xREVIEWED_CANONICAL_ENROLLMENT_BLOCK_HASH"
+    "block_hash": "0xREVIEWED_CANONICAL_ENROLLMENT_BLOCK_HASH",
+    "audit_trust_dir": "/trusted/wrapper-audit-trust"
   },
   "policy": {
     "expected_operator": "0xREVIEWED_OPERATOR",
@@ -71,8 +72,8 @@ phase, reviewed code, or operator requires a new reviewed pool configuration;
 the pool freezes these values at initialization. No live deployment values or
 production VK are supplied by the examples.
 
-Every keeper configuration must contain `enrollment` with exactly
-`registry_rpc_file` and `block_hash`. The first
+Every keeper configuration must contain `enrollment` with
+`registry_rpc_file` and `block_hash`, plus optional `audit_trust_dir`. The first
 is an absolute private connection-file path with `url` and `authorization`; the
 second is the independently reviewed canonical enrollment block for that journal.
 Use the same pin as its dispatch audit trust. This trusted configuration enables
@@ -83,6 +84,13 @@ The coordinator authenticates that pin and the dispatcher's lane before a new
 native SNARK pick. It may reuse the verified immutable snapshot while running;
 it never obtains authority from a serialized journal or work-envelope flag.
 Existing uncertain native leases retain their reconciliation path.
+Cross-period wrapping requires `audit_trust_dir`: an absolute private directory
+containing independently provisioned trust files for every included journal.
+It must equal the wrapper's `audit_trust_dir` and remain available to the rental
+pool when it revalidates a saved compute permit. The current journal's trust pin
+must match `block_hash`; historical journals retain their own reviewed pins.
+The pool rebuilds canonical enrollment authorities from these files, never from
+the work envelope's claimed anchors. Single-period configurations may omit it.
 Offline `service.py` helpers and `keeper.prepare` retain their EOA account-signature
 checks when canonical context is omitted. Contract operators still require a
 separately implemented adapter.

@@ -137,6 +137,29 @@ def validate_work(settings, envelope, payload):
 
 
 def copy_audit_events(bundle, event_root, destination):
+    if bundle.get("schema_version") == 3:
+        s.exact(bundle, ("schema_version", "period", "current_journal_id", "contexts"))
+        s.uint(bundle["period"], 64)
+        s.nonzero(bundle["current_journal_id"])
+        contexts = bundle["contexts"]
+        s.require(type(contexts) is list and 0 < len(contexts) <= 101, "invalid_aggregate_audit_contexts")
+        keys = []
+        for context in contexts:
+            s.exact(context, ("journal_id", "request", "bundle"))
+            key = s.nonzero(context["journal_id"])
+            original = context["bundle"]
+            s.require(type(original) is dict and original.get("schema_version") in (1, 2)
+                      and original.get("journal_id") == key, "aggregate_audit_context_changed")
+            keys.append(key)
+        s.require(keys == sorted(set(keys)) and bundle["current_journal_id"] in keys,
+                  "aggregate_audit_contexts_changed")
+        for context in contexts:
+            if context["bundle"]["schema_version"] == 2:
+                s.require(event_root is not None, "audit_event_archive_required")
+                source, root = directory(event_root), directory(destination, create=True)
+                copy_audit_events(context["bundle"], source / context["journal_id"][2:],
+                                  root / context["journal_id"][2:])
+        return
     if bundle.get("schema_version") != 2:
         return
     import audit
@@ -152,28 +175,8 @@ def copy_audit_events(bundle, event_root, destination):
         name = "%016d.jsonl" % index
         path = source / name
         s.require(path.lstat().st_nlink == 1, "private_single_link_file_required")
-        data = s.read(path, private=True, maximum=16 * 1024 * 1024)
-        target = root / name
-        if target.exists() or target.is_symlink():
-            s.require(target.lstat().st_nlink == 1, "private_single_link_file_required")
-            s.require(s.read(target, private=True) == data, "immutable_audit_event_segment_changed")
-            continue
-        # Stage outside the archive so an interrupted write cannot add an unexpected
-        # filename to the exact, checkpoint-bound set of segments.
-        fd, temporary = tempfile.mkstemp(prefix=".audit-copy-", dir=root.parent)
-        try:
-            with os.fdopen(fd, "wb") as output:
-                output.write(data)
-                output.flush()
-                os.fsync(output.fileno())
-            try:
-                os.link(temporary, target, follow_symlinks=False)
-            except FileExistsError:
-                s.require(target.lstat().st_nlink == 1, "private_single_link_file_required")
-                s.require(s.read(target, private=True) == data, "immutable_audit_event_segment_changed")
-        finally:
-            Path(temporary).unlink(missing_ok=True)
-        r.sync_dir(root)
+        data = s.read(path, private=True, maximum=s.MAX_FILE)
+        audit.publish_segment(root / name, data)
 
 
 def publish_work(inbox, envelope, payload, *, event_root=None):

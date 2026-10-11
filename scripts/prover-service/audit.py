@@ -2,6 +2,8 @@
 """Replay authenticated dispatch history against an independently pinned checkpoint."""
 
 import copy
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,6 +55,49 @@ def _event_directory(root, *, create=False):
     return fd
 
 
+def publish_segment(destination, data):
+    destination = Path(destination)
+    s.require(re.fullmatch(r"[0-9]{16,20}\.jsonl", destination.name) is not None,
+              "invalid_audit_segment_name")
+    s.require(type(data) is bytes and len(data) <= s.MAX_FILE, "audit_event_segment_too_large")
+    archive = _event_directory(destination.parent)
+    lock_name = ".audit-archive-" + hashlib.sha256(os.fsencode(destination.parent.name)).hexdigest() + ".lock"
+    parent = lock = None
+    try:
+        parent = os.open(destination.parent.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        lock = os.open(lock_name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        info = os.fstat(lock)
+        s.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                  and info.st_nlink == 1 and not info.st_mode & 0o077, "private_audit_archive_lock_required")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if destination.exists() or destination.is_symlink():
+            s.require(destination.lstat().st_nlink == 1 and s.read(destination, private=True) == data,
+                      "audit_event_segment_changed")
+            os.fsync(archive)
+            os.fsync(parent)
+            return
+        descriptor, temporary = tempfile.mkstemp(prefix=".audit-segment-", suffix=".tmp",
+                                               dir=destination.parent.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            # The cooperative lock protects immutable comparison and rename together.
+            # Rename publishes one inode link, including after an immediate process exit.
+            os.replace(temporary, destination)
+            os.fsync(archive)
+            os.fsync(parent)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    finally:
+        if lock is not None:
+            os.close(lock)
+        if parent is not None:
+            os.close(parent)
+        os.close(archive)
+
+
 def export_events(events, destination, count=None):
     count = len(events) if count is None else s.uint(count, 64)
     s.require(type(SEGMENT_EVENTS) is int and 0 < SEGMENT_EVENTS <= 256, "invalid_audit_segment_size")
@@ -72,18 +117,7 @@ def export_events(events, destination, count=None):
             data = b"".join(lines)
             s.require(len(data) <= s.MAX_FILE, "audit_event_segment_too_large")
             name = f"{segment:016d}.jsonl"
-            fd, temporary = tempfile.mkstemp(prefix=".audit-segment-", suffix=".tmp", dir=Path(destination).parent)
-            try:
-                with os.fdopen(fd, "wb") as output:
-                    output.write(data)
-                    output.flush()
-                    os.fsync(output.fileno())
-                try:
-                    os.link(temporary, name, dst_dir_fd=directory, follow_symlinks=False)
-                except FileExistsError:
-                    s.require(s.read(Path(destination) / name, private=True) == data, "audit_event_segment_changed")
-            finally:
-                Path(temporary).unlink(missing_ok=True)
+            publish_segment(Path(destination) / name, data)
         os.fsync(directory)
     finally:
         os.close(directory)
@@ -407,7 +441,16 @@ class Replay:
 
 
 def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, trust, rpc, *, fri_payload,
-                   allow_control=False, event_root=None):
+                   allow_control=False, event_root=None, enrollment=None):
+    if bundle.get("schema_version") == 3:
+        return _verify_aggregate(settings, evidence, manifest, subscriptions, duties, bundle, trust, rpc,
+                    fri_payload=fri_payload, allow_control=allow_control, event_root=event_root, enrollment=enrollment)
+    return _verify_journal(settings, evidence, manifest, subscriptions, duties, bundle, trust, rpc,
+                          fri_payload=fri_payload, allow_control=allow_control, event_root=event_root)
+
+
+def _verify_journal(settings, evidence, manifest, subscriptions, duties, bundle, trust, rpc, *, fri_payload,
+                    allow_control=False, event_root=None, context=False, rewardable=True):
     s.config(settings)
     s.exact(bundle, ("schema_version", "identity", "journal_id", "events", "checkpoint", "sequencer_signature"))
     s.exact(trust, ("schema_version", "journal_id", "enrollment_block_hash", "minimum_checkpoint",
@@ -420,6 +463,9 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
     total_events = event_count(bundle)
     s.verify_eoa(checkpoint_request(bundle), bundle["sequencer_signature"])
     enrollment = validate_identity(identity, journal_id, trust, rpc)
+    if not context and identity["enrollment"]["phase"] == "service":
+        rewardable = not s.round_closed(settings, rpc, identity["period"])
+        s.require(rewardable or not duties, "closed_duty_period")
     s.require(subscriptions == identity["subscriptions"], "audit_package_snapshot_changed")
     lanes = [name for name, lane in identity["lanes"].items() if lane["settings"] == settings]
     s.require(len(lanes) == 1, "audit_package_lane_changed")
@@ -488,7 +534,8 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
         # Removing reward credit must not let the sequencer substitute an operator's accepted proof.
         s.require(all(duty["friProofHash"] == proof_hashes[duty["batchNumber"]] for duty in accepted_receipts),
                   "audit_accepted_duty_native_proof_changed")
-        expected_duties = [duty for duty in accepted_receipts if duty["slot"] < settings["duties_per_round"]]
+        expected_duties = [duty for duty in accepted_receipts
+                           if rewardable and not allow_control and duty["slot"] < settings["duties_per_round"]]
         s.require(type(duties) is list and len(duties) == len(expected_duties)
                   and sorted(map(s.canonical, duties)) == sorted(map(s.canonical, expected_duties)),
                   "audit_package_accepted_duties_incomplete")
@@ -497,23 +544,115 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
         unrewarded = [number for number, statement in statements.items() if statement["count"] > 0 and number not in credited]
         uncovered = [number for number, statement in statements.items() if statement["count"] > 0 and number not in covered]
         exhausted = all(account["offered"] >= settings["duties_per_round"] for account in replay.accounts.values())
-        s.require(not uncovered or allow_control or exhausted, "audit_nonempty_batch_without_service_duty_wait")
+        s.require(context or not uncovered or allow_control or exhausted or not rewardable,
+                  "audit_nonempty_batch_without_service_duty_wait")
         zero_duty_reason = None
         if not expected_duties:
             if allow_control:
                 zero_duty_reason = "control"
+            elif not rewardable:
+                zero_duty_reason = "round_closed"
             elif all(statement["count"] == 0 for statement in statements.values()):
                 zero_duty_reason = "empty_native_range"
             elif exhausted or not uncovered:
                 zero_duty_reason = "quota_exhausted"
-            s.require(zero_duty_reason is not None, "audit_no_accepted_duties_wait")
-        return {"journal_id": journal_id, "event_count": total_events, "event_head": head,
+            s.require(context or zero_duty_reason is not None, "audit_no_accepted_duties_wait")
+        result = {"journal_id": journal_id, "event_count": total_events, "event_head": head,
                 "assignment_cursor": replay.cursor, "lane": lane,
                 "zero_duty_reason": zero_duty_reason,
                 "unrewarded_batches": unrewarded,
-                "unrewarded_reason": ("control" if allow_control else "quota_exhausted") if unrewarded else None,
+                "unrewarded_reason": ("control" if allow_control else "round_closed" if not rewardable
+                                      else "quota_exhausted") if unrewarded else None,
                 "required_duties": copy.deepcopy(expected_duties),
+                "accepted_receipts": accepted_receipts,
                 "accounts": {account: {"offered_opportunities": data["offered"], "quota": settings["duties_per_round"]}
                              for account, data in replay.accounts.items()}}
+        if context:
+            result.update(covered_batches=sorted(covered), quota_exhausted=exhausted)
+        return result
     finally:
         replay.close()
+
+
+def _verify_aggregate(settings, evidence, manifest, subscriptions, duties, bundle, trusts, rpc, *, fri_payload,
+                      allow_control=False, event_root=None, enrollment=None):
+    s.exact(bundle, ("schema_version", "period", "current_journal_id", "contexts"))
+    s.require(bundle["schema_version"] == 3 and type(enrollment) is s.EnrollmentGroup,
+              "authenticated_enrollment_group_required")
+    s.require(manifest["payload"].get("schema_version") == 2 and bundle["period"] == manifest["payload"]["period"]
+              and bundle["current_journal_id"] == manifest["payload"]["current_journal_id"],
+              "aggregate_audit_scope_changed")
+    statements = s.validate_evidence(settings, evidence)
+    numbers = list(statements)
+    s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True, enrollment=enrollment)
+    contexts = manifest["payload"]["contexts"]
+    s.require(type(bundle["contexts"]) is list and type(trusts) is dict, "invalid_aggregate_audit_contexts")
+    keys = [context["journal_id"] for context in contexts]
+    s.require([context["journal_id"] for context in bundle["contexts"]] == keys,
+              "aggregate_audit_contexts_changed")
+    for key, trust in trusts.items():
+        if key not in keys:
+            s.require(not any(numbers[0] <= duty["batchNumber"] <= numbers[-1]
+                              for duty in trust["required_duties"]), "aggregate_known_duty_context_omitted")
+    covered, expected, slots, results, reasons = {}, [], set(), [], {}
+    for declared, context in zip(contexts, bundle["contexts"]):
+        s.exact(context, ("journal_id", "request", "bundle"))
+        key, request, original = context["journal_id"], context["request"], context["bundle"]
+        s.nonzero(key)
+        s.require(key in trusts and original["journal_id"] == key, "aggregate_audit_context_untrusted")
+        s.exact(request, ("proposal", "manifest", "subscriptions", "duties"))
+        s.require(request["manifest"] == declared["manifest"] and request["subscriptions"] == declared["subscriptions"]
+                  and request["proposal"]["mode"] == "service"
+                  and request["proposal"]["accepted_package"]["period"] == bundle["period"],
+                  "aggregate_audit_request_changed")
+        authority = enrollment.authorities[key]
+        s.require(original["identity"]["period"] == authority.period
+                  and trusts[key]["enrollment_block_hash"] == authority.block_hash,
+                  "aggregate_audit_enrollment_changed")
+        for duty in request["duties"]:
+            s.require_rewardable_duty(enrollment, duty)
+        root = Path(event_root) / key[2:] if event_root is not None else None
+        result = _verify_journal(settings, evidence, request["manifest"], request["subscriptions"], request["duties"],
+                    original, trusts[key], rpc, fri_payload=fri_payload, allow_control=allow_control, event_root=root,
+                    context=True, rewardable=enrollment.rewardable(key) and not allow_control)
+        for receipt in result["accepted_receipts"]:
+            number = receipt["batchNumber"]
+            s.require(number not in covered, "aggregate_duplicate_accepted_batch")
+            covered[number] = receipt
+            if allow_control:
+                reasons[number] = "control"
+            elif not enrollment.rewardable(key):
+                reasons[number] = "round_closed" if authority.period in enrollment.closed_periods else "bootstrap"
+            elif receipt["slot"] >= settings["duties_per_round"]:
+                reasons[number] = "quota_exhausted"
+        for duty in result["required_duties"]:
+            slot = (duty["account"], duty["period"], duty["slot"])
+            s.require(slot not in slots, "aggregate_duplicate_duty_slot")
+            slots.add(slot)
+        expected.extend(result["required_duties"])
+        results.append(result)
+    s.require(type(duties) is list and sorted(map(s.canonical, duties)) == sorted(map(s.canonical, expected)),
+              "aggregate_accepted_duties_incomplete")
+    current = next(result for result in results if result["journal_id"] == bundle["current_journal_id"])
+    uncovered = [number for number, statement in statements.items() if statement["count"] > 0 and number not in covered]
+    current_closed = enrollment.current_period in enrollment.closed_periods \
+        and enrollment.phases[enrollment.current_journal_id] == "service"
+    s.require(not uncovered or allow_control or current["quota_exhausted"] or current_closed,
+              "audit_nonempty_batch_without_service_duty_wait")
+    credited = {duty["batchNumber"] for duty in expected}
+    unrewarded = [number for number, statement in statements.items() if statement["count"] > 0 and number not in credited]
+    for number in unrewarded:
+        reasons.setdefault(number, "control" if allow_control else "round_closed" if current_closed else "quota_exhausted")
+    zero_reason = None
+    if not expected:
+        zero_reason = ("control" if allow_control else "empty_native_range" if not unrewarded else
+                       "round_closed" if "round_closed" in reasons.values() else "bootstrap" if "bootstrap" in reasons.values()
+                       else "quota_exhausted")
+    return {"journal_id": current["journal_id"], "period": bundle["period"],
+            "event_count": current["event_count"], "event_head": current["event_head"],
+            "assignment_cursor": current["assignment_cursor"], "lane": current["lane"],
+            "contexts": results, "accounts": current["accounts"], "required_duties": expected,
+            "accepted_receipts": [covered[number] for number in sorted(covered)],
+            "covered_batches": sorted(covered), "zero_duty_reason": zero_reason,
+            "unrewarded_batches": unrewarded, "unrewarded_reasons": reasons,
+            "unrewarded_reason": zero_reason if zero_reason is not None else "mixed_contexts" if unrewarded else None}

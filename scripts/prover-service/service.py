@@ -225,6 +225,8 @@ class EnrollmentAuthority:
         object.__setattr__(self, "anchor", canonical(anchor))
         object.__setattr__(self, "period", period)
         object.__setattr__(self, "block_hash", anchor["block_hash"])
+        object.__setattr__(self, "rpc", rpc)
+        object.__setattr__(self, "settings", json.loads(canonical(settings)))
 
     @staticmethod
     def scope(settings):
@@ -235,6 +237,110 @@ class EnrollmentAuthority:
     def check(self, settings, subscriptions, period):
         require(self.identity == self.scope(settings) and self.period == period
                 and self.snapshot == canonical(subscriptions), "enrollment_authority_scope_mismatch")
+
+
+class EnrollmentGroup:
+    """Independent historical consent and canonical reward finalization for one package."""
+
+    def __init__(self, settings, authorities, current_journal_id, rpc, report_block_hash=None):
+        config(settings)
+        require(type(authorities) is dict and 0 < len(authorities) <= 101, "invalid_enrollment_group")
+        nonzero(current_journal_id)
+        require(current_journal_id in authorities and all(type(value) is EnrollmentAuthority
+                and value.identity == EnrollmentAuthority.scope(settings) for value in authorities.values()),
+                "enrollment_group_authority_mismatch")
+        for key in authorities:
+            nonzero(key)
+        require(rpc is not None and rpc.call("eth_chainId", []) == settings["registry_chain_id"], "wrong_rpc_chain")
+        block = rpc.call("eth_getBlockByNumber", ["latest", False]) if report_block_hash is None else \
+            rpc.call("eth_getBlockByHash", [nonzero(report_block_hash), False])
+        require(type(block) is dict and (report_block_hash is None or block["hash"] == report_block_hash),
+                "enrollment_group_report_anchor_changed")
+        self.report_block_hash = nonzero(block["hash"])
+        uint(block["timestamp"])
+        self.authorities = dict(authorities)
+        self.rpc, self.settings = rpc, settings
+        self.current_journal_id = current_journal_id
+        self.current_period = authorities[current_journal_id].period
+        self.closed_periods = set()
+        self.phases = {key: json.loads(value.anchor)["phase"] for key, value in authorities.items()}
+        self.assignment_journals = {}
+        for period in {value.period for value in authorities.values()}:
+            if hasattr(rpc, "contract"):
+                raw = rpc.contract(settings["registry"], "isRoundFinalized(uint256)", [period], self.report_block_hash)
+            else:
+                raw = raw_hex(rpc.call("eth_call", [{"to": settings["registry"],
+                    "data": cast("calldata", "isRoundFinalized(uint256)", str(period))},
+                    {"blockHash": self.report_block_hash, "requireCanonical": True}]))
+            require(len(raw) == 32 and int.from_bytes(raw, "big") in (0, 1), "invalid_round_finalization")
+            if int.from_bytes(raw, "big"):
+                self.closed_periods.add(period)
+        if "number" in block:
+            canonical_block = rpc.call("eth_getBlockByNumber", [block["number"], False])
+            require(type(canonical_block) is dict and canonical_block["hash"] == self.report_block_hash,
+                    "enrollment_group_report_anchor_changed")
+
+    def rewardable(self, journal_id, mode="service"):
+        require(journal_id in self.authorities and mode in ("service", "bootstrap"), "invalid_enrollment_group_context")
+        if mode == "bootstrap":
+            return journal_id == self.current_journal_id and self.phases[journal_id] == "bootstrap"
+        return self.phases[journal_id] == "service" and self.authorities[journal_id].period not in self.closed_periods
+
+    def check_aggregate(self, settings, contexts, outer_period, current_journal_id):
+        require(current_journal_id == self.current_journal_id and outer_period == self.current_period,
+                "enrollment_group_current_period_mismatch")
+        require(type(contexts) is list and 0 < len(contexts) <= 101, "invalid_manifest_contexts")
+        keys = []
+        for context in contexts:
+            exact(context, ("journal_id", "manifest", "subscriptions"))
+            key = nonzero(context["journal_id"])
+            require(key in self.authorities, "enrollment_group_context_untrusted")
+            authority = self.authorities[key]
+            period = context["manifest"]["payload"]["period"]
+            require(period <= outer_period, "future_manifest_context")
+            authority.check(settings, context["subscriptions"], period)
+            keys.append(key)
+            for assignment in context["manifest"]["payload"]["assignments"]:
+                identifier = assignment["assignment_id"]
+                require(identifier not in self.assignment_journals or self.assignment_journals[identifier] == key,
+                        "duplicate_context_assignment")
+                self.assignment_journals[identifier] = key
+        require(keys == sorted(set(keys)) and set(keys) == set(self.authorities),
+                "enrollment_group_contexts_changed")
+
+
+def aggregate_subscriptions(settings, contexts):
+    by_hash = {}
+    for context in contexts:
+        for signed in context["subscriptions"]:
+            key = subscription_request(settings, signed["subscription"])["struct_hash"]
+            if key in by_hash:
+                require(by_hash[key]["subscription"] == signed["subscription"], "conflicting_subscription_hash")
+            else:
+                by_hash[key] = signed
+    return [by_hash[key] for key in sorted(by_hash)]
+
+
+def round_closed(settings, rpc, period, report_block_hash=None):
+    config(settings)
+    uint(period, 64)
+    require(rpc is not None and rpc.call("eth_chainId", []) == settings["registry_chain_id"], "wrong_rpc_chain")
+    block = rpc.call("eth_getBlockByNumber", ["latest", False]) if report_block_hash is None else \
+        rpc.call("eth_getBlockByHash", [nonzero(report_block_hash), False])
+    require(type(block) is dict and (report_block_hash is None or block["hash"] == report_block_hash),
+            "round_finalization_anchor_changed")
+    anchor = nonzero(block["hash"])
+    if hasattr(rpc, "contract"):
+        raw = rpc.contract(settings["registry"], "isRoundFinalized(uint256)", [period], anchor)
+    else:
+        raw = raw_hex(rpc.call("eth_call", [{"to": settings["registry"],
+            "data": cast("calldata", "isRoundFinalized(uint256)", str(period))},
+            {"blockHash": anchor, "requireCanonical": True}]))
+    require(len(raw) == 32 and int.from_bytes(raw, "big") in (0, 1), "invalid_round_finalization")
+    if "number" in block:
+        current = rpc.call("eth_getBlockByNumber", [block["number"], False])
+        require(type(current) is dict and current["hash"] == anchor, "round_finalization_anchor_changed")
+    return bool(int.from_bytes(raw, "big"))
 
 
 def subscription_request(settings, subscription):
@@ -412,6 +518,65 @@ def manifest_request(settings, payload):
 
 
 def validate_manifest(settings, manifest, subscriptions, evidence, allow_empty=False, *, enrollment=None):
+    exact(manifest, ("payload", "sequencer_signature"))
+    if manifest["payload"].get("schema_version") != 2:
+        return _validate_manifest_v1(settings, manifest, subscriptions, evidence, allow_empty, enrollment=enrollment)
+    payload = manifest["payload"]
+    exact(payload, ("schema_version", "chain_id", "chain_address", "sequencer", "period", "current_journal_id",
+                    "subscription_snapshot_hash", "contexts"))
+    require(payload["chain_id"] == settings["execution_chain_id"] and payload["chain_address"] == settings["chain_address"]
+            and payload["sequencer"] == settings["sequencer"], "manifest_identity_mismatch")
+    uint(payload["period"], 64)
+    require(type(enrollment) is EnrollmentGroup, "authenticated_enrollment_group_required")
+    enrollment.check_aggregate(settings, payload["contexts"], payload["period"], payload["current_journal_id"])
+    require(subscriptions == aggregate_subscriptions(settings, payload["contexts"])
+            and payload["subscription_snapshot_hash"] == keccak(canonical(subscriptions)),
+            "subscription_snapshot_mismatch")
+    verify_eoa(manifest_request(settings, payload), manifest["sequencer_signature"])
+    current, by_hash, assignment_ids = {}, {}, set()
+    for context in payload["contexts"]:
+        require(context["manifest"]["payload"].get("schema_version") == 1, "nested_manifest_context")
+        assignments, supplied = _validate_manifest_v1(settings, context["manifest"], context["subscriptions"], evidence,
+                          True, enrollment=enrollment.authorities[context["journal_id"]])
+        for item in context["manifest"]["payload"]["assignments"]:
+            require(item["assignment_id"] not in assignment_ids, "duplicate_context_assignment")
+            assignment_ids.add(item["assignment_id"])
+        for number, item in assignments.items():
+            if number not in current:
+                current[number] = item
+            elif isinstance(current[number], list):
+                current[number].append(item)
+            else:
+                current[number] = [current[number], item]
+        for key, subscription in supplied.items():
+            require(key not in by_hash or by_hash[key] == subscription, "conflicting_subscription_hash")
+            by_hash[key] = subscription
+    require(allow_empty or current, "invalid_assignments")
+    return current, by_hash
+
+
+def assignment_for(assignments, number, duty=None):
+    value = assignments.get(number)
+    if not isinstance(value, list):
+        return value
+    require(duty is not None, "ambiguous_context_assignment")
+    found = [item for item in value if item["assignment_id"] == duty["assignmentId"]
+             and item["period"] == duty["period"]]
+    require(len(found) == 1, "duplicate_or_unassigned_duty")
+    return found[0]
+
+
+def require_rewardable_duty(enrollment, duty, mode="service"):
+    if type(enrollment) is EnrollmentGroup:
+        key = enrollment.assignment_journals.get(duty["assignmentId"])
+        require(key is not None, "unassigned_context_duty")
+        require(duty["period"] not in enrollment.closed_periods or mode == "bootstrap", "closed_duty_period")
+        require(enrollment.rewardable(key, mode), "context_duty_not_rewardable")
+    elif type(enrollment) is EnrollmentAuthority and mode == "service":
+        require(not round_closed(enrollment.settings, enrollment.rpc, duty["period"]), "closed_duty_period")
+
+
+def _validate_manifest_v1(settings, manifest, subscriptions, evidence, allow_empty=False, *, enrollment=None):
     exact(manifest, ("payload", "sequencer_signature"))
     payload = manifest["payload"]
     exact(payload, ("schema_version", "chain_id", "chain_address", "sequencer", "period", "previous_cursor",
@@ -597,7 +762,7 @@ def prepare_package(settings, evidence, manifest, subscriptions, duties, proposa
         encode_duty(duty)
         require(uint(duty["slot"], 16) < settings["duties_per_round"], "uncredited_assignment_not_rewardable")
         number = duty["batchNumber"]
-        assignment = assignments.get(number)
+        assignment = assignment_for(assignments, number, duty)
         require(assignment and number not in seen, "duplicate_or_unassigned_duty")
         for duty_key, assignment_key in (("account", "account"), ("subscriptionHash", "subscription_hash"),
                                          ("period", "period"), ("slot", "slot"), ("attempt", "attempt"),
@@ -609,6 +774,7 @@ def prepare_package(settings, evidence, manifest, subscriptions, duties, proposa
         require(slot not in slots, "duplicate_duty_slot")
         unsigned = {k: duty[k] for k, _ in DUTY}
         verify_eoa(duty_request(settings, unsigned, by_hash[duty["subscriptionHash"]]), duty["operatorSignature"])
+        require_rewardable_duty(enrollment, duty, proposal.get("mode"))
         seen.add(number)
         slots.add(slot)
     exact(proposal, ("mode", "accepted_package", "candidate", "candidate_proof"))
@@ -686,7 +852,8 @@ def complete_package(settings, prepared, sequencer_signature, wrapper_signature)
     seen = set()
     for duty in sidecar["duties"]:
         number = duty["batchNumber"]
-        require(number in statements and number not in seen and duty["period"] == accepted["period"]
+        require(number in statements and number not in seen
+                and (duty["period"] == accepted["period"] if bootstrap else duty["period"] <= accepted["period"])
                 and duty["statementHash"] == statements[number]["statement"]
                 and 0 < duty["transactionCount"] == statements[number]["count"], "signed_duty_evidence_mismatch")
         seen.add(number)

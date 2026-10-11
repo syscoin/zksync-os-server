@@ -217,6 +217,7 @@ class SQLiteEvents(Sequence):
 
 class State(dict):
     database = None
+    marker_pending = False
 
 
 def _field(state, path):
@@ -247,7 +248,10 @@ def _attach(state, connection, map_fields, list_fields):
     result.database = connection
     for path in map_fields:
         parent, key = _field(result, path)
-        parent[key] = SQLiteMap(connection, "map_" + path.replace(".", "_"))
+        name = "map_" + path.replace(".", "_")
+        exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+        # Attaching a newly introduced optional map must not change a dry-run journal.
+        parent[key] = SQLiteMap(connection, name) if exists else parent.get(key, {})
     for path in list_fields:
         if path == "audit.events" and "audit" not in result:
             continue
@@ -296,7 +300,9 @@ def load(path, *, map_fields=("operations",), list_fields=()):
             origin = connection.execute("SELECT value FROM metadata WHERE key='origin'").fetchone()
             s.require(origin is not None and origin[0] == hashlib.sha256(raw).hexdigest(),
                       "journal_migration_source_changed")
-        return _attach(_decode(row[0]), connection, map_fields, list_fields)
+        state = _attach(_decode(row[0]), connection, map_fields, list_fields)
+        state.marker_pending = marker.get("storage_version") != 2
+        return state
     except BaseException:
         connection.close()
         raise
@@ -321,6 +327,8 @@ def save(path, state, *, map_fields=("operations",), list_fields=()):
         replacement = _attach(copy.deepcopy(metadata), connection, map_fields, list_fields)
         for field in map_fields:
             parent, key = _field(replacement, field)
+            if not isinstance(parent[key], SQLiteMap):
+                parent[key] = SQLiteMap(connection, "map_" + field.replace(".", "_"))
             source, source_key = _field(state, field)
             parent[key].update(source[source_key])
         for field in list_fields:
@@ -351,10 +359,12 @@ def save(path, state, *, map_fields=("operations",), list_fields=()):
             state.clear()
             state.update(replacement)
             state.database = connection
+            state.marker_pending = True
             for field in (*map_fields, *list_fields):
                 parent, key = _field(state, field)
                 parent[key].clear_pending()
             _atomic(path, {**metadata, "schema_version": 2, "storage_version": 2})
+            state.marker_pending = False
             return
         except BaseException:
             if connection.connection is not None and connection.in_transaction:
@@ -365,7 +375,16 @@ def save(path, state, *, map_fields=("operations",), list_fields=()):
             raise
     metadata = _metadata(state, map_fields, list_fields)
     connection.execute("BEGIN IMMEDIATE")
+    attached = []
     try:
+        for field in map_fields:
+            parent, key = _field(state, field)
+            if not isinstance(parent[key], SQLiteMap):
+                original = parent[key]
+                replacement = SQLiteMap(connection, "map_" + field.replace(".", "_"))
+                replacement.update(original)
+                parent[key] = replacement
+                attached.append((parent, key, original))
         for field in (*map_fields, *list_fields):
             parent, key = _field(state, field)
             parent[key].flush()
@@ -373,10 +392,15 @@ def save(path, state, *, map_fields=("operations",), list_fields=()):
         connection.execute("COMMIT")
     except BaseException:
         connection.execute("ROLLBACK")
+        for parent, key, original in attached:
+            parent[key] = original
         raise
     for field in (*map_fields, *list_fields):
         parent, key = _field(state, field)
         parent[key].clear_pending()
+    if state.marker_pending:
+        _atomic(path, {**metadata, "schema_version": 2, "storage_version": 2})
+        state.marker_pending = False
 
 
 def disk_map(root, name):

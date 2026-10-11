@@ -357,6 +357,37 @@ missing retry history, wrong signers and domain mutation. The shared vectors
 also feed Rust/Solidity regression tests. These are protocol tests with synthetic
 proofs; they do not constitute production proving or live-chain validation.
 
+## Packages crossing a period boundary
+
+The wrapper roster period selects who endorses a package. A FRI receipt retains
+its original period, quota slot, subscription and assignment ID even when the
+package opens in the next period. Service receipts can be credited through that
+original period's existing receipt-grace window. Independent wrapper audits exclude
+bootstrap-journal receipts from service reward reports. On-chain checks reject future,
+closed and pre-service-period credits and reuse of already credited bootstrap batches.
+The native validity proof and original accepted receipt remain audit evidence
+after grace closes, without earning credit in a different period.
+
+A cross-period package uses a signed schema-2 manifest containing independently
+signed original journal manifests and an aggregate schema-3 audit. Each journal
+keeps its own canonical enrollment anchor, signed checkpoint and complete event
+history. Archive paths are `audit-events/<journal-id-without-0x>/`. Wrappers need
+an independently provisioned trust file for every included journal and refuse
+omission of independently known receipts in the package's batch range. Operators
+may rotate between periods; each receipt uses its original subscription.
+
+The audit checks native batch coverage across all contexts, then applies the
+current journal's quota-exhaustion rule only to uncovered native work. If an old
+credit window closes during wrapping, the wrapper returns the verified proof
+without endorsing the stale report. The coordinator retains that proof and repairs
+the report through `repairPackage`, preserving the original draw, turn deadlines,
+manifest and receipt history. The repaired package must be endorsed again.
+
+Deploy the paired Registry/ProofGate and Rust validation changes with these tools.
+Update trusted contract bytecode hashes from the newly built contracts. The ABI,
+receipt signing fields, native verifier and VK are unchanged; no CRS regeneration
+is required. This is prelaunch code and does not require deployed-state migration.
+
 ## Live trusted-host FRI dispatcher
 
 `dispatcher.py` connects the signed service workflow to the existing native FRI

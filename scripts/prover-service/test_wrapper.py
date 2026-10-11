@@ -189,6 +189,25 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(result["action"], "queued_selected_snark")
         return result["pool_operation"]
 
+    def unstarted(self):
+        runner = self.runner()
+        def interrupted(*_):
+            raise KeyboardInterrupt
+        runner.fri_checker = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            runner.step(True)
+        entry = self.runner().state["jobs"][self.work_hash]
+        self.assertEqual((entry["status"], entry["pool_operation"]), ("received", None))
+
+    def changed_payload_work(self, payload, turn=3):
+        envelope = io.private_json(self.source / "work.json")
+        envelope["body"]["payload_sha256"] = io.digest(payload)
+        envelope["body"]["request"]["proposal"]["accepted_package"]["turn"] = turn
+        request = io.work_request(self.f["settings"], envelope["body"])
+        envelope["sequencer_signature"] = sign(request, "sequencer")
+        source = io.publish_work(self.root / "inbox", envelope, payload)
+        return request["typed_data"]["message"]["workHash"], source
+
     def returned(self, identifier):
         self.p.operation(identifier)["status"] = "returned"
         io.immutable_json(self.p.directory(identifier) / "returned-proof.json", self.f["snark"])
@@ -301,6 +320,117 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(self.p.enqueues, [])
         self.assertNotIn(self.work_hash, runner.state["jobs"])
 
+    def test_more_than_inbox_capacity_signed_missed_turns_do_not_block_current_work(self):
+        for index in range(1025):
+            def missed(body, index=index):
+                body["request"]["proposal"]["accepted_package"]["turn"] = 2
+                body["native_lease_deadline"] += index
+            self.publish(mutate=missed)
+        result = self.runner().step(True)
+        self.assertEqual(result["action"], "queued_selected_snark")
+        self.assertEqual(result["work_hash"], self.work_hash)
+        self.assertEqual(len(self.p.enqueues), 1)
+        self.assertEqual(len(self.fri_calls), 1)
+        self.assertEqual(set(self.runner().state["jobs"]), {self.work_hash})
+
+    def test_future_turn_handoff_is_skipped_then_becomes_eligible(self):
+        self.source.joinpath("work.json").unlink()
+        work_hash, _ = self.publish(mutate=lambda body:
+                body["request"]["proposal"]["accepted_package"].update(turn=4))
+        self.assertEqual(self.runner().step(True)["action"], "selected_waiting_for_authenticated_handoff")
+        self.assertEqual(self.p.enqueues, [])
+        self.assertNotIn(work_hash, self.runner().state["jobs"])
+        self.rpc.turn, self.rpc.deadline = 4, 1400
+        result = self.runner().step(True)
+        self.assertEqual((result["action"], result["work_hash"]), ("queued_selected_snark", work_hash))
+
+    def test_received_missed_turn_releases_live_capacity_before_new_work(self):
+        self.unstarted()
+        self.rpc.turn, self.rpc.deadline = 4, 1400
+        state = k.status(self.keeper, self.rpc, self.rpc.now, self.roster)
+        rebound = k.rebind_request(self.f["settings"], self.request, state, self.roster)
+        work_hash, _ = self.publish(rebound)
+        result = self.runner().step(True)
+        self.assertEqual((result["action"], result["work_hash"]), ("queued_selected_snark", work_hash))
+        jobs = self.runner().state["jobs"]
+        self.assertEqual(jobs[self.work_hash]["status"], "obsolete")
+        self.assertEqual(jobs[work_hash]["status"], "computing")
+        self.assertEqual(len(self.p.enqueues), 1)
+
+    def test_received_future_turn_survives_earlier_canonical_view_and_recovers(self):
+        self.unstarted()
+        self.rpc.turn = 2
+        self.assertEqual(self.runner().step(True)["action"], "selected_waiting_for_authenticated_handoff")
+        self.assertEqual(self.runner().state["jobs"][self.work_hash]["status"], "received")
+        self.assertEqual(self.p.enqueues, [])
+        self.rpc.turn = 3
+        self.assertEqual(self.runner().step(True)["action"], "queued_selected_snark")
+        self.assertEqual(self.runner().state["jobs"][self.work_hash]["status"], "computing")
+
+    def test_different_frozen_package_cannot_retire_received_work_by_turn_number(self):
+        self.unstarted()
+        runner = self.runner()
+        state, artifact = runner.status()
+        state["current_turn"] = 4
+        state["frozen_package"]["reportHash"] = h(222)
+        state["frozen_package_hash"] = s.struct_hash("AcceptedPackageV1", s.PACKAGE, state["frozen_package"])
+        entry = runner.state["jobs"][self.work_hash]
+        self.assertFalse(runner.retire_unstarted(self.work_hash, entry, state, artifact, True))
+        self.assertEqual(entry["status"], "received")
+        self.assertEqual(self.p.enqueues, [])
+
+    def test_signed_proof_substitution_neither_computes_nor_retires_received_work(self):
+        payload = copy.deepcopy(self.f["fri_payload"])
+        payload["fri_proofs"][0] = base64.b64encode(b"substituted-native-proof").decode()
+        work_hash, source = self.changed_payload_work(payload, turn=2)
+        runner = self.runner()
+        directory = io.directory(self.store.root / "jobs" / work_hash[2:], create=True)
+        io.immutable_json(directory / "work.json", io.private_json(source / "work.json"))
+        io.immutable_json(directory / "payload.json", payload, io.MAX_PAYLOAD)
+        runner.state["jobs"][work_hash] = {"status": "received", "pool_operation": None,
+                                         "source": str(source), "last_error": None}
+        runner.save()
+        state, artifact = runner.status()
+        with self.assertRaisesRegex(s.Error, "duty_native_artifact_mismatch"):
+            runner.retire_unstarted(work_hash, runner.state["jobs"][work_hash], state, artifact, True)
+        self.assertEqual(runner.state["jobs"][work_hash]["status"], "received")
+        self.assertEqual(self.p.enqueues, [])
+        self.changed_payload_work(payload)
+        self.source.joinpath("work.json").unlink()
+        self.assertEqual(self.runner().step(True)["action"], "selected_waiting_for_authenticated_handoff")
+        self.assertEqual(self.p.enqueues, [])
+
+    def test_foreign_signed_package_is_not_an_active_candidate(self):
+        self.source.joinpath("work.json").unlink()
+        self.publish(mutate=lambda body:
+                body["request"]["proposal"]["accepted_package"].update(chainAddress=a(230)))
+        runner = self.runner()
+        self.assertEqual(runner.step(True)["action"], "selected_waiting_for_authenticated_handoff")
+        self.assertEqual(runner.state["last_status"]["error"], "work_package_scope_changed")
+        self.assertEqual((self.p.enqueues, self.fri_calls, self.wallet.calls), ([], [], []))
+
+    def test_missed_turn_claim_still_requires_signature_directory_and_payload_authentication(self):
+        envelope = io.private_json(self.source / "work.json")
+        envelope["body"]["request"]["proposal"]["accepted_package"]["turn"] = 2
+        envelope["sequencer_signature"] = sign(io.work_request(self.f["settings"], envelope["body"]), "account")
+        bad_signature = io.publish_work(self.root / "inbox", envelope, self.f["fri_payload"])
+        _, bad_directory = self.publish(mutate=lambda body:
+                (body["request"]["proposal"]["accepted_package"].update(turn=2), body.update(native_lease_deadline=1501)))
+        renamed = self.root / "inbox" / ("00" * 31 + "01")
+        bad_directory.rename(renamed)
+        _, bad_payload = self.publish(mutate=lambda body:
+                (body["request"]["proposal"]["accepted_package"].update(turn=2), body.update(native_lease_deadline=1502)))
+        (bad_payload / "payload.json").unlink()
+        io.immutable_json(bad_payload / "payload.json", {"changed": True})
+        runner = self.runner()
+        for source, reason in ((bad_signature, "invalid_signature|cast_failed"), (renamed, "work_directory_hash_mismatch"),
+                               (bad_payload, "work_payload_changed")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(s.Error, reason):
+                runner.authenticated_work(source)
+        result = runner.step(True)
+        self.assertEqual((result["action"], result["work_hash"]), ("queued_selected_snark", self.work_hash))
+        self.assertEqual(len(self.p.enqueues), 1)
+
     def test_turn_rollover_returns_bare_proof_and_next_turn_reuses_it_without_new_compute(self):
         identifier = self.queued()
         self.returned(identifier)
@@ -316,6 +446,26 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(self.runner().step(True)["action"], "returned_endorsement")
         self.assertEqual(len(self.p.operations), 1)
         self.assertIsNotNone(io.private_json(new_source / "result.json")["result"]["prepared"])
+
+    def test_single_period_grace_closure_after_compute_returns_only_verified_bare_proof(self):
+        class ClosingRegistry(RegistryRpc):
+            closed = False
+            def contract(self, address, signature, values, anchor):
+                if signature == "isRoundFinalized(uint256)":
+                    return s.word(int(self.closed))
+                return super().contract(address, signature, values, anchor)
+        self.registry_rpc = ClosingRegistry(self.f["settings"], self.f["subscriptions"])
+        identifier = self.queued()
+        self.returned(identifier)
+        self.registry_rpc.closed = True
+        self.assertEqual(self.runner().step(True)["action"], "returned_proof_after_turn_change")
+        answer = io.private_json(self.source / "result.json")["result"]
+        self.assertEqual(answer["proof"], self.f["snark"])
+        self.assertIsNone(answer["prepared"])
+        self.assertEqual(answer["wrapper_signature"], "0x")
+        self.assertEqual([json.loads(call[1][1])["primaryType"] for call in self.wallet.calls], ["WrapperResultV1"])
+        self.assertEqual(len(self.rpc.verifications), 1)
+        self.assertEqual(len(self.p.enqueues), 1)
 
     def test_dry_run_has_no_file_pool_verifier_or_wallet_side_effects(self):
         before = self.snapshot()
@@ -461,6 +611,209 @@ class WrapperTests(unittest.TestCase):
         self.verifier.write_bytes(b"changed")
         with self.assertRaisesRegex(s.Error, "fri_verifier_binary_changed"):
             w.verify_fris(*args)
+
+
+class CrossEpochWrapperTests(unittest.TestCase):
+    setUpClass = classmethod(WrapperTests.setUpClass.__func__)
+    setUp = WrapperTests.setUp
+    runner = WrapperTests.runner
+    fri_check = WrapperTests.fri_check
+    result_check = WrapperTests.result_check
+    returned = WrapperTests.returned
+    audit = WrapperTests.audit
+    publish = WrapperTests.publish
+
+    def cross_epoch(self, streamed=False):
+        import test_coordinator_cross_epoch as cross
+        case = cross.CrossEpochCoordinatorTests("test_old_accepted_range_settles_with_current_roster_and_original_credit")
+        case.setUpClass()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        if streamed:
+            with patch.object(w.journal, "MAX_INLINE_EVENTS", 1):
+                case.dispatcher.save()
+        case.handoff()
+        identifier, bundle = case.frozen()
+        work = case.controller.step(True)
+        original = Path(case.controller.state["operations"][identifier]["works"][work["work_hash"]]["directory"])
+        body = io.private_json(original / "work.json")["body"]
+        self.cross, self.cross_identifier, self.cross_bundle = case, identifier, bundle
+        self.f = copy.deepcopy(case.f)
+        self.f.update(copy.deepcopy(bundle["request"]))
+        self.keeper = copy.deepcopy(case.config["keeper"])
+        self.keeper["policy"]["expected_operator"] = self.f["proposal"]["candidate"]["operator"]
+        self.keeper["enrollment"]["audit_trust_dir"] = str(self.root / "trust")
+        self.config = {**self.config, "keeper": self.keeper}
+        self.store = w.initialize(self.root / "cross-wrapper", self.config)
+        self.wallet = TypedWallet(self.store.root / "signatures")
+        self.p.settings["lanes"]["child"]["stages"]["SNARK"]["service"] = self.keeper
+        self.rpc, self.registry_rpc, self.roster = case.rpc, case.registry_rpc, case.roster
+        io.immutable_json(self.root / "rosters" / "6.json", self.roster)
+        for context in bundle["audit"]["contexts"]:
+            key, period = context["journal_id"], context["bundle"]["identity"]["period"]
+            trust = {"schema_version": 1, "journal_id": key, "enrollment_block_hash": {5: h(100), 6: h(101)}[period],
+                     "minimum_checkpoint": {"event_count": 0, "event_head": key, "assignment_cursor": key},
+                     "required_readiness": [], "required_duties": []}
+            io.immutable_json(self.root / "trust" / (key[2:] + ".json"), trust)
+        body["release_sha256"] = w.job.hash_bytes(self.release_raw)
+        return self.deliver(body, case.controller.directory(identifier) / "audit-events")
+
+    def deliver(self, body, event_root=None):
+        self.cross_body = copy.deepcopy(body)
+        signing = io.work_request(self.f["settings"], body)
+        envelope = {"body": body, "sequencer_signature": sign(signing, "sequencer")}
+        source = io.publish_work(self.root / "inbox", envelope, self.f["fri_payload"], event_root=event_root)
+        self.work_hash, self.source = signing["typed_data"]["message"]["workHash"], source
+        return self.work_hash, source
+
+    def queue(self):
+        with patch("wrapper.audit.verify_package", REAL_AUDIT_VERIFY):
+            result = self.runner().step(True)
+        self.assertEqual(result["action"], "queued_selected_snark")
+        self.assertEqual(result["work_hash"], self.work_hash)
+        return result["pool_operation"]
+
+    def test_streamed_cross_epoch_proof_return_preserves_original_periods_and_each_checkpoint(self):
+        self.cross_epoch(streamed=True)
+        identifier = self.queue()
+        retained = self.store.root / "jobs" / self.work_hash[2:] / "audit-events"
+        old = next(context for context in self.cross_body["audit"]["contexts"]
+                   if context["bundle"]["identity"]["period"] == 5)
+        self.assertTrue((retained / old["journal_id"][2:] / "0000000000000000.jsonl").is_file())
+        self.returned(identifier)
+        with patch("wrapper.audit.verify_package", REAL_AUDIT_VERIFY):
+            self.assertEqual(self.runner().step(True)["action"], "returned_endorsement")
+        answer = io.validate_result(self.f["settings"], self.work_hash, io.private_json(self.source / "result.json"),
+                                    self.keeper["policy"]["expected_operator"])
+        self.assertEqual([duty["period"] for duty in answer["prepared"]["sidecar"]["duties"]], [5, 5])
+        self.assertEqual(answer["prepared"]["sidecar"]["accepted_package"]["period"], 6)
+        state = self.runner().state
+        self.assertEqual(len(state["known_receipts"]), 2)
+        for context in self.cross_body["audit"]["contexts"]:
+            self.assertEqual(state["checkpoints"][context["journal_id"]]["event_count"],
+                             context["bundle"]["checkpoint"]["eventCount"])
+
+    def test_historical_consent_requires_its_own_independent_pin(self):
+        self.cross_epoch()
+        old = next(context for context in self.cross_body["audit"]["contexts"]
+                   if context["bundle"]["identity"]["period"] == 5)
+        path = self.root / "trust" / (old["journal_id"][2:] + ".json")
+        r.atomic_json(path, {**io.private_json(path), "enrollment_block_hash": h(101)})
+        with self.assertRaisesRegex(s.Error, "current_service_period_required"):
+            self.runner().receive(self.source, *self.runner().status(), True)
+        self.assertEqual((self.p.enqueues, self.wallet.calls), ([], []))
+
+    def test_pool_revalidates_cross_epoch_permit_from_independent_configured_pins(self):
+        self.cross_epoch()
+        self.queue()
+        permit = io.private_json(self.store.root / "jobs" / self.work_hash[2:] / "permit.json")
+        with patch.object(k, "registry_rpc_for", return_value=self.registry_rpc):
+            # The rental pool reloads this permit without the wrapper's in-memory authority.
+            checked = k.validate_permit(self.keeper, self.rpc, permit, self.f["evidence"],
+                                       self.f["fri_payload"], self.rpc.now, 50)
+        self.assertEqual(checked, permit)
+        old = next(context for context in self.cross_body["audit"]["contexts"]
+                   if context["bundle"]["identity"]["period"] == 5)
+        old_path = self.root / "trust" / (old["journal_id"][2:] + ".json")
+        old_trust = io.private_json(old_path)
+        old_path.unlink()
+        with patch.object(k, "registry_rpc_for", return_value=self.registry_rpc), \
+                patch.object(self.rpc, "call") as native:
+            with self.assertRaises(FileNotFoundError):
+                k.validate_permit(self.keeper, self.rpc, permit, self.f["evidence"],
+                                  self.f["fri_payload"], self.rpc.now, 50)
+            native.assert_not_called()
+        io.immutable_json(old_path, old_trust)
+        current = self.cross_body["audit"]["current_journal_id"]
+        current_path = self.root / "trust" / (current[2:] + ".json")
+        r.atomic_json(current_path, {**io.private_json(current_path), "enrollment_block_hash": h(100)})
+        with patch.object(k, "registry_rpc_for", return_value=self.registry_rpc), \
+                patch.object(self.rpc, "call") as native:
+            with self.assertRaisesRegex(s.Error, "enrollment_authority_anchor_mismatch"):
+                k.validate_permit(self.keeper, self.rpc, permit, self.f["evidence"],
+                                  self.f["fri_payload"], self.rpc.now, 50)
+            native.assert_not_called()
+        self.assertEqual(len(self.p.enqueues), 1)
+
+    def test_cross_epoch_pool_trust_directory_must_match_before_compute(self):
+        self.cross_epoch()
+        original = copy.deepcopy(self.keeper)
+        other = io.directory(self.root / "other-trust", create=True)
+        for value in (None, str(other)):
+            with self.subTest(audit_trust_dir=value):
+                runner = self.runner()
+                runner.keeper = copy.deepcopy(original)
+                if value is None:
+                    del runner.keeper["enrollment"]["audit_trust_dir"]
+                else:
+                    runner.keeper["enrollment"]["audit_trust_dir"] = value
+                self.p.settings["lanes"]["child"]["stages"]["SNARK"]["service"] = runner.keeper
+                with patch("wrapper.audit.verify_package", REAL_AUDIT_VERIFY):
+                    with self.assertRaisesRegex(s.Error, "wrapper_pool_audit_trust_directory_mismatch"):
+                        runner.receive(self.source, *runner.status(), True)
+                self.assertEqual((self.p.enqueues, self.fri_calls, self.wallet.calls), ([], [], []))
+
+    def test_known_receipts_force_historical_context_even_without_external_required_duties(self):
+        self.cross_epoch()
+        with patch.object(w.journal, "MAX_ROWS", 1):
+            self.queue()
+        runner = self.runner()
+        self.assertTrue((self.store.root / "wrapper.json.sqlite3").is_file())
+        self.assertEqual(len(runner.state["known_receipts"]), 2)
+        current = next(context for context in self.cross_body["audit"]["contexts"]
+                       if context["journal_id"] == self.cross_body["audit"]["current_journal_id"])
+        body = copy.deepcopy(self.cross_body)
+        body.update(audit=current["bundle"], request=current["request"])
+        state, _ = runner.status()
+        with self.assertRaisesRegex(s.Error, "aggregate_known_duty_context_omitted"):
+            runner.audited(body, state, True, self.f["fri_payload"])
+        body = copy.deepcopy(self.cross_body)
+        body["audit"]["contexts"] = [current]
+        with self.assertRaisesRegex(s.Error, "aggregate_known_duty_context_omitted"):
+            runner.audited(body, state, True, self.f["fri_payload"])
+        self.assertEqual(len(self.p.enqueues), 1)
+
+    def test_external_historical_receipt_blocks_standalone_context_omission(self):
+        self.cross_epoch()
+        old, current = (next(context for context in self.cross_body["audit"]["contexts"]
+                            if context["bundle"]["identity"]["period"] == period) for period in (5, 6))
+        path = self.root / "trust" / (old["journal_id"][2:] + ".json")
+        r.atomic_json(path, {**io.private_json(path), "required_duties": old["request"]["duties"]})
+        body = copy.deepcopy(self.cross_body)
+        body.update(audit=current["bundle"], request=current["request"])
+        runner = self.runner()
+        with self.assertRaisesRegex(s.Error, "aggregate_known_duty_context_omitted"):
+            runner.audited(body, runner.status()[0], True, self.f["fri_payload"])
+        self.assertEqual(self.p.enqueues, [])
+
+    def test_grace_closure_after_compute_returns_bare_proof_and_repaired_report_reuses_it(self):
+        self.cross_epoch()
+        identifier = self.queue()
+        self.returned(identifier)
+        self.registry_rpc.finalize(660, 102)
+        self.rpc.now = self.cross.now = 665
+        self.rpc.head["timestamp"] = hex(665)
+        self.rpc.blocks[self.rpc.head["number"]] = copy.deepcopy(self.rpc.head)
+        original_source = self.source
+        with patch("wrapper.audit.verify_package", REAL_AUDIT_VERIFY):
+            self.assertEqual(self.runner().step(True)["action"], "returned_proof_after_turn_change")
+        answer = io.private_json(original_source / "result.json")["result"]
+        self.assertIsNone(answer["prepared"])
+        self.assertEqual(answer["wrapper_signature"], "0x")
+        self.assertEqual(answer["proof"], self.f["snark"])
+        revised = self.cross.controller.refresh_report(self.cross_identifier, self.cross_bundle, True)
+        self.assertEqual(revised["request"]["duties"], [])
+        self.rpc.item["sidecar"] = self.cross.controller.prepare(revised["request"], self.f["evidence"], self.f["fri_payload"])
+        body = copy.deepcopy(self.cross_body)
+        current, artifact = self.runner().status()
+        rebound = k.rebind_request(self.f["settings"], revised["request"], current, artifact)
+        body.update(request=rebound, audit=revised["audit"], proof=self.f["snark"])
+        self.deliver(body, self.cross.controller.directory(self.cross_identifier) / "audit-events")
+        with patch("wrapper.audit.verify_package", REAL_AUDIT_VERIFY):
+            self.assertEqual(self.runner().step(True)["action"], "returned_endorsement")
+        result = io.private_json(self.source / "result.json")["result"]
+        self.assertEqual(result["prepared"]["sidecar"]["duties"], [])
+        self.assertEqual(len(self.p.enqueues), 1)
 
 
 class HandoffTests(unittest.TestCase):

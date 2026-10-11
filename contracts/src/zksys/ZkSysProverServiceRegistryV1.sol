@@ -331,7 +331,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
 
         bytes32 packageHash = ZkSysServiceTypesV1.hashPackage(accepted);
         if (acceptedPackages[packageHash]) return;
-        if (isRoundFinalized(accepted.period)) revert RoundClosed(accepted.period);
+        if (qualificationOnly && isRoundFinalized(accepted.period)) revert RoundClosed(accepted.period);
         if (!qualificationOnly && block.timestamp < _periodStart(accepted.period)) revert InvalidPackage();
         acceptedPackages[packageHash] = true;
 
@@ -340,13 +340,22 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             ProverSubscriptionV1 storage subscription_ = _subscriptions[duty.subscriptionHash];
             if (
                 duty.account == address(0) || subscription_.account != duty.account
-                    || subscription_.sequencer != accepted.sequencer || duty.period != accepted.period
+                    || subscription_.sequencer != accepted.sequencer
+                    || (qualificationOnly
+                            ? duty.period != accepted.period
+                            : duty.period > accepted.period || duty.period < firstServicePeriod)
                     || duty.period < subscription_.firstPeriod || duty.period > subscription_.lastPeriod
                     || subscription_.services != (ZkSysServiceTypesV1.FRI_SERVICE | ZkSysServiceTypesV1.WRAPPER_SERVICE)
                     || duty.batchNumber < accepted.batchFrom || duty.batchNumber > accepted.batchTo
                     || duty.statementHash == bytes32(0) || duty.friProofHash == bytes32(0) || duty.transactionCount == 0
                     || duty.assignmentId == bytes32(0) || duty.attempt == 0 || duty.slot >= dutiesPerRound
             ) revert InvalidDuty();
+            if (!qualificationOnly) {
+                // Wrapping can cross an epoch boundary without moving the signed duty's credit
+                // or extending the deadline of the round in which that work was performed.
+                if (isRoundFinalized(duty.period)) revert RoundClosed(duty.period);
+                if (block.timestamp < _periodStart(duty.period)) revert InvalidDuty();
+            }
             if (!subscription_.operator
                     .isValidSignatureNow(_hashTypedDataV4(ZkSysServiceTypesV1.hashDuty(duty)), duty.operatorSignature)) revert InvalidSignature();
 

@@ -23,6 +23,7 @@ class Rpc:
         self.active = True
         self.vk = s.raw_hex(settings["vk_hash"])
         self.anchors = []
+        self.views = []
         self.extra_enrolled = []
         self.ineligible = set()
         self.gateway = None
@@ -31,16 +32,17 @@ class Rpc:
         if method == "eth_chainId":
             return self.settings["registry_chain_id"]
         if method == "eth_getBlockByNumber":
-            assert params == ["finalized", False]
-            return {"hash": h(100), "timestamp": "0x226" if self.active else "0x1c2"}
+            assert params in (["finalized", False], ["latest", False], ["0x64", False])
+            return {"hash": h(100), "number": "0x64", "timestamp": "0x226" if self.active else "0x1c2"}
         if method == "eth_getBlockByHash":
             assert params == [h(100), False]
-            return {"hash": h(100), "timestamp": "0x226" if self.active else "0x1c2"}
+            return {"hash": h(100), "number": "0x64", "timestamp": "0x226" if self.active else "0x1c2"}
         raise AssertionError(method)
 
     def contract(self, address, signature, values, anchor):
         assert address == self.settings["registry"]
         self.anchors.append(anchor)
+        self.views.append(signature)
         assert anchor == h(100)
         if signature == self.fail:
             return bytes(32)

@@ -497,7 +497,10 @@ impl ProverServiceSidecarV1 {
                 || duty.transactionCount == 0
                 || count != Some(U256::from(duty.transactionCount))
                 || duty.statementHash != statements[batch_index]
-                || duty.period != accepted.period
+                || match &context.phase {
+                    PackagePhaseV1::Bootstrap => duty.period != accepted.period,
+                    PackagePhaseV1::Service { .. } => duty.period > accepted.period,
+                }
                 || duty.friProofHash.is_zero()
                 || duty.account.is_zero()
                 || duty.subscriptionHash.is_zero()
@@ -917,6 +920,58 @@ mod tests {
                 Err(ValidationError::Duty(_))
             ));
         }
+    }
+
+    fn refresh_service_report(
+        sidecar: &mut ProverServiceSidecarV1,
+        context: &mut ValidationContextV1,
+    ) {
+        sidecar.accepted_package.reportHash = hash_report(&sidecar.duties);
+        let mut frozen = sidecar.accepted_package.clone();
+        frozen.turn = 0;
+        frozen.proofHash = B256::ZERO;
+        frozen.wrapper = Address::ZERO;
+        frozen.wrapperBeneficiary = Address::ZERO;
+        let PackagePhaseV1::Service {
+            frozen_package_hash,
+            ..
+        } = &mut context.phase
+        else {
+            panic!("service fixture required");
+        };
+        *frozen_package_hash = hash_package(&frozen);
+    }
+
+    #[test]
+    fn service_package_preserves_earlier_signed_duty_period() {
+        let (mut sidecar, mut context, proof_data) = service_evidence();
+        sidecar.duties[0].period = 6;
+        refresh_service_report(&mut sidecar, &mut context);
+        sidecar.validate(&context, &proof_data).unwrap();
+        assert_eq!(sidecar.accepted_package.period, 7);
+        assert_eq!(sidecar.duties[0].period, 6);
+    }
+
+    #[test]
+    fn service_package_rejects_future_signed_duty_period() {
+        let (mut sidecar, mut context, proof_data) = service_evidence();
+        sidecar.duties[0].period = 8;
+        refresh_service_report(&mut sidecar, &mut context);
+        assert_eq!(
+            sidecar.validate(&context, &proof_data),
+            Err(ValidationError::Duty(0))
+        );
+    }
+
+    #[test]
+    fn bootstrap_package_rejects_earlier_signed_duty_period() {
+        let (mut sidecar, context, proof_data) = evidence();
+        sidecar.duties[0].period = 6;
+        sidecar.accepted_package.reportHash = hash_report(&sidecar.duties);
+        assert_eq!(
+            sidecar.validate(&context, &proof_data),
+            Err(ValidationError::Duty(0))
+        );
     }
 
     #[test]

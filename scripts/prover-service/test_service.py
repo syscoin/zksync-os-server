@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import service as s
 
@@ -122,7 +123,69 @@ def fixture(execution_chain_id="0x23a", registry_chain_id="0x23a", settlement_ch
 
 def prepare(f):
     return s.prepare_package(f["settings"], f["evidence"], f["manifest"], f["subscriptions"], f["duties"],
-                             f["proposal"], f["snark"], f["fri_payload"])
+                             f["proposal"], f["snark"], f["fri_payload"], enrollment=f.get("enrollment"))
+
+
+class FinalizationRpc:
+    def __init__(self, settings, closed=()):
+        self.settings, self.closed = settings, set(closed)
+
+    def call(self, method, params):
+        if method == "eth_chainId":
+            return self.settings["registry_chain_id"]
+        if method in ("eth_getBlockByNumber", "eth_getBlockByHash"):
+            return {"hash": h(190), "number": "0x64", "timestamp": "0x28a"}
+        raise AssertionError(method)
+
+    def contract(self, address, signature, values, anchor):
+        assert address == self.settings["registry"] and anchor == h(190)
+        assert signature == "isRoundFinalized(uint256)"
+        return s.word(int(values[0] in self.closed))
+
+
+def aggregate_fixture(rotated=False, closed=(), same_period=False):
+    f = fixture()
+    settings = f["settings"]
+    old, current = h(180), h(181)
+    old_subs, current_subs = copy.deepcopy(f["subscriptions"]), copy.deepcopy(f["subscriptions"])
+    if rotated:
+        current_subs[0]["subscription"].update(operator=s.cast("wallet", "address", "--private-key", KEYS["wrapper"]).lower(),
+                                               nonce=8)
+        current_subs[0]["signature"] = sign(s.subscription_request(settings, current_subs[0]["subscription"]), "account")
+    periods = {old: 5, current: 5 if same_period else 6}
+    contexts = []
+    duties = []
+    for number, key, snapshot in ((1, old, old_subs), (2, current, current_subs)):
+        payload = copy.deepcopy(f["manifest"]["payload"])
+        payload["period"] = periods[key]
+        payload["subscription_snapshot_hash"] = s.keccak(s.canonical(snapshot))
+        assignment = copy.deepcopy(payload["assignments"][number - 1])
+        assignment.update(period=periods[key], slot=0,
+                          subscription_hash=s.subscription_request(settings, snapshot[0]["subscription"])["struct_hash"])
+        payload["assignments"], payload["retries"] = [assignment], []
+        signed = {"payload": payload, "sequencer_signature": sign(s.manifest_request(settings, payload), "sequencer")}
+        contexts.append({"journal_id": key, "manifest": signed, "subscriptions": snapshot})
+        request = s.prepare_receipt(settings, f["evidence"], signed, snapshot,
+                                    f["authorities"][number - 1], f["proofs"][number - 1])
+        duties.append({**request["typed_data"]["message"],
+                       "operatorSignature": sign(request, "wrapper" if rotated and number == 2 else "operator")})
+    subscriptions = s.aggregate_subscriptions(settings, contexts)
+    payload = {"schema_version": 2, "chain_id": settings["execution_chain_id"], "chain_address": settings["chain_address"],
+               "sequencer": settings["sequencer"], "period": periods[current], "current_journal_id": current,
+               "subscription_snapshot_hash": s.keccak(s.canonical(subscriptions)), "contexts": contexts}
+    f["manifest"] = {"payload": payload, "sequencer_signature": sign(s.manifest_request(settings, payload), "sequencer")}
+    f["subscriptions"], f["duties"] = subscriptions, duties
+    f["proposal"]["accepted_package"]["period"] = periods[current]
+    rpc = FinalizationRpc(settings, closed)
+    authorities = {}
+    for context in contexts:
+        key = context["journal_id"]
+        anchor = {"block_hash": key, "timestamp": periods[key] * 100 + 50, "phase": "service",
+                  "ends_at": (periods[key] + 1) * 100}
+        with patch("enrollment.enrollment_snapshot", return_value=(context["subscriptions"], anchor)):
+            authorities[key] = s.EnrollmentAuthority(settings, context["subscriptions"], periods[key], rpc, key)
+    f["enrollment"] = s.EnrollmentGroup(settings, authorities, current, rpc)
+    return f
 
 
 class ServiceTests(unittest.TestCase):
@@ -133,6 +196,45 @@ class ServiceTests(unittest.TestCase):
 
     def setUp(self):
         self.f = copy.deepcopy(self.base)
+
+    def test_mixed_period_package_preserves_original_credit_and_rotated_operator(self):
+        f = aggregate_fixture(rotated=True)
+        prepared = prepare(f)
+        completed = s.complete_package(f["settings"], prepared, sign(prepared["sequencer_request"], "sequencer"),
+                                       sign(prepared["wrapper_request"], "wrapper"))
+        self.assertEqual([duty["period"] for duty in completed["duties"]], [5, 6])
+        self.assertEqual(completed["accepted_package"]["period"], 6)
+        self.assertEqual(len(f["subscriptions"]), 2)
+
+    def test_mixed_period_package_rejects_future_context_and_duplicate_credit_slot(self):
+        f = aggregate_fixture()
+        f["manifest"]["payload"]["contexts"][0]["manifest"]["payload"]["period"] = 7
+        with self.assertRaisesRegex(s.Error, "future_manifest_context"):
+            prepare(f)
+        with self.assertRaisesRegex(s.Error, "duplicate_duty_slot"):
+            prepare(aggregate_fixture(same_period=True))
+
+    def test_historical_round_closure_projects_rewards_without_changing_proof(self):
+        f = aggregate_fixture(closed=(5,))
+        with self.assertRaisesRegex(s.Error, "closed_duty_period"):
+            prepare(f)
+        original = f["snark"]["proof"]
+        f["duties"] = f["duties"][1:]
+        prepared = prepare(f)
+        self.assertEqual([duty["period"] for duty in prepared["sidecar"]["duties"]], [6])
+        self.assertEqual(f["snark"]["proof"], original)
+
+    def test_aggregate_manifest_requires_independent_authorities_and_unique_assignment_ids(self):
+        f = aggregate_fixture()
+        f["enrollment"] = None
+        with self.assertRaisesRegex(s.Error, "authenticated_enrollment_group_required"):
+            prepare(f)
+        f = aggregate_fixture()
+        contexts = f["manifest"]["payload"]["contexts"]
+        contexts[1]["manifest"]["payload"]["assignments"][0]["assignment_id"] = \
+            contexts[0]["manifest"]["payload"]["assignments"][0]["assignment_id"]
+        with self.assertRaisesRegex(s.Error, "duplicate_context_assignment"):
+            prepare(f)
 
     def test_enrollment_requires_both_signers_for_identical_typed_data_and_matches_cast(self):
         settings, signed = self.f["settings"], self.f["subscriptions"][0]
