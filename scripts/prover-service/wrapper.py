@@ -14,6 +14,7 @@ import tempfile
 import time
 
 import audit
+import journal
 import keeper as k
 import proof_check
 import service as s
@@ -24,6 +25,10 @@ import job
 import pool
 import sentry
 from runpod import Store, atomic_json, read_private_json
+
+JOURNAL_FIELDS = ("jobs", "checkpoints")
+TERMINAL = ("returned", "expired", "obsolete", "rejected")
+LIVE = ("received", "computing")
 
 
 def configuration(value):
@@ -54,8 +59,8 @@ def initialize(root, config):
     for name in ("jobs", "signatures", "fri-checks"):
         io.directory(root / name, create=True)
     io.immutable_json(root / "configuration.json", config)
-    atomic_json(root / "wrapper.json", {"schema_version": 1, "configuration_sha256": io.digest(config),
-                                        "checkpoints": {}, "jobs": {}, "last_status": None})
+    journal.save(root / "wrapper.json", {"schema_version": 1, "configuration_sha256": io.digest(config),
+                                        "checkpoints": {}, "jobs": {}, "last_status": None}, map_fields=JOURNAL_FIELDS)
     return Store(root)
 
 
@@ -111,7 +116,7 @@ class Wrapper:
                  fri_checker=verify_fris, snark_checker=proof_check.verify_snark):
         self.store, self.clock = store, clock
         self.config = configuration(io.private_json(store.root / "configuration.json"))
-        self.state = io.private_json(store.root / "wrapper.json")
+        self.state = journal.load(store.root / "wrapper.json", map_fields=JOURNAL_FIELDS)
         s.require(self.state["schema_version"] == 1
                   and self.state["configuration_sha256"] == io.digest(self.config), "wrapper_configuration_changed")
         self.keeper = self.config["keeper"]
@@ -124,7 +129,7 @@ class Wrapper:
         self.fri_checker, self.snark_checker = fri_checker, snark_checker
 
     def save(self):
-        atomic_json(self.store.root / "wrapper.json", self.state)
+        journal.save(self.store.root / "wrapper.json", self.state, map_fields=JOURNAL_FIELDS)
 
     def status(self):
         state = k.status(self.keeper, self.rpc, self.clock())
@@ -133,7 +138,7 @@ class Wrapper:
         roster = io.private_json(Path(self.config["roster_dir"]) / (str(state["roster"]["period"]) + ".json"))
         return k.status(self.keeper, self.rpc, self.clock(), roster), roster
 
-    def audited(self, body, chain_state, execute, payload):
+    def audited(self, body, chain_state, execute, payload, event_root=None):
         bundle = body["audit"]
         s.require(type(bundle) is dict, "signed_dispatch_audit_required")
         journal_id = s.nonzero(bundle["journal_id"])
@@ -146,9 +151,10 @@ class Wrapper:
             elif count < previous["event_count"]:
                 trust = {**trust, "minimum_checkpoint": previous}
         request = body["request"]
+        archive = {"event_root": event_root} if bundle.get("schema_version") == 2 else {}
         result = audit.verify_package(self.settings, body["evidence"], request["manifest"], request["subscriptions"],
                     request["duties"], bundle, trust, self.registry_rpc, fri_payload=payload,
-                    allow_control=chain_state["control_work"])
+                    allow_control=chain_state["control_work"], **archive)
         if execute:
             self.state["checkpoints"][journal_id] = {key: result[key] for key in
                                                     ("event_count", "event_head", "assignment_cursor")}
@@ -185,17 +191,19 @@ class Wrapper:
         s.require(request == body["request"] and state["local_operator_selected"], "work_not_for_current_local_turn")
         enrollment = self.enrollment(request)
         prepared = k.prepare(self.settings, request, body["evidence"], payload, enrollment=enrollment)
-        self.audited(body, state, execute, payload)
+        self.audited(body, state, execute, payload, source / "audit-events")
         p = self.pool()
         runtime, release = self.pool_policy(p, body)
         runtime = 1 if body["proof"] is not None else runtime
         k.inspect(self.keeper, self.rpc, prepared, body["evidence"], self.clock(), runtime)
         if not execute:
             return {"action": "would_verify_and_handle_selected_turn", "work_hash": work_hash}
-        s.require(len(self.state["jobs"]) < 1024 or work_hash in self.state["jobs"], "wrapper_history_capacity")
+        if work_hash not in self.state["jobs"]:
+            s.require(sum(1 for _ in journal.status_items(self.state["jobs"], LIVE)) < 1024, "wrapper_live_capacity")
         directory = io.directory(self.store.root / "jobs" / work_hash[2:], create=True)
-        io.immutable_json(directory / "work.json", envelope)
         io.immutable_json(directory / "payload.json", payload, io.MAX_PAYLOAD)
+        io.copy_audit_events(body["audit"], source / "audit-events", directory / "audit-events")
+        io.immutable_json(directory / "work.json", envelope)
         self.state["jobs"].setdefault(work_hash, {"status": "received", "pool_operation": None,
                                                 "source": str(source), "last_error": None})
         self.save()
@@ -248,7 +256,7 @@ class Wrapper:
         if unchanged and current["mode"] == "service" and current["package_open"] and current["local_operator_selected"]:
             rebound = k.rebind_request(self.settings, body["request"], current, roster)
             if rebound == body["request"]:
-                self.audited(body, current, execute, payload)
+                self.audited(body, current, execute, payload, directory / "audit-events")
                 request = body["request"]
                 prepared = s.prepare_package(self.settings, body["evidence"], request["manifest"], request["subscriptions"],
                                              request["duties"], request["proposal"], proof, payload, enrollment=enrollment)
@@ -284,9 +292,8 @@ class Wrapper:
             self.save()
 
     def recover(self, execute):
-        for work_hash, entry in self.state["jobs"].items():
-            if entry["status"] in ("returned", "expired", "obsolete", "rejected"):
-                continue
+        for work_hash, entry in journal.status_items(self.state["jobs"], LIVE):
+            entry = self.state["jobs"][work_hash]
             try:
                 result = self.recover_job(work_hash, entry, execute)
                 if result is not None:
@@ -341,16 +348,21 @@ class Wrapper:
         if state["mode"] != "service" or not state["package_open"] or not state["local_operator_selected"]:
             return {"action": "continue_fri_until_selected", "current_turn": state.get("current_turn"),
                     "selected_wrapper_index": state.get("selected_wrapper_index")}
-        entries = sorted(io.directory(self.config["inbox_dir"]).iterdir())
-        s.require(len(entries) <= 1024, "wrapper_inbox_capacity")
-        for directory in entries:
+        entries = []
+        for directory in io.directory(self.config["inbox_dir"]).iterdir():
             if not directory.is_dir() or directory.is_symlink() or not (directory / "work.json").exists():
                 continue
+            entry = journal.peek(self.state["jobs"], "0x" + directory.name)
+            if entry and entry["status"] in (*TERMINAL, "computing"):
+                continue
+            entries.append(directory)
+            s.require(len(entries) <= 1024, "wrapper_inbox_capacity")
+        for directory in sorted(entries):
             work_hash = "0x" + directory.name
             try:
                 s.nonzero(work_hash)
                 entry = self.state["jobs"].get(work_hash)
-                if entry and entry["status"] in ("returned", "expired", "obsolete", "rejected", "computing"):
+                if entry and entry["status"] in (*TERMINAL, "computing"):
                     continue
                 envelope = io.private_json(directory / "work.json")
                 proposal = envelope["body"]["request"]["proposal"]

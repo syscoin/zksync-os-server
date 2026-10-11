@@ -172,7 +172,7 @@ class WrapperTests(unittest.TestCase):
         return w.Wrapper(self.store, self.rpc, self.registry_rpc, self.wallet,
                          lambda: self.rpc.now, fri_checker=self.fri_check)
 
-    def publish(self, request=None, proof=None, mutate=None):
+    def publish(self, request=None, proof=None, mutate=None, event_root=None):
         body = {"schema_version": 1, "lane": "child", "release_sha256": w.job.hash_bytes(self.release_raw),
                 "payload_sha256": io.digest(self.f["fri_payload"]), "request": copy.deepcopy(request or self.request),
                 "evidence": self.f["evidence"], "audit": {"journal_id": h(180)}, "native_lease_deadline": 1500,
@@ -181,7 +181,7 @@ class WrapperTests(unittest.TestCase):
             mutate(body)
         request = io.work_request(self.f["settings"], body)
         envelope = {"body": body, "sequencer_signature": sign(request, "sequencer")}
-        source = io.publish_work(self.root / "inbox", envelope, self.f["fri_payload"])
+        source = io.publish_work(self.root / "inbox", envelope, self.f["fri_payload"], event_root=event_root)
         return request["typed_data"]["message"]["workHash"], source
 
     def queued(self):
@@ -237,6 +237,69 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(answer["prepared"]["sidecar"]["duties"], package["duties"])
         self.assertEqual(io.private_json(self.store.root / "wrapper.json")["checkpoints"][journal]["event_count"],
                          package["bundle"]["checkpoint"]["eventCount"])
+
+    def test_streamed_handoff_retains_archive_for_offline_proof_completion(self):
+        from test_audit import AuditTests
+        case = AuditTests("test_full_history_replays_and_contains_no_host_capabilities")
+        case.setUpClass()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        case.accepted(1)
+        case.accepted(2)
+        package = case.package(1, 2)
+        events = package["bundle"]["events"]
+        archive = self.root / "signed-archive"
+        with patch.object(w.audit, "SEGMENT_EVENTS", 2):
+            descriptor = w.audit.export_events(events, archive)
+        bundle = {**package["bundle"], "schema_version": 2, "events": descriptor}
+        for field in ("manifest", "subscriptions", "duties"):
+            self.f[field] = package[field]
+        self.keeper, self.request, item = setup(self.f)
+        self.rpc, self.registry_rpc = Chain(self.f, self.keeper, item), case.rpc
+        journal_id = bundle["journal_id"]
+        io.immutable_json(self.root / "trust" / (journal_id[2:] + ".json"), package["trust"])
+        work_hash, source = self.publish(mutate=lambda body: body.update(audit=bundle), event_root=archive)
+        with patch("wrapper.audit.verify_package", REAL_AUDIT_VERIFY):
+            identifier = self.queued()
+            retained = self.store.root / "jobs" / work_hash[2:] / "audit-events"
+            self.assertEqual(list(w.audit.iter_events(bundle, retained)), events)
+            for path in (source / "audit-events").iterdir():
+                path.unlink()
+            self.returned(identifier)
+            self.assertEqual(self.runner().step(True)["action"], "returned_endorsement")
+        answer = io.validate_result(self.f["settings"], work_hash, io.private_json(source / "result.json"),
+                                   self.keeper["policy"]["expected_operator"])
+        self.assertEqual(answer["prepared"]["sidecar"]["duties"], package["duties"])
+
+    def test_completed_history_does_not_block_new_work_or_count_toward_inbox_capacity(self):
+        runner = self.runner()
+        for index in range(1025):
+            work_hash = "0x" + (index + 1000).to_bytes(32, "big").hex()
+            runner.state["jobs"][work_hash] = {"status": "returned", "pool_operation": None,
+                                             "source": "unused", "last_error": None}
+            source = io.directory(self.root / "inbox" / work_hash[2:], create=True)
+            io.immutable_json(source / "work.json", {})
+        runner.save()
+        self.assertTrue((self.store.root / "wrapper.json.sqlite3").is_file())
+        resumed = self.runner()
+        self.assertEqual(resumed.step(True)["action"], "queued_selected_snark")
+        self.assertLessEqual(len(resumed.state["jobs"].cache), 1)
+        recovered = self.runner()
+        self.assertEqual(len(recovered.state["jobs"]), 1026)
+        self.assertEqual(recovered.state["jobs"][self.work_hash]["status"], "computing")
+
+    def test_live_capacity_remains_bounded_when_completed_history_is_unlimited(self):
+        runner = self.runner()
+        for index in range(1024):
+            work_hash = "0x" + (index + 1000).to_bytes(32, "big").hex()
+            runner.state["jobs"][work_hash] = {"status": "received", "pool_operation": None,
+                                             "source": "unused", "last_error": None}
+        runner.save()
+        state, artifact = runner.status()
+        with self.assertRaisesRegex(s.Error, "wrapper_live_capacity"):
+            runner.receive(self.source, state, artifact, True)
+        self.assertEqual(self.p.enqueues, [])
+        self.assertNotIn(self.work_hash, runner.state["jobs"])
 
     def test_turn_rollover_returns_bare_proof_and_next_turn_reuses_it_without_new_compute(self):
         identifier = self.queued()

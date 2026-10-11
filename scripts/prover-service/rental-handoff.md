@@ -72,10 +72,17 @@ For a FRI service duty, prepare the operator's response without a private lease:
 
 ```sh
 python3 scripts/prover-service/service.py --config /trusted/config.json \
+  --registry-rpc-file /trusted/child-registry-rpc.json \
+  --enrollment-block-hash INDEPENDENTLY_PINNED_JOURNAL_ENROLLMENT_BLOCK \
   --output /trusted/offered-duty-request.json offered-duty \
   --evidence /trusted/native-evidence.json --manifest /trusted/offer/manifest.json \
   --subscriptions /trusted/offer/subscriptions.json --proof /trusted/returned-fri.json
 ```
+
+Use the enrollment pin for the offer's exact period journal. Automatically
+created period snapshots authenticate consent from the canonical registry tuple,
+including ERC-1271 accounts, and do not reproduce historical signature bytes.
+The canonical enrollment context is therefore required for these offers.
 
 This authenticates the signed current assignment and subscriptions, derives the
 full native statement/count, and hashes the exact returned proof. Its EIP-712 digest

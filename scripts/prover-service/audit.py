@@ -2,10 +2,19 @@
 """Replay authenticated dispatch history against an independently pinned checkpoint."""
 
 import copy
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import tempfile
 
+import journal
 import service as s
 
 MAX_EVENTS = 16000
+SEGMENT_EVENTS = 256
+MAX_EVENT_LINE = 64 * 1024
 REQUEST = [("journalId", "bytes32"), ("account", "address"), ("subscriptionHash", "bytes32"),
            ("period", "uint64"), ("nonce", "uint64"), ("expiresAt", "uint64")]
 CHECKPOINT = [("journalId", "bytes32"), ("eventCount", "uint64"), ("eventHead", "bytes32"),
@@ -14,6 +23,116 @@ CHECKPOINT = [("journalId", "bytes32"), ("eventCount", "uint64"), ("eventHead", 
 ASSIGNMENT_FIELDS = ("assignment_id", "account", "subscription_hash", "batch_number", "statement_hash",
                      "lease_commitment", "attempt", "slot", "period")
 LIVE = ("pick_pending", "picked", "offered", "submission_pending")
+
+
+def event_count(bundle):
+    if bundle["schema_version"] == 1:
+        events = bundle["events"]
+        s.require(type(events) is list and len(events) <= MAX_EVENTS
+                  and len(s.canonical(bundle)) <= s.MAX_FILE, "audit_capacity_exceeded")
+        return len(events)
+    s.require(bundle["schema_version"] == 2, "unsupported_audit_schema")
+    descriptor = bundle["events"]
+    s.exact(descriptor, ("format", "segment_events", "event_count"))
+    s.require(descriptor["format"] == "segmented-jsonl-v1"
+              and type(descriptor["segment_events"]) is int
+              and 0 < descriptor["segment_events"] <= 256, "invalid_audit_event_descriptor")
+    return s.uint(descriptor["event_count"], 64)
+
+
+def _event_directory(root, *, create=False):
+    s.require(root is not None, "audit_event_directory_required")
+    root = Path(root)
+    if create:
+        root.mkdir(mode=0o700, parents=False, exist_ok=True)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        os.close(fd)
+        raise s.Error("private_audit_event_directory_required")
+    return fd
+
+
+def export_events(events, destination, count=None):
+    count = len(events) if count is None else s.uint(count, 64)
+    s.require(type(SEGMENT_EVENTS) is int and 0 < SEGMENT_EVENTS <= 256, "invalid_audit_segment_size")
+    descriptor = {"format": "segmented-jsonl-v1", "segment_events": SEGMENT_EVENTS, "event_count": count}
+    directory = _event_directory(destination, create=True)
+    try:
+        source = iter(events)
+        for segment, start in enumerate(range(0, count, SEGMENT_EVENTS)):
+            lines = []
+            for _ in range(min(SEGMENT_EVENTS, count - start)):
+                try:
+                    line = s.canonical(next(source)) + b"\n"
+                except StopIteration:
+                    raise s.Error("audit_event_source_truncated") from None
+                s.require(len(line) <= MAX_EVENT_LINE, "audit_event_too_large")
+                lines.append(line)
+            data = b"".join(lines)
+            s.require(len(data) <= s.MAX_FILE, "audit_event_segment_too_large")
+            name = f"{segment:016d}.jsonl"
+            fd, temporary = tempfile.mkstemp(prefix=".audit-segment-", suffix=".tmp", dir=Path(destination).parent)
+            try:
+                with os.fdopen(fd, "wb") as output:
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
+                try:
+                    os.link(temporary, name, dst_dir_fd=directory, follow_symlinks=False)
+                except FileExistsError:
+                    s.require(s.read(Path(destination) / name, private=True) == data, "audit_event_segment_changed")
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return descriptor
+
+
+def iter_events(bundle, event_root=None):
+    count = event_count(bundle)
+    if bundle["schema_version"] == 1:
+        yield from bundle["events"]
+        return
+    descriptor = bundle["events"]
+    size = descriptor["segment_events"]
+    try:
+        directory = _event_directory(event_root)
+    except OSError:
+        raise s.Error("audit_event_directory_unavailable") from None
+    try:
+        expected_segments, found = (count + size - 1) // size, 0
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                s.require(re.fullmatch(r"[0-9]{16,20}\.jsonl", entry.name) is not None,
+                          "audit_event_segments_missing_or_extra")
+                segment = int(entry.name[:-6])
+                s.require(segment < expected_segments and entry.name == f"{segment:016d}.jsonl",
+                          "audit_event_segments_missing_or_extra")
+                found += 1
+        s.require(found == expected_segments, "audit_event_segments_missing_or_extra")
+        for segment, start in enumerate(range(0, count, size)):
+            try:
+                fd = os.open(f"{segment:016d}.jsonl", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+            except OSError:
+                raise s.Error("audit_event_segment_unavailable") from None
+            with os.fdopen(fd, "rb") as source:
+                info = os.fstat(source.fileno())
+                s.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                          and info.st_nlink == 1 and not info.st_mode & 0o077, "private_audit_event_file_required")
+                s.require(info.st_size <= s.MAX_FILE, "audit_event_segment_too_large")
+                for _ in range(min(size, count - start)):
+                    line = source.readline(MAX_EVENT_LINE + 1)
+                    s.require(line.endswith(b"\n") and len(line) <= MAX_EVENT_LINE, "audit_event_line_truncated_or_large")
+                    try:
+                        yield json.loads(line, object_pairs_hook=s._unique,
+                                         parse_constant=lambda _: s.require(False, "nonfinite_json_value"))
+                    except (ValueError, UnicodeError):
+                        raise s.Error("invalid_audit_event_json") from None
+                s.require(not source.read(1), "audit_event_segment_extra_lines")
+    finally:
+        os.close(directory)
 
 
 def checkpoint_request(bundle):
@@ -73,8 +192,6 @@ def validate_identity(identity, journal_id, trust, rpc):
                   and gateway["settlement_chain_id"] not in (settings["execution_chain_id"], gateway["execution_chain_id"])
                   and lanes["child"]["endpoint_commitment"] != lanes["gateway"]["endpoint_commitment"],
                   "audit_invalid_gateway_topology")
-    s.require(len(identity["subscriptions"]) * settings["duties_per_round"] <= enrollment_state.MAX_OPERATIONS,
-              "audit_roster_exceeds_capacity")
     return authority
 
 
@@ -89,10 +206,30 @@ class Replay:
                               for entry in identity["subscriptions"]}
         self.accounts = {account: {"nonce": 0, "offered": 0, "ready": None}
                          for account in sorted(self.subscriptions)}
-        self.operations, self.pending = {}, None
+        self.storage = tempfile.TemporaryDirectory(prefix="zksys-dispatch-replay-")
+        opened = []
+        try:
+            for name in ("operations", "readiness", "accepted"):
+                mapping = journal.disk_map(Path(self.storage.name), name)
+                opened.append(mapping)
+                setattr(self, name, mapping)
+        except BaseException:
+            for mapping in opened:
+                mapping.close()
+            self.storage.cleanup()
+            raise
+        self.pending = None
         self.next_account = self.next_lane = self.next_operation = 0
         self.cursor = journal_id
-        self.readiness, self.accepted = {}, {}
+
+    def sync(self):
+        for mapping in (self.operations, self.readiness, self.accepted):
+            mapping.sync()
+
+    def close(self):
+        for mapping in (self.operations, self.readiness, self.accepted):
+            mapping.close()
+        self.storage.cleanup()
 
     def live(self, at):
         s.require(at < self.identity["enrollment"]["ends_at"], "audit_dispatch_window_closed")
@@ -162,7 +299,7 @@ class Replay:
             s.verify_eoa(expected, payload["signature"])
             s.require((entry["ready"] is None or
                        entry["ready"]["request"]["typed_data"]["message"]["expiresAt"] <= at)
-                      and not any(op["account"] == account and op["status"] in LIVE for op in self.operations.values()),
+                      and not journal.live_account(self.operations, account, LIVE),
                       "audit_duplicate_or_busy_readiness")
             entry["ready"], entry["nonce"] = payload, entry["nonce"] + 1
             self.readiness[s.keccak(s.canonical(payload))] = event["sequence"]
@@ -170,7 +307,7 @@ class Replay:
         if kind == "pick_started":
             s.exact(payload, ("operation", "account", "lane"))
             self.live(at)
-            s.require(self.pending is None and len(self.operations) < 2000, "audit_pending_or_full_dispatcher")
+            s.require(self.pending is None, "audit_pick_already_pending")
             selected = self.selected(at)
             s.require(selected is not None and payload["account"] == selected[0], "audit_biased_ready_selection")
             s.require(payload["operation"] == f"job-{self.next_operation:06d}"
@@ -205,9 +342,7 @@ class Replay:
                 s.nonzero(item[field])
             s.require(0 < s.uint(item["batch_number"], 64) and 0 < s.uint(payload["transaction_count"], 64),
                       "audit_nonempty_assignment_required")
-            prior = [(key, old) for key, old in self.operations.items() if old["assignment"]
-                     and old["lane"] == op["lane"] and old["assignment"]["batch_number"] == item["batch_number"]]
-            previous = prior[-1] if prior else None
+            previous = journal.last_batch(self.operations, op["lane"], item["batch_number"])
             if previous:
                 old = previous[1]
                 s.require(old["status"] in ("rejected", "expired")
@@ -271,18 +406,18 @@ class Replay:
             op["status"] = "expired"
 
 
-def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, trust, rpc, *, fri_payload, allow_control=False):
+def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, trust, rpc, *, fri_payload,
+                   allow_control=False, event_root=None):
     s.config(settings)
     s.exact(bundle, ("schema_version", "identity", "journal_id", "events", "checkpoint", "sequencer_signature"))
     s.exact(trust, ("schema_version", "journal_id", "enrollment_block_hash", "minimum_checkpoint",
                     "required_readiness", "required_duties"))
-    s.require(bundle["schema_version"] == trust["schema_version"] == 1, "unsupported_audit_schema")
+    s.require(bundle["schema_version"] in (1, 2) and trust["schema_version"] == 1, "unsupported_audit_schema")
     s.require(type(allow_control) is bool, "invalid_control_exemption")
     journal_id = s.nonzero(bundle["journal_id"])
     s.require(journal_id == s.nonzero(trust["journal_id"]), "audit_untrusted_journal")
-    identity, checkpoint, events = bundle["identity"], bundle["checkpoint"], bundle["events"]
-    s.require(type(events) is list and len(events) <= MAX_EVENTS and len(s.canonical(bundle)) <= s.MAX_FILE,
-              "audit_capacity_exceeded")
+    identity, checkpoint = bundle["identity"], bundle["checkpoint"]
+    total_events = event_count(bundle)
     s.verify_eoa(checkpoint_request(bundle), bundle["sequencer_signature"])
     enrollment = validate_identity(identity, journal_id, trust, rpc)
     s.require(subscriptions == identity["subscriptions"], "audit_package_snapshot_changed")
@@ -296,7 +431,7 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
               and fri_payload["vk_hash"] == settings["vk_hash"] and type(fri_payload["fri_proofs"]) is list
               and len(fri_payload["fri_proofs"]) == len(numbers), "audit_native_fri_payload_mismatch")
     proof_hashes = {number: s.keccak(s.decode_proof(proof)) for number, proof in zip(numbers, fri_payload["fri_proofs"])}
-    s.require(checkpoint["journalId"] == journal_id and checkpoint["eventCount"] == len(events)
+    s.require(checkpoint["journalId"] == journal_id and checkpoint["eventCount"] == total_events
               and checkpoint["chainId"] == settings["execution_chain_id"]
               and checkpoint["chainAddress"] == settings["chain_address"]
               and checkpoint["period"] == identity["period"]
@@ -305,77 +440,80 @@ def verify_package(settings, evidence, manifest, subscriptions, duties, bundle, 
     minimum = trust["minimum_checkpoint"]
     s.exact(minimum, ("event_count", "event_head", "assignment_cursor"))
     count = s.uint(minimum["event_count"], 64)
-    s.require(count <= len(events), "audit_checkpoint_truncated")
+    s.require(count <= total_events, "audit_checkpoint_truncated")
     replay, head, at = Replay(identity, journal_id), journal_id, identity["enrollment"]["timestamp"]
-    prefix = {"event_count": 0, "event_head": head, "assignment_cursor": journal_id}
-    for index, event in enumerate(events, 1):
-        s.exact(event, ("sequence", "at", "kind", "payload", "previous", "hash"))
-        s.require(s.uint(event["sequence"], 64) == index and event["previous"] == head
-                  and s.uint(event["at"], 64) >= at, "audit_event_order_changed")
-        s.require(s.keccak(s.canonical({key: value for key, value in event.items() if key != "hash"})) == event["hash"],
-                  "audit_event_hash_changed")
-        replay.apply(event)
-        head, at = event["hash"], event["at"]
-        if index == count:
-            prefix = {"event_count": index, "event_head": head, "assignment_cursor": replay.cursor}
-    s.require(prefix == minimum, "audit_checkpoint_prefix_changed")
-    s.require(checkpoint["eventHead"] == head and checkpoint["assignmentCursor"] == replay.cursor
-              and checkpoint["issuedAt"] >= at, "audit_checkpoint_head_changed")
-    required_readiness, required_duties = trust["required_readiness"], trust["required_duties"]
-    s.require(type(required_readiness) is list and len(required_readiness) <= MAX_EVENTS
-              and type(required_duties) is list and len(required_duties) <= 2000, "invalid_audit_external_receipts")
-    for receipt in required_readiness:
-        s.exact(receipt, ("request", "signature", "observed_before_event_count"))
-        bound = s.uint(receipt["observed_before_event_count"], 64)
-        sequence = replay.readiness.get(s.keccak(s.canonical({key: receipt[key] for key in ("request", "signature")})))
-        s.require(sequence is not None and sequence <= bound, "audit_known_readiness_omitted_or_delayed")
-    for duty in required_duties:
-        s.encode_duty(duty)
-        s.require(s.keccak(s.canonical(duty)) in replay.accepted, "audit_known_accepted_duty_omitted")
-    relevant = [key for key, op in replay.operations.items() if op["lane"] == lane and op["assignment"] is not None
-                and numbers[0] <= op["assignment"]["batch_number"] <= numbers[-1]]
-    for key in relevant:
-        op = replay.operations[key]
-        item, statement = op["assignment"], statements[op["assignment"]["batch_number"]]
-        s.require(item["statement_hash"] == statement["statement"] and op["transaction_count"] == statement["count"],
-                  "audit_assignment_native_evidence_changed")
-        s.require(op["status"] not in LIVE, "audit_range_has_unresolved_assignment")
-        # Reusing the very proof that an operator submitted while claiming it was rejected
-        # cannot authorize an uncredited package or a replacement recipient.
-        s.require(op["status"] != "rejected" or op["submitted_duty"]["friProofHash"] != proof_hashes[item["batch_number"]],
-                  "audit_rejected_operator_proof_reused")
-    expected_manifest = replay.manifest(relevant, lane)
-    s.require(manifest["payload"] == expected_manifest, "audit_package_assignments_or_retries_incomplete")
-    s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True, enrollment=enrollment)
-    accepted_receipts = [replay.operations[key]["duty"] for key in relevant
-                         if replay.operations[key]["status"] == "accepted"]
-    # Removing reward credit must not let the sequencer substitute an operator's accepted proof.
-    s.require(all(duty["friProofHash"] == proof_hashes[duty["batchNumber"]] for duty in accepted_receipts),
-              "audit_accepted_duty_native_proof_changed")
-    expected_duties = [duty for duty in accepted_receipts if duty["slot"] < settings["duties_per_round"]]
-    s.require(type(duties) is list and len(duties) == len(expected_duties)
-              and sorted(map(s.canonical, duties)) == sorted(map(s.canonical, expected_duties)),
-              "audit_package_accepted_duties_incomplete")
-    credited = {duty["batchNumber"] for duty in expected_duties}
-    covered = {duty["batchNumber"] for duty in accepted_receipts}
-    unrewarded = [number for number, statement in statements.items() if statement["count"] > 0 and number not in credited]
-    uncovered = [number for number, statement in statements.items() if statement["count"] > 0 and number not in covered]
-    exhausted = all(account["offered"] >= settings["duties_per_round"] for account in replay.accounts.values())
-    s.require(not uncovered or allow_control or exhausted, "audit_nonempty_batch_without_service_duty_wait")
-    zero_duty_reason = None
-    if not expected_duties:
-        if allow_control:
-            zero_duty_reason = "control"
-        elif all(statement["count"] == 0 for statement in statements.values()):
-            zero_duty_reason = "empty_native_range"
-        elif exhausted or not uncovered:
-            zero_duty_reason = "quota_exhausted"
-        s.require(zero_duty_reason is not None, "audit_no_accepted_duties_wait")
-    return {"journal_id": journal_id, "event_count": len(events), "event_head": head,
-            "assignment_cursor": replay.cursor, "lane": lane,
-            "zero_duty_reason": zero_duty_reason,
-            "unrewarded_batches": unrewarded,
-            "unrewarded_reason": ("control" if allow_control else "quota_exhausted") if unrewarded else None,
-            "required_duties": copy.deepcopy(expected_duties),
-            "accounts": {account: {"offered_opportunities": data["offered"], "quota": settings["duties_per_round"]}
-                         for account, data in replay.accounts.items()}}
+    try:
+        prefix = {"event_count": 0, "event_head": head, "assignment_cursor": journal_id}
+        for index, event in enumerate(iter_events(bundle, event_root), 1):
+            s.exact(event, ("sequence", "at", "kind", "payload", "previous", "hash"))
+            s.require(s.uint(event["sequence"], 64) == index and event["previous"] == head
+                      and s.uint(event["at"], 64) >= at, "audit_event_order_changed")
+            s.require(s.keccak(s.canonical({key: value for key, value in event.items() if key != "hash"})) == event["hash"],
+                      "audit_event_hash_changed")
+            replay.apply(event)
+            replay.sync()
+            head, at = event["hash"], event["at"]
+            if index == count:
+                prefix = {"event_count": index, "event_head": head, "assignment_cursor": replay.cursor}
+        s.require(prefix == minimum, "audit_checkpoint_prefix_changed")
+        s.require(checkpoint["eventHead"] == head and checkpoint["assignmentCursor"] == replay.cursor
+                  and checkpoint["issuedAt"] >= at, "audit_checkpoint_head_changed")
+        required_readiness, required_duties = trust["required_readiness"], trust["required_duties"]
+        s.require(type(required_readiness) is list and len(required_readiness) <= MAX_EVENTS
+                  and type(required_duties) is list and len(required_duties) <= 2000, "invalid_audit_external_receipts")
+        for receipt in required_readiness:
+            s.exact(receipt, ("request", "signature", "observed_before_event_count"))
+            bound = s.uint(receipt["observed_before_event_count"], 64)
+            sequence = replay.readiness.get(s.keccak(s.canonical({key: receipt[key] for key in ("request", "signature")})))
+            s.require(sequence is not None and sequence <= bound, "audit_known_readiness_omitted_or_delayed")
+        for duty in required_duties:
+            s.encode_duty(duty)
+            s.require(s.keccak(s.canonical(duty)) in replay.accepted, "audit_known_accepted_duty_omitted")
+        relevant = [key for key, _ in journal.range_items(replay.operations, lane, numbers[0], numbers[-1])]
+        for key in relevant:
+            op = replay.operations[key]
+            item, statement = op["assignment"], statements[op["assignment"]["batch_number"]]
+            s.require(item["statement_hash"] == statement["statement"] and op["transaction_count"] == statement["count"],
+                      "audit_assignment_native_evidence_changed")
+            s.require(op["status"] not in LIVE, "audit_range_has_unresolved_assignment")
+            # Reusing the very proof that an operator submitted while claiming it was rejected
+            # cannot authorize an uncredited package or a replacement recipient.
+            s.require(op["status"] != "rejected" or op["submitted_duty"]["friProofHash"] != proof_hashes[item["batch_number"]],
+                      "audit_rejected_operator_proof_reused")
+        expected_manifest = replay.manifest(relevant, lane)
+        s.require(manifest["payload"] == expected_manifest, "audit_package_assignments_or_retries_incomplete")
+        s.validate_manifest(settings, manifest, subscriptions, statements, allow_empty=True, enrollment=enrollment)
+        accepted_receipts = [replay.operations[key]["duty"] for key in relevant
+                             if replay.operations[key]["status"] == "accepted"]
+        # Removing reward credit must not let the sequencer substitute an operator's accepted proof.
+        s.require(all(duty["friProofHash"] == proof_hashes[duty["batchNumber"]] for duty in accepted_receipts),
+                  "audit_accepted_duty_native_proof_changed")
+        expected_duties = [duty for duty in accepted_receipts if duty["slot"] < settings["duties_per_round"]]
+        s.require(type(duties) is list and len(duties) == len(expected_duties)
+                  and sorted(map(s.canonical, duties)) == sorted(map(s.canonical, expected_duties)),
+                  "audit_package_accepted_duties_incomplete")
+        credited = {duty["batchNumber"] for duty in expected_duties}
+        covered = {duty["batchNumber"] for duty in accepted_receipts}
+        unrewarded = [number for number, statement in statements.items() if statement["count"] > 0 and number not in credited]
+        uncovered = [number for number, statement in statements.items() if statement["count"] > 0 and number not in covered]
+        exhausted = all(account["offered"] >= settings["duties_per_round"] for account in replay.accounts.values())
+        s.require(not uncovered or allow_control or exhausted, "audit_nonempty_batch_without_service_duty_wait")
+        zero_duty_reason = None
+        if not expected_duties:
+            if allow_control:
+                zero_duty_reason = "control"
+            elif all(statement["count"] == 0 for statement in statements.values()):
+                zero_duty_reason = "empty_native_range"
+            elif exhausted or not uncovered:
+                zero_duty_reason = "quota_exhausted"
+            s.require(zero_duty_reason is not None, "audit_no_accepted_duties_wait")
+        return {"journal_id": journal_id, "event_count": total_events, "event_head": head,
+                "assignment_cursor": replay.cursor, "lane": lane,
+                "zero_duty_reason": zero_duty_reason,
+                "unrewarded_batches": unrewarded,
+                "unrewarded_reason": ("control" if allow_control else "quota_exhausted") if unrewarded else None,
+                "required_duties": copy.deepcopy(expected_duties),
+                "accounts": {account: {"offered_opportunities": data["offered"], "quota": settings["duties_per_round"]}
+                             for account, data in replay.accounts.items()}}
+    finally:
+        replay.close()

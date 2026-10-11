@@ -1,6 +1,7 @@
 import base64
 import copy
 import json
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -9,6 +10,8 @@ from unittest.mock import patch
 
 import dispatcher as d
 import service as s
+import journal
+import audit
 from test_service import fixture, sign, h, a, KEYS
 
 
@@ -217,8 +220,8 @@ class DispatcherTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "current_service_period"):
             d.enrollment_snapshot(self.f["settings"], self.f["subscriptions"], 6, self.rpc)
 
-    def test_initialization_reserves_capacity_for_the_complete_roster_quota(self):
-        for count, quota, accepted in ((250, 8, True), (32, 64, False)):
+    def test_complete_roster_quota_can_span_history_segments(self):
+        for count, quota in ((250, 8), (32, 64)):
             with self.subTest(count=count, quota=quota):
                 settings = {**self.f["settings"], "duties_per_round": quota}
                 subscriptions = [copy.deepcopy(self.f["subscriptions"][0]) for _ in range(count)]
@@ -229,13 +232,8 @@ class DispatcherTests(unittest.TestCase):
                 # a complete finalized snapshot has been validated.
                 with patch.object(d, "enrollment_snapshot", return_value=(subscriptions,
                         self.dispatcher.state["enrollment"])):
-                    if accepted:
-                        store = d.initialize(root, settings, subscriptions, 5, "https://trusted.example/", self.rpc)
-                        self.assertEqual(len(s.read_json(store.root / "state.json", private=True)["accounts"]), count)
-                    else:
-                        with self.assertRaisesRegex(s.Error, "full_roster_quota_exceeds_dispatcher_capacity"):
-                            d.initialize(root, settings, subscriptions, 5, "https://trusted.example/", self.rpc)
-                        self.assertFalse(root.exists())
+                    store = d.initialize(root, settings, subscriptions, 5, "https://trusted.example/", self.rpc)
+                    self.assertEqual(len(s.read_json(store.root / "state.json", private=True)["accounts"]), count)
 
     def test_operator_request_replay_wrong_identity_and_expiry_fail_before_pick(self):
         request = self.dispatcher.request(self.account, 590)
@@ -385,6 +383,72 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(completed["accepted_package"]["batchTo"], 6)
         self.assertEqual(len(completed["batch_outputs"]), 6)
         self.assertEqual(len(completed["duties"]), 4)
+
+    def test_one_prover_crosses_job_and_event_limits_with_native_recovery(self):
+        # This exercises durable scheduling at scale; the smaller protocol tests retain
+        # real signatures and ABI hash comparisons. Native proving remains mocked.
+        signature = "0x" + "11" * 65
+        self.addCleanup(s.type_hash.cache_clear)
+        with patch.object(s, "keccak", side_effect=lambda raw: "0x" + hashlib.sha256(raw).hexdigest()), \
+                patch.object(s, "verify_eoa"), patch("test_dispatcher.sign", return_value=signature):
+            self.root = Path(self.tmp.name) / "continuous"
+            self.store = d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 5,
+                                      "https://trusted.example/", self.rpc)
+            self.reload()
+            previous = self.f["evidence"]["previous_batch"]
+            output = self.f["evidence"]["batches"][0]["output"]
+            stored_template = self.f["evidence"]["batches"][0]["stored"]
+            accepted = []
+            for number in range(1, 2002):
+                stored = {**stored_template, "batchNumber": number, "commitment": s.output_hash(output)}
+                evidence = {**self.f["evidence"], "previous_batch": previous,
+                            "batches": [{"stored": stored, "output": output}]}
+                self.ready()
+                self.network.responses.append((204, {}, b""))
+                self.assertEqual(self.dispatcher.pick(), "no_job")
+                self.network.responses += [(200, {}, {"batch_number": number,
+                    "vk_hash": self.f["settings"]["vk_hash"], "prover_input": base64.b64encode(b"\1\0\0\0").decode(),
+                    "lease_token": "0x" + (number + 100).to_bytes(32, "big").hex()}), (200, {}, evidence)]
+                operation = self.dispatcher.pick()
+                self.dispatcher.authorize(operation, signature)
+                proof = {**self.f["proofs"][0], "batch_number": number}
+                if number == 2000:
+                    self.network.responses.append((503, {}, b""))
+                    with self.assertRaisesRegex(s.Error, "uncertain"):
+                        self.dispatcher.submit(operation, proof, signature)
+                    lease = s.read_json(self.root / operation / "authority.json", private=True)["lease_token"]
+                    self.reload()
+                    self.network.responses += [(200, {}, {"from_batch_number": number, "to_batch_number": number,
+                        "vk_hash": proof["vk_hash"], "fri_proofs": [proof["proof"]]}), (200, {}, evidence)]
+                    self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
+                    self.assertEqual(s.read_json(self.root / operation / "authority.json", private=True)["lease_token"], lease)
+                else:
+                    self.network.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+                    self.assertEqual(self.dispatcher.submit(operation, proof, signature), "accepted")
+                accepted.append(operation)
+                previous = stored
+                if number in (171, 1000):
+                    self.reload()
+            self.reload()
+            report = self.dispatcher.report()["accounts"][self.account]
+            self.assertEqual((report["native_accepted"], report["credited_accepted"], report["uncredited_accepted"]),
+                             (2001, 4, 1997))
+            self.assertEqual(report["offered_opportunities"], 4)
+            self.assertGreater(len(self.dispatcher.state["audit"]["events"]), 16000)
+            event_root = self.root / "audit-events"
+            bundle = self.dispatcher.audit_payload("child", 2001, 2001, event_root=event_root)
+            bundle["sequencer_signature"] = signature
+            manifest = {"payload": self.dispatcher.range_manifest_payload("child", 2001, 2001),
+                        "sequencer_signature": signature}
+            trust = {"schema_version": 1, "journal_id": bundle["journal_id"], "enrollment_block_hash": h(100),
+                "minimum_checkpoint": {"event_count": 0, "event_head": bundle["journal_id"],
+                                       "assignment_cursor": bundle["journal_id"]},
+                "required_readiness": [], "required_duties": []}
+            result = audit.verify_package(self.f["settings"], evidence, manifest, self.f["subscriptions"], [],
+                bundle, trust, self.rpc, fri_payload={"from_batch_number": 2001, "to_batch_number": 2001,
+                    "vk_hash": proof["vk_hash"], "fri_proofs": [proof["proof"]]}, event_root=event_root)
+            self.assertEqual(result["event_count"], len(self.dispatcher.state["audit"]["events"]))
+            self.assertEqual(result["accounts"][self.account]["offered_opportunities"], 4)
 
     def test_post_quota_submission_recovery_preserves_lease_and_no_extra_credit(self):
         self.f = fixture(batch_count=5)

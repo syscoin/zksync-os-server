@@ -5,9 +5,6 @@ import copy
 import service as s
 
 
-MAX_OPERATIONS = 2000
-
-
 def fixed_word(raw):
     s.require(len(raw) == 32, "invalid_rpc_word")
     return int.from_bytes(raw, "big")

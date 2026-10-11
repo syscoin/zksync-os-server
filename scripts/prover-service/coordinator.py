@@ -2,7 +2,7 @@
 """Drive a selected wrapper turn from the private native lease to node settlement."""
 
 import argparse
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, ExitStack, nullcontext
 import os
 from pathlib import Path
 import re
@@ -13,8 +13,10 @@ import uuid
 
 import audit
 import dispatcher
+import journal
 import keeper as k
 import native_handoff
+import period_routing
 import proof_check
 import relay as r
 import roster as rosters
@@ -73,7 +75,7 @@ def initialize(root, config):
     io.immutable_json(root / "configuration.json", config)
     transactions.initialize(root / "transactions", config["keeper"]["settings"], config["transaction_policy"])
     r.Store.initialize(root / "relay", config["keeper"]["settings"], config["relay_policy"])
-    atomic_json(root / "coordinator.json", {"schema_version": 1, "configuration_sha256": io.digest(config),
+    journal.save(root / "coordinator.json", {"schema_version": 1, "configuration_sha256": io.digest(config),
                 "release_sha256": job.hash_bytes(raw), "active": None, "operations": {}})
     return Store(root)
 
@@ -82,7 +84,7 @@ class Coordinator:
     def __init__(self, store, rpc=None, wallet=None, relay_wallet=None, native=None, clock=time.time):
         self.store, self.clock = store, clock
         self.config = configuration(io.private_json(store.root / "configuration.json"))
-        self.state = io.private_json(store.root / "coordinator.json")
+        self.state = journal.load(store.root / "coordinator.json")
         s.require(self.state["schema_version"] == 1 and self.state["configuration_sha256"] == io.digest(self.config),
                   "coordinator_configuration_changed")
         self.keeper, self.settings = self.config["keeper"], self.config["keeper"]["settings"]
@@ -95,7 +97,7 @@ class Coordinator:
 
     def save(self, execute=True):
         if execute:
-            atomic_json(self.store.root / "coordinator.json", self.state)
+            journal.save(self.store.root / "coordinator.json", self.state)
 
     def signing_wallet(self):
         return self.wallet or io.wallet_connection(self.config["sequencer_wallet_file"], self.keeper["policy"]["rpc_timeout_seconds"])
@@ -125,9 +127,22 @@ class Coordinator:
         journal_root = Path(self.config["dispatcher_dir"])
         if not (journal_root / "state.json").exists():
             journal_root = journal_root / str(period)
-        store = Store(io.directory(journal_root))
-        with store.lock("dispatcher.lock"):
-            state = io.private_json(store.root / "state.json")
+        store = period_routing.root_store(Store(io.directory(journal_root)))
+        with ExitStack() as locks:
+            locks.enter_context(store.lock("dispatcher.lock"))
+            state = journal.load(store.root / "state.json", list_fields=("audit.events",))
+            if state["period"] != period or state["enrollment"]["phase"] != "service" \
+                    or state["enrollment"]["block_hash"] != self.keeper["enrollment"]["block_hash"]:
+                try:
+                    store = period_routing.current_store(store, None, int(self.clock()), requested_period=period,
+                                  existing_only=True, requested_phase="service",
+                                  enrollment_block_hash=self.keeper["enrollment"]["block_hash"])
+                except s.Error as error:
+                    if state["period"] == period and str(error) == "unknown_period_journal":
+                        raise s.Error("enrollment_authority_anchor_mismatch") from None
+                    raise
+                locks.enter_context(store.lock("dispatcher.lock"))
+                state = journal.load(store.root / "state.json", list_fields=("audit.events",))
             s.require(state["period"] == period, "dispatcher_period_does_not_match_opening_roster")
             s.require(state["enrollment"]["block_hash"] == self.keeper["enrollment"]["block_hash"],
                       "enrollment_authority_anchor_mismatch")
@@ -145,7 +160,6 @@ class Coordinator:
         return self.store.root / "jobs" / identifier
 
     def reserve(self):
-        s.require(len(self.state["operations"]) < 1000, "coordinator_history_capacity")
         identifier = uuid.uuid4().hex
         io.directory(self.directory(identifier), create=True)
         self.state["operations"][identifier] = {"status": "picking", "leases": [], "lease": None,
@@ -238,8 +252,18 @@ class Coordinator:
         payload = io.private_json(directory / "payload.json", io.MAX_PAYLOAD)
         evidence = io.private_json(directory / "evidence.json")
         snapshot_path = directory / "snapshot.json"
+        intent_path = directory / "snapshot-intent.json"
         if snapshot_path.exists():
             snapshot = io.private_json(snapshot_path)
+        elif intent_path.exists():
+            intent = io.private_json(intent_path)
+            s.exact(intent, ("schema_version", "payload_sha256", "evidence_sha256", "snapshot"))
+            s.require(intent["schema_version"] == 1 and intent["payload_sha256"] == io.digest(payload)
+                      and intent["evidence_sha256"] == io.digest(evidence), "frozen_snapshot_inputs_changed")
+            snapshot = intent["snapshot"]
+            with self.dispatcher_for(chain) as dispatch:
+                self.export_snapshot_events(dispatch, snapshot, payload, directory)
+            io.immutable_json(snapshot_path, snapshot)
         else:
             with self.dispatcher_for(chain) as dispatch:
                 lane = self.keeper["lane"]
@@ -247,7 +271,14 @@ class Coordinator:
                 dispatch.network = self.native
                 authorization = sentry.authorization(self.config["native_auth_file"])
                 dispatch.auth = {lane: authorization} if len(dispatch.state["lanes"]) > 1 else authorization
-                for key, operation in list(dispatch.state["operations"].items()):
+                operations = dict(journal.range_items(dispatch.state["operations"], lane, start, end))
+                pending = dispatch.state.get("pending_pick")
+                if pending is not None:
+                    operation = dispatch.state["operations"][pending]
+                    if operation["lane"] == lane and operation["assignment"] is None:
+                        operations[pending] = operation
+                for key, operation in operations.items():
+                    operation = dispatch.state["operations"][key]
                     assignment = operation["assignment"]
                     if operation["lane"] != lane or assignment is not None and not start <= assignment["batch_number"] <= end:
                         continue
@@ -258,9 +289,9 @@ class Coordinator:
                             dispatch.accepted(key, io.private_json(source / "authority.json"), signed["proof"], signed["signature"])
                     s.require(operation["status"] not in audit.LIVE, "wait_for_dispatcher_range_reconciliation")
                 manifest = dispatch.range_manifest_payload(lane, start, end)
-                bundle = dispatch.audit_payload(lane, start, end)
+                bundle = dispatch.audit_payload(lane, start, end, export_events=False)
                 accepted_receipts = []
-                for key, operation in dispatch.state["operations"].items():
+                for key, operation in journal.range_items(dispatch.state["operations"], lane, start, end):
                     if operation["lane"] == lane and operation["status"] == "accepted" and operation["assignment"] is not None \
                             and start <= operation["assignment"]["batch_number"] <= end:
                         accepted_receipts.append(io.private_json(dispatch.directory(key) / "duty.json"))
@@ -276,8 +307,8 @@ class Coordinator:
                           for number, proof in zip(statements, payload["fri_proofs"])}
                 s.require(all(duty["friProofHash"] == hashes[duty["batchNumber"]] for duty in accepted_receipts),
                           "accepted_duty_native_payload_changed")
-                for event in bundle["events"]:
-                    if event["kind"] == "rejected":
+                for event in dispatch.state["audit"]["events"]:
+                    if event["kind"] == "rejected" and event["payload"]["operation"] in operations:
                         operation = dispatch.state["operations"][event["payload"]["operation"]]
                         assignment = operation["assignment"]
                         if operation["lane"] == lane and start <= assignment["batch_number"] <= end:
@@ -286,6 +317,10 @@ class Coordinator:
                                       "rejected_operator_proof_reused")
                 snapshot = {"manifest": manifest, "audit": bundle, "subscriptions": dispatch.state["subscriptions"],
                             "duties": sorted(duties, key=lambda duty: duty["batchNumber"])}
+                if bundle["schema_version"] == 2:
+                    io.immutable_json(intent_path, {"schema_version": 1, "payload_sha256": io.digest(payload),
+                                      "evidence_sha256": io.digest(evidence), "snapshot": snapshot})
+                    self.export_snapshot_events(dispatch, snapshot, payload, directory)
             io.immutable_json(snapshot_path, snapshot)
         manifest_signature = self.sign(s.manifest_request(self.settings, snapshot["manifest"]), True)
         audit_signature = self.sign(audit.checkpoint_request(snapshot["audit"]), True)
@@ -309,6 +344,24 @@ class Coordinator:
         op["bundle"] = io.digest(bundle)
         self.save()
         return bundle
+
+    def export_snapshot_events(self, dispatch, snapshot, payload, directory):
+        bundle, checkpoint = snapshot["audit"], snapshot["audit"]["checkpoint"]
+        count = audit.event_count(bundle)
+        ledger = dispatch.state["audit"]
+        s.require(bundle["schema_version"] == 2 and bundle["journal_id"] == dispatch.state["journal_id"]
+                  and bundle["identity"] == ledger["identity"]
+                  and snapshot["subscriptions"] == dispatch.state["subscriptions"]
+                  and checkpoint["eventCount"] == count <= len(ledger["events"])
+                  and checkpoint["batchFrom"] == payload["from_batch_number"]
+                  and checkpoint["batchTo"] == payload["to_batch_number"]
+                  and checkpoint["chainId"] == self.settings["execution_chain_id"]
+                  and checkpoint["chainAddress"] == self.settings["chain_address"]
+                  and checkpoint["period"] == dispatch.state["period"], "frozen_snapshot_scope_changed")
+        head = ledger["events"][count - 1]["hash"] if count else dispatch.state["journal_id"]
+        s.require(head == checkpoint["eventHead"], "frozen_snapshot_audit_prefix_changed")
+        descriptor = audit.export_events(ledger["events"], directory / "audit-events", count=count)
+        s.require(descriptor == bundle["events"], "frozen_snapshot_archive_descriptor_changed")
 
     def maintenance(self, identifier, call, producer, execute):
         op = self.state["operations"][identifier]
@@ -570,7 +623,8 @@ class Coordinator:
         signature = self.sign(signing_request, execute)
         if not execute:
             return {"next_action": "would_deliver_selected_wrapper", "operator": operator, "turn": chain["current_turn"]}
-        source = io.publish_work(inbox, {"body": body, "sequencer_signature": signature}, payload)
+        source = io.publish_work(inbox, {"body": body, "sequencer_signature": signature}, payload,
+                                 event_root=directory / "audit-events")
         if work_hash not in op["works"]:
             s.require(len(op["works"]) < 256, "wrapper_turn_attempt_limit")
             op["works"][work_hash] = {"directory": str(source), "operator": operator, "checked": False}

@@ -364,12 +364,20 @@ pick/submit API. It is opt-in (`--execute` is required), runs on the trusted
 sequencer host, and never receives wallet private keys. Keep one protected journal
 per sequencer, period, and bootstrap/service phase. Never run competing journals
 or rewind a journal from a backup: the durable cursor and per-account slots are the
-allocation authority. The adapter supports up to 256 enrolled accounts and 2,000
-retained assignment attempts per journal; its commands hold an exclusive process
-lock. Initialization requires the full eligible account count times its shared
-quota to fit that limit, counting the child/Gateway quota once. Deployment sizing
-must also leave headroom for retries and continued work after the credit quota,
-and stay within the enrollment bound. Fair
+allocation authority. The adapter supports up to 256 enrolled accounts; its
+commands hold an exclusive process lock. Assignment and audit history continue
+on disk within the same period identity, without a lifetime assignment count
+cutoff. Large journals migrate from JSON to an indexed SQLite store, retaining
+the account cursor, credit slots, readiness nonces, leases and signed receipts.
+Keep the metadata file and its database together when backing up or restoring;
+the small JSON metadata file alone is not a complete journal. Audit history is
+streamed and checked as one complete hash chain, with bounded records and
+transport chunks. This continuation does not reset enrollment or create another
+quota. Each signed streamed audit needs its own private artifact directory with
+an `audit-events/` subdirectory; keep that complete archive with the audit JSON
+when transporting or restoring it. Auditors currently replay from genesis using
+temporary disk indexes, so CPU and I/O work grow with the epoch history; this is
+not constant-time verification. The separate 256-account enrollment bound still applies. Fair
 allocation assumes the trusted sequencer preserves authenticated
 readiness requests and delivers its signed offers; the journal does not prove
 that a malicious sequencer has withheld neither. This is a trusted dispatcher,
@@ -392,6 +400,24 @@ The account snapshot is fixed for that journal, so finish bootstrap enrollment
 before initializing it. A later bootstrap applicant waits for the next assessment
 snapshot with no failure mark. Never reset or create a competing same-period
 journal to add applicants: that would reuse duty slots and readiness nonces.
+
+After the initial journal is configured, `work-request` and `pick` follow the
+finalized registry clock automatically. A new period or bootstrap-to-service phase
+gets an immutable journal under `periods/<period>-<phase>/`, populated from the
+complete canonical eligible enrollment at one finalized block. No new round is
+created while the boundary remains unfinalized or no eligible subscribers exist.
+Operators must maintain their on-chain subscriptions and sign fresh readiness
+for the new journal; old readiness signatures are never reused.
+
+New-journal picks return scoped handles such as
+`periods/6-service/job-000000`. Pass the complete handle to later offer, proof,
+submit and export commands. A bare handle applies to the explicitly supplied
+`--state` directory; a manifest cannot mix journals. `--fixed-epoch` disables
+automatic routing for old-work reconciliation, including `recover-pick` and
+historical audit exports. It does not reopen an expired readiness window. Old
+journals and lease capabilities remain intact. Wrapper enrollment anchors and
+independent audit trust pins still require their own authenticated configuration;
+automatic FRI routing does not authorize trusting an unreviewed wrapper snapshot.
 
 ```sh
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
@@ -433,7 +459,7 @@ accepted receipts are audited but excluded from the rewarded duty report.
 says whether the whole quota was offered. Operators choose when to sign readiness;
 this adapter does not implement bans for declining further work.
 Upgrade the dispatcher, service tools and wrapper audit together before exporting
-post-quota work; older tools reject the uncredited assignment marker.
+post-quota work or streamed audit history; older tools reject these handoffs.
 Sparse demand is not an asserted service failure and never creates synthetic
 successes or reward weight.
 

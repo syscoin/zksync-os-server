@@ -404,6 +404,42 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual(self.signatures()[0][1], self.signatures()[1][1])
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def test_history_continues_past_256_and_migration_preserves_pending_nonce(self):
+        self.rpc.send_interrupt = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.step()
+        original = copy.deepcopy(self.store.load(self.settings, self.limits)["operations"][self.identifier])
+        for period in range(1, 514):
+            call = copy.deepcopy(self.call)
+            call["action"] = "prepareRosterDraw"
+            call["transaction"].update(to=self.settings["coordinator"],
+                data="0x" + (r.selector("prepareRosterDraw(uint64)") + s.word(period)).hex())
+            following = self.runner().stage(call)
+        state = self.store.load(self.settings, self.limits)
+        self.assertEqual(len(state["operations"]), 514)
+        retained = state["operations"][self.identifier]
+        self.assertEqual(retained["raw_transaction"], original["raw_transaction"])
+        self.assertEqual(retained["unsigned_transaction"], original["unsigned_transaction"])
+        self.assertEqual(retained["transaction_hash"], original["transaction_hash"])
+        self.step(identifier=following)
+        self.assertEqual(len(self.signatures()), 1)
+        self.rpc.send_interrupt = False
+        self.rpc.mine()
+        self.rpc.advance()
+        self.assertEqual(self.step()["status"], "confirmed")
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+        self.rpc.operation_id, self.rpc.receipt = following, None
+        self.step(identifier=following)
+        following_record = self.store.load(self.settings, self.limits)["operations"][following]
+        self.assertEqual(s.uint(following_record["unsigned_transaction"]["nonce"]), 1)
+        self.assertEqual(following_record["raw_transaction"], self.rpc.sent[-1])
+        self.rpc.mine()
+        self.rpc.advance()
+        self.assertEqual(self.step(identifier=following)["status"], "confirmed")
+        self.assertEqual(len(self.signatures()), 2)
+        self.assertEqual(len(self.rpc.sent), 2)
+
     def test_ambiguous_send_restarts_with_only_identical_raw_bytes(self):
         self.rpc.send_error = s.Error("rpc_transport_failure")
         self.assertEqual(self.step()["status"], "send_uncertain")

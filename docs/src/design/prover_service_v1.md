@@ -299,15 +299,30 @@ Only verifier-backed FRI acceptance or recovery of the identical retained proof
 and metadata can produce an accepted duty. Safe exports omit BasicAuth and lease
 capabilities. The adapter is an EOA/file-handoff workflow with one journal per
 sequencer/period/phase, not a public worker server. Its fixed snapshot is bounded
-to 256 enrolled accounts and 2,000 retained attempts. The entire eligible roster's
-quota must fit that attempt limit; initialization rejects
-an impossible assessment. Reserve additional capacity for retries and continued
-work after the credit quota operationally.
+to 256 enrolled accounts. Retained assignments and audit history continue in
+an indexed on-disk journal under the same period identity; there is no lifetime
+assignment count cutoff. Large JSON journals migrate to SQLite while preserving
+their exact cursors, nonces, credit slots and recovery records. The metadata file
+and database form one journal and must be retained together. Complete signed audit
+history is streamed and hash-chain checked; individual records, transport chunks
+and native packages remain bounded. Continuation never resets enrollment or
+creates fresh credit opportunities.
 Enrollment and quota sizing against the actual network are release requirements.
 Enrollment must precede initialization; later applicants wait for the next assessment snapshot
 and receive no failure mark. An active journal must never be reset to add them. A trusted sequencer can still omit
 readiness requests or withhold delivery, so fairness assumes honest operation of
 this dispatcher and its authenticated handoff transport.
+
+The initial dispatcher configuration anchors automatic period routing. Work
+requests and picks use finalized registry time to create the next immutable
+period/phase journal from complete canonical eligible enrollment, with one block
+pin for every registry read. An unfinalized boundary or empty eligible roster
+stops new assignments without resetting the old journal. Each new journal needs
+fresh operator readiness, and its operation handles retain the period/phase scope.
+`--fixed-epoch` keeps manual old-work recovery and historical audit export on the
+specified journal. Wrapper/keeper enrollment pins and independently reviewed
+audit trust remain explicit; automatic FRI handoff supplies no replacement trust
+authority for those roles.
 
 No job, unsigned reservations and empty work do not count as offered service.
 The journal reports genuine signed opportunities separately from native proof
@@ -323,8 +338,9 @@ signs the same proof-bound `DutySuccessV1` receipt and native verification remai
 mandatory; the receipt is retained and audited but excluded from the rewarded
 report. The audit authenticates every accepted proof, including uncredited ones,
 and refuses to treat an unrelated unassigned batch as post-quota work. No ban for
-declining further work is implemented. The journal's enrollment, period and
-retained-attempt limits still apply.
+declining further work is implemented. The journal's enrollment and period rules
+still apply; continuing storage does not renew an expired subscription or adopt
+a new period's canonical enrollment pin.
 
 The read-only `/v1/SNARK/{from}/{to}/evidence` endpoint exports canonical stored
 batch/output preimages from retained proof metadata. It has the existing bounded

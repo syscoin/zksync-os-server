@@ -59,6 +59,124 @@ class AuditTests(unittest.TestCase):
         proof = {**self.f["proofs"][number - 1], "proof": base64.b64encode(bytes([199]) * 96).decode()}
         return proof, sign(self.dispatcher.proof_request(operation, proof), "operator")
 
+    def streamed(self, package, segment_events=3):
+        package = copy.deepcopy(package)
+        root = Path(self.tmp.name) / f"stream-{len(list(Path(self.tmp.name).glob('stream-*')))}"
+        with patch.object(audit, "SEGMENT_EVENTS", segment_events):
+            package["bundle"]["events"] = audit.export_events(package["bundle"]["events"], root)
+        package["bundle"]["schema_version"] = 2
+        package["event_root"] = root
+        return package
+
+    def test_streamed_history_crosses_segments_with_exact_credit_and_retry_binding(self):
+        self.quota(1)
+        self.accepted(1)
+        first = self.package(1, 1)
+        rejected = self.offered(2)
+        proof, signature = self.invalid_proof(rejected, 2)
+        self.network.responses.append((422, {"x-syscoin-prover-disposition": "rejected"}, b""))
+        self.dispatcher.submit(rejected, proof, signature)
+        overflow = self.accepted(2, token=h(199))
+        package = self.package(1, 2)
+        checkpoint = first["bundle"]["checkpoint"]
+        package["trust"]["minimum_checkpoint"] = {"event_count": checkpoint["eventCount"],
+              "event_head": checkpoint["eventHead"], "assignment_cursor": checkpoint["assignmentCursor"]}
+        receipt = s.read_json(self.root / overflow / "duty.json", private=True)
+        package["trust"]["required_duties"] = [receipt]
+        streamed = self.streamed(package)
+        result = audit.verify_package(**streamed)
+        self.assertEqual(result["event_count"], len(package["bundle"]["events"]))
+        self.assertEqual(result["required_duties"], package["duties"])
+        self.assertEqual((receipt["slot"], receipt["attempt"]), (1, 2))
+        self.assertEqual(result["accounts"][self.account]["offered_opportunities"], 1)
+        self.assertGreater(len(list(streamed["event_root"].iterdir())), 1)
+        streamed["trust"]["minimum_checkpoint"]["assignment_cursor"] = h(199)
+        with self.assertRaisesRegex(s.Error, "prefix_changed"):
+            audit.verify_package(**streamed)
+
+    def test_streamed_checkpoint_cannot_override_fair_selection(self):
+        other = self.two_accounts()
+        self.ready()
+        self.ready(other, key="account")
+        self.pick()
+        package = self.package()
+        event = next(event for event in package["bundle"]["events"] if event["kind"] == "pick_started")
+        self.assertEqual(event["payload"]["account"], other)
+        event["payload"]["account"] = self.account
+        self.rehash(package["bundle"])
+        with self.assertRaisesRegex(s.Error, "biased_ready_selection"):
+            audit.verify_package(**self.streamed(package, segment_events=1))
+
+    def test_streamed_history_rejects_missing_extra_corrupt_and_symlink_segments(self):
+        self.accepted()
+        self.accepted(2)
+        original = self.package()
+        for fault in ("missing", "extra", "corrupt", "symlink", "public"):
+            with self.subTest(fault=fault):
+                package = self.streamed(original)
+                path = package["event_root"] / "0000000000000000.jsonl"
+                if fault == "missing":
+                    path.unlink()
+                elif fault == "extra":
+                    with path.open("ab") as output:
+                        output.write(b"{}\n")
+                elif fault == "corrupt":
+                    data = path.read_bytes().replace(b'"at":550', b'"at":551', 1)
+                    self.assertNotEqual(data, path.read_bytes())
+                    path.write_bytes(data)
+                elif fault == "symlink":
+                    target = Path(self.tmp.name) / (package["event_root"].name + "-source")
+                    path.rename(target)
+                    path.symlink_to(target)
+                else:
+                    path.chmod(0o644)
+                with self.assertRaises(s.Error):
+                    audit.verify_package(**package)
+
+    def test_streamed_signed_head_and_count_must_match_all_content(self):
+        self.accepted()
+        original = self.package(1, 1)
+        for fault in ("head", "count"):
+            with self.subTest(fault=fault):
+                package = self.streamed(original)
+                if fault == "head":
+                    package["bundle"]["checkpoint"]["eventHead"] = h(199)
+                else:
+                    package["bundle"]["events"]["event_count"] += 1
+                package["bundle"]["sequencer_signature"] = sign(audit.checkpoint_request(package["bundle"]), "sequencer")
+                with self.assertRaises(s.Error):
+                    audit.verify_package(**package)
+
+    def test_replay_retains_more_than_two_thousand_operations_without_resetting_identity(self):
+        self.ready()
+        replay = audit.Replay(self.dispatcher.state["audit"]["identity"], self.dispatcher.state["journal_id"])
+        try:
+            replay.apply(self.dispatcher.state["audit"]["events"][0])
+            replay.sync()
+            for index in range(2001):
+                operation = f"job-{index:06d}"
+                replay.apply({"at": 550, "kind": "pick_started",
+                              "payload": {"operation": operation, "account": self.account, "lane": "child"}})
+                replay.sync()
+                replay.apply({"at": 550, "kind": "pick_abandoned", "payload": {"operation": operation}})
+                replay.sync()
+            self.assertEqual(len(replay.operations), 2001)
+            self.assertEqual(replay.next_operation, 2001)
+            self.assertEqual(replay.accounts[self.account]["nonce"], 1)
+            self.assertEqual(replay.accounts[self.account]["offered"], 0)
+            self.assertEqual(replay.cursor, self.dispatcher.state["journal_id"])
+            self.assertEqual(replay.operations["job-000000"]["status"], "unexported_pick_abandoned")
+        finally:
+            replay.close()
+
+    def test_segmented_source_streams_more_than_legacy_event_capacity(self):
+        root = Path(self.tmp.name) / "large-stream"
+        events = ({"index": index} for index in range(audit.MAX_EVENTS + 1))
+        descriptor = audit.export_events(events, root, count=audit.MAX_EVENTS + 1)
+        bundle = {"schema_version": 2, "events": descriptor}
+        self.assertEqual(sum(1 for _ in audit.iter_events(bundle, root)), audit.MAX_EVENTS + 1)
+        self.assertEqual(list(audit.iter_events(bundle, root))[-1], {"index": audit.MAX_EVENTS})
+
     def rehash(self, bundle):
         head = bundle["journal_id"]
         for sequence, event in enumerate(bundle["events"], 1):

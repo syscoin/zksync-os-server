@@ -2,10 +2,12 @@
 """Durable signing-only wallet transactions for validated keeper maintenance calls."""
 
 import copy
+from collections.abc import MutableMapping
 from contextlib import nullcontext
 from pathlib import Path
 import time
 
+import journal
 import relay as r
 import service as s
 
@@ -39,12 +41,12 @@ class Store(r.Store):
         return store
 
     def load(self, settings, limits):
-        state = s.read_json(self.root / "state.json", private=True, maximum=r.MAX_STATE)
-        s.exact(state, ("schema_version", "kind", "config_hash", "policy_hash", "operations"))
+        state = journal.load(self.root / "state.json")
+        s.exact(dict(state), ("schema_version", "kind", "config_hash", "policy_hash", "operations"))
         s.require(state["schema_version"] == 1 and state["kind"] == "keeper_transactions"
                   and state["config_hash"] == r.sha256(settings) and state["policy_hash"] == r.sha256(limits),
                   "transaction_configuration_changed")
-        s.require(type(state["operations"]) is dict and len(state["operations"]) <= 256, "invalid_transaction_operations")
+        s.require(isinstance(state["operations"], MutableMapping), "invalid_transaction_operations")
         return state
 
 
@@ -163,7 +165,6 @@ class Transactions:
                 s.require(intent(self.settings, self.limits, existing["call"], existing.get("invocation")) == frozen,
                           "maintenance_intent_changed")
                 return operation_id
-            s.require(len(self.state["operations"]) < 256, "transaction_operation_limit")
             self.state["operations"][operation_id] = {"call": copy.deepcopy(call), "status": "staged",
                 "unsigned_transaction": None, "raw_transaction": None, "transaction_hash": None,
                 "broadcast_attempts": 0, "last_broadcast_at": None, "last_error": None, "receipt": None}
@@ -281,6 +282,7 @@ class Transactions:
             if self._settled(other, head):
                 continue
             # A predecessor can be re-included in another block while this row owns the signed retry.
+            other = self.state["operations"][other_id]
             self._receipt(other, head)
             if other["receipt"] is not None:
                 if self._confirmations(other["receipt"], head) >= self.limits["confirmations"]:

@@ -10,6 +10,7 @@ import urllib.parse
 import audit
 import coordinator as c
 import enrollment
+import journal
 import keeper as k
 import relay as r
 import roster
@@ -233,6 +234,18 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.wallet.calls, [])
         self.assertEqual(before, {str(path): path.read_bytes() for path in self.base.rglob("*") if path.is_file()})
 
+    def test_completed_operation_history_does_not_block_new_range(self):
+        for index in range(1001):
+            self.controller.state["operations"][str(index)] = {"status": "settled", "test": index}
+        self.controller.save()
+        self.assertTrue((self.control_store.root / "coordinator.json.sqlite3").is_file())
+        controller = self.controller_reload()
+        identifier = controller.reserve()
+        recovered = self.controller_reload()
+        self.assertEqual(len(recovered.state["operations"]), 1002)
+        self.assertEqual(recovered.state["active"], identifier)
+        self.assertEqual(recovered.state["operations"]["0"], {"status": "settled", "test": 0})
+
     def test_signed_snapshot_replays_real_dispatch_audit_and_exact_duties(self):
         identifier, bundle = self.frozen()
         trust = {"schema_version": 1, "journal_id": bundle["audit"]["journal_id"], "enrollment_block_hash": h(100),
@@ -246,6 +259,52 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(checked["required_duties"], request["duties"])
         self.assertEqual(len(request["duties"]), 2)
         self.assertEqual(self.controller.state["operations"][identifier]["bundle"], io.digest(bundle))
+
+    def test_streamed_snapshot_delivers_checkpoint_bound_archive(self):
+        events = list(self.dispatcher.state["audit"]["events"])
+        with patch.object(journal, "MAX_INLINE_EVENTS", 1):
+            self.dispatcher.save()
+        identifier, bundle = self.frozen()
+        self.assertEqual(bundle["audit"]["schema_version"], 2)
+        archive = self.controller.directory(identifier) / "audit-events"
+        self.assertEqual(list(audit.iter_events(bundle["audit"], archive)), events)
+        request = bundle["request"]
+        journal_id = bundle["audit"]["journal_id"]
+        trust = {"schema_version": 1, "journal_id": journal_id, "enrollment_block_hash": h(100),
+                 "minimum_checkpoint": {"event_count": 0, "event_head": journal_id, "assignment_cursor": journal_id},
+                 "required_readiness": [], "required_duties": []}
+        checked = audit.verify_package(self.f["settings"], self.f["evidence"], request["manifest"],
+                    request["subscriptions"], request["duties"], bundle["audit"], trust, self.registry_rpc,
+                    fri_payload=self.f["fri_payload"], event_root=archive)
+        self.assertEqual(checked["required_duties"], request["duties"])
+        work = self.controller.step(True)
+        source = Path(self.controller.state["operations"][identifier]["works"][work["work_hash"]]["directory"])
+        envelope = io.private_json(source / "work.json")
+        self.assertEqual(io.validate_work(self.f["settings"], envelope, self.f["fri_payload"]), work["work_hash"])
+        self.assertEqual(list(audit.iter_events(envelope["body"]["audit"], source / "audit-events")), events)
+
+    def test_interrupted_archive_export_recovers_frozen_prefix_after_new_dispatch_events(self):
+        with patch.object(journal, "MAX_INLINE_EVENTS", 1):
+            self.dispatcher.save()
+        events = list(self.dispatcher.state["audit"]["events"])
+        identifier = self.acquired()
+        chain, artifact = self.controller.status()
+        export = audit.export_events
+        def interrupted(source, destination, count=None):
+            export(source, destination, count=2)
+            raise KeyboardInterrupt
+        with patch.object(audit, "SEGMENT_EVENTS", 2):
+            with patch.object(audit, "export_events", interrupted), self.assertRaises(KeyboardInterrupt):
+                self.controller.snapshot(identifier, chain, artifact, True)
+            directory = self.controller.directory(identifier)
+            self.assertTrue((directory / "snapshot-intent.json").is_file())
+            self.assertFalse((directory / "snapshot.json").exists())
+            self.reload()
+            self.ready()
+            self.assertGreater(len(self.dispatcher.state["audit"]["events"]), len(events))
+            bundle = self.controller.snapshot(identifier, chain, artifact, True)
+        self.assertEqual(bundle["audit"]["checkpoint"]["eventCount"], len(events))
+        self.assertEqual(list(audit.iter_events(bundle["audit"], directory / "audit-events")), events)
 
     def test_snapshot_keeps_overflow_assignments_and_receipts_without_rewarding_them(self):
         self.continuous_dispatch()
@@ -749,6 +808,39 @@ class CoordinatorTests(unittest.TestCase):
         _, bundle = self.frozen()
         self.assertEqual(bundle["request"]["manifest"]["payload"]["period"], 5)
         self.assertEqual(len(bundle["request"]["duties"]), 2)
+
+    def test_existing_next_period_journal_is_selected_without_replacing_trusted_anchor(self):
+        subscriptions = copy.deepcopy(self.f["subscriptions"])
+        for signed in subscriptions:
+            signed["subscription"] = {key: signed["subscription"][key] for key, _ in s.SUBSCRIPTION}
+            signed["subscription"].update(firstPeriod=6, lastPeriod=6)
+            signed["signature"] = sign(s.subscription_request(self.f["settings"], signed["subscription"]), "account")
+        class NextPeriodRpc(td.Rpc):
+            def call(self, method, params):
+                if method in ("eth_getBlockByNumber", "eth_getBlockByHash"):
+                    return {"hash": h(100), "timestamp": "0x28a"}
+                return super().call(method, params)
+        registry_rpc = NextPeriodRpc(self.f["settings"], subscriptions)
+        periods = io.directory(self.root.resolve() / "periods", create=True)
+        child = td.d.initialize(periods / "6-service", self.f["settings"], subscriptions, 6,
+                                 self.config["endpoint"], registry_rpc)
+        self.controller.registry_rpc = registry_rpc
+        original = copy.deepcopy(self.controller.keeper["enrollment"])
+        with self.controller.dispatcher_for({"roster": {"period": 6}}) as dispatch:
+            self.assertEqual(dispatch.store.root, child.root)
+            self.assertEqual(dispatch.state["period"], 6)
+        self.assertEqual(self.controller.keeper["enrollment"], original)
+        self.controller.keeper["enrollment"]["block_hash"] = h(101)
+        with self.assertRaisesRegex(s.Error, "unknown_period_journal"):
+            with self.controller.dispatcher_for({"roster": {"period": 6}}):
+                pass
+        self.assertEqual(sorted(path.name for path in periods.iterdir()), ["6-service"])
+
+    def test_missing_next_period_journal_is_not_created_by_coordinator(self):
+        with self.assertRaisesRegex(s.Error, "unknown_period_journal"):
+            with self.controller.dispatcher_for({"roster": {"period": 6}}):
+                pass
+        self.assertFalse((self.root / "periods").exists())
 
     def test_same_nonce_account_is_rejected(self):
         bad = copy.deepcopy(self.config)

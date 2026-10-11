@@ -136,12 +136,53 @@ def validate_work(settings, envelope, payload):
     return request["typed_data"]["message"]["workHash"]
 
 
-def publish_work(inbox, envelope, payload):
+def copy_audit_events(bundle, event_root, destination):
+    if bundle.get("schema_version") != 2:
+        return
+    import audit
+    s.require(event_root is not None, "audit_event_archive_required")
+    source = directory(event_root)
+    # Validate every bounded segment before publishing a discoverable envelope.
+    for _ in audit.iter_events(bundle, source):
+        pass
+    descriptor = bundle["events"]
+    root = directory(destination, create=True)
+    count, width = descriptor["event_count"], descriptor["segment_events"]
+    for index in range((count + width - 1) // width):
+        name = "%016d.jsonl" % index
+        path = source / name
+        s.require(path.lstat().st_nlink == 1, "private_single_link_file_required")
+        data = s.read(path, private=True, maximum=16 * 1024 * 1024)
+        target = root / name
+        if target.exists() or target.is_symlink():
+            s.require(target.lstat().st_nlink == 1, "private_single_link_file_required")
+            s.require(s.read(target, private=True) == data, "immutable_audit_event_segment_changed")
+            continue
+        # Stage outside the archive so an interrupted write cannot add an unexpected
+        # filename to the exact, checkpoint-bound set of segments.
+        fd, temporary = tempfile.mkstemp(prefix=".audit-copy-", dir=root.parent)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            try:
+                os.link(temporary, target, follow_symlinks=False)
+            except FileExistsError:
+                s.require(target.lstat().st_nlink == 1, "private_single_link_file_required")
+                s.require(s.read(target, private=True) == data, "immutable_audit_event_segment_changed")
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        r.sync_dir(root)
+
+
+def publish_work(inbox, envelope, payload, *, event_root=None):
     inbox = directory(inbox)
     work_hash = s.keccak(s.canonical(envelope["body"]))
     root = directory(inbox / work_hash[2:], create=True)
     immutable_json(root / "payload.json", payload, MAX_PAYLOAD)
-    # Readers discover only the final envelope, after the bounded payload is durable.
+    copy_audit_events(envelope["body"]["audit"], event_root, root / "audit-events")
+    # Readers discover only the final envelope, after its payload and archive are durable.
     immutable_json(root / "work.json", envelope)
     return root
 

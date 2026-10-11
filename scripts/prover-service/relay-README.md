@@ -175,9 +175,13 @@ requires it, and use the chain's authenticated finality tooling operationally.
 
 There is no destructive forget, nonce-cancel, fee-bump or policy-migration
 command. Manual recovery must establish the real canonical transaction/nonce
-state first. State capacity is bounded (256 operations / 16 MiB); reaching it
-stops new activity while preserving existing records. Retain backups and migrate
-only after pending wallet reservations are resolved.
+state first. Large journals migrate automatically from JSON to indexed SQLite
+storage and retain completed history without a lifetime operation count cutoff.
+Migration preserves every original signed transaction, pending nonce reservation
+and receipt; reconciliation continues without requesting a replacement signature.
+Keep the metadata file, database and immutable package artifacts together in
+backups. Per-record limits and the existing fee, timeout and broadcast budgets
+remain in force.
 
 ## Local verification
 

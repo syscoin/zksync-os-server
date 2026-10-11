@@ -147,8 +147,12 @@ Keep the transaction journal and coordinator state together across restarts.
 Legacy refresh or witness records that already reserved a nonce without a
 checkpoint scope can recover their original receipt, but are not rebroadcast
 under a new checkpoint.
-The maintenance journal retains at most 256 operations; reaching that limit
-blocks new entries. This limit includes completed refreshes and witnesses.
+The maintenance and relay journals retain their history in an indexed SQLite
+store once they outgrow the small JSON form. Completed history does not impose
+a lifetime operation count cutoff. Migration preserves signed transaction bytes,
+reserved nonces, receipts and retry generations; it does not release a pending
+reservation or authorize a new transaction. Back up the metadata file and its
+database together, retaining the original immutable work artifacts.
 
 ### Configuration and external inputs
 
@@ -245,17 +249,25 @@ time, unavailable witnesses and uncertain transactions produce wait/recovery
 states instead of synthetic work or service credit. No production end-to-end
 deployment or live GPU run is established by the local regression tests.
 
-`dispatcher_dir` may name a single initialized period journal, or a private
-parent containing one initialized journal per period (`5/`, `6/`, and so on).
+`dispatcher_dir` may name the initial journal with automatically created
+`periods/<period>-<phase>/` journals, a particular period journal, or a legacy
+private parent containing one initialized journal per period (`5/`, `6/`).
 The coordinator selects the frozen/opening roster period before acquiring new
 work and taking its signed snapshot. Its keeper pin must match that journal.
 Retain older journals, coordinator/wrapper state, and pool configurations until
-their pending work and uncertain allocations are reconciled. For a new period,
-create its journal through the enrollment workflow, prepare new reviewed keeper,
+their pending work and uncertain allocations are reconciled. The FRI dispatcher
+creates the next journal only from finalized registry time and complete eligible
+enrollment; operators sign fresh readiness for its new identity. For a new period,
+prepare new reviewed keeper,
 coordinator/wrapper and pool configurations in fresh state directories, and supply
 the matching independently reviewed audit trust pin to the operators. The
 immutable configuration does not adopt a new journal's pin automatically. Do not
 run competing dispatchers or rewind old state to change a pin.
+FRI handles from automatic handoff include their journal path, for example
+`periods/6-service/job-000000`; preserve that scope in follow-up commands.
+Use `--fixed-epoch` with the exact old dispatcher journal for pending-pick recovery
+or historical audit export. This preserves recovery without extending old duty
+deadlines or weakening the independent enrollment and audit trust checks.
 
 ## Inspect the phase before offering rewarded FRI work
 
