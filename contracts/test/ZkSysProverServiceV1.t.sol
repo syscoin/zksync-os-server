@@ -30,12 +30,18 @@ contract ServiceClockMockV1 {
 
 contract ServiceContractSignerMockV1 {
     address private immutable _signer;
+    bool private _approved = true;
 
     constructor(address signer) {
         _signer = signer;
     }
 
+    function setApproval(bool approved) external {
+        _approved = approved;
+    }
+
     function isValidSignature(bytes32 digest, bytes calldata signature) external view returns (bytes4) {
+        if (!_approved) return bytes4(0xffffffff);
         (address recovered, ECDSA.RecoverError error) = ECDSA.tryRecover(digest, signature);
         return error == ECDSA.RecoverError.NoError && recovered == _signer ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
     }
@@ -1283,6 +1289,41 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         assertEq(service.dutySlots(bob, 5), 0);
         assertEq(service.qualifiedWrapperCount(7), 0);
         assertEq(service.totalAdmittedBonusWeight(7), 0);
+    }
+
+    function testExactAcceptedReportReplaySurvivesContractOperatorPolicyChange() public {
+        _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        ServiceContractSignerMockV1 operator = new ServiceContractSignerMockV1(vm.addr(BOB_OPERATOR_KEY));
+        ProverSubscriptionV1 memory subscription_ = _subscription(BOB_KEY, BOB_OPERATOR_KEY);
+        subscription_.operator = address(operator);
+        bytes32 digest = service.subscriptionDigest(subscription_);
+        bytes32 sub = service.subscribe(subscription_, _sign(BOB_KEY, digest), _sign(BOB_OPERATOR_KEY, digest));
+        _activate(false);
+        vm.warp(issuer.startTime() + 6 * issuer.periodSeconds() + service.receiptGraceSeconds());
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(BOB_KEY, BOB_OPERATOR_KEY, sub, 3, 5, 0);
+        duties[1] = _duty(BOB_KEY, BOB_OPERATOR_KEY, sub, 4, 6, 0);
+        AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 6);
+        source.accept(service, accepted, duties);
+        operator.setApproval(false);
+        source.accept(service, accepted, duties);
+        address bob = vm.addr(BOB_KEY);
+        assertTrue(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+        assertEq(service.assessedSuccesses(bob, 5), 0);
+        assertEq(service.rewardedSuccesses(bob, 5), 0);
+        assertEq(service.dutySlots(bob, 5), 0);
+        assertEq(service.assessedSuccesses(bob, 6), 1);
+        assertEq(service.rewardedSuccesses(bob, 6), 1);
+        assertEq(service.dutySlots(bob, 6), 1);
+
+        duties[0].statementHash = keccak256("changed report");
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidPackage.selector);
+        source.accept(service, accepted, duties);
+        accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        source.accept(service, accepted, duties);
+        assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+        assertEq(service.rewardedSuccesses(bob, 6), 1);
     }
 
     function testBootstrapClosedPeriodStillRejectsEmptyQualificationReport() public {

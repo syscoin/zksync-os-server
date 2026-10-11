@@ -331,6 +331,8 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         ) revert InvalidPackage();
 
         bytes32 packageHash = ZkSysServiceTypesV1.hashPackage(accepted);
+        // Exact accepted reports remain idempotent when an ERC-1271 operator changes its signing policy.
+        if (acceptedPackages[packageHash]) return;
         if (!qualificationOnly && block.timestamp < _periodStart(accepted.period)) revert InvalidPackage();
 
         for (uint256 i; i < duties.length; ++i) {
@@ -354,7 +356,6 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             if (!subscription_.operator
                     .isValidSignatureNow(_hashTypedDataV4(ZkSysServiceTypesV1.hashDuty(duty)), duty.operatorSignature)) revert InvalidSignature();
         }
-        if (acceptedPackages[packageHash]) return;
         if (qualificationOnly && isRoundFinalized(accepted.period)) revert RoundClosed(accepted.period);
         acceptedPackages[packageHash] = true;
 
