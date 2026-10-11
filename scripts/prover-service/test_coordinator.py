@@ -566,15 +566,21 @@ class CoordinatorTests(unittest.TestCase):
             identifier = self.acquired()
             self.assertEqual(scan.call_count, 1)
             authority = self.controller.enrollment
-            registry_reads = len(self.registry_rpc.anchors)
+            registry_reads = len(self.registry_rpc.views)
             chain, artifact = self.controller.status()
             self.controller.snapshot(identifier, chain, artifact, True)
             first = self.controller.step(True)
             self.assertEqual(first["status"], "broadcast")
             self.assertEqual(scan.call_count, 1)
-            self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+            self.assertGreater(len(self.registry_rpc.views), registry_reads)
+            self.assertTrue(all(signature == "isRoundFinalized(uint256)"
+                                for signature in self.registry_rpc.views[registry_reads:]))
             self.assertIs(self.controller.enrollment, authority)
             transaction = self.rpc.sent[-1]
+            transaction_store = c.transactions.Store(self.control_store.root / "transactions")
+            reserved = copy.deepcopy(transaction_store.load(self.f["settings"], self.config["transaction_policy"])
+                                     ["operations"][first["operation_id"]]["unsigned_transaction"])
+            wallet_signatures = [call for call in self.wallet.calls if call[0] == "eth_signTransaction"]
             self.rpc.advance(31)
             self.now = self.rpc.now
             self.controller_reload()
@@ -583,11 +589,16 @@ class CoordinatorTests(unittest.TestCase):
             self.assertEqual(second["status"], "broadcast")
             self.assertEqual(scan.call_count, 2)
             self.assertIsNot(self.controller.enrollment, authority)
-            registry_reads = len(self.registry_rpc.anchors)
+            registry_reads = len(self.registry_rpc.views)
             third = self.controller.step(True)
             self.assertEqual(third["next_action"], "wait_before_identical_rebroadcast")
             self.assertEqual(scan.call_count, 2)
-            self.assertEqual(len(self.registry_rpc.anchors), registry_reads)
+            self.assertTrue(all(signature == "isRoundFinalized(uint256)"
+                                for signature in self.registry_rpc.views[registry_reads:]))
+            recovered = transaction_store.load(self.f["settings"], self.config["transaction_policy"])["operations"]
+            self.assertEqual(list(recovered), [first["operation_id"]])
+            self.assertEqual(recovered[first["operation_id"]]["unsigned_transaction"], reserved)
+            self.assertEqual([call for call in self.wallet.calls if call[0] == "eth_signTransaction"], wallet_signatures)
         self.assertEqual(self.rpc.sent, [transaction, transaction])
         self.assertEqual(len([call for call in self.wallet.calls if call[0] == "eth_signTransaction"]), 1)
 

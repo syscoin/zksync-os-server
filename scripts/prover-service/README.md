@@ -363,8 +363,12 @@ The wrapper roster period selects who endorses a package. A FRI receipt retains
 its original period, quota slot, subscription and assignment ID even when the
 package opens in the next period. Service receipts can be credited through that
 original period's existing receipt-grace window. Independent wrapper audits exclude
-bootstrap-journal receipts from service reward reports. On-chain checks reject future,
-closed and pre-service-period credits and reuse of already credited bootstrap batches.
+bootstrap-journal receipts from service reward reports. On-chain checks reject future
+and pre-service-period duties and reuse of already credited bootstrap batches.
+If delivery to the Registry crosses an older duty's grace deadline, it authenticates
+the complete accepted report, consumes that expired batch without credit, and
+continues crediting still-open duties. A consumed batch cannot be relabeled into a
+newer reward period.
 The native validity proof and original accepted receipt remain audit evidence
 after grace closes, without earning credit in a different period.
 
@@ -382,6 +386,10 @@ credit window closes during wrapping, the wrapper returns the verified proof
 without endorsing the stale report. The coordinator retains that proof and repairs
 the report through `repairPackage`, preserving the original draw, turn deadlines,
 manifest and receipt history. The repaired package must be endorsed again.
+
+Recovery also refreshes the reward projection before preparing a persisted
+snapshot. Its original signed manifests, receipts and audit prefixes remain
+immutable; expired duties are omitted from the prepared reward report.
 
 Deploy the paired Registry/ProofGate and Rust validation changes with these tools.
 Update trusted contract bytecode hashes from the newly built contracts. The ABI,

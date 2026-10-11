@@ -114,6 +114,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     mapping(uint64 period => uint32 count) public qualifiedWrapperCount;
     mapping(uint64 period => bytes32 root) public publishedRosterRoot;
     mapping(address publisher => mapping(uint64 period => RosterPublication publication)) private _publications;
+    mapping(bytes32 canonicalDuty => bool consumed) private _consumedDuties;
 
     event Subscribed(bytes32 indexed subscriptionHash, address indexed account, address indexed operator);
     event DutyAccepted(
@@ -330,10 +331,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         ) revert InvalidPackage();
 
         bytes32 packageHash = ZkSysServiceTypesV1.hashPackage(accepted);
-        if (acceptedPackages[packageHash]) return;
-        if (qualificationOnly && isRoundFinalized(accepted.period)) revert RoundClosed(accepted.period);
         if (!qualificationOnly && block.timestamp < _periodStart(accepted.period)) revert InvalidPackage();
-        acceptedPackages[packageHash] = true;
 
         for (uint256 i; i < duties.length; ++i) {
             DutySuccessV1 calldata duty = duties[i];
@@ -351,16 +349,28 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
                     || duty.assignmentId == bytes32(0) || duty.attempt == 0 || duty.slot >= dutiesPerRound
             ) revert InvalidDuty();
             if (!qualificationOnly) {
-                // Wrapping can cross an epoch boundary without moving the signed duty's credit
-                // or extending the deadline of the round in which that work was performed.
-                if (isRoundFinalized(duty.period)) revert RoundClosed(duty.period);
                 if (block.timestamp < _periodStart(duty.period)) revert InvalidDuty();
             }
             if (!subscription_.operator
                     .isValidSignatureNow(_hashTypedDataV4(ZkSysServiceTypesV1.hashDuty(duty)), duty.operatorSignature)) revert InvalidSignature();
+        }
+        if (acceptedPackages[packageHash]) return;
+        if (qualificationOnly && isRoundFinalized(accepted.period)) revert RoundClosed(accepted.period);
+        acceptedPackages[packageHash] = true;
 
+        for (uint256 i; i < duties.length; ++i) {
+            DutySuccessV1 calldata duty = duties[i];
+            ProverSubscriptionV1 storage subscription_ = _subscriptions[duty.subscriptionHash];
             bytes32 canonicalDuty = keccak256(abi.encode(accepted.chainId, accepted.chainAddress, duty.batchNumber));
-            if (creditedDuties[canonicalDuty]) revert DutyAlreadyCredited(duty.batchNumber);
+            // Cross-chain delivery can outlast a duty's grace window. Consume its canonical
+            // batch without reopening the closed quota or blocking still-live report entries.
+            if (!qualificationOnly && isRoundFinalized(duty.period)) {
+                _consumedDuties[canonicalDuty] = true;
+                continue;
+            }
+            if (creditedDuties[canonicalDuty] || _consumedDuties[canonicalDuty]) {
+                revert DutyAlreadyCredited(duty.batchNumber);
+            }
             uint64 bit = uint64(1) << duty.slot;
             uint64 slots = qualificationOnly ? bootstrapDutySlots[duty.account] : dutySlots[duty.account][duty.period];
             if ((slots & bit) != 0) {

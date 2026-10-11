@@ -38,6 +38,7 @@ class ServiceOnlyEnrollmentTests(unittest.TestCase):
                  ("dutiesPerRound()", (), s.word(settings["duties_per_round"])),
                  ("startTime()", (), s.word(0)), ("periodSeconds()", (), s.word(100)),
                  ("firstServicePeriod()", (), s.word(5)), ("serviceActive()", (), s.word(1)),
+                 ("isRoundFinalized(uint256)", (5,), s.word(0)),
                  ("friSubscriberCount(address,uint64)", (settings["sequencer"], 5), s.word(1)),
                  ("friSubscriberAt(address,uint64,uint256)", (settings["sequencer"], 5, 0),
                   bytes(12) + s.raw_hex(sub["account"])),
@@ -71,8 +72,9 @@ class ServiceOnlyEnrollmentTests(unittest.TestCase):
                 owner.calls.append((method, params))
                 if method == "eth_chainId":
                     result = owner.chain_id
-                elif method == "eth_getBlockByHash" and params == [h(100), False]:
-                    result = {"hash": owner.block_hash, "timestamp": "0x226"}
+                elif ((method == "eth_getBlockByHash" and params == [h(100), False])
+                      or (method == "eth_getBlockByNumber" and params in (["latest", False], ["0x64", False]))):
+                    result = {"hash": owner.block_hash, "number": "0x64", "timestamp": "0x226"}
                 elif (method == "eth_call" and len(params) == 2
                       and params[1] == {"blockHash": h(100), "requireCanonical": True}
                       and params[0]["to"] == owner.f["settings"]["registry"]):
@@ -131,6 +133,8 @@ class ServiceOnlyEnrollmentTests(unittest.TestCase):
                 self.assertEqual(value["sidecar"]["duties"][0]["account"] if command == "package"
                                  else value["typed_data"]["message"]["account"], a(169))
         self.assertTrue(any(method == "eth_call" for method, _ in self.calls))
+        self.assertIn(("eth_getBlockByNumber", ["latest", False]), self.calls)
+        self.assertIn(("eth_getBlockByNumber", ["0x64", False]), self.calls)
 
     def test_offline_contract_account_still_requires_canonical_consent(self):
         result, output = self.run_cli("offered-duty", context=False)

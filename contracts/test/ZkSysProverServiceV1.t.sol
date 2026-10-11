@@ -1095,8 +1095,10 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 0);
         vm.warp(11_100);
         assertTrue(service.isRoundFinalized(0));
-        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.RoundClosed.selector, uint64(0)));
         source.accept(service, accepted, duties);
+        assertTrue(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+        assertEq(service.assessedSuccesses(vm.addr(ALICE_KEY), 0), 0);
+        assertEq(service.dutySlots(vm.addr(ALICE_KEY), 0), 0);
         assertEq(service.serviceFactorBps(vm.addr(ALICE_KEY), 0), 0);
     }
 
@@ -1177,10 +1179,10 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 3, 5, 0);
         AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 6);
         assertFalse(service.isRoundFinalized(6));
-        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.RoundClosed.selector, uint64(5)));
         source.accept(service, accepted, duties);
-        assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+        assertTrue(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
         assertEq(service.rewardedSuccesses(vm.addr(ALICE_KEY), 5), 0);
+        assertEq(service.dutySlots(vm.addr(ALICE_KEY), 5), 0);
     }
 
     function testClosedFrozenWrapperPeriodCanSettleWithoutRewardCredit() public {
@@ -1197,10 +1199,90 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         duties = new DutySuccessV1[](1);
         duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 5, 5, 0);
         accepted = _package(duties, false, 5, 6, 5);
-        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.RoundClosed.selector, uint64(5)));
+        source.accept(service, accepted, duties);
+        assertTrue(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+        assertEq(service.dutySlots(vm.addr(ALICE_KEY), 5), 0);
+    }
+
+    function testDelayedMixedReportKeepsLiveCreditAndConsumedExpiredBatchCannotBeRelabeled() public {
+        bytes32 sub = _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        _activate(false);
+        vm.warp(issuer.startTime() + 6 * issuer.periodSeconds() + service.receiptGraceSeconds());
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 3, 5, 0);
+        duties[1] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 4, 6, 0);
+        AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 6);
+        source.accept(service, accepted, duties);
+        source.accept(service, accepted, duties);
+        address alice = vm.addr(ALICE_KEY);
+        assertEq(service.assessedSuccesses(alice, 5), 0);
+        assertEq(service.rewardedSuccesses(alice, 5), 0);
+        assertEq(service.dutySlots(alice, 5), 0);
+        assertEq(service.assessedSuccesses(alice, 6), 1);
+        assertEq(service.rewardedSuccesses(alice, 6), 1);
+        assertEq(service.dutySlots(alice, 6), 1);
+        bytes32 expired = keccak256(abi.encode(accepted.chainId, accepted.chainAddress, uint64(3)));
+        assertFalse(service.creditedDuties(expired));
+
+        duties = new DutySuccessV1[](1);
+        duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 3, 6, 1);
+        AcceptedPackageV1 memory relabeled = _package(duties, false, 3, 4, 6);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.DutyAlreadyCredited.selector, uint64(3)));
+        source.accept(service, relabeled, duties);
+        assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(relabeled)));
+        assertEq(service.rewardedSuccesses(alice, 6), 1);
+
+        duties[0] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 4, 6, 1);
+        AcceptedPackageV1 memory duplicate = _package(duties, false, 3, 4, 6);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.DutyAlreadyCredited.selector, uint64(4)));
+        source.accept(service, duplicate, duties);
+        assertEq(service.rewardedSuccesses(alice, 6), 1);
+    }
+
+    function testExpiredReceiptsStillAuthenticateBeforeConsumptionAndExactReplay() public {
+        bytes32 sub = _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        _activate(false);
+        vm.warp(issuer.startTime() + 6 * issuer.periodSeconds() + service.receiptGraceSeconds());
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(ALICE_KEY, BOB_OPERATOR_KEY, sub, 3, 5, 0);
+        duties[1] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, sub, 4, 6, 0);
+        AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 6);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
         source.accept(service, accepted, duties);
         assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
-        assertEq(service.dutySlots(vm.addr(ALICE_KEY), 5), 0);
+        assertEq(service.rewardedSuccesses(vm.addr(ALICE_KEY), 6), 0);
+
+        duties[0].operatorSignature = _sign(ALICE_OPERATOR_KEY, service.dutyDigest(duties[0]));
+        accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+        source.accept(service, accepted, duties);
+        source.accept(service, accepted, duties);
+        duties[0].operatorSignature = bytes("");
+        accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        source.accept(service, accepted, duties);
+        assertEq(service.rewardedSuccesses(vm.addr(ALICE_KEY), 6), 1);
+    }
+
+    function testExpiredFullQuotaCannotQualifyOrChangeOldRewardState() public {
+        _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        bytes32 sub = _subscribe(BOB_KEY, BOB_OPERATOR_KEY);
+        _activate(false);
+        vm.warp(issuer.startTime() + 6 * issuer.periodSeconds() + service.receiptGraceSeconds());
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(BOB_KEY, BOB_OPERATOR_KEY, sub, 3, 5, 0);
+        duties[1] = _duty(BOB_KEY, BOB_OPERATOR_KEY, sub, 4, 5, 1);
+        AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 6);
+        source.accept(service, accepted, duties);
+        accepted.manifestHash = keccak256("expired retry in another accepted package");
+        source.accept(service, accepted, duties);
+        address bob = vm.addr(BOB_KEY);
+        assertFalse(service.verifiedForSequencer(bob, vm.addr(SEQUENCER_KEY)));
+        assertEq(service.bootstrapSuccesses(bob), 0);
+        assertEq(service.assessedSuccesses(bob, 5), 0);
+        assertEq(service.rewardedSuccesses(bob, 5), 0);
+        assertEq(service.dutySlots(bob, 5), 0);
+        assertEq(service.qualifiedWrapperCount(7), 0);
+        assertEq(service.totalAdmittedBonusWeight(7), 0);
     }
 
     function testBootstrapClosedPeriodStillRejectsEmptyQualificationReport() public {

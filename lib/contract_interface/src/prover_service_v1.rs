@@ -362,6 +362,7 @@ pub struct ValidationContextV1 {
 pub enum PackagePhaseV1 {
     Bootstrap,
     Service {
+        first_service_period: u64,
         period: u64,
         roster_root: B256,
         selected_wrapper_index: u32,
@@ -499,7 +500,10 @@ impl ProverServiceSidecarV1 {
                 || duty.statementHash != statements[batch_index]
                 || match &context.phase {
                     PackagePhaseV1::Bootstrap => duty.period != accepted.period,
-                    PackagePhaseV1::Service { .. } => duty.period > accepted.period,
+                    PackagePhaseV1::Service {
+                        first_service_period,
+                        ..
+                    } => duty.period < *first_service_period || duty.period > accepted.period,
                 }
                 || duty.friProofHash.is_zero()
                 || duty.account.is_zero()
@@ -533,6 +537,7 @@ impl ProverServiceSidecarV1 {
                 }
             }
             PackagePhaseV1::Service {
+                first_service_period,
                 period,
                 roster_root,
                 selected_wrapper_index,
@@ -542,6 +547,7 @@ impl ProverServiceSidecarV1 {
                 let candidate = self.candidate.as_ref().ok_or(ValidationError::Candidate)?;
                 if roster_root.is_zero()
                     || frozen_package_hash.is_zero()
+                    || accepted.period < *first_service_period
                     || accepted.period != *period
                     || accepted.rosterRoot != *roster_root
                     || accepted.turn != *turn
@@ -681,6 +687,7 @@ mod tests {
             batch_from: package.batchFrom,
             batch_to: package.batchTo,
             phase: PackagePhaseV1::Service {
+                first_service_period: package.period,
                 period: package.period,
                 roster_root: package.rosterRoot,
                 selected_wrapper_index: candidate.index,
@@ -812,6 +819,7 @@ mod tests {
         let mut frozen = sidecar.accepted_package.clone();
         frozen.proofHash = B256::ZERO;
         context.phase = PackagePhaseV1::Service {
+            first_service_period: 5,
             period: 7,
             roster_root,
             selected_wrapper_index: 0,
@@ -956,6 +964,17 @@ mod tests {
     fn service_package_rejects_future_signed_duty_period() {
         let (mut sidecar, mut context, proof_data) = service_evidence();
         sidecar.duties[0].period = 8;
+        refresh_service_report(&mut sidecar, &mut context);
+        assert_eq!(
+            sidecar.validate(&context, &proof_data),
+            Err(ValidationError::Duty(0))
+        );
+    }
+
+    #[test]
+    fn service_package_rejects_pre_service_signed_duty_period() {
+        let (mut sidecar, mut context, proof_data) = service_evidence();
+        sidecar.duties[0].period = 4;
         refresh_service_report(&mut sidecar, &mut context);
         assert_eq!(
             sidecar.validate(&context, &proof_data),

@@ -496,11 +496,19 @@ a lifetime assignment-count cutoff.
 A service wrapper package may contain duties from an earlier service period. Each
 duty retains its original subscription, period and quota slot, and can earn credit
 only before that original period's existing receipt-grace deadline. Future-period
-credits are rejected. Independent wrapper audits exclude bootstrap-journal receipts
-from service reward reports; the signed duty fields do not encode journal phase.
+and pre-service-period duties are rejected. Independent wrapper audits exclude
+bootstrap-journal receipts from service reward reports; the signed duty fields do
+not encode journal phase.
 Expired receipts still bind the native FRI proof bytes and batch coverage. Each
 participating journal is independently audited under its own canonical enrollment
 anchor and pinned checkpoint; current-period quota exhaustion governs uncovered
 native work. A report whose historical credits expire while wrapping is repaired
 through the existing package repair mechanism, without redrawing its roster or
 resetting its deadlines.
+
+If an accepted mixed-period report reaches the Registry after an older duty's
+deadline, the complete report remains authenticated. The Registry consumes expired
+batches without changing their closed-period credit or slots, and credits the
+still-open entries. Consumed batches cannot earn credit under a different period.
+A recovered coordinator snapshot refreshes this reward projection before bundle
+preparation while retaining the immutable receipt and audit history.

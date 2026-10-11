@@ -409,7 +409,6 @@ class Coordinator:
                    "manifest": {"payload": snapshot["manifest"], "sequencer_signature": manifest_signature},
                    "subscriptions": snapshot["subscriptions"], "duties": snapshot["duties"]}
         s.require(accepted["period"] == chain["roster"]["period"], "dispatcher_period_does_not_match_opening_roster")
-        self.prepare(request, evidence, payload)
         if snapshot["audit"]["schema_version"] == 3:
             signed_audit = copy.deepcopy(snapshot["audit"])
             for context in signed_audit["contexts"]:
@@ -417,9 +416,17 @@ class Coordinator:
                 context["bundle"]["sequencer_signature"] = self.sign(audit.checkpoint_request(context["bundle"]), True)
         else:
             signed_audit = {**snapshot["audit"], "sequencer_signature": audit_signature}
-        bundle = {"request": request, "audit": signed_audit}
-        io.immutable_json(directory / "bundle.json", bundle)
+        # Snapshot persistence can precede a restart beyond a receipt's reward grace.
+        # Retain that immutable history and prepare only its current reward projection.
+        bundle = self.refresh_report(identifier, {"request": request, "audit": signed_audit}, False)
+        self.prepare(bundle["request"], evidence, payload)
+        name = "bundle.json"
+        if (directory / name).exists() and io.private_json(directory / name) != bundle:
+            name = "bundle-" + io.digest(bundle) + ".json"
+        io.immutable_json(directory / name, bundle)
         op["bundle"] = io.digest(bundle)
+        if name != "bundle.json":
+            op["bundle_file"] = name
         self.save()
         return bundle
 
