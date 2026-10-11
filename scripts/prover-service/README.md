@@ -359,6 +359,11 @@ proofs; they do not constitute production proving or live-chain validation.
 
 ## Packages crossing a period boundary
 
+Before the first paid period starts, an activated gate's nonrewarded control proof
+can use its existing authenticated bootstrap journal to carry the peer activation
+message. Ordinary paid work requires a service journal. This is part of the
+one-time launch phase.
+
 The wrapper roster period selects who endorses a package. A FRI receipt retains
 its original period, quota slot, subscription and assignment ID even when the
 package opens in the next period. Service receipts can be credited through that

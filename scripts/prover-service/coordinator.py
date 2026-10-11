@@ -121,7 +121,12 @@ class Coordinator:
     def enrollment_for(self, request):
         if request["manifest"]["payload"]["schema_version"] == 2:
             payload = request["manifest"]["payload"]
-            with self.dispatchers_for({"roster": {"period": payload["period"]}},
+            chain = {"roster": {"period": payload["period"]}, "control_work": False}
+            current = self.status()[0]
+            if current["roster"] is not None and current["roster"]["period"] == payload["period"]:
+                chain["control_work"] = current["control_work"]
+                chain["head"] = current["head"]
+            with self.dispatchers_for(chain,
                                       request["proposal"]["accepted_package"]["batchFrom"],
                                       request["proposal"]["accepted_package"]["batchTo"]) as (current, dispatches):
                 authorities = {item.state["journal_id"]: item.enrollment for item in dispatches}
@@ -215,11 +220,16 @@ class Coordinator:
         with ExitStack() as locks:
             locks.enter_context(store.lock("dispatcher.lock"))
             state = journal.load(store.root / "state.json", list_fields=("audit.events",))
-            if state["period"] != period or state["enrollment"]["phase"] != "service" \
+            # A gate can activate before its peer receives the activation message. Its
+            # prestart control proof uses the authenticated one-time bootstrap journal.
+            phase = "bootstrap" if chain.get("control_work", False) and state["enrollment"]["phase"] == "bootstrap" \
+                and int(self.clock()) < state["enrollment"]["ends_at"] and type(chain.get("head")) is dict \
+                and s.uint(chain["head"]["timestamp"]) < state["enrollment"]["ends_at"] else "service"
+            if state["period"] != period or state["enrollment"]["phase"] != phase \
                     or state["enrollment"]["block_hash"] != self.keeper["enrollment"]["block_hash"]:
                 try:
                     store = period_routing.current_store(store, None, int(self.clock()), requested_period=period,
-                                  existing_only=True, requested_phase="service",
+                                  existing_only=True, requested_phase=phase,
                                   enrollment_block_hash=self.keeper["enrollment"]["block_hash"])
                 except s.Error as error:
                     if state["period"] == period and str(error) == "unknown_period_journal":
@@ -234,6 +244,8 @@ class Coordinator:
                 self.registry_rpc = k.registry_rpc_for(self.keeper)
             dispatch = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc,
                                                enrollment=self.enrollment if type(self.enrollment) is s.EnrollmentAuthority else None)
+            s.require(phase != "bootstrap" or dispatch.enrollment.anchor == s.canonical(state["enrollment"]),
+                      "bootstrap_enrollment_authority_changed")
             lane = dispatch.state["lanes"].get(self.keeper["lane"])
             s.require(lane is not None and lane["settings"] == self.settings
                       and lane["endpoint"] == sentry.endpoint_url(self.config["endpoint"]), "dispatcher_lane_changed")
