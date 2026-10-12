@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Build the unchanged upstream helper without resolving Airbender's lockless CLI workspace.
+# Build the unchanged Airbender helper without resolving its lockless CLI workspace.
 set -euo pipefail
 umask 077
 
 fail() { printf 'end-params build: %s\n' "$*" >&2; exit 1; }
 [[ $# -eq 2 ]] || fail 'usage: build-end-params.sh PRISTINE_AIRBENDER_CHECKOUT NEW_BUILD_DIRECTORY'
-readonly airbender_commit=03454c7a41053a4b88bb421e97fb9efe893a92f5
+readonly airbender_commit=e8f380777b7e90388c7323d6fd80a3b58c589f17
+readonly airbender_tree=799e018339df40d0e456ba3fa0fc768ce0691853
 readonly toolchain=nightly-2026-02-10
 readonly source_sha256=95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7
-readonly manifest_sha256=c58938395721dec889f6fe49f991f1dd1ae7cd8b457dd1434f4512d572e30335
-readonly lock_sha256=06d8dd4fd5efc9ad7db969dbee9949f6bd7af4fc2920d784f33047fac6acc293
+readonly manifest_sha256=dc2ca3c5ad7126733eb26dcddaf6cb4e130a5770e6c363f23d3962a8d6634b89
+readonly lock_sha256=0b004f8fe8b536edfb841f99f1c5d78d058df598d2c7f093c457b7932f55e2e6
 helper_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly helper_dir
 readonly assets_dir="${helper_dir}/end-params"
@@ -38,13 +39,14 @@ sha256_file() {
 
 [[ "$(git -C "${airbender_dir}" rev-parse --show-toplevel)" == "${airbender_dir}" ]] || fail 'expected checkout root'
 [[ "$(git -C "${airbender_dir}" rev-parse HEAD)" == "${airbender_commit}" ]] || fail 'Airbender commit mismatch'
+[[ "$(git -C "${airbender_dir}" rev-parse 'HEAD^{tree}')" == "${airbender_tree}" ]] || fail 'Airbender tree mismatch'
 [[ -z "$(git -C "${airbender_dir}" status --porcelain)" ]] || fail 'Airbender checkout must be pristine'
-readonly upstream_source="${airbender_dir}/tools/cli/src/bin/end_params.rs"
-[[ "$(sha256_file "${upstream_source}")" == "${source_sha256}" ]] || fail 'upstream helper source mismatch'
+readonly fork_source="${airbender_dir}/tools/cli/src/bin/end_params.rs"
+[[ "$(sha256_file "${fork_source}")" == "${source_sha256}" ]] || fail 'Airbender helper source mismatch'
 [[ "$(sha256_file "${assets_dir}/src/end_params.rs")" == "${source_sha256}" ]] || fail 'packaged helper source mismatch'
 [[ "$(sha256_file "${assets_dir}/Cargo.toml")" == "${manifest_sha256}" ]] || fail 'harness manifest mismatch'
 [[ "$(sha256_file "${assets_dir}/Cargo.lock")" == "${lock_sha256}" ]] || fail 'harness lock mismatch'
-cmp "${upstream_source}" "${assets_dir}/src/end_params.rs"
+cmp "${fork_source}" "${assets_dir}/src/end_params.rs"
 
 mkdir -m 0700 "${build_dir}"
 mkdir -m 0700 "${build_dir}/src"
@@ -62,7 +64,7 @@ cargo "+${toolchain}" build --locked --release \
   --target-dir "${build_dir}/target"
 [[ "$(sha256_file "${build_dir}/Cargo.lock")" == "${lock_sha256}" ]] || fail 'Cargo changed the reviewed lock'
 [[ "$(sha256_file "${build_dir}/Cargo.toml")" == "${manifest_sha256}" ]] || fail 'build changed the harness manifest'
-[[ "$(sha256_file "${build_dir}/src/end_params.rs")" == "${source_sha256}" ]] || fail 'build changed the upstream source'
+[[ "$(sha256_file "${build_dir}/src/end_params.rs")" == "${source_sha256}" ]] || fail 'build changed the Airbender source'
 test -x "${build_dir}/target/release/end_params"
 printf '%s  %s\n' \
   "${manifest_sha256}" Cargo.toml \

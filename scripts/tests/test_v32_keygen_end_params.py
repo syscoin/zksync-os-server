@@ -15,10 +15,11 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 KEYGEN = REPO / "scripts/keygen"
-COMMIT = "03454c7a41053a4b88bb421e97fb9efe893a92f5"
+COMMIT = "e8f380777b7e90388c7323d6fd80a3b58c589f17"
+TREE = "799e018339df40d0e456ba3fa0fc768ce0691853"
 SOURCE_HASH = "95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7"
-MANIFEST_HASH = "c58938395721dec889f6fe49f991f1dd1ae7cd8b457dd1434f4512d572e30335"
-LOCK_HASH = "06d8dd4fd5efc9ad7db969dbee9949f6bd7af4fc2920d784f33047fac6acc293"
+MANIFEST_HASH = "dc2ca3c5ad7126733eb26dcddaf6cb4e130a5770e6c363f23d3962a8d6634b89"
+LOCK_HASH = "0b004f8fe8b536edfb841f99f1c5d78d058df598d2c7f093c457b7932f55e2e6"
 
 
 class EndParamsAssetTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertEqual(set(manifest["dependencies"]), {"execution_utils", "riscv_transpiler", "verifier_common"})
         for dependency in manifest["dependencies"].values():
             self.assertEqual(dependency["rev"], COMMIT)
-            self.assertEqual(dependency["git"], "https://github.com/matter-labs/zksync-airbender")
+            self.assertEqual(dependency["git"], "https://github.com/syscoin/zksync-airbender")
             self.assertIs(dependency["default-features"], False)
         self.assertEqual(manifest["dependencies"]["execution_utils"]["features"], ["prover", "verifier_binaries"])
         self.assertEqual(manifest["profile"]["release"], {"opt-level": 3, "lto": "fat", "codegen-units": 1, "debug": False})
@@ -45,7 +46,7 @@ class EndParamsAssetTests(unittest.TestCase):
         for package in packages:
             source = package.get("source", "")
             if "zksync-airbender" in source:
-                self.assertEqual(source, f"git+https://github.com/matter-labs/zksync-airbender?rev={COMMIT}#{COMMIT}")
+                self.assertEqual(source, f"git+https://github.com/syscoin/zksync-airbender?rev={COMMIT}#{COMMIT}")
             if source.startswith("registry+"):
                 self.assertRegex(package["checksum"], r"^[0-9a-f]{64}$")
 
@@ -64,6 +65,19 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn("SERVER_FRI_VERIFIER", block)
         self.assertIn('if [[ "${GATEWAY_TARGET_IDENTITY_STATUS}" != "attested" ]]; then', workflow)
         self.assertIn('if [[ "${APP_IDENTITY_STATUS}" != "attested" ]]; then', workflow)
+
+    def test_candidate_wrapper_uses_fork_and_stock_control_stays_upstream(self):
+        workflow = (REPO / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
+        candidate = workflow.split("      - name: Check out exact Airbender and wrapper sources", 1)[1]
+        candidate = candidate.split("      - name:", 1)[0]
+        stock = workflow.split("  stock-control:", 1)[1]
+        self.assertIn('scripts/keygen/pin-wrapper-airbender.py', candidate)
+        self.assertIn('?rev=${AIRBENDER_COMMIT}#${AIRBENDER_COMMIT}', candidate)
+        self.assertIn('HEAD^{tree}', candidate)
+        self.assertIn('?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}', stock)
+        self.assertNotIn('scripts/keygen/pin-wrapper-airbender.py', stock)
+        self.assertNotIn("V8_VK_REGENERATION_REQUIRED", workflow)
+        self.assertNotIn("V8_APP_IDENTITY_REGENERATION_REQUIRED", workflow)
 
 
 class EndParamsBuildWrapperTests(unittest.TestCase):
@@ -92,7 +106,9 @@ class EndParamsBuildWrapperTests(unittest.TestCase):
             if args[-1] == '--show-toplevel':
                 print(os.environ['FAKE_AIRBENDER'])
             elif args[-1] == 'HEAD':
-                print(os.environ.get('FAKE_COMMIT', '03454c7a41053a4b88bb421e97fb9efe893a92f5'))
+                print(os.environ.get('FAKE_COMMIT', 'e8f380777b7e90388c7323d6fd80a3b58c589f17'))
+            elif args[-1] == 'HEAD^{tree}':
+                print(os.environ.get('FAKE_TREE', '799e018339df40d0e456ba3fa0fc768ce0691853'))
             elif args[-1] == '--porcelain':
                 print(os.environ.get('FAKE_STATUS', ''), end='')
             else:
@@ -178,7 +194,8 @@ class EndParamsBuildWrapperTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_wrong_revision_dirty_checkout_or_overrides_fail_before_build(self):
-        for name, value in (("FAKE_COMMIT", "0" * 40), ("FAKE_STATUS", " M source.rs\n"),
+        for name, value in (("FAKE_COMMIT", "0" * 40), ("FAKE_TREE", "0" * 40),
+                            ("FAKE_STATUS", " M source.rs\n"),
                             ("RUST_TOOLCHAIN", "stable"), ("RUSTFLAGS", "-C opt-level=0")):
             with self.subTest(name=name):
                 self.env[name] = value

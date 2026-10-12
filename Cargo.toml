@@ -128,14 +128,13 @@ zk_os_api = { package = "zksync_os_api", git = "https://github.com/matter-labs/z
 zk_os_evm_interpreter = { package = "evm_interpreter", git = "https://github.com/matter-labs/zksync-os", tag = "v0.4.0" }
 
 # SYSCOIN: Airbender crates for verifying V8 FRI proofs submitted by external provers. This exact
-# upstream rc.2 graph (`03454c7a41053a4b88bb421e97fb9efe893a92f5`) must match the prover,
-# embedded Security100 recursion programs, and the app-bound commitment recorded with
-# `V8_VK_HASH`; zkOS itself is the final v0.4.0 release.
-execution_utils = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.2", features = [
+# reviewed Syscoin fork commit must match the prover, embedded Security100 recursion programs,
+# and the app-bound commitment recorded with `V8_VK_HASH`; zkOS remains final v0.4.0.
+execution_utils = { git = "https://github.com/syscoin/zksync-airbender", rev = "e8f380777b7e90388c7323d6fd80a3b58c589f17", features = [
     "verifier_binaries",
 ] }
-riscv_transpiler = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.2" }
-verifier_common = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.2" }
+riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "e8f380777b7e90388c7323d6fd80a3b58c589f17" }
+verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "e8f380777b7e90388c7323d6fd80a3b58c589f17" }
 
 # Other dependencies.
 

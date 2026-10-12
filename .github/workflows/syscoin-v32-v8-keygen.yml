@@ -52,9 +52,11 @@ env:
   OFFLINE_GATEWAY_IDENTITY_SIZE: "10173"
   OFFLINE_GATEWAY_IDENTITY_SHA256: 2efa802311ab4efb3827e820ba41df33867820d11e7f08c3ec62f27c7dc3bf3a
 
-  AIRBENDER_REPOSITORY: https://github.com/matter-labs/zksync-airbender.git
-  AIRBENDER_COMMIT: 03454c7a41053a4b88bb421e97fb9efe893a92f5
+  AIRBENDER_REPOSITORY: https://github.com/syscoin/zksync-airbender.git
+  AIRBENDER_COMMIT: e8f380777b7e90388c7323d6fd80a3b58c589f17
+  AIRBENDER_TREE: 799e018339df40d0e456ba3fa0fc768ce0691853
   AIRBENDER_RELEASE: v0.6.0-rc.2
+  STOCK_AIRBENDER_COMMIT: 03454c7a41053a4b88bb421e97fb9efe893a92f5
   AIRBENDER_PLATFORM_REPOSITORY: https://github.com/matter-labs/airbender-platform.git
   # SYSCOIN: Exact cargo-airbender v0.2.4 revision used by both canonical app rebuilds.
   AIRBENDER_PLATFORM_COMMIT: a350ee3e08bef4cbe2b7bc968966bee45bc98a17
@@ -63,6 +65,7 @@ env:
   WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
   PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
   PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
+  REGISTERED_V8_VK_HASH: "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90"
   RUST_TOOLCHAIN: nightly-2026-02-10
   CARGO_BINUTILS_VERSION: 0.4.0
 
@@ -169,7 +172,7 @@ jobs:
           [[ "${GATEWAY_TARGET_IDENTITY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           [[ "${GATEWAY_TARGET_IDENTITY_SHA256}" != "${ZERO_B256#0x}" ]]
           if [[ "${APP_IDENTITY_STATUS}" != "attested" ]]; then
-            echo "canonical app identity regeneration is required for zksync-os tree ${ZKSYNC_OS_PATCHED_TREE}" >&2
+            echo "FRI degree-lift app and Security100 artifact identities require independent qualification before keygen" >&2
             exit 1
           fi
           [[ "${APP_BIN_SIZE}" =~ ^[1-9][0-9]*$ ]]
@@ -810,18 +813,21 @@ jobs:
           git clone --no-tags "${AIRBENDER_REPOSITORY}" "${WORK_DIR}/airbender"
           git -C "${WORK_DIR}/airbender" checkout --detach "${AIRBENDER_COMMIT}"
           [[ "$(git -C "${WORK_DIR}/airbender" rev-parse HEAD)" == "${AIRBENDER_COMMIT}" ]]
+          [[ "$(git -C "${WORK_DIR}/airbender" rev-parse 'HEAD^{tree}')" == "${AIRBENDER_TREE}" ]]
 
           git clone --no-tags "${WRAPPER_REPOSITORY}" "${WORK_DIR}/wrapper"
           git -C "${WORK_DIR}/wrapper" checkout --detach "${WRAPPER_COMMIT}"
           [[ "$(git -C "${WORK_DIR}/wrapper" rev-parse HEAD)" == "${WRAPPER_COMMIT}" ]]
+          python3 "${GITHUB_WORKSPACE}/scripts/keygen/pin-wrapper-airbender.py" \
+            "${WORK_DIR}/wrapper"
 
           mapfile -t airbender_sources < <(
-            grep -F 'source = "git+https://github.com/matter-labs/zksync-airbender' \
+            grep -F 'source = "git+https://github.com/syscoin/zksync-airbender' \
               "${WORK_DIR}/wrapper/Cargo.lock"
           )
           (( ${#airbender_sources[@]} > 0 ))
           for source in "${airbender_sources[@]}"; do
-            [[ "${source}" == *"?tag=${AIRBENDER_RELEASE}#${AIRBENDER_COMMIT}\"" ]]
+            [[ "${source}" == *"?rev=${AIRBENDER_COMMIT}#${AIRBENDER_COMMIT}\"" ]]
           done
           grep -Fqx 'default = ["security_100"]' "${WORK_DIR}/wrapper/wrapper/Cargo.toml"
 
@@ -914,8 +920,6 @@ jobs:
           require_string("V8_APP_BIN_MD5", os.environ["APP_BIN_MD5"])
           require_words("V8_APP_END_PARAMS", os.environ["APP_END_PARAMS"])
           require_words("V8_SECURITY100_EXPECTED_CHAIN", os.environ["SECURITY100_WORDS"])
-          if "const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = false;" not in source:
-              raise SystemExit("server V8 app-identity regeneration sentinel is not cleared")
           PY
 
       - name: Generate the app-bound Security100 verification keys
@@ -1041,7 +1045,7 @@ jobs:
           )
           (( ${#airbender_sources[@]} > 0 ))
           for source in "${airbender_sources[@]}"; do
-            [[ "${source}" == *"?tag=${AIRBENDER_RELEASE}#${AIRBENDER_COMMIT}\"" ]]
+            [[ "${source}" == *"?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}\"" ]]
           done
 
           git clone --no-tags "${PROVER_REPOSITORY}" "${WORK_DIR}/prover"
@@ -1712,33 +1716,20 @@ jobs:
           syscoin_vk_hash="$(< "${output_dir}/syscoin-v8-vk-hash.txt")"
           proving_version="lib/types/src/protocol/proving_version.rs"
 
-          # SYSCOIN: Prepare the server half of the atomic candidate without
-          # clearing the regeneration sentinel. The checked-out source starts and
-          # finishes this key-generation job with its zero VK, and no generated output can
-          # activate proving by itself.
+          # SYSCOIN: Prepare a candidate against the currently registered key.
+          # Generated output cannot activate the new key without a reviewed source update.
           git diff --quiet -- "${proving_version}"
-          grep -Fq \
-            '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
-            "${proving_version}"
-          [[ "$(grep -Fc \
-            '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
-            "${proving_version}")" == "1" ]]
-          grep -Fq 'const V8_VK_REGENERATION_REQUIRED: bool = true;' "${proving_version}"
+          [[ "${syscoin_vk_hash}" != "${REGISTERED_V8_VK_HASH}" ]]
+          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "1" ]]
           restore_server_gate() {
             git restore --source=HEAD --worktree -- "${proving_version}"
           }
           trap restore_server_gate EXIT
-          VK_HASH="${syscoin_vk_hash}" perl -0pi -e \
-            's/0x0{64}/$ENV{VK_HASH}/' \
+          OLD_HASH="${REGISTERED_V8_VK_HASH}" VK_HASH="${syscoin_vk_hash}" perl -0pi -e \
+            's/\Q$ENV{OLD_HASH}\E/$ENV{VK_HASH}/' \
             "${proving_version}"
-          grep -Fq "\"${syscoin_vk_hash}\"" "${proving_version}"
-          if grep -Fq \
-              '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
-              "${proving_version}"
-          then
-            exit 1
-          fi
-          grep -Fq 'const V8_VK_REGENERATION_REQUIRED: bool = true;' "${proving_version}"
+          [[ "$(grep -Fc "\"${syscoin_vk_hash}\"" "${proving_version}")" == "1" ]]
+          ! grep -Fq "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}"
           git diff --check -- "${proving_version}"
           git diff --binary --no-ext-diff -- "${proving_version}" > \
             "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
@@ -1746,10 +1737,7 @@ jobs:
           restore_server_gate
           trap - EXIT
           git diff --quiet -- "${proving_version}"
-          grep -Fq \
-            '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
-            "${proving_version}"
-          grep -Fq 'const V8_VK_REGENERATION_REQUIRED: bool = true;' "${proving_version}"
+          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "1" ]]
           git apply --check "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
 
           plonk_key_sha="$(sha256sum "${output_dir}/era/ZKsyncOS_plonk_scheduler_key.json" | awk '{print $1}')"
@@ -1774,7 +1762,9 @@ jobs:
             --arg gateway_relay_runtime_hash "${SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH}" \
             --arg gateway_target_identity_sha256 "${GATEWAY_TARGET_IDENTITY_SHA256}" \
             --arg gateway_derivation_record_schema "${GATEWAY_DERIVATION_RECORD_SCHEMA}" \
+            --arg airbender_repository "${AIRBENDER_REPOSITORY}" \
             --arg airbender "${AIRBENDER_COMMIT}" \
+            --arg airbender_tree "${AIRBENDER_TREE}" \
             --arg airbender_release "${AIRBENDER_RELEASE}" \
             --arg cargo_airbender "${AIRBENDER_PLATFORM_COMMIT}" \
             --arg wrapper "${WRAPPER_COMMIT}" \
@@ -1810,7 +1800,9 @@ jobs:
                 server_revision: $server_revision,
                 zksync_os_base: $zksync_os_base,
                 zksync_os_patched_tree: $zksync_os_patched_tree,
+                airbender_repository: $airbender_repository,
                 airbender: $airbender,
+                airbender_tree: $airbender_tree,
                 airbender_release: $airbender_release,
                 cargo_airbender: $cargo_airbender,
                 wrapper: $wrapper,

@@ -93,9 +93,7 @@ build_inputs = (
     "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh",
     "scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh",
     "scripts/patches/zksync-os-syscoin-v0.4.0.patch",
-    "scripts/prepare-server-airbender.py",
-    "scripts/patches/airbender-server-security.json",
-    "scripts/patches/airbender-server-security.patch",
+    "scripts/check-server-airbender.py",
     "scripts/apply-zksync-era-syscoin-patch.sh",
     "scripts/patches/zksync-era-syscoin.patch",
     "scripts/apply-era-contracts-syscoin-patch.sh",
@@ -279,7 +277,7 @@ if [ "${BUILD_PREBUILT}" = true ]; then
   PREBUILT_SOURCE_DIGEST="$(prebuilt_source_digest)"
 fi
 
-SERVER_AIRBENDER_PREPARED=false
+SERVER_AIRBENDER_ATTESTED=false
 if uses_patched_workspace; then
   configure_build_context
   ZKSYNC_OS_ALIAS=zk_os_forward_system
@@ -302,8 +300,8 @@ if uses_patched_workspace; then
     "${RUN_PATH}" \
     "${ZKSYNC_OS_PATCHED_PATH}" "${ZKSYNC_OS_TAG}" "${ZKSYNC_OS_SOURCE_URL}" \
     "${ZKSYNC_OS_LOCKED_REV}" "${ZKSYNC_OS_PATCHED_REV}"
-  prepare_server_airbender "${RUN_PATH}"
-  SERVER_AIRBENDER_PREPARED=true
+  attest_server_airbender "${RUN_PATH}"
+  SERVER_AIRBENDER_ATTESTED=true
   clear_multivm_build_script_cache "${TARGET_DIR}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
@@ -316,8 +314,8 @@ else
 fi
 
 if [ "${BUILD_PREBUILT}" = true ]; then
-  if [ "${SERVER_AIRBENDER_PREPARED}" = true ]; then
-    run_cargo_with_verified_server_airbender "$@"
+  if [ "${SERVER_AIRBENDER_ATTESTED}" = true ]; then
+    run_cargo_with_attested_server_airbender "$@"
   else
     cargo "$@"
   fi
@@ -331,8 +329,8 @@ if [ "${BUILD_PREBUILT}" = true ]; then
   exit 0
 fi
 
-if [ "${SERVER_AIRBENDER_PREPARED}" = true ]; then
-  run_cargo_with_verified_server_airbender "$@"
+if [ "${SERVER_AIRBENDER_ATTESTED}" = true ]; then
+  run_cargo_with_attested_server_airbender "$@"
 else
   cargo "$@"
 fi
