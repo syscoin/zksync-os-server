@@ -64,8 +64,8 @@ env:
   WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git
   WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
   PROVER_TOOLING_REPOSITORY: https://github.com/syscoin/zksync-airbender-prover.git
-  PROVER_TOOLING_COMMIT: 5d03af4604cc177b37cc7504b7752d2217386467
-  PROVER_TOOLING_TREE: c2c53b21d8a3413a682a5e652f4fec38b7d39adc
+  PROVER_TOOLING_COMMIT: 3070f1b4d49dcf104400471063324e97a213f7c6
+  PROVER_TOOLING_TREE: 2f72324196fee1dcf1f30be423d0994635e94347
   PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
   PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
   REGISTERED_V8_VK_HASH: "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90"
@@ -1834,7 +1834,9 @@ jobs:
                 wrapper: $wrapper,
                 prover_tooling_commit: $prover_tooling_commit,
                 prover_tooling_tree: $prover_tooling_tree,
-                wrapper_patched_tree: $candidate_sources[0].sources.wrapper_patched_tree,
+                candidate_wrapper_repository: $candidate_sources[0].sources.wrapper_repository,
+                candidate_wrapper_commit: $candidate_sources[0].sources.wrapper_commit,
+                candidate_wrapper_tree: $candidate_sources[0].sources.wrapper_tree,
                 common_crypto_patched_tree: $candidate_sources[0].sources.common_crypto_patched_tree,
                 candidate_wrapper_manifest_sha256: $candidate_sources[0].manifest_sha256_by_lane.a,
                 candidate_wrapper_manifest_sha256_by_lane: $candidate_sources[0].manifest_sha256_by_lane,

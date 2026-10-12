@@ -1,4 +1,4 @@
-"""No-build checks for the candidate keygen's patched proving source graph."""
+"""No-build checks for the candidate keygen's pinned proving source graph."""
 
 import importlib.util
 import json
@@ -18,6 +18,9 @@ SPEC = importlib.util.spec_from_file_location(
     "candidate_wrapper", ROOT / "scripts/keygen/prepare-candidate-wrapper.py")
 CANDIDATE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CANDIDATE)
+UPSTREAM_AIRBENDER = "https://github.com/matter-labs/zksync-airbender"
+UPSTREAM_LOCK_SOURCE = ("git+" + UPSTREAM_AIRBENDER
+                        + "?tag=v0.6.0-rc.2#03454c7a41053a4b88bb421e97fb9efe893a92f5")
 
 
 class CandidateWrapperTests(unittest.TestCase):
@@ -42,13 +45,13 @@ class CandidateWrapperTests(unittest.TestCase):
                              "zksync_solidity_vk_codegen": "crates/vk_codegen"}
         manifest = "[workspace]\n[workspace.dependencies]\n"
         for name in sorted(CANDIDATE.AIRBENDER_DEPS):
-            manifest += (name + ' = { git = "' + CANDIDATE.UPSTREAM
-                         + '", tag = "v0.6.0-rc.2" }\n')
+            manifest += (name + ' = { git = "' + CANDIDATE.FORK
+                         + '", rev = "' + CANDIDATE.FORK_COMMIT + '" }\n')
         (self.wrapper / "Cargo.toml").write_text(manifest)
         lock = "version = 4\n"
         for index in range(44):
             lock += (f'\n[[package]]\nname = "air-{index}"\nversion = "0.1.0"\n'
-                     + 'source = "' + CANDIDATE.OLD_SOURCE + '"\n')
+                     + 'source = "' + CANDIDATE.NEW_SOURCE + '"\n')
         for name in sorted(CANDIDATE.WRAPPER_CRYPTO_PACKAGES):
             lock += (f'\n[[package]]\nname = "{name}"\nversion = "0.32.10"\n'
                      + 'source = "' + self.crypto_source + '"\n')
@@ -57,16 +60,19 @@ class CandidateWrapperTests(unittest.TestCase):
         (self.wrapper / "Cargo.lock").write_text(lock)
         self.original = tomllib.loads(lock)
 
-    def pin(self, tree="reviewed-wrapper"):
-        def git(_directory, *args):
-            return {("rev-parse", "HEAD"): CANDIDATE.WRAPPER_COMMIT,
-                    ("write-tree",): tree}[args]
+    def pin(self, tree="reviewed-wrapper", head=None, dirty=""):
+        def git(directory, *args):
+            if args == ("write-tree",):
+                return "reviewed-wrapper"
+            return {("rev-parse", "HEAD"): head or CANDIDATE.WRAPPER_COMMIT,
+                    ("rev-parse", "HEAD^{tree}"): tree,
+                    ("status", "--porcelain", "--untracked-files=all"): dirty}[args]
 
         with mock.patch.object(CANDIDATE, "git", side_effect=git):
             CANDIDATE.pin(self.wrapper, self.crypto, self.crypto_pins,
                           self.crypto_paths, "reviewed-wrapper", "reviewed-wrapper")
 
-    def test_pins_fork_and_exact_patched_crypto_lock_closure(self):
+    def test_keeps_pinned_fork_and_exact_patched_crypto_lock_closure(self):
         self.pin()
         manifest = tomllib.loads((self.wrapper / "Cargo.toml").read_text())
         for name in CANDIDATE.AIRBENDER_DEPS:
@@ -82,11 +88,30 @@ class CandidateWrapperTests(unittest.TestCase):
         self.assertEqual(len(packages), len(self.original["package"]))
         for before, after in zip(self.original["package"], packages):
             expected = before.copy()
-            if expected.get("source") == CANDIDATE.OLD_SOURCE:
-                expected["source"] = CANDIDATE.NEW_SOURCE
-            elif expected.get("source") == self.crypto_source:
+            if expected.get("source") == self.crypto_source:
                 del expected["source"]
             self.assertEqual(after, expected)
+        self.assertNotIn("wrapper_patched_tree", CANDIDATE.SOURCE_IDENTITY)
+        self.assertEqual(CANDIDATE.SOURCE_IDENTITY["wrapper_repository"],
+                         "https://github.com/syscoin/zkos-wrapper.git")
+        self.assertEqual(CANDIDATE.SOURCE_IDENTITY["wrapper_commit"],
+                         "88aa2e1a5bb3778e1b1e07f64d95ab5ac5332da8")
+        self.assertEqual(CANDIDATE.SOURCE_IDENTITY["wrapper_tree"],
+                         "914a0cd1402f289cabccd83cf6cafa1c148385ad")
+
+    def test_rejects_upstream_airbender_manifest_or_lock(self):
+        manifest_path = self.wrapper / "Cargo.toml"
+        lock_path = self.wrapper / "Cargo.lock"
+        for path, old, new in (
+            (manifest_path, CANDIDATE.FORK, UPSTREAM_AIRBENDER),
+            (lock_path, CANDIDATE.NEW_SOURCE, UPSTREAM_LOCK_SOURCE),
+        ):
+            with self.subTest(path=path):
+                original = path.read_text()
+                path.write_text(original.replace(old, new, 1))
+                with self.assertRaises(ValueError):
+                    self.pin()
+                path.write_text(original)
 
     def test_rejects_missing_crypto_package_without_mutating_inputs(self):
         path = self.wrapper / "Cargo.lock"
@@ -94,12 +119,19 @@ class CandidateWrapperTests(unittest.TestCase):
         path.write_text(original.replace('name = "boojum"', 'name = "unknown"'))
         with self.assertRaisesRegex(ValueError, "unexpected wrapper proving lock graph"):
             self.pin()
-        self.assertEqual((self.wrapper / "Cargo.toml").read_text().count(CANDIDATE.FORK), 0)
+        self.assertEqual((self.wrapper / "Cargo.toml").read_text().count(CANDIDATE.FORK), 7)
 
-    def test_rejects_unreviewed_patched_tree_without_mutating_inputs(self):
-        with self.assertRaisesRegex(ValueError, "patch tree changed"):
+    def test_rejects_unreviewed_wrapper_fork_tree_without_mutating_inputs(self):
+        with self.assertRaisesRegex(ValueError, "wrapper fork source changed"):
             self.pin(tree="different-tree")
-        self.assertEqual((self.wrapper / "Cargo.lock").read_text().count(CANDIDATE.NEW_SOURCE), 0)
+        self.assertEqual((self.wrapper / "Cargo.lock").read_text().count(CANDIDATE.NEW_SOURCE), 44)
+
+    def test_rejects_unreviewed_wrapper_fork_revision_or_dirty_source(self):
+        for inputs in ({"head": "0" * 40}, {"dirty": " M wrapper/src/lib.rs\n"}):
+            with self.subTest(inputs=inputs):
+                with self.assertRaisesRegex(ValueError, "wrapper"):
+                    self.pin(**inputs)
+                self.assertNotIn("[patch.", (self.wrapper / "Cargo.toml").read_text())
 
     def downloaded_closures(self):
         self.pin()
@@ -206,6 +238,9 @@ class CandidateWrapperTests(unittest.TestCase):
         self.assertNotIn("${WORK_DIR}/candidate-proving-sources", block)
         self.assertNotIn("${WORK_DIR}/prover-tooling", block)
         self.assertIn('--slurpfile candidate_sources "${source_closure}"', block)
+        for field in ("repository", "commit", "tree"):
+            self.assertIn(f"candidate_wrapper_{field}: $candidate_sources[0].sources.wrapper_{field}", block)
+        self.assertNotIn("wrapper_patched_tree", block)
         self.assertIn("candidate_wrapper_manifest_sha256_by_lane:", block)
 
 

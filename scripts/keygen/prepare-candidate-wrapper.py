@@ -15,19 +15,17 @@ except ImportError:
     import tomli as tomllib
 
 
-PROVER_TOOLING_COMMIT = "5d03af4604cc177b37cc7504b7752d2217386467"
-PROVER_TOOLING_TREE = "c2c53b21d8a3413a682a5e652f4fec38b7d39adc"
-WRAPPER_COMMIT = "585595f145cb53a09a130706ca36f80ddcac3961"
-WRAPPER_PATCHED_TREE = "51ac41a846c976b25056f6857b62f133f347f4ca"
+PROVER_TOOLING_COMMIT = "3070f1b4d49dcf104400471063324e97a213f7c6"
+PROVER_TOOLING_TREE = "2f72324196fee1dcf1f30be423d0994635e94347"
+WRAPPER_REPOSITORY = "https://github.com/syscoin/zkos-wrapper.git"
+WRAPPER_COMMIT = "88aa2e1a5bb3778e1b1e07f64d95ab5ac5332da8"
+WRAPPER_TREE = "914a0cd1402f289cabccd83cf6cafa1c148385ad"
 CRYPTO_URL = "https://github.com/matter-labs/zksync-crypto.git"
 CRYPTO_COMMIT = "bf2797e4ca13475bf797aa43e085389cdd6732f9"
 CRYPTO_PATCHED_TREE = "f8d7b132a841e0bfbfccd27614314a279d523887"
-UPSTREAM = "https://github.com/matter-labs/zksync-airbender"
-UPSTREAM_COMMIT = "03454c7a41053a4b88bb421e97fb9efe893a92f5"
 FORK = "https://github.com/syscoin/zksync-airbender"
 FORK_COMMIT = "553fdd31b9d7a0b354845c7b6b8e7c3d13337c52"
 FORK_TREE = "6693fdafa31c45ebf8acf26e9a1f3dfc3edcffdc"
-OLD_SOURCE = f"git+{UPSTREAM}?tag=v0.6.0-rc.2#{UPSTREAM_COMMIT}"
 NEW_SOURCE = f"git+{FORK}?rev={FORK_COMMIT}#{FORK_COMMIT}"
 AIRBENDER_DEPS = {
     "unified_reduced_machine_verifier", "blake_verifier", "execution_utils",
@@ -50,12 +48,13 @@ SOURCE_IDENTITY = {
     "prover_tooling_commit": PROVER_TOOLING_COMMIT,
     "prover_tooling_tree": PROVER_TOOLING_TREE,
     "airbender_repository": FORK, "airbender_commit": FORK_COMMIT,
-    "airbender_tree": FORK_TREE, "wrapper_commit": WRAPPER_COMMIT,
-    "wrapper_patched_tree": WRAPPER_PATCHED_TREE,
+    "airbender_tree": FORK_TREE,
+    "wrapper_repository": WRAPPER_REPOSITORY,
+    "wrapper_commit": WRAPPER_COMMIT, "wrapper_tree": WRAPPER_TREE,
     "common_crypto_commit": CRYPTO_COMMIT,
     "common_crypto_patched_tree": CRYPTO_PATCHED_TREE,
 }
-CLOSURE_SCHEMA = "syscoin-candidate-proving-source-closure-v1"
+CLOSURE_SCHEMA = "syscoin-candidate-proving-source-closure-v2"
 
 
 def digest(raw: bytes) -> str:
@@ -171,8 +170,11 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
     wrapper = wrapper.resolve(strict=True)
     if git(wrapper, "rev-parse", "HEAD") != WRAPPER_COMMIT:
         raise ValueError("unexpected wrapper revision")
-    if git(wrapper, "write-tree") != wrapper_tree or git(crypto, "write-tree") != crypto_tree:
-        raise ValueError("reviewed wrapper or crypto patch tree changed")
+    if (git(wrapper, "rev-parse", "HEAD^{tree}") != wrapper_tree
+            or git(wrapper, "status", "--porcelain", "--untracked-files=all")):
+        raise ValueError("reviewed wrapper fork source changed")
+    if git(crypto, "write-tree") != crypto_tree:
+        raise ValueError("reviewed crypto patch tree changed")
 
     manifest_path, lock_path = wrapper / "Cargo.toml", wrapper / "Cargo.lock"
     manifest, lock = manifest_path.read_text(), lock_path.read_text()
@@ -180,41 +182,38 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
     if "patch" in parsed_manifest or "replace" in parsed_manifest:
         raise ValueError("unexpected wrapper dependency override")
     dependencies = parsed_manifest["workspace"]["dependencies"]
-    selected = {name for name, row in dependencies.items()
-                if isinstance(row, dict) and row.get("git") == UPSTREAM}
     airbender = {name for name, row in dependencies.items()
                  if isinstance(row, dict) and "zksync-airbender" in row.get("git", "")}
-    if selected != AIRBENDER_DEPS or airbender != selected or any(
-        dependencies[name].get("tag") != "v0.6.0-rc.2" for name in selected
+    if airbender != AIRBENDER_DEPS or any(
+        dependencies[name].get("git") != FORK
+        or dependencies[name].get("rev") != FORK_COMMIT
+        or "tag" in dependencies[name] for name in airbender
     ):
         raise ValueError("unexpected wrapper Airbender dependencies")
-    old_manifest_url = f'git = "{UPSTREAM}"'
-    old_manifest_tag = 'tag = "v0.6.0-rc.2"'
-    if manifest.count(old_manifest_url) != 7 or manifest.count(old_manifest_tag) != 7:
-        raise ValueError("unexpected wrapper manifest source encoding")
 
     canonical = tomllib.loads(lock)
-    old_air = [row for row in canonical["package"] if row.get("source") == OLD_SOURCE]
+    fork_air = [row for row in canonical["package"] if row.get("source") == NEW_SOURCE]
     crypto_source = crypto_pins["upstream_lock_source"]
     old_crypto = [row for row in canonical["package"] if row.get("source") == crypto_source]
     crypto_names = {row["name"] for row in old_crypto}
-    if (len(old_air) != 44 or lock.count(OLD_SOURCE) != 44
+    if (len(fork_air) != 44 or lock.count(NEW_SOURCE) != 44
             or len(old_crypto) != len(WRAPPER_CRYPTO_PACKAGES)
             or crypto_names != WRAPPER_CRYPTO_PACKAGES
             or any(row["version"] != crypto_pins["upstream_packages"][row["name"]]
                    for row in old_crypto)
             or set(crypto_paths) != set(crypto_pins["upstream_packages"])):
         raise ValueError("unexpected wrapper proving lock graph")
+    if any("zksync-airbender" in row.get("source", "")
+           and row["source"] != NEW_SOURCE for row in canonical["package"]):
+        raise ValueError("mixed Airbender sources in wrapper lock")
     if any("github.com/matter-labs/zksync-crypto" in row.get("source", "")
            and "zksync-crypto-gpu" not in row.get("source", "")
            and row.get("source") != crypto_source for row in canonical["package"]):
         raise ValueError("mixed common crypto sources in wrapper lock")
 
-    new_manifest = manifest.replace(old_manifest_url, f'git = "{FORK}"')
-    new_manifest = new_manifest.replace(old_manifest_tag, f'rev = "{FORK_COMMIT}"')
     # The CPU wrapper uses ten common-crypto packages; bind precisely those to
     # the prover's verified patched tree without changing the stock-control graph.
-    new_manifest += '\n[patch.' + json.dumps(crypto_pins["upstream_url"]) + ']\n'
+    new_manifest = manifest + '\n[patch.' + json.dumps(crypto_pins["upstream_url"]) + ']\n'
     for name in sorted(crypto_names):
         new_manifest += (json.dumps(name) + " = { path = "
                          + json.dumps(str(crypto / crypto_paths[name])) + " }\n")
@@ -224,13 +223,7 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
         raise ValueError("unexpected wrapper lock layout")
     for index, row in enumerate(canonical["package"], 1):
         source = row.get("source")
-        if source == OLD_SOURCE:
-            old_line = "source = " + json.dumps(OLD_SOURCE)
-            new_line = "source = " + json.dumps(NEW_SOURCE)
-            if blocks[index].count(old_line) != 1:
-                raise ValueError("unexpected Airbender source row")
-            blocks[index] = blocks[index].replace(old_line, new_line)
-        elif source == crypto_source:
+        if source == crypto_source:
             source_line = "source = " + json.dumps(crypto_source) + "\n"
             if blocks[index].count(source_line) != 1:
                 raise ValueError("unexpected common crypto source row")
@@ -239,7 +232,7 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
     updated = tomllib.loads(new_manifest)
     if any(updated["workspace"]["dependencies"][name].get("git") != FORK
            or updated["workspace"]["dependencies"][name].get("rev") != FORK_COMMIT
-           for name in selected):
+           for name in airbender):
         raise ValueError("wrapper manifest pin failed")
     new_packages = tomllib.loads(new_lock)["package"]
     if (sum(row.get("source") == NEW_SOURCE for row in new_packages) != 44
@@ -260,9 +253,10 @@ def prepare(tooling: Path, airbender: Path, build: Path,
     crypto_pins = preparer.load_crypto_pins()
     if (air_pins["fork_url"], air_pins["fork_commit"], air_pins["fork_tree"]) != (FORK, FORK_COMMIT, FORK_TREE):
         raise ValueError("candidate Airbender source differs from prover")
-    if (wrapper_pins["upstream_commit"], wrapper_pins["patched_tree"],
+    if (wrapper_pins["fork_url"], wrapper_pins["fork_commit"], wrapper_pins["fork_tree"],
             crypto_pins["upstream_url"], crypto_pins["upstream_commit"], crypto_pins["patched_tree"]) != (
-            WRAPPER_COMMIT, WRAPPER_PATCHED_TREE, CRYPTO_URL, CRYPTO_COMMIT, CRYPTO_PATCHED_TREE):
+            WRAPPER_REPOSITORY, WRAPPER_COMMIT, WRAPPER_TREE,
+            CRYPTO_URL, CRYPTO_COMMIT, CRYPTO_PATCHED_TREE):
         raise ValueError("candidate wrapper or crypto source differs from prover")
     preparer.verify_airbender_source(airbender.resolve(strict=True), air_pins)
     build = build.resolve()
@@ -270,7 +264,7 @@ def prepare(tooling: Path, airbender: Path, build: Path,
     wrapper, _, _ = preparer.prepare_wrapper(build, wrapper_pins)
     crypto, _, crypto_paths = preparer.prepare_crypto(build, crypto_pins)
     pin(wrapper, crypto, crypto_pins, crypto_paths,
-        wrapper_pins["patched_tree"], crypto_pins["patched_tree"])
+        wrapper_pins["fork_tree"], crypto_pins["patched_tree"])
     if source_closure_output is not None:
         export_source_closure(wrapper, crypto, source_closure_output)
     return wrapper
