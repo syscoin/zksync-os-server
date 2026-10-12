@@ -70,7 +70,7 @@ class EndParamsAssetTests(unittest.TestCase):
         workflow = (REPO / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
         candidate = workflow.split("      - name: Prepare exact Airbender, wrapper, and common crypto sources", 1)[1]
         candidate = candidate.split("      - name:", 1)[0]
-        stock = workflow.split("  stock-control:", 1)[1]
+        stock = workflow.split("  stock-control:", 1)[1].split("  attest:", 1)[0]
         self.assertIn('scripts/keygen/prepare-candidate-wrapper.py', candidate)
         self.assertIn('"${WORK_DIR}/prover-tooling" "${WORK_DIR}/airbender"', candidate)
         self.assertIn('?rev=${AIRBENDER_COMMIT}#${AIRBENDER_COMMIT}', candidate)
