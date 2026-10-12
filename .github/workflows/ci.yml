@@ -121,6 +121,7 @@ jobs:
             scripts.tests.test_v32_keygen_candidate_wrapper \
             scripts.tests.test_v32_keygen_inventory_closure \
             scripts.tests.test_v32_keygen_cpu_crs \
+            scripts.tests.test_v32_keygen_source_fetch \
             -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s scripts/keygen/gateway-identity -p test_check_identity.py -v

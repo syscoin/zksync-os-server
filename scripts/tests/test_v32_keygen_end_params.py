@@ -77,8 +77,13 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn('HEAD^{tree}', candidate)
         self.assertLess(workflow.index('scripts/keygen/prepare-candidate-wrapper.py'),
                         workflow.index('compute-aux-params'))
-        self.assertIn('PROVER_TOOLING_COMMIT: dced2f067b070e7f208b78659ce843eb93b3f9d2', workflow)
-        self.assertIn('PROVER_TOOLING_TREE: c0b8e4c6e7ca1400ac1d346ef4ec5197dc5bab37', workflow)
+        preparer = (KEYGEN / "prepare-candidate-wrapper.py").read_text()
+        for name, value in (
+            ("PROVER_TOOLING_COMMIT", "1bbff305ccc14abe3e03faa0148f0a525d4a2535"),
+            ("PROVER_TOOLING_TREE", "61adf220526ba470dd052933b5de7e39577ea3d2"),
+        ):
+            self.assertIn(f"{name}: {value}", workflow)
+            self.assertIn(f'{name} = "{value}"', preparer)
         self.assertIn('WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git', workflow)
         self.assertIn('WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961', workflow)
         self.assertIn('?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}', stock)

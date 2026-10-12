@@ -15,8 +15,8 @@ except ImportError:
     import tomli as tomllib
 
 
-PROVER_TOOLING_COMMIT = "dced2f067b070e7f208b78659ce843eb93b3f9d2"
-PROVER_TOOLING_TREE = "c0b8e4c6e7ca1400ac1d346ef4ec5197dc5bab37"
+PROVER_TOOLING_COMMIT = "1bbff305ccc14abe3e03faa0148f0a525d4a2535"
+PROVER_TOOLING_TREE = "61adf220526ba470dd052933b5de7e39577ea3d2"
 WRAPPER_REPOSITORY = "https://github.com/syscoin/zkos-wrapper.git"
 WRAPPER_COMMIT = "816a3598c60fac37d02cf1dcd1bc48b2e2c75de1"
 WRAPPER_TREE = "a1e9a551b9588b1dfab5c5088554fc69770c0e85"
