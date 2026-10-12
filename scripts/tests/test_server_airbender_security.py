@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-build regressions for the immutable server Airbender pin and prebuilt stamp."""
+"""No-build regressions for the server's Cargo pin and prebuilt stamp."""
 
 import hashlib
 import os
@@ -30,25 +30,22 @@ class ServerAirbenderPinTests(unittest.TestCase):
             self.assertEqual(deps[name]["git"], FORK)
             self.assertEqual(deps[name]["rev"], COMMIT)
             self.assertNotIn("tag", deps[name])
-        current = [row for row in lock["package"] if row.get("source") == SOURCE]
-        legacy = [row for row in lock["package"] if row.get("source") == LEGACY]
-        self.assertEqual(len(current), 44)
-        self.assertEqual(len(legacy), 6)
+        sources = {row.get("source") for row in lock["package"]
+                   if "zksync-airbender" in row.get("source", "")}
+        self.assertEqual(sources, {SOURCE, LEGACY})
         text = (ROOT / "Cargo.lock").read_text()
-        self.assertEqual(text.count(SOURCE), 44)
-        self.assertEqual(text.count(SOURCE.split("#")[0] + ")"), 57)
         self.assertNotIn("?tag=v0.6.0-rc.2#", text)
 
-    def test_launcher_attests_fork_without_patch_replay(self):
+    def test_launcher_uses_locked_cargo_without_patch_replay(self):
         launcher = (ROOT / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh").read_text()
         helper = (ROOT / "scripts/_patched-zksync-os-workspace.sh").read_text()
         self.assertNotIn("prepare_server_airbender", launcher + helper)
-        self.assertNotIn("run_cargo_with_verified_server_airbender", launcher + helper)
+        self.assertNotIn("check-server-airbender", launcher + helper)
         self.assertNotIn("airbender-server-security.patch", launcher + helper)
         self.assertIn('"Cargo.toml", "Cargo.lock"', launcher)
-        self.assertIn('attest_server_airbender "${RUN_PATH}"', launcher)
-        self.assertEqual(launcher.count('run_cargo_with_attested_server_airbender "$@"'), 2)
-        self.assertIn("--verify", helper)
+        self.assertIn('set -- build --locked --release --bin zksync-os-server', launcher)
+        self.assertEqual(launcher.count('run_cargo_with_stable_workspace_graph "$@"'), 2)
+        self.assertIn("workspace_cargo_graph_digest", helper)
 
     def test_fork_tree_is_recorded_for_keygen(self):
         workflow = (ROOT / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
@@ -58,36 +55,36 @@ class ServerAirbenderPinTests(unittest.TestCase):
 
 
 class ShellBoundaryTests(unittest.TestCase):
-    def test_cargo_is_guarded_on_both_sides_of_execution(self):
+    def test_disposable_workspace_graph_is_stable_through_cargo(self):
         helper = ROOT / "scripts/_patched-zksync-os-workspace.sh"
-        for cargo_code, failing_check in ((0, 0), (7, 0), (0, 1), (0, 2)):
-            with self.subTest(cargo_code=cargo_code, failing_check=failing_check):
+        for cargo_code, mutate_graph in ((0, False), (7, False), (0, True), (7, True)):
+            with self.subTest(cargo_code=cargo_code, mutate_graph=mutate_graph):
                 with tempfile.TemporaryDirectory() as temp:
-                    log = Path(temp) / "events"
+                    run_path = Path(temp) / "run"
+                    run_path.mkdir()
+                    (run_path / "Cargo.toml").write_text("[workspace]\n")
+                    (run_path / "Cargo.lock").write_text("version = 3\n")
                     command = r'''
 set -euo pipefail
 source "$HELPER"
-check_count=0
-python3() {
-  check_count=$((check_count + 1))
-  printf 'check\n' >> "$EVENTS"
-  [ "$check_count" != "$FAILING_CHECK" ]
-}
 cargo() {
-  printf 'cargo\n' >> "$EVENTS"
+  if [ "$MUTATE_GRAPH" = true ]; then
+    printf 'changed\n' >> "$RUN_PATH/Cargo.lock"
+  fi
   return "$CARGO_CODE"
 }
-run_cargo_with_attested_server_airbender test --locked
+run_cargo_with_stable_workspace_graph test --locked
 '''
-                    env = dict(os.environ, HELPER=str(helper), EVENTS=str(log),
-                               FAILING_CHECK=str(failing_check), CARGO_CODE=str(cargo_code),
-                               ZKSYNC_OS_SERVER_PATH=str(ROOT), RUN_PATH=str(Path(temp) / "run"))
+                    env = dict(os.environ, HELPER=str(helper), CARGO_CODE=str(cargo_code),
+                               MUTATE_GRAPH=str(mutate_graph).lower(), RUN_PATH=str(run_path))
                     result = subprocess.run(["bash", "-c", command], env=env,
                                             text=True, capture_output=True)
-                    expected = ["check"] if failing_check == 1 else ["check", "cargo", "check"]
-                    self.assertEqual(log.read_text().splitlines(), expected)
                     self.assertEqual(result.returncode == 0,
-                                     cargo_code == 0 and failing_check == 0)
+                                     cargo_code == 0 and not mutate_graph)
+                    if mutate_graph:
+                        self.assertIn("Cargo graph changed", result.stderr)
+                    elif cargo_code:
+                        self.assertEqual(result.returncode, cargo_code)
 
     def test_prebuilt_stamp_tracks_server_sources(self):
         launcher = ROOT / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
@@ -108,6 +105,7 @@ gl_die() { printf '%s\n' "$*" >&2; exit 1; }
 gl_export_syscoin_edge_da_commit_target_from_gateway_config() { :; }
 git() { printf '1111111111111111111111111111111111111111\n'; }
 cargo() {
+  printf '%s\n' "$@" > "$CARGO_ARGS"
   mkdir -p "$CARGO_TARGET_DIR/release"
   printf '#!/bin/sh\nprintf "exec\\n" >> "$EVENTS"\n' > "$CARGO_TARGET_DIR/release/zksync-os-server"
   chmod +x "$CARGO_TARGET_DIR/release/zksync-os-server"
@@ -122,10 +120,13 @@ extract_zksync_os_git_url() { printf 'https://github.com/matter-labs/zksync-os.g
 require_official_zksync_os_source() { :; }
 extract_locked_rev() { printf '1111111111111111111111111111111111111111\n'; }
 prepare_zksync_os_checkout() { printf '%s/fake-os\n' "$ZKSYNC_OS_SERVER_PATH"; }
-prepare_run_workspace() { mkdir -p "$1"; }
-attest_server_airbender() { :; }
+prepare_run_workspace() {
+  mkdir -p "$1"
+  cp "$ZKSYNC_OS_SERVER_PATH/Cargo.toml" "$1/Cargo.toml"
+  cp "$ZKSYNC_OS_SERVER_PATH/Cargo.lock" "$1/Cargo.lock"
+}
 clear_multivm_build_script_cache() { :; }
-run_cargo_with_attested_server_airbender() { cargo "$@"; }
+run_cargo_with_stable_workspace_graph() { cargo "$@"; }
 ''')
             sources = {
                 "Cargo.toml": "old server graph\n",
@@ -136,7 +137,6 @@ run_cargo_with_attested_server_airbender() { cargo "$@"; }
                 "scripts/releases/era-v32/generated-verifier-manifest.json": "old release manifest\n",
                 "scripts/releases/era-v32/check-release-overlay.py": "old release checker\n",
                 "scripts/apply-era-contracts-syscoin-release.py": "old materializer\n",
-                "scripts/check-server-airbender.py": "old source checker\n",
             }
             for name, data in sources.items():
                 path = server / name
@@ -148,7 +148,7 @@ run_cargo_with_attested_server_airbender() { cargo "$@"; }
             env.update(GATEWAY_DIR=str(directory / "gateway"),
                        ZKSYNC_OS_SERVER_PATH=str(server),
                        ZKSYNC_OS_STATIC_BUILD_CONTEXT="true", PROTOCOL_VERSION="v32.0",
-                       EVENTS=str(events))
+                       EVENTS=str(events), CARGO_ARGS=str(directory / "cargo-args"))
 
             def launch(*args):
                 return subprocess.run(["bash", str(gateway / launcher.name), "lane", "--", *args],
@@ -170,6 +170,16 @@ run_cargo_with_attested_server_airbender() { cargo "$@"; }
 
             built = launch("build-prebuilt")
             self.assertEqual(built.returncode, 0, built.stderr)
+            self.assertEqual((directory / "cargo-args").read_text().splitlines(),
+                             ["build", "--locked", "--release", "--bin", "zksync-os-server"])
+            direct = launch("run", "--release", "--", "--help")
+            self.assertEqual(direct.returncode, 0, direct.stderr)
+            self.assertEqual((directory / "cargo-args").read_text().splitlines(),
+                             ["run", "--locked", "--release", "--", "--help"])
+            already_locked = launch("run", "--locked", "--release", "--", "--help")
+            self.assertEqual(already_locked.returncode, 0, already_locked.stderr)
+            self.assertEqual((directory / "cargo-args").read_text().splitlines(),
+                             ["run", "--locked", "--release", "--", "--help"])
             current = launch("exec-prebuilt", "--", "--version")
             self.assertEqual(current.returncode, 0, current.stderr)
             self.assertEqual(events.read_text().splitlines(), ["exec"])

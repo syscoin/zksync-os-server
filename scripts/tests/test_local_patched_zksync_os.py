@@ -8602,7 +8602,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         ).read_text(encoding="utf-8")
         self.assertIn('if chain_name == os.environ["GATEWAY_CHAIN_NAME"]', generator)
         self.assertIn('"exec-prebuilt --"', generator)
-        self.assertIn('else "run --release --"', generator)
+        self.assertIn('else "run --locked --release --"', generator)
         self.assertIn('-- {runner_mode} {start_config_args}', generator)
         runtime_identity = common[
             common.index("gl_assert_gateway_runtime_identity()") : common.index(
