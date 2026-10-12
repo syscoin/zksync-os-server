@@ -15,14 +15,15 @@ except ImportError:
     import tomli as tomllib
 
 
-PROVER_TOOLING_COMMIT = "1bbff305ccc14abe3e03faa0148f0a525d4a2535"
-PROVER_TOOLING_TREE = "61adf220526ba470dd052933b5de7e39577ea3d2"
+PROVER_TOOLING_COMMIT = "8f9d102bbc7cd7e87e5ecd1c24b3e4783de5964f"
+PROVER_TOOLING_TREE = "aa0b49805a90f827d290dc97afa5d1d64d129949"
 WRAPPER_REPOSITORY = "https://github.com/syscoin/zkos-wrapper.git"
 WRAPPER_COMMIT = "816a3598c60fac37d02cf1dcd1bc48b2e2c75de1"
 WRAPPER_TREE = "a1e9a551b9588b1dfab5c5088554fc69770c0e85"
-CRYPTO_URL = "https://github.com/matter-labs/zksync-crypto.git"
-CRYPTO_COMMIT = "bf2797e4ca13475bf797aa43e085389cdd6732f9"
-CRYPTO_PATCHED_TREE = "f8d7b132a841e0bfbfccd27614314a279d523887"
+CRYPTO_UPSTREAM_URL = "https://github.com/matter-labs/zksync-crypto.git"
+CRYPTO_URL = "https://github.com/syscoin/zksync-crypto.git"
+CRYPTO_COMMIT = "720c1e165aee94d0df11bd26754b7387c2b8c944"
+CRYPTO_TREE = "16ab40313bd9c9158f557a38a4680cd84b073c51"
 FORK = "https://github.com/syscoin/zksync-airbender"
 FORK_COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
 FORK_TREE = "a41a4a18eeb102b405bcb63ad7ca85e9b6b13213"
@@ -51,10 +52,10 @@ SOURCE_IDENTITY = {
     "airbender_tree": FORK_TREE,
     "wrapper_repository": WRAPPER_REPOSITORY,
     "wrapper_commit": WRAPPER_COMMIT, "wrapper_tree": WRAPPER_TREE,
-    "common_crypto_commit": CRYPTO_COMMIT,
-    "common_crypto_patched_tree": CRYPTO_PATCHED_TREE,
+    "common_crypto_repository": CRYPTO_URL,
+    "common_crypto_commit": CRYPTO_COMMIT, "common_crypto_tree": CRYPTO_TREE,
 }
-CLOSURE_SCHEMA = "syscoin-candidate-proving-source-closure-v2"
+CLOSURE_SCHEMA = "syscoin-candidate-proving-source-closure-v3"
 
 
 def digest(raw: bytes) -> str:
@@ -67,9 +68,9 @@ def normalized_manifest(raw: bytes, crypto_root: str) -> bytes:
     root = Path(crypto_root)
     if not root.is_absolute() or str(root) != crypto_root or ".." in root.parts:
         raise ValueError("noncanonical prepared crypto root")
-    if "replace" in manifest or set(manifest.get("patch", {})) != {CRYPTO_URL}:
+    if "replace" in manifest or set(manifest.get("patch", {})) != {CRYPTO_UPSTREAM_URL}:
         raise ValueError("unexpected candidate dependency override")
-    patches = manifest["patch"][CRYPTO_URL]
+    patches = manifest["patch"][CRYPTO_UPSTREAM_URL]
     if set(patches) != WRAPPER_CRYPTO_PACKAGES:
         raise ValueError("unexpected candidate crypto patch graph")
     for name, relative in CRYPTO_PATHS.items():
@@ -119,7 +120,8 @@ def read_source_closure(directory: Path) -> tuple[dict, bytes, bytes]:
             or any(row["version"] != "0.32.10" or "source" in row for row in crypto)
             or any("zksync-airbender" in row.get("source", "")
                    and row["source"] != NEW_SOURCE for row in packages)
-            or any("github.com/matter-labs/zksync-crypto" in row.get("source", "")
+            or any(("github.com/matter-labs/zksync-crypto" in row.get("source", "")
+                    or "github.com/syscoin/zksync-crypto" in row.get("source", ""))
                    and "zksync-crypto-gpu" not in row["source"] for row in packages)):
         raise ValueError("unexpected candidate proving lock graph")
     return record, normalized, lock
@@ -173,8 +175,10 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
     if (git(wrapper, "rev-parse", "HEAD^{tree}") != wrapper_tree
             or git(wrapper, "status", "--porcelain", "--untracked-files=all")):
         raise ValueError("reviewed wrapper fork source changed")
-    if git(crypto, "write-tree") != crypto_tree:
-        raise ValueError("reviewed crypto patch tree changed")
+    if (git(crypto, "rev-parse", "HEAD") != CRYPTO_COMMIT
+            or git(crypto, "rev-parse", "HEAD^{tree}") != crypto_tree
+            or git(crypto, "status", "--porcelain", "--untracked-files=all")):
+        raise ValueError("reviewed crypto fork source changed")
 
     manifest_path, lock_path = wrapper / "Cargo.toml", wrapper / "Cargo.lock"
     manifest, lock = manifest_path.read_text(), lock_path.read_text()
@@ -212,7 +216,7 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
         raise ValueError("mixed common crypto sources in wrapper lock")
 
     # The CPU wrapper uses ten common-crypto packages; bind precisely those to
-    # the prover's verified patched tree without changing the stock-control graph.
+    # the prover's verified fork tree without changing the stock-control graph.
     new_manifest = manifest + '\n[patch.' + json.dumps(crypto_pins["upstream_url"]) + ']\n'
     for name in sorted(crypto_names):
         new_manifest += (json.dumps(name) + " = { path = "
@@ -254,9 +258,9 @@ def prepare(tooling: Path, airbender: Path, build: Path,
     if (air_pins["fork_url"], air_pins["fork_commit"], air_pins["fork_tree"]) != (FORK, FORK_COMMIT, FORK_TREE):
         raise ValueError("candidate Airbender source differs from prover")
     if (wrapper_pins["fork_url"], wrapper_pins["fork_commit"], wrapper_pins["fork_tree"],
-            crypto_pins["upstream_url"], crypto_pins["upstream_commit"], crypto_pins["patched_tree"]) != (
+            crypto_pins["fork_url"], crypto_pins["fork_commit"], crypto_pins["fork_tree"]) != (
             WRAPPER_REPOSITORY, WRAPPER_COMMIT, WRAPPER_TREE,
-            CRYPTO_URL, CRYPTO_COMMIT, CRYPTO_PATCHED_TREE):
+            CRYPTO_URL, CRYPTO_COMMIT, CRYPTO_TREE):
         raise ValueError("candidate wrapper or crypto source differs from prover")
     preparer.verify_airbender_source(airbender.resolve(strict=True), air_pins)
     build = build.resolve()
@@ -264,7 +268,7 @@ def prepare(tooling: Path, airbender: Path, build: Path,
     wrapper, _, _ = preparer.prepare_wrapper(build, wrapper_pins)
     crypto, _, crypto_paths = preparer.prepare_crypto(build, crypto_pins)
     pin(wrapper, crypto, crypto_pins, crypto_paths,
-        wrapper_pins["fork_tree"], crypto_pins["patched_tree"])
+        wrapper_pins["fork_tree"], crypto_pins["fork_tree"])
     if source_closure_output is not None:
         export_source_closure(wrapper, crypto, source_closure_output)
     return wrapper

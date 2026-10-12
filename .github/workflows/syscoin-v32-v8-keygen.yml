@@ -64,8 +64,8 @@ env:
   WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git
   WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
   PROVER_TOOLING_REPOSITORY: https://github.com/syscoin/zksync-airbender-prover.git
-  PROVER_TOOLING_COMMIT: 1bbff305ccc14abe3e03faa0148f0a525d4a2535
-  PROVER_TOOLING_TREE: 61adf220526ba470dd052933b5de7e39577ea3d2
+  PROVER_TOOLING_COMMIT: 8f9d102bbc7cd7e87e5ecd1c24b3e4783de5964f
+  PROVER_TOOLING_TREE: aa0b49805a90f827d290dc97afa5d1d64d129949
   PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
   PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
   REGISTERED_V8_VK_HASH: "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90"
@@ -1774,7 +1774,7 @@ jobs:
           source_closure="${output_dir}/proving-source-closure.json"
 
           jq -n \
-            --arg schema "syscoin-v32-v8-security100-keygen-v4" \
+            --arg schema "syscoin-v32-v8-security100-keygen-v5" \
             --arg server_revision "${GITHUB_SHA}" \
             --arg zksync_os_base "${ZKSYNC_OS_BASE_COMMIT}" \
             --arg zksync_os_patched_tree "${ZKSYNC_OS_PATCHED_TREE}" \
@@ -1837,7 +1837,9 @@ jobs:
                 candidate_wrapper_repository: $candidate_sources[0].sources.wrapper_repository,
                 candidate_wrapper_commit: $candidate_sources[0].sources.wrapper_commit,
                 candidate_wrapper_tree: $candidate_sources[0].sources.wrapper_tree,
-                common_crypto_patched_tree: $candidate_sources[0].sources.common_crypto_patched_tree,
+                common_crypto_repository: $candidate_sources[0].sources.common_crypto_repository,
+                common_crypto_commit: $candidate_sources[0].sources.common_crypto_commit,
+                common_crypto_tree: $candidate_sources[0].sources.common_crypto_tree,
                 candidate_wrapper_manifest_sha256: $candidate_sources[0].manifest_sha256_by_lane.a,
                 candidate_wrapper_manifest_sha256_by_lane: $candidate_sources[0].manifest_sha256_by_lane,
                 candidate_wrapper_normalized_manifest_sha256: $candidate_sources[0].normalized_manifest_sha256,
