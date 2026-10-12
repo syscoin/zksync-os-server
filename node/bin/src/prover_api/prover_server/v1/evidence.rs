@@ -66,7 +66,7 @@ enum EvidenceError {
     Storage(u64),
     #[error("invalid retained FRI batch {0}: {1}")]
     Invalid(u64, &'static str),
-    #[error("canonical V8 verification key regeneration is required")]
+    #[error("canonical V8 verification key is unavailable")]
     VkUnavailable,
 }
 
@@ -125,7 +125,7 @@ impl EvidenceRecord {
         let version = metadata
             .proving_version()
             .map_err(|_| EvidenceError::Invalid(number, "unsupported proving version"))?;
-        if version != ProvingVersion::V8 || version.requires_vk_regeneration() {
+        if version != ProvingVersion::V8 {
             return Err(EvidenceError::VkUnavailable);
         }
         let vk_hash: B256 = version
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_markers_fake_proofs_and_unavailable_key_never_export() {
+    fn retained_markers_and_fake_proofs_never_export() {
         for proof in [
             FriProof::Fake,
             FriProof::AlreadySubmittedToL1,
@@ -506,27 +506,6 @@ mod tests {
             assert!(matches!(
                 EvidenceRecord::from_retained(1, envelope),
                 Err(EvidenceError::Invalid(..))
-            ));
-        }
-        if ProvingVersion::V8.requires_vk_regeneration()
-            || ProvingVersion::V8
-                .vk_hash()
-                .parse::<B256>()
-                .unwrap()
-                .is_zero()
-        {
-            let mut envelope = create_test_batch_envelope_with_data(
-                1,
-                ProtocolSemanticVersion::new(0, 32, 0),
-                FriProof::Real(RealFriProof {
-                    proof: vec![1, 2, 3].into(),
-                    proving_execution_version: 8,
-                }),
-            );
-            envelope.batch = metadata(1);
-            assert!(matches!(
-                EvidenceRecord::from_retained(1, envelope),
-                Err(EvidenceError::VkUnavailable)
             ));
         }
         assert!(EvidenceRecord::from_metadata(1, &metadata(1), B256::ZERO).is_err());

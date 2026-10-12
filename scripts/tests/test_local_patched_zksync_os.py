@@ -6342,10 +6342,11 @@ gl_checkpoint_assert_fingerprint_matches
     def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
         manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        self.assertIn('tag = "v0.6.0-rc.2"', manifest)
+        self.assertIn('rev = "0d8c852954afcae1f160151a17fe80886f1755b0"', manifest)
+        self.assertIn('git = "https://github.com/syscoin/zksync-airbender"', manifest)
         self.assertNotIn('tag = "v0.6.0-rc.1"', manifest)
         self.assertIn(
-            "?tag=v0.6.0-rc.2#03454c7a41053a4b88bb421e97fb9efe893a92f5",
+            "?rev=0d8c852954afcae1f160151a17fe80886f1755b0#0d8c852954afcae1f160151a17fe80886f1755b0",
             lock,
         )
         self.assertNotIn("?tag=v0.6.0-rc.1", lock)
@@ -6392,9 +6393,6 @@ gl_checkpoint_assert_fingerprint_matches
         )
 
         self.assertIn(
-            "const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = false;", verifier
-        )
-        self.assertIn(
             'const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";',
             verifier,
         )
@@ -6413,10 +6411,7 @@ gl_checkpoint_assert_fingerprint_matches
             )
             self.assertIsNotNone(values)
             self.assertEqual([int(x) for x in re.findall(r"\d+", values[1])], expected)
-        self.assertLess(
-            verifier.index("if v8_verifier::V8_APP_IDENTITY_REGENERATION_REQUIRED"),
-            verifier.index("validate_v8_proof_shape(proof)?;"),
-        )
+        self.assertIn("expected_chain, V8_SECURITY100_EXPECTED_CHAIN,", verifier)
 
     def test_keygen_security100_identity_uses_wrapper_aux_params(self) -> None:
         workflow = (
@@ -8642,7 +8637,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         ).read_text(encoding="utf-8")
         self.assertIn('if chain_name == os.environ["GATEWAY_CHAIN_NAME"]', generator)
         self.assertIn('"exec-prebuilt --"', generator)
-        self.assertIn('else "run --release --"', generator)
+        self.assertIn('else "run --locked --release --"', generator)
         self.assertIn('-- {runner_mode} {start_config_args}', generator)
         runtime_identity = common[
             common.index("gl_assert_gateway_runtime_identity()") : common.index(

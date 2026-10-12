@@ -1299,7 +1299,7 @@ gateway_acquire_execute_operator_lock "{chain_name}" "{config_path}"
     runner_mode = (
         "exec-prebuilt --"
         if chain_name == os.environ["GATEWAY_CHAIN_NAME"]
-        else "run --release --"
+        else "run --locked --release --"
     )
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail

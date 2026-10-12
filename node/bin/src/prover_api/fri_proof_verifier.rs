@@ -91,17 +91,6 @@ pub fn verify_fri_proof(
     proof: &execution_utils::unrolled::UnrolledProgramProof,
     batch_number: u64,
 ) -> Result<(), SubmitError> {
-    // SYSCOIN: Startup already blocks external proving while the VK is pending, but durable proof
-    // recovery and library callers also reach this verifier directly. Keep the app binding itself
-    // fail-closed until the rebuilt guest identity is installed.
-    if v8_verifier::V8_APP_IDENTITY_REGENERATION_REQUIRED {
-        return Err(SubmitError::TemporaryInternal(format!(
-            "canonical V8 app identity regeneration is required for zksync-os tree {} (app md5 {})",
-            v8_verifier::V8_APP_IDENTITY_SOURCE_TREE,
-            v8_verifier::V8_APP_BIN_MD5,
-        )));
-    }
-
     validate_v8_proof_shape(proof)?;
 
     // Cheap consistency check of the carried chain fields (mirrors the airbender CLI's
@@ -272,9 +261,10 @@ mod v8_verifier {
 
     /// SYSCOIN: Reproduced guest identity; independently derived end parameters and
     /// Security100 continuation must agree with the registered app-bound key.
+    #[allow(dead_code)] // The keygen workflow checks this source identity in the generated file.
     pub(super) const V8_APP_IDENTITY_SOURCE_TREE: &str = "6935489bdbc7b1ed31e608677d1b2418b10691b5";
+    #[allow(dead_code)] // The keygen workflow checks this guest identity in the generated file.
     pub(super) const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";
-    pub(super) const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = false;
 
     /// `end_params` is derived from the app binary alone. The Security100 chain continues those
     /// params through the pinned unrolled and unified recursion artifacts.
@@ -342,12 +332,10 @@ mod v8_verifier {
                 &unrolled_chain,
                 &unrolled_preimage,
             );
-            if !V8_APP_IDENTITY_REGENERATION_REQUIRED {
-                assert_eq!(
-                    expected_chain, V8_SECURITY100_EXPECTED_CHAIN,
-                    "canonical V8 Security100 chain does not match the installed app identity"
-                );
-            }
+            assert_eq!(
+                expected_chain, V8_SECURITY100_EXPECTED_CHAIN,
+                "canonical V8 Security100 chain does not match the installed app identity"
+            );
 
             UnifiedLevelData {
                 setup,
@@ -474,26 +462,14 @@ mod tests {
         );
     }
 
-    /// The pre-keygen source tree must contain only explicit sentinels, never a prior app's
-    /// apparently canonical identity. After regeneration, this same test checks the installed
-    /// app-derived Security100 chain against the runtime derivation.
     #[test]
     fn v8_app_identity_state_is_coherent() {
-        if v8_verifier::V8_APP_IDENTITY_REGENERATION_REQUIRED {
-            assert_eq!(v8_verifier::V8_APP_END_PARAMS, [0; 8]);
-            assert_eq!(v8_verifier::V8_SECURITY100_EXPECTED_CHAIN, [0; 8]);
-            assert_eq!(
-                v8_verifier::V8_APP_BIN_MD5,
-                "00000000000000000000000000000000"
-            );
-        } else {
-            assert_ne!(v8_verifier::V8_APP_END_PARAMS, [0; 8]);
-            assert_ne!(v8_verifier::V8_SECURITY100_EXPECTED_CHAIN, [0; 8]);
-            assert_eq!(
-                v8_verifier::unified_level_data().expected_chain,
-                v8_verifier::V8_SECURITY100_EXPECTED_CHAIN,
-            );
-        }
+        assert_ne!(v8_verifier::V8_APP_END_PARAMS, [0; 8]);
+        assert_ne!(v8_verifier::V8_SECURITY100_EXPECTED_CHAIN, [0; 8]);
+        assert_eq!(
+            v8_verifier::unified_level_data().expected_chain,
+            v8_verifier::V8_SECURITY100_EXPECTED_CHAIN,
+        );
     }
 
     /// Smoke test for the V8 unified-layer verifier lane against a real proof produced by the

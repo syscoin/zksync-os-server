@@ -15,10 +15,11 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 KEYGEN = REPO / "scripts/keygen"
-COMMIT = "03454c7a41053a4b88bb421e97fb9efe893a92f5"
+COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
+TREE = "a41a4a18eeb102b405bcb63ad7ca85e9b6b13213"
 SOURCE_HASH = "95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7"
-MANIFEST_HASH = "c58938395721dec889f6fe49f991f1dd1ae7cd8b457dd1434f4512d572e30335"
-LOCK_HASH = "06d8dd4fd5efc9ad7db969dbee9949f6bd7af4fc2920d784f33047fac6acc293"
+MANIFEST_HASH = "6c3cece11db29eb3c470a2185955b2e2253d469c6ec90fd4a19ce41651fb8e5e"
+LOCK_HASH = "3f905502022eda649948767e26ded3e7d44158fc6f413ac65eec0b4797cf272f"
 
 
 class EndParamsAssetTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertEqual(set(manifest["dependencies"]), {"execution_utils", "riscv_transpiler", "verifier_common"})
         for dependency in manifest["dependencies"].values():
             self.assertEqual(dependency["rev"], COMMIT)
-            self.assertEqual(dependency["git"], "https://github.com/matter-labs/zksync-airbender")
+            self.assertEqual(dependency["git"], "https://github.com/syscoin/zksync-airbender")
             self.assertIs(dependency["default-features"], False)
         self.assertEqual(manifest["dependencies"]["execution_utils"]["features"], ["prover", "verifier_binaries"])
         self.assertEqual(manifest["profile"]["release"], {"opt-level": 3, "lto": "fat", "codegen-units": 1, "debug": False})
@@ -45,7 +46,7 @@ class EndParamsAssetTests(unittest.TestCase):
         for package in packages:
             source = package.get("source", "")
             if "zksync-airbender" in source:
-                self.assertEqual(source, f"git+https://github.com/matter-labs/zksync-airbender?rev={COMMIT}#{COMMIT}")
+                self.assertEqual(source, f"git+https://github.com/syscoin/zksync-airbender?rev={COMMIT}#{COMMIT}")
             if source.startswith("registry+"):
                 self.assertRegex(package["checksum"], r"^[0-9a-f]{64}$")
 
@@ -57,13 +58,77 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn('"${WORK_DIR}/end-params-helper/target/release/end_params"', block)
         self.assertNotIn('--manifest-path "${WORK_DIR}/airbender/Cargo.toml"', block)
         self.assertIn('grep -Fqx "app_end_params = ${APP_END_PARAMS}"', block)
-        self.assertIn('--manifest-path "${WORK_DIR}/wrapper/Cargo.toml"', block)
+        self.assertIn('--manifest-path "${WORK_DIR}/candidate-proving-sources/zkos-wrapper/Cargo.toml"', block)
         self.assertIn("compute-aux-params", block)
         self.assertIn('[[ "${commitment}" == "${SECURITY100_COMMITMENT}" ]]', block)
         self.assertIn("${SECURITY100_WORDS}", block)
         self.assertIn("SERVER_FRI_VERIFIER", block)
         self.assertIn('if [[ "${GATEWAY_TARGET_IDENTITY_STATUS}" != "attested" ]]; then', workflow)
         self.assertIn('if [[ "${APP_IDENTITY_STATUS}" != "attested" ]]; then', workflow)
+
+    def test_candidate_wrapper_uses_fork_and_stock_control_stays_upstream(self):
+        workflow = (REPO / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
+        candidate = workflow.split("      - name: Prepare exact Airbender, wrapper, and common crypto sources", 1)[1]
+        candidate = candidate.split("      - name:", 1)[0]
+        stock = workflow.split("  stock-control:", 1)[1].split("  attest:", 1)[0]
+        self.assertIn('scripts/keygen/prepare-candidate-wrapper.py', candidate)
+        self.assertIn('"${WORK_DIR}/prover-tooling" "${WORK_DIR}/airbender"', candidate)
+        self.assertIn('?rev=${AIRBENDER_COMMIT}#${AIRBENDER_COMMIT}', candidate)
+        self.assertIn('HEAD^{tree}', candidate)
+        self.assertLess(workflow.index('scripts/keygen/prepare-candidate-wrapper.py'),
+                        workflow.index('compute-aux-params'))
+        self.assertIn('PROVER_TOOLING_COMMIT: dced2f067b070e7f208b78659ce843eb93b3f9d2', workflow)
+        self.assertIn('PROVER_TOOLING_TREE: c0b8e4c6e7ca1400ac1d346ef4ec5197dc5bab37', workflow)
+        self.assertIn('WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git', workflow)
+        self.assertIn('WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961', workflow)
+        self.assertIn('?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}', stock)
+        self.assertNotIn('scripts/keygen/prepare-candidate-wrapper.py', stock)
+        self.assertIn('--manifest-path "${WORK_DIR}/wrapper/Cargo.toml"', stock)
+        self.assertIn('candidate_wrapper_repository: $candidate_sources[0].sources.wrapper_repository', workflow)
+        self.assertIn('candidate_wrapper_commit: $candidate_sources[0].sources.wrapper_commit', workflow)
+        self.assertIn('candidate_wrapper_tree: $candidate_sources[0].sources.wrapper_tree', workflow)
+        self.assertNotIn('wrapper_patched_tree:', workflow)
+        self.assertNotIn("V8_VK_REGENERATION_REQUIRED", workflow)
+        self.assertNotIn("V8_APP_IDENTITY_REGENERATION_REQUIRED", workflow)
+
+    def test_candidate_vk_replacement_updates_both_registered_literals(self):
+        workflow = (REPO / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
+        candidate = workflow.split("      - name: Produce fail-closed server candidate", 1)[1]
+        candidate = candidate.split("      - name:", 1)[0]
+        self.assertEqual(candidate.count('"${proving_version}")" == "2" ]]'), 3)
+        self.assertIn("'s/\\Q$ENV{OLD_HASH}\\E/$ENV{VK_HASH}/g'", candidate)
+        self.assertIn('checked_out_server_vk_remains_registered: true', candidate)
+        self.assertNotIn('checked_out_server_vk_remains_zero', candidate)
+        original = (REPO / "lib/types/src/protocol/proving_version.rs").read_text()
+        old_hash = '0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90'
+        new_hash = '0x' + 'ab' * 32
+        self.assertEqual(original.count(f'"{old_hash}"'), 2)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "lib/types/src/protocol/proving_version.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text(original)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "lib/types/src/protocol/proving_version.rs"],
+                           cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                            "commit", "-qm", "fixture"], cwd=root, check=True)
+            output = root / "work/final"
+            output.mkdir(parents=True)
+            (output / "syscoin-v8-vk-hash.txt").write_text(new_hash + "\n")
+            script = candidate.split("        run: |\n", 1)[1]
+            script = textwrap.dedent(script[:script.index("          plonk_key_sha=")])
+            result = subprocess.run(["bash", "-c", script], cwd=root,
+                                    capture_output=True, text=True,
+                                    env={**os.environ, "WORK_DIR": str(root / "work"),
+                                         "REGISTERED_V8_VK_HASH": old_hash})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(source.read_text(), original)
+            patch = output / "zksync-os-server-v8-plonk-candidate.patch"
+            self.assertTrue(patch.is_file())
+            additions = [line for line in patch.read_text().splitlines()
+                         if line.startswith("+") and f'"{new_hash}"' in line]
+            self.assertEqual(len(additions), 2)
 
 
 class EndParamsBuildWrapperTests(unittest.TestCase):
@@ -92,7 +157,9 @@ class EndParamsBuildWrapperTests(unittest.TestCase):
             if args[-1] == '--show-toplevel':
                 print(os.environ['FAKE_AIRBENDER'])
             elif args[-1] == 'HEAD':
-                print(os.environ.get('FAKE_COMMIT', '03454c7a41053a4b88bb421e97fb9efe893a92f5'))
+                print(os.environ.get('FAKE_COMMIT', '0d8c852954afcae1f160151a17fe80886f1755b0'))
+            elif args[-1] == 'HEAD^{tree}':
+                print(os.environ.get('FAKE_TREE', 'a41a4a18eeb102b405bcb63ad7ca85e9b6b13213'))
             elif args[-1] == '--porcelain':
                 print(os.environ.get('FAKE_STATUS', ''), end='')
             else:
@@ -178,7 +245,8 @@ class EndParamsBuildWrapperTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_wrong_revision_dirty_checkout_or_overrides_fail_before_build(self):
-        for name, value in (("FAKE_COMMIT", "0" * 40), ("FAKE_STATUS", " M source.rs\n"),
+        for name, value in (("FAKE_COMMIT", "0" * 40), ("FAKE_TREE", "0" * 40),
+                            ("FAKE_STATUS", " M source.rs\n"),
                             ("RUST_TOOLCHAIN", "stable"), ("RUSTFLAGS", "-C opt-level=0")):
             with self.subTest(name=name):
                 self.env[name] = value

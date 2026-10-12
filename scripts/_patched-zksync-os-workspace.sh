@@ -454,20 +454,35 @@ cargo_lock.write_text(lock_text, encoding="utf-8")
 PY
 }
 
-prepare_server_airbender() {
-  python3 "${ZKSYNC_OS_SERVER_PATH}/scripts/prepare-server-airbender.py" \
-    --server "${ZKSYNC_OS_SERVER_PATH}" --workspace "$1"
+workspace_cargo_graph_digest() {
+  python3 - "${RUN_PATH}" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+digest = hashlib.sha256()
+for name in ("Cargo.toml", "Cargo.lock"):
+    path = root / name
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"missing or symlinked workspace input: {path}")
+    digest.update(name.encode() + b"\0" + path.read_bytes())
+print(digest.hexdigest())
+PY
 }
 
-run_cargo_with_verified_server_airbender() {
+run_cargo_with_stable_workspace_graph() {
   local cargo_status=0
-  # The source identity must still hold when Cargo consumes it and after Cargo
-  # returns; a failed build must not hide a changed verifier or lock graph.
-  python3 "${ZKSYNC_OS_SERVER_PATH}/scripts/prepare-server-airbender.py" \
-    --server "${ZKSYNC_OS_SERVER_PATH}" --workspace "${RUN_PATH}" --verify || return $?
+  local graph_before graph_after
+  graph_before="$(workspace_cargo_graph_digest)" || return $?
   cargo "$@" || cargo_status=$?
-  python3 "${ZKSYNC_OS_SERVER_PATH}/scripts/prepare-server-airbender.py" \
-    --server "${ZKSYNC_OS_SERVER_PATH}" --workspace "${RUN_PATH}" --verify || return $?
+  graph_after="$(workspace_cargo_graph_digest)" || return $?
+  # Cargo consumes a disposable rewritten workspace; a changed graph must not
+  # produce an accepted binary, even when the checked-in server tree is stable.
+  [ "${graph_before}" = "${graph_after}" ] || {
+    echo "error: disposable workspace Cargo graph changed during Cargo execution" >&2
+    return 1
+  }
   return "${cargo_status}"
 }
 

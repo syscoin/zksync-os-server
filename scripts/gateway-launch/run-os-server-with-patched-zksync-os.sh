@@ -15,7 +15,7 @@ Usage:
   run-os-server-with-patched-zksync-os.sh <workspace-name> -- exec-prebuilt -- <binary args...>
 Examples:
   run-os-server-with-patched-zksync-os.sh gateway -- build-prebuilt
-  run-os-server-with-patched-zksync-os.sh gateway -- run --release -- --config /path/to/config.yaml
+  run-os-server-with-patched-zksync-os.sh gateway -- run --locked --release -- --config /path/to/config.yaml
   run-os-server-with-patched-zksync-os.sh gateway -- exec-prebuilt -- --config /path/to/config.yaml
 EOF
   exit 1
@@ -93,9 +93,6 @@ build_inputs = (
     "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh",
     "scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh",
     "scripts/patches/zksync-os-syscoin-v0.4.0.patch",
-    "scripts/prepare-server-airbender.py",
-    "scripts/patches/airbender-server-security.json",
-    "scripts/patches/airbender-server-security.patch",
     "scripts/apply-zksync-era-syscoin-patch.sh",
     "scripts/patches/zksync-era-syscoin.patch",
     "scripts/apply-era-contracts-syscoin-patch.sh",
@@ -271,7 +268,26 @@ if [ "${1:-}" = "build-prebuilt" ]; then
   # can fail. The currently running process keeps its open executable, while a
   # later restart fails closed until this build publishes a new stamp.
   rm -f "${PREBUILT_STAMP}"
-  set -- build --release --bin zksync-os-server
+  set -- build --locked --release --bin zksync-os-server
+fi
+
+# Keep caller-supplied compile and run commands on the checked-in dependency
+# graph, including edge nodes launched directly with `cargo run`.
+if uses_patched_workspace; then
+  case "${1:-}" in
+  build | run | check | test | clippy)
+    CARGO_GRAPH_LOCKED=false
+    for arg in "$@"; do
+      [ "${arg}" = "--" ] && break
+      [ "${arg}" = "--locked" ] && CARGO_GRAPH_LOCKED=true
+    done
+    if [ "${CARGO_GRAPH_LOCKED}" = false ]; then
+      CARGO_SUBCOMMAND="$1"
+      shift
+      set -- "${CARGO_SUBCOMMAND}" --locked "$@"
+    fi
+    ;;
+  esac
 fi
 
 refresh_os_server_config_credentials "$@"
@@ -279,7 +295,6 @@ if [ "${BUILD_PREBUILT}" = true ]; then
   PREBUILT_SOURCE_DIGEST="$(prebuilt_source_digest)"
 fi
 
-SERVER_AIRBENDER_PREPARED=false
 if uses_patched_workspace; then
   configure_build_context
   ZKSYNC_OS_ALIAS=zk_os_forward_system
@@ -302,8 +317,6 @@ if uses_patched_workspace; then
     "${RUN_PATH}" \
     "${ZKSYNC_OS_PATCHED_PATH}" "${ZKSYNC_OS_TAG}" "${ZKSYNC_OS_SOURCE_URL}" \
     "${ZKSYNC_OS_LOCKED_REV}" "${ZKSYNC_OS_PATCHED_REV}"
-  prepare_server_airbender "${RUN_PATH}"
-  SERVER_AIRBENDER_PREPARED=true
   clear_multivm_build_script_cache "${TARGET_DIR}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
@@ -316,8 +329,8 @@ else
 fi
 
 if [ "${BUILD_PREBUILT}" = true ]; then
-  if [ "${SERVER_AIRBENDER_PREPARED}" = true ]; then
-    run_cargo_with_verified_server_airbender "$@"
+  if uses_patched_workspace; then
+    run_cargo_with_stable_workspace_graph "$@"
   else
     cargo "$@"
   fi
@@ -331,8 +344,8 @@ if [ "${BUILD_PREBUILT}" = true ]; then
   exit 0
 fi
 
-if [ "${SERVER_AIRBENDER_PREPARED}" = true ]; then
-  run_cargo_with_verified_server_airbender "$@"
+if uses_patched_workspace; then
+  run_cargo_with_stable_workspace_graph "$@"
 else
   cargo "$@"
 fi
