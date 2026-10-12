@@ -2,6 +2,7 @@
 """One-step durable service relay. Signing and broadcast require --execute."""
 
 import argparse
+from collections.abc import MutableMapping
 from contextlib import contextmanager, nullcontext
 import copy
 import fcntl
@@ -165,15 +166,17 @@ class Store:
             os.close(fd)
 
     def load(self, settings, limits):
-        state = s.read_json(self.root / "state.json", private=True, maximum=MAX_STATE)
-        s.exact(state, ("schema_version", "config_hash", "policy_hash", "operations"))
+        import journal
+        state = journal.load(self.root / "state.json")
+        s.exact(dict(state), ("schema_version", "config_hash", "policy_hash", "operations"))
         s.require(state["schema_version"] == 1 and state["config_hash"] == sha256(settings)
                   and state["policy_hash"] == sha256(limits), "relay_configuration_changed")
-        s.require(type(state["operations"]) is dict and len(state["operations"]) <= 256, "invalid_relay_operations")
+        s.require(isinstance(state["operations"], MutableMapping), "invalid_relay_operations")
         return state
 
     def save(self, state):
-        atomic_json(self.root / "state.json", state)
+        import journal
+        journal.save(self.root / "state.json", state)
 
 
 @functools.lru_cache(maxsize=256)
@@ -479,7 +482,6 @@ class Relay:
         if existing:
             s.require(existing["artifact_hash"] == sha256(item), "package_authorization_already_frozen")
             return operation_id
-        s.require(len(self.state["operations"]) < 256, "relay_operation_limit")
         observed = context(self.rpc, self.settings, self.limits, item, int(self.clock()), simulate=False)
         destination = self.store.root / (operation_id + ".json")
         if destination.exists():

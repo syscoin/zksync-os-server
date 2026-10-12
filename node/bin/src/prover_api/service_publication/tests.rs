@@ -105,7 +105,7 @@ async fn fixture(
         work.timelock,
     )
     .unwrap();
-    let calldata = Bytes::from_static(b"exact retained native calldata");
+    let calldata = encode_historical_calldata(&work, &sidecar);
     let handoff = Handoff {
         schema_version: 1,
         work_hash: keccak256(serde_json::to_vec(&work).unwrap()),
@@ -197,6 +197,7 @@ fn push_contracts(asserter: &Asserter, work: &Work) {
         ] {
             asserter.push_success(&Bytes::from(encoded));
         }
+        asserter.push_success(&Bytes::from(5_u64.abi_encode()));
     }
 }
 
@@ -215,7 +216,7 @@ async fn confirms_exact_bootstrap_and_service_receipts_at_inclusive_depth() {
         asserter.push_success(&receipt);
         asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
         let confirmed = publication
-            .observe(&work, handoff.work_hash, &handoff, &calldata)
+            .observe(&work, handoff.work_hash, &handoff, None)
             .await
             .unwrap()
             .unwrap();
@@ -240,7 +241,7 @@ async fn insufficient_depth_preserves_pending_work() {
     );
     assert!(
         publication
-            .observe(&work, handoff.work_hash, &handoff, &calldata)
+            .observe(&work, handoff.work_hash, &handoff, None)
             .await
             .unwrap()
             .is_none()
@@ -271,15 +272,46 @@ async fn rejects_foreign_calldata_missing_event_reverted_receipt_and_wrong_runti
         push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
         if mutation == "runtime" {
             asserter.push_success(&Bytes::from_static(b"unreviewed"));
+        } else if mutation == "calldata" {
+            push_contracts(&asserter, &work);
         }
-        assert!(
-            publication
-                .observe(&work, handoff.work_hash, &handoff, &calldata)
-                .await
-                .is_err(),
-            "{mutation}"
-        );
+        let error = publication
+            .observe(&work, handoff.work_hash, &handoff, None)
+            .await
+            .unwrap_err();
+        if mutation == "calldata" {
+            assert!(error.to_string().contains("exact native gate call"));
+        }
     }
+}
+
+#[tokio::test]
+async fn historical_service_receipt_rejects_duty_before_pinned_first_period() {
+    let asserter = Asserter::new();
+    let (publication, work, mut handoff, _, _temp) = fixture(&asserter, false).await;
+    handoff.sidecar.duties[0].period = 4;
+    handoff.sidecar.accepted_package.reportHash =
+        zksync_os_contract_interface::prover_service_v1::hash_report(&handoff.sidecar.duties);
+    let calldata = encode_historical_calldata(&work, &handoff.sidecar);
+    let tx = transaction(&work, calldata);
+    handoff.transaction_hash = tx.tx_hash();
+    push_start(
+        &asserter,
+        &work,
+        &handoff,
+        &tx,
+        &receipt(&work, &handoff),
+        44,
+    );
+    push_contracts(&asserter, &work);
+    let error = publication
+        .observe(&work, handoff.work_hash, &handoff, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<zksync_os_contract_interface::prover_service_v1::ValidationError>(),
+        Some(&zksync_os_contract_interface::prover_service_v1::ValidationError::Duty(0))
+    );
 }
 
 #[tokio::test]
@@ -308,7 +340,7 @@ async fn rejects_reorg_and_receipt_disappearance_after_historical_checks() {
         asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
         assert!(
             publication
-                .observe(&work, handoff.work_hash, &handoff, &calldata)
+                .observe(&work, handoff.work_hash, &handoff, None)
                 .await
                 .is_err(),
             "{mutation}"
@@ -427,7 +459,7 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         .service_submission(
             work.gate,
             &handoff.sidecar,
-            &work.context(&handoff.sidecar).unwrap(),
+            &work.context(&handoff.sidecar, 5).unwrap(),
         )
         .unwrap()
         .calldata;
@@ -503,7 +535,7 @@ async fn restart_cannot_lower_the_frozen_confirmation_depth() {
         );
         assert!(
             publication
-                .observe(&work, handoff.work_hash, &handoff, &calldata)
+                .observe(&work, handoff.work_hash, &handoff, None)
                 .await
                 .unwrap()
                 .is_none()

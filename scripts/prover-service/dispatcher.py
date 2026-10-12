@@ -3,9 +3,11 @@
 
 import argparse
 import copy
+from contextlib import ExitStack
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -14,7 +16,9 @@ import urllib.parse
 
 import service as s
 import audit
-from enrollment import MAX_OPERATIONS, enrollment_snapshot, fixed_word
+import journal
+import period_routing
+from enrollment import enrollment_snapshot, fixed_word
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "prover-rental"))
 import job
@@ -58,8 +62,6 @@ class Rpc:
 
 def initialize(root, settings, subscriptions, period, endpoint, rpc, gateway=None):
     subscriptions, anchor = enrollment_snapshot(settings, subscriptions, period, rpc)
-    s.require(len(subscriptions) * settings["duties_per_round"] <= MAX_OPERATIONS,
-              "full_roster_quota_exceeds_dispatcher_capacity")
     endpoint = sentry.endpoint_url(endpoint)
     lanes = {"child": {"settings": settings, "endpoint": endpoint}}
     if gateway is not None:
@@ -103,7 +105,7 @@ class Dispatcher:
         s.require(registry_rpc is not None, "registry_rpc_required")
         self.store, self.network, self.auth = store, network, auth
         self.now = int(time.time()) if now is None else now
-        self.state = s.read_json(store.root / "state.json", private=True)
+        self.state = journal.load(store.root / "state.json", list_fields=("audit.events",))
         s.require(self.state["schema_version"] == 1, "unsupported_journal")
         self.settings = s.config(self.state["settings"])
         s.require(set(self.state["lanes"]) in ({"child"}, {"child", "gateway"}), "invalid_journal_lanes")
@@ -130,18 +132,8 @@ class Dispatcher:
         return self.auth[self.state["operations"][operation]["lane"]] if type(self.auth) is dict else self.auth
 
     def save(self):
-        payload = s.canonical(self.state)
-        s.require(len(payload) <= s.MAX_FILE, "journal_capacity_reached")
-        fd, temporary = tempfile.mkstemp(prefix=".dispatcher-", dir=self.store.root)
-        try:
-            with os.fdopen(fd, "wb") as output:
-                output.write(payload)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, self.store.root / "state.json")
-            sync_dir(self.store.root)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+        journal.save(self.store.root / "state.json", self.state,
+                     list_fields=("audit.events",) if "audit" in self.state else ())
 
     def record(self, kind, payload):
         # Old journals lack the authenticated history needed to reconstruct fair dispatch.
@@ -150,12 +142,12 @@ class Dispatcher:
         if ledger is None:
             return
         events = ledger["events"]
-        s.require(len(events) < audit.MAX_EVENTS, "audit_capacity_reached")
         s.require(self.now >= (events[-1]["at"] if events else self.state["enrollment"]["timestamp"]),
                   "audit_clock_regressed")
         event = {"sequence": len(events) + 1, "at": self.now, "kind": kind,
                  "payload": copy.deepcopy(payload), "previous": ledger["head"]}
         event["hash"] = s.keccak(s.canonical(event))
+        s.require(len(s.canonical(event)) + 1 <= audit.MAX_EVENT_LINE, "audit_event_too_large")
         events.append(event)
         ledger["head"] = event["hash"]
 
@@ -191,12 +183,9 @@ class Dispatcher:
         s.verify_eoa(expected, signature)
         account = message["account"]
         entry = self.state["accounts"][account]
-        s.require((entry["ready"] is None or entry["ready"]["request"]["typed_data"]["message"]["expiresAt"] <= self.now)
-                  and entry["offered"] < self.settings["duties_per_round"],
-                  "request_already_pending_or_quota_offered")
-        s.require(not any(op["account"] == account and op["status"] in
-                          ("pick_pending", "picked", "offered", "submission_pending")
-                          for op in self.state["operations"].values()), "account_has_live_job")
+        s.require(entry["ready"] is None or entry["ready"]["request"]["typed_data"]["message"]["expiresAt"] <= self.now,
+                  "request_already_pending")
+        s.require(not journal.live_account(self.state["operations"], account, audit.LIVE), "account_has_live_job")
         entry["ready"] = {"request": expected, "signature": signature}
         entry["nonce"] += 1
         self.record("ready", entry["ready"])
@@ -218,7 +207,6 @@ class Dispatcher:
         selected = self.next_account()
         if selected is None:
             return "no_authenticated_demand"
-        s.require(len(self.state["operations"]) < MAX_OPERATIONS, "journal_capacity_reached")
         account, index = selected
         operation = f"job-{self.state['next_operation']:06d}"
         directory = self.store.root / operation
@@ -270,12 +258,9 @@ class Dispatcher:
         evidence = decode(raw)
         statements = s.validate_evidence(settings, evidence)
         s.require(set(statements) == {number} and statements[number]["count"] > 0, "nonempty_exact_statement_required")
-        prior = [(key, op) for key, op in self.state["operations"].items()
-                 if op["assignment"] and op["assignment"]["batch_number"] == number
-                 and op["lane"] == self.state["operations"][operation]["lane"]]
         op = self.state["operations"][operation]
         account = op["account"]
-        previous = prior[-1] if prior else None
+        previous = journal.last_batch(self.state["operations"], op["lane"], number)
         s.require(previous is None or previous[1]["status"] in ("rejected", "expired"),
                   "batch_has_live_or_accepted_assignment")
         if previous:
@@ -368,7 +353,8 @@ class Dispatcher:
         s.verify_eoa(self.offer_request(operation), signature)
         manifest = {"payload": self.manifest_payload([operation]), "sequencer_signature": signature}
         if op["status"] == "picked":
-            self.state["accounts"][op["account"]]["offered"] += 1
+            account = self.state["accounts"][op["account"]]
+            account["offered"] = min(account["offered"] + 1, self.settings["duties_per_round"])
             self.record("offered", {"operation": operation, "sequencer_signature": signature})
             op["offer_signature"] = signature
         elif "offer_signature" in op:
@@ -397,7 +383,7 @@ class Dispatcher:
         directory = self.directory(operation)
         authority["status"] = "accepted"
         atomic_json(directory / "authority.json", authority)
-        request = s.prepare_duty(self.lane(operation)["settings"], s.read_json(directory / "evidence.json", private=True),
+        request = s.prepare_receipt(self.lane(operation)["settings"], s.read_json(directory / "evidence.json", private=True),
                                  s.read_json(directory / "manifest.json", private=True), self.state["subscriptions"],
                                  authority, proof, enrollment=self.enrollment)
         s.verify_eoa(request, signature)
@@ -489,9 +475,7 @@ class Dispatcher:
     def range_manifest_payload(self, lane, batch_from, batch_to):
         s.require(lane in self.state["lanes"] and 0 < s.uint(batch_from, 64) <= s.uint(batch_to, 64),
                   "invalid_audit_range")
-        operations = [key for key, op in self.state["operations"].items()
-                      if op["lane"] == lane and op["assignment"] is not None
-                      and batch_from <= op["assignment"]["batch_number"] <= batch_to]
+        operations = [key for key, _ in journal.range_items(self.state["operations"], lane, batch_from, batch_to)]
         if operations:
             return self.manifest_payload(operations)
         settings = self.state["lanes"][lane]["settings"]
@@ -501,27 +485,37 @@ class Dispatcher:
                 "subscription_snapshot_hash": s.keccak(s.canonical(self.state["subscriptions"])),
                 "assignments": [], "retries": []}
 
-    def audit_payload(self, lane, batch_from, batch_to):
+    def audit_payload(self, lane, batch_from, batch_to, *, event_root=None, export_events=True):
         s.require("audit" in self.state, "legacy_journal_has_no_authenticated_audit_history")
         self.range_manifest_payload(lane, batch_from, batch_to)
         ledger, settings = self.state["audit"], self.state["lanes"][lane]["settings"]
         s.require(self.now >= (ledger["events"][-1]["at"] if ledger["events"]
                               else self.state["enrollment"]["timestamp"]), "audit_clock_regressed")
-        return copy.deepcopy({"schema_version": 1, "identity": ledger["identity"],
-                "journal_id": self.state["journal_id"], "events": ledger["events"],
+        if isinstance(ledger["events"], journal.SQLiteEvents):
+            events = {"format": "segmented-jsonl-v1", "segment_events": audit.SEGMENT_EVENTS,
+                      "event_count": len(ledger["events"])}
+            if export_events:
+                s.require(event_root is not None, "audit_event_directory_required")
+                audit.export_events(ledger["events"], event_root)
+            version = 2
+        else:
+            events, version = ledger["events"], 1
+        return copy.deepcopy({"schema_version": version, "identity": ledger["identity"],
+                "journal_id": self.state["journal_id"], "events": events,
                 "checkpoint": {"journalId": self.state["journal_id"], "eventCount": len(ledger["events"]),
                                "eventHead": ledger["head"], "assignmentCursor": self.state["cursor"],
                                "issuedAt": self.now, "chainId": settings["execution_chain_id"],
                                "chainAddress": settings["chain_address"], "batchFrom": batch_from,
                                "batchTo": batch_to, "period": self.state["period"]}})
 
-    def export_audit(self, lane, batch_from, batch_to, signature, prepared=None):
-        bundle = self.audit_payload(lane, batch_from, batch_to)
+    def export_audit(self, lane, batch_from, batch_to, signature, prepared=None, *, event_root=None):
+        bundle = self.audit_payload(lane, batch_from, batch_to, event_root=event_root)
         if prepared is not None:
             issued_at = prepared["checkpoint"]["issuedAt"]
             s.require(s.uint(issued_at, 64) <= self.now, "audit_checkpoint_from_future")
             bundle["checkpoint"]["issuedAt"] = issued_at
-            s.require(bundle == prepared and issued_at >= (bundle["events"][-1]["at"] if bundle["events"]
+            retained = self.state["audit"]["events"]
+            s.require(bundle == prepared and issued_at >= (retained[-1]["at"] if retained
                       else self.state["enrollment"]["timestamp"]), "audit_changed_after_signing_request")
         s.verify_eoa(audit.checkpoint_request(bundle), signature)
         return {**bundle, "sequencer_signature": signature}
@@ -554,8 +548,45 @@ class Dispatcher:
                                        "quota": self.settings["duties_per_round"],
                                        "quota_offered": data["offered"] == self.settings["duties_per_round"],
                                        "native_accepted": sum(op["account"] == account and op["status"] == "accepted"
+                                                       for op in self.state["operations"].values()),
+                                       "credited_accepted": sum(op["account"] == account and op["status"] == "accepted"
+                                                       and op["assignment"]["slot"] < self.settings["duties_per_round"]
+                                                       for op in self.state["operations"].values()),
+                                       "uncredited_accepted": sum(op["account"] == account and op["status"] == "accepted"
+                                                       and op["assignment"]["slot"] == self.settings["duties_per_round"]
                                                        for op in self.state["operations"].values())}
                              for account, data in self.state["accounts"].items()}}
+
+
+def routed_store(args, store, registry_rpc, now):
+    if args.fixed_epoch:
+        return store
+    operations = getattr(args, "operations", None)
+    if operations is None and hasattr(args, "operation"):
+        operations = [args.operation]
+    if operations:
+        parsed = [re.fullmatch(r"(?:(periods/[0-9]+-(?:bootstrap|service))/)?(job-[0-9]{6,20})", value)
+                  for value in operations]
+        s.require(all(parsed), "invalid_operation_handle")
+        roots = {match[1] for match in parsed}
+        s.require(len(roots) == 1, "one_period_per_operation_command")
+        prefix = roots.pop()
+        selected = Store(store.root / prefix) if prefix is not None else Store(args.state)
+        if hasattr(args, "operation"):
+            args.operation = parsed[0][2]
+        else:
+            args.operations = [match[2] for match in parsed]
+        return selected
+    if args.command == "ready":
+        request = s.read_json(args.request)
+        message = request["typed_data"]["message"]
+        return period_routing.current_store(store, registry_rpc, now,
+                    requested_period=message["period"], requested_journal_id=message["journalId"])
+    if args.command == "export-audit":
+        bundle = s.read_json(args.request)["bundle"]
+        return period_routing.current_store(store, registry_rpc, now,
+                    requested_period=bundle["identity"]["period"], requested_journal_id=bundle["journal_id"])
+    return period_routing.current_store(store, registry_rpc, now)
 
 
 def main():
@@ -564,6 +595,7 @@ def main():
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--auth-file")
     parser.add_argument("--gateway-auth-file")
+    parser.add_argument("--fixed-epoch", action="store_true", help="operate only the specified journal for old-work recovery")
     parser.add_argument("--registry-rpc", help="required after init: trusted child RPC for canonical journal enrollment consent")
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init")
@@ -621,23 +653,36 @@ def main():
         print("initialized")
         return
     s.require(args.registry_rpc is not None, "registry_rpc_required")
-    store = Store(args.state)
-    with store.lock("dispatcher.lock"):
+    base = Store(args.state)
+    if not args.fixed_epoch:
+        base = period_routing.root_store(base)
+    registry_rpc = Rpc(args.registry_rpc, network)
+    now = int(time.time())
+    with base.lock("dispatcher.lock"), ExitStack() as locks:
+        store = routed_store(args, base, registry_rpc, now)
+        if store.root != base.root:
+            locks.enter_context(store.lock("dispatcher.lock"))
         auth = None
         if args.command in ("pick", "recover-pick", "submit"):
             state = s.read_json(store.root / "state.json", private=True)
             auth = {"child": sentry.authorization(args.auth_file)}
             if "gateway" in state["lanes"]:
                 auth["gateway"] = sentry.authorization(args.gateway_auth_file)
-        dispatcher = Dispatcher(store, network, auth, registry_rpc=Rpc(args.registry_rpc, network))
+        dispatcher = Dispatcher(store, network, auth, now=now, registry_rpc=registry_rpc)
         if args.command == "work-request":
             s.write_new(args.output, dispatcher.request(args.account, args.expires_at))
         elif args.command == "ready":
             dispatcher.ready(s.read_json(args.request), s.read_json(args.signature)["signature"])
         elif args.command == "pick":
-            print(dispatcher.pick())
+            result = dispatcher.pick()
+            if result.startswith("job-") and store.root != base.root:
+                result = str(store.root.relative_to(base.root) / result)
+            print(result)
         elif args.command == "recover-pick":
-            print(dispatcher.recover_pick())
+            result = dispatcher.recover_pick()
+            if result.startswith("job-") and store.root != base.root:
+                result = str(store.root.relative_to(base.root) / result)
+            print(result)
         elif args.command == "abandon-unexported-pick":
             dispatcher.abandon_unexported_pick()
         elif args.command == "offer-request":
@@ -656,7 +701,8 @@ def main():
         elif args.command == "export":
             dispatcher.export(args.operation, args.output_directory)
         elif args.command == "audit-request":
-            bundle = dispatcher.audit_payload(args.lane, args.batch_from, args.batch_to)
+            bundle = dispatcher.audit_payload(args.lane, args.batch_from, args.batch_to,
+                                               event_root=Path(args.output).parent / "audit-events")
             s.write_new(args.output, {"bundle": bundle, "request": audit.checkpoint_request(bundle)})
         elif args.command == "export-audit":
             prepared = s.read_json(args.request)
@@ -669,7 +715,8 @@ def main():
                      and lane["settings"]["chain_address"] == checkpoint["chainAddress"]]
             s.require(len(lanes) == 1, "audit_package_lane_changed")
             s.write_new(args.output, dispatcher.export_audit(lanes[0], checkpoint["batchFrom"], checkpoint["batchTo"],
-                        s.read_json(args.signature)["signature"], prepared=bundle))
+                        s.read_json(args.signature)["signature"], prepared=bundle,
+                        event_root=Path(args.output).parent / "audit-events"))
         else:
             print(json.dumps(dispatcher.report(), sort_keys=True))
 

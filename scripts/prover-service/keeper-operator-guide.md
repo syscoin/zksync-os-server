@@ -24,6 +24,12 @@ require an EN: it authenticates canonical native commitments, verifies the exact
 FRIs on CPU, checks the returned native SNARK, and audits signed dispatch history
 before endorsing. Selection and wrapping add no duty points, fee entitlement, or bonus weight.
 
+FRI credit quotas do not stop assignments. Ready operators continue receiving
+work after their credit opportunities are exhausted, using the same authenticated
+handoff with `slot == duties_per_round`. These accepted receipts remain in the
+dispatch audit but must be omitted from the rewarded `duties` report. Operators
+control their readiness; declining post-quota work has no implemented ban rule.
+
 ## Pin the trusted host
 
 Keep one mode-0600 keeper configuration per lane, phase, and enrollment journal:
@@ -36,7 +42,8 @@ Keep one mode-0600 keeper configuration per lane, phase, and enrollment journal:
   "settings": { "...": "the complete service.py configuration for this lane" },
   "enrollment": {
     "registry_rpc_file": "/trusted/child-registry-rpc.json",
-    "block_hash": "0xREVIEWED_CANONICAL_ENROLLMENT_BLOCK_HASH"
+    "block_hash": "0xREVIEWED_CANONICAL_ENROLLMENT_BLOCK_HASH",
+    "audit_trust_dir": "/trusted/wrapper-audit-trust"
   },
   "policy": {
     "expected_operator": "0xREVIEWED_OPERATOR",
@@ -65,8 +72,8 @@ phase, reviewed code, or operator requires a new reviewed pool configuration;
 the pool freezes these values at initialization. No live deployment values or
 production VK are supplied by the examples.
 
-Every keeper configuration must contain `enrollment` with exactly
-`registry_rpc_file` and `block_hash`. The first
+Every keeper configuration must contain `enrollment` with
+`registry_rpc_file` and `block_hash`, plus optional `audit_trust_dir`. The first
 is an absolute private connection-file path with `url` and `authorization`; the
 second is the independently reviewed canonical enrollment block for that journal.
 Use the same pin as its dispatch audit trust. This trusted configuration enables
@@ -77,6 +84,13 @@ The coordinator authenticates that pin and the dispatcher's lane before a new
 native SNARK pick. It may reuse the verified immutable snapshot while running;
 it never obtains authority from a serialized journal or work-envelope flag.
 Existing uncertain native leases retain their reconciliation path.
+Cross-period wrapping requires `audit_trust_dir`: an absolute private directory
+containing independently provisioned trust files for every included journal.
+It must equal the wrapper's `audit_trust_dir` and remain available to the rental
+pool when it revalidates a saved compute permit. The current journal's trust pin
+must match `block_hash`; historical journals retain their own reviewed pins.
+The pool rebuilds canonical enrollment authorities from these files, never from
+the work envelope's claimed anchors. Single-period configurations may omit it.
 Offline `service.py` helpers and `keeper.prepare` retain their EOA account-signature
 checks when canonical context is omitted. Contract operators still require a
 separately implemented adapter.
@@ -141,8 +155,12 @@ Keep the transaction journal and coordinator state together across restarts.
 Legacy refresh or witness records that already reserved a nonce without a
 checkpoint scope can recover their original receipt, but are not rebroadcast
 under a new checkpoint.
-The maintenance journal retains at most 256 operations; reaching that limit
-blocks new entries. This limit includes completed refreshes and witnesses.
+The maintenance and relay journals retain their history in an indexed SQLite
+store once they outgrow the small JSON form. Completed history does not impose
+a lifetime operation count cutoff. Migration preserves signed transaction bytes,
+reserved nonces, receipts and retry generations; it does not release a pending
+reservation or authorize a new transaction. Back up the metadata file and its
+database together, retaining the original immutable work artifacts.
 
 ### Configuration and external inputs
 
@@ -239,17 +257,25 @@ time, unavailable witnesses and uncertain transactions produce wait/recovery
 states instead of synthetic work or service credit. No production end-to-end
 deployment or live GPU run is established by the local regression tests.
 
-`dispatcher_dir` may name a single initialized period journal, or a private
-parent containing one initialized journal per period (`5/`, `6/`, and so on).
+`dispatcher_dir` may name the initial journal with automatically created
+`periods/<period>-<phase>/` journals, a particular period journal, or a legacy
+private parent containing one initialized journal per period (`5/`, `6/`).
 The coordinator selects the frozen/opening roster period before acquiring new
 work and taking its signed snapshot. Its keeper pin must match that journal.
 Retain older journals, coordinator/wrapper state, and pool configurations until
-their pending work and uncertain allocations are reconciled. For a new period,
-create its journal through the enrollment workflow, prepare new reviewed keeper,
+their pending work and uncertain allocations are reconciled. The FRI dispatcher
+creates the next journal only from finalized registry time and complete eligible
+enrollment; operators sign fresh readiness for its new identity. For a new period,
+prepare new reviewed keeper,
 coordinator/wrapper and pool configurations in fresh state directories, and supply
 the matching independently reviewed audit trust pin to the operators. The
 immutable configuration does not adopt a new journal's pin automatically. Do not
 run competing dispatchers or rewind old state to change a pin.
+FRI handles from automatic handoff include their journal path, for example
+`periods/6-service/job-000000`; preserve that scope in follow-up commands.
+Use `--fixed-epoch` with the exact old dispatcher journal for pending-pick recovery
+or historical audit export. This preserves recovery without extending old duty
+deadlines or weakening the independent enrollment and audit trust checks.
 
 ## Inspect the phase before offering rewarded FRI work
 
@@ -388,11 +414,12 @@ nonce already owned by the automatic coordinator.
    Obtain `/prover-jobs/v1/SNARK/{from}/{to}/evidence` for the exact returned range.
    The native `payload.json` contains the actual FRI proofs selected by the node.
 
-2. Collect the exact accepted FRI duties, signed manifest, and subscriptions for
+2. Collect the exact accepted credit-bearing FRI duties, signed manifest, and subscriptions for
    that range. Construct `request.json` with the four keys `proposal`, `manifest`,
    `subscriptions`, and `duties`. `proposal` uses the same shape as `service.py
    package`: `mode`, `accepted_package` without generated manifest/report/proof
    hashes, `candidate`, and `candidate_proof`. A control request uses empty duties.
+   Post-quota receipts stay in the dispatch audit and must not enter `duties`.
    The chosen candidate must be a valid member of the committed roster; opening
    clears its wrapper fields and does not select a winner from supplied data.
 

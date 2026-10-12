@@ -1,0 +1,60 @@
+name: Prover service
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prover-service:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      ZKSYNC_OS_SERVER_DIR: ${{ github.workspace }}
+      ZKSYNC_AIRBENDER_PROVER_DIR: ${{ github.workspace }}/companion-prover
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Checkout compatible prover tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: syscoin/zksync-airbender-prover
+          ref: 1e1214f66c8dc7b02052e01b0a3b977c64c894e2
+          path: companion-prover
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1.9.0
+        with:
+          version: v1.7.1
+
+      - name: Run Python service tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 --version
+          cast --version
+          python3 -m unittest discover -s scripts/prover-service -p 'test_*.py' -v \
+            2>&1 | tee "${RUNNER_TEMP}/prover-service-tests.log"
+
+      - name: Upload service test log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prover-service-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prover-service-tests.log
+          if-no-files-found: warn
+          retention-days: 7

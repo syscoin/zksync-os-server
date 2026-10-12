@@ -72,10 +72,17 @@ For a FRI service duty, prepare the operator's response without a private lease:
 
 ```sh
 python3 scripts/prover-service/service.py --config /trusted/config.json \
+  --registry-rpc-file /trusted/child-registry-rpc.json \
+  --enrollment-block-hash INDEPENDENTLY_PINNED_JOURNAL_ENROLLMENT_BLOCK \
   --output /trusted/offered-duty-request.json offered-duty \
   --evidence /trusted/native-evidence.json --manifest /trusted/offer/manifest.json \
   --subscriptions /trusted/offer/subscriptions.json --proof /trusted/returned-fri.json
 ```
+
+Use the enrollment pin for the offer's exact period journal. Automatically
+created period snapshots authenticate consent from the canonical registry tuple,
+including ERC-1271 accounts, and do not reproduce historical signature bytes.
+The canonical enrollment context is therefore required for these offers.
 
 This authenticates the signed current assignment and subscriptions, derives the
 full native statement/count, and hashes the exact returned proof. Its EIP-712 digest
@@ -94,6 +101,13 @@ accepted disposition (or recovery of the identical retained accepted proof)
 permits its durable accepted duty. A proxy response, rental result, or signature
 alone cannot admit work or earn bonus. The selected wrapper verifies these native
 FRIs again as part of the aggregate input before endorsing a SNARK package.
+
+The same rental and signed-result handoff continues after the account's credit
+quota. An assignment with `slot == duties_per_round` is explicitly uncredited:
+its `DutySuccessV1` signature authenticates the proof receipt, but the coordinator
+excludes it from the on-chain duty report. The wrapper audit still checks its
+assignment history, native acceptance and exact proof hash. Reaching the quota
+does not stop work distribution or create additional service bonus.
 
 For service SNARK compute, the external pool requires a current selected-wrapper
 permit. The automated coordinator authenticates the wrapper's signed result,

@@ -136,12 +136,56 @@ def validate_work(settings, envelope, payload):
     return request["typed_data"]["message"]["workHash"]
 
 
-def publish_work(inbox, envelope, payload):
+def copy_audit_events(bundle, event_root, destination):
+    if bundle.get("schema_version") == 3:
+        s.exact(bundle, ("schema_version", "period", "current_journal_id", "contexts"))
+        s.uint(bundle["period"], 64)
+        s.nonzero(bundle["current_journal_id"])
+        contexts = bundle["contexts"]
+        s.require(type(contexts) is list and 0 < len(contexts) <= 101, "invalid_aggregate_audit_contexts")
+        keys = []
+        for context in contexts:
+            s.exact(context, ("journal_id", "request", "bundle"))
+            key = s.nonzero(context["journal_id"])
+            original = context["bundle"]
+            s.require(type(original) is dict and original.get("schema_version") in (1, 2)
+                      and original.get("journal_id") == key, "aggregate_audit_context_changed")
+            keys.append(key)
+        s.require(keys == sorted(set(keys)) and bundle["current_journal_id"] in keys,
+                  "aggregate_audit_contexts_changed")
+        for context in contexts:
+            if context["bundle"]["schema_version"] == 2:
+                s.require(event_root is not None, "audit_event_archive_required")
+                source, root = directory(event_root), directory(destination, create=True)
+                copy_audit_events(context["bundle"], source / context["journal_id"][2:],
+                                  root / context["journal_id"][2:])
+        return
+    if bundle.get("schema_version") != 2:
+        return
+    import audit
+    s.require(event_root is not None, "audit_event_archive_required")
+    source = directory(event_root)
+    # Validate every bounded segment before publishing a discoverable envelope.
+    for _ in audit.iter_events(bundle, source):
+        pass
+    descriptor = bundle["events"]
+    root = directory(destination, create=True)
+    count, width = descriptor["event_count"], descriptor["segment_events"]
+    for index in range((count + width - 1) // width):
+        name = "%016d.jsonl" % index
+        path = source / name
+        s.require(path.lstat().st_nlink == 1, "private_single_link_file_required")
+        data = s.read(path, private=True, maximum=s.MAX_FILE)
+        audit.publish_segment(root / name, data)
+
+
+def publish_work(inbox, envelope, payload, *, event_root=None):
     inbox = directory(inbox)
     work_hash = s.keccak(s.canonical(envelope["body"]))
     root = directory(inbox / work_hash[2:], create=True)
     immutable_json(root / "payload.json", payload, MAX_PAYLOAD)
-    # Readers discover only the final envelope, after the bounded payload is durable.
+    copy_audit_events(envelope["body"]["audit"], event_root, root / "audit-events")
+    # Readers discover only the final envelope, after its payload and archive are durable.
     immutable_json(root / "work.json", envelope)
     return root
 

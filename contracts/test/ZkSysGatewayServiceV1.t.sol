@@ -531,6 +531,100 @@ contract ZkSysGatewayServiceV1Test is Test {
         assertEq(vk, child.verifier.vkHash());
     }
 
+    function testGatewayAcceptedMixedReportSurvivesDeliveryAfterOriginalDutyGrace() public {
+        _qualify();
+        _prepareRostersAndCoordinators();
+        _activate();
+        vm.chainId(CHILD);
+        vm.warp(START + 6_000 - 200);
+        service.renewWrapper(subscriptionHash, 6);
+        vm.warp(service.rosterCutoff(6));
+        WrapperCandidateV1[] memory page = new WrapperCandidateV1[](1);
+        page[0] = candidate;
+        rosterRoot = service.publishRosterPage(6, page);
+        bytes memory message = GateMessenger(address(0x8008)).lastMessage();
+        vm.chainId(GATEWAY);
+        childMailbox.expectMessage(0, 1, 0, 0, address(service), message);
+        gatewayRoster.relayRoster(6, rosterRoot, 1, _inclusion());
+        child.coordinator.prepareRosterDraw(6);
+        child.coordinator.recordRosterDraw(6);
+
+        vm.warp(START + 6_000 + 50);
+        assertFalse(service.isRoundFinalized(5));
+        Package memory p = _package(child, 0, true);
+        uint64 from = p.accepted.batchFrom;
+        ZkSysProofGateV1.StoredBatch memory previous;
+        previous.batchNumber = from - 1;
+        previous.batchHash = keccak256(abi.encode(CHILD, from - 1));
+        ZkSysProofGateV1.StoredBatch[] memory batches = new ZkSysProofGateV1.StoredBatch[](2);
+        p.duties = new DutySuccessV1[](2);
+        bytes32 priorHash = previous.batchHash;
+        for (uint64 i; i < 2; ++i) {
+            p.outputs[i].l2TxCount = 1;
+            batches[i].batchNumber = from + i;
+            batches[i].batchHash = keccak256(abi.encode(CHILD, uint256(from) + i));
+            batches[i].priorityOperationsHash = p.outputs[i].priorityOperationsHash;
+            batches[i].commitment = _outputHash(p.outputs[i]);
+            p.duties[i] = DutySuccessV1({
+                account: vm.addr(ACCOUNT_KEY),
+                subscriptionHash: subscriptionHash,
+                batchNumber: from + i,
+                statementHash: keccak256(
+                    abi.encodePacked(priorHash, batches[i].batchHash, child.gate.chainConfigHash(), batches[i].commitment)
+                ),
+                friProofHash: keccak256(abi.encode("fri", CHILD, from + i)),
+                transactionCount: 1,
+                period: 5 + i,
+                slot: 0,
+                attempt: 1,
+                assignmentId: keccak256(abi.encode("assignment", CHILD, from + i)),
+                operatorSignature: bytes("")
+            });
+            vm.chainId(CHILD);
+            p.duties[i].operatorSignature = _sign(OPERATOR_KEY, service.dutyDigest(p.duties[i]));
+            vm.chainId(GATEWAY);
+            priorHash = batches[i].batchHash;
+        }
+        uint256[] memory proof = new uint256[](46);
+        proof[0] = 0x802;
+        proof[2] = 123;
+        p.proofData = bytes.concat(hex"01", abi.encode(previous, batches, proof));
+        p.accepted.period = 6;
+        p.accepted.rosterRoot = rosterRoot;
+        p.accepted.reportHash = ZkSysServiceTypesV1.hashReport(p.duties);
+        p.accepted.proofHash = keccak256(p.proofData);
+        child.settlement.configure(address(child.gate), p.accepted.proofHash);
+        AcceptedPackageV1 memory proposed = abi.decode(abi.encode(p.accepted), (AcceptedPackageV1));
+        proposed.proofHash = bytes32(0);
+        vm.prank(vm.addr(SEQUENCER_KEY));
+        child.gate.openPackage(proposed);
+        p.accepted.wrapper = candidate.operator;
+        p.accepted.wrapperBeneficiary = candidate.beneficiary;
+        _joint(child, p);
+        bytes32 originalHash = ZkSysServiceTypesV1.hashPackage(p.accepted);
+        assertEq(child.gate.lastAcceptedPackage(), originalHash);
+        bytes memory originalMessage = GateMessenger(address(0x8008)).lastMessage();
+        assertEq(originalMessage, abi.encode(receiver.ACCEPTED_DOMAIN(), originalHash, false));
+
+        vm.chainId(CHILD);
+        vm.warp(START + 6_000 + service.receiptGraceSeconds());
+        assertTrue(service.isRoundFinalized(5));
+        assertFalse(service.isRoundFinalized(6));
+        ServiceMessageVerifierMockV1(address(0x10009))
+            .expectMessage(GATEWAY, 1, 0, 0, address(child.gate), originalMessage);
+        receiver.relayAccepted(p.accepted, p.duties, false, _inclusion());
+        receiver.relayAccepted(p.accepted, p.duties, false, _inclusion());
+        assertTrue(service.acceptedPackages(originalHash));
+        assertEq(p.accepted.reportHash, ZkSysServiceTypesV1.hashReport(p.duties));
+        address account = vm.addr(ACCOUNT_KEY);
+        assertEq(service.assessedSuccesses(account, 5), 0);
+        assertEq(service.rewardedSuccesses(account, 5), 0);
+        assertEq(service.dutySlots(account, 5), 0);
+        assertEq(service.assessedSuccesses(account, 6), 1);
+        assertEq(service.rewardedSuccesses(account, 6), 1);
+        assertEq(service.dutySlots(account, 6), 1);
+    }
+
     function testGatewayOnlyQualificationCannotSetOrOverwriteChildVk() public {
         _relayAccepted(gateway, _bootstrap(gateway, 0, true), true);
         _relayAccepted(gateway, _bootstrap(gateway, 1, true), true);

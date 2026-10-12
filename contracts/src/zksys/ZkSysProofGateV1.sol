@@ -276,7 +276,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
                     _hashTypedDataV4(ZkSysServiceTypesV1.hashPackage(accepted)), sequencerSignature
                 )
         ) revert InvalidPackage();
-        _verifyAndProve(accepted, duties, outputs, proofData);
+        _verifyAndProve(accepted, duties, outputs, proofData, true);
         _publishAccepted(accepted, true);
     }
 
@@ -293,7 +293,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         if (!serviceActive) revert WrongPhase();
         if (transitionWork && duties.length != 0) revert InvalidDutyStatement();
         coordinator.acceptPackage(accepted, candidate, candidateProof, sequencerSignature, wrapperSignature);
-        _verifyAndProve(accepted, duties, outputs, proofData);
+        _verifyAndProve(accepted, duties, outputs, proofData, false);
         _publishAccepted(accepted, false);
     }
 
@@ -301,7 +301,8 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         AcceptedPackageV1 calldata accepted,
         DutySuccessV1[] calldata duties,
         BatchOutput[] calldata outputs,
-        bytes calldata proofData
+        bytes calldata proofData,
+        bool bootstrap
     ) private {
         _checkSettlement();
         if (
@@ -356,7 +357,10 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
             uint256 count = outputs[index].l1TxCount + outputs[index].l2TxCount;
             if (
                 seen & bit != 0 || count == 0 || count != duty.transactionCount
-                    || duty.statementHash != statements[index] || duty.period != accepted.period
+                    || duty.statementHash != statements[index]
+                    || (bootstrap
+                            ? duty.period != accepted.period
+                            : duty.period > accepted.period || duty.period < coordinator.firstServicePeriod())
                     || duty.friProofHash == bytes32(0)
             ) revert InvalidDutyStatement();
             seen |= bit;

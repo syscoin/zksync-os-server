@@ -192,7 +192,11 @@ impl Work {
         Ok(())
     }
 
-    fn context(&self, sidecar: &ProverServiceSidecarV1) -> anyhow::Result<ValidationContextV1> {
+    fn context(
+        &self,
+        sidecar: &ProverServiceSidecarV1,
+        first_service_period: u64,
+    ) -> anyhow::Result<ValidationContextV1> {
         let accepted = &sidecar.accepted_package;
         let phase = if let Some(candidate) = &sidecar.candidate {
             anyhow::ensure!(
@@ -205,6 +209,7 @@ impl Work {
             normalized.wrapper = Address::ZERO;
             normalized.wrapperBeneficiary = Address::ZERO;
             PackagePhaseV1::Service {
+                first_service_period,
                 period: accepted.period,
                 roster_root: accepted.rosterRoot,
                 selected_wrapper_index: candidate.index,
@@ -326,16 +331,7 @@ impl ServicePublication {
                             && !handoff.transaction_hash.is_zero(),
                         "service handoff identity mismatch"
                     );
-                    let context = work.context(&handoff.sidecar)?;
-                    let calldata = if let Some(command) = command {
-                        command
-                            .service_submission(work.gate, &handoff.sidecar, &context)?
-                            .calldata
-                    } else {
-                        handoff.sidecar.validate(&context, &work.proof_data)?;
-                        encode_historical_calldata(work, &handoff.sidecar)
-                    };
-                    self.observe(work, work_hash, &handoff, &calldata).await
+                    self.observe(work, work_hash, &handoff, command).await
                 };
                 match tokio::time::timeout(self.config.rpc_timeout, result).await {
                     Ok(Ok(Some(confirmed))) => {
@@ -363,7 +359,7 @@ impl ServicePublication {
         work: &Work,
         work_hash: B256,
         handoff: &Handoff,
-        calldata: &Bytes,
+        command: Option<&ProofCommand>,
     ) -> anyhow::Result<Option<Confirmed>> {
         let provider = &self.provider;
         anyhow::ensure!(
@@ -406,7 +402,6 @@ impl ServicePublication {
                 && transaction.block_number() == Some(block_number)
                 && transaction.to() == Some(work.gate)
                 && receipt.to == Some(work.gate)
-                && transaction.input() == calldata
                 && transaction.value().is_zero(),
             "service transaction differs from exact native gate call"
         );
@@ -461,7 +456,7 @@ impl ServicePublication {
                 && (bootstrap || gate.coordinator().block(block).call().await? == work.coordinator),
             "historical service gate configuration differs from native work"
         );
-        if !work.coordinator.is_zero() {
+        let first_service_period = if !work.coordinator.is_zero() {
             anyhow::ensure!(
                 keccak256(
                     provider
@@ -484,7 +479,23 @@ impl ServicePublication {
                     && coordinator.sequencer().block(block).call().await? == work.sequencer,
                 "historical coordinator configuration differs from native work"
             );
-        }
+            coordinator.firstServicePeriod().block(block).call().await?
+        } else {
+            0
+        };
+        let context = work.context(&handoff.sidecar, first_service_period)?;
+        let calldata = if let Some(command) = command {
+            command
+                .service_submission(work.gate, &handoff.sidecar, &context)?
+                .calldata
+        } else {
+            handoff.sidecar.validate(&context, &work.proof_data)?;
+            encode_historical_calldata(work, &handoff.sidecar)
+        };
+        anyhow::ensure!(
+            transaction.input() == &calldata,
+            "service transaction differs from exact native gate call"
+        );
         let canonical = provider
             .get_block_by_number(BlockNumberOrTag::Number(block_number))
             .await?
@@ -512,7 +523,7 @@ impl ServicePublication {
             transaction_hash: handoff.transaction_hash,
             block_hash,
             block_number,
-            calldata_hash: keccak256(calldata),
+            calldata_hash: keccak256(&calldata),
             package_hash,
         }))
     }

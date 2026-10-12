@@ -35,6 +35,7 @@ contract GateDrawSource is IZkSysAuthenticatedRootSourceV1 {
 
 contract GateRosterSource is IZkSysWrapperRosterSourceV1 {
     bytes32 public root;
+    uint64 public period;
 
     constructor(bytes32 root_) {
         root = root_;
@@ -53,7 +54,11 @@ contract GateRosterSource is IZkSysWrapperRosterSourceV1 {
     }
 
     function currentRoster() external view returns (uint64, bytes32, uint32) {
-        return (0, root, 1);
+        return (period, root, 1);
+    }
+
+    function setPeriod(uint64 period_) external {
+        period = period_;
     }
 
     function rosterFor(uint64) external view returns (bytes32, uint32) {
@@ -476,6 +481,16 @@ contract ZkSysProofGateTest is Test {
         gate.submitBootstrap(accepted, duties, outputs, proofData, signature);
     }
 
+    function testBootstrapCannotImportDutyFromEarlierPeriod() public {
+        accepted.period = 6;
+        duties[0].period = 5;
+        accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+        bytes memory signature = _signature();
+        vm.expectRevert(ZkSysProofGateV1.InvalidDutyStatement.selector);
+        gate.submitBootstrap(accepted, duties, outputs, proofData, signature);
+        assertEq(settlement.verified(), 0);
+    }
+
     function testBeneficiaryTamperingAndReplayRejected() public {
         bytes memory signature = _signature();
         accepted.sequencerBeneficiary = address(111);
@@ -531,9 +546,23 @@ contract ZkSysProofGateTest is Test {
         internal
         returns (ZkSysWrapperCoordinatorV1 coordinator, WrapperCandidateV1 memory candidate)
     {
+        return _activateAndOpenPeriod(0);
+    }
+
+    function _activateAndOpenPeriod(uint64 period)
+        internal
+        returns (ZkSysWrapperCoordinatorV1 coordinator, WrapperCandidateV1 memory candidate)
+    {
         (coordinator, candidate) = _installReadyCoordinator();
         gate.activateService();
-        vm.warp(1_000);
+        if (period != 0) {
+            vm.warp(999 + uint256(period) * 100);
+            GateRosterSource(address(coordinator.rosterSource())).setPeriod(period);
+            coordinator.prepareRosterDraw(period);
+            coordinator.recordRosterDraw(period);
+        }
+        vm.warp(1_000 + uint256(period) * 100);
+        accepted.period = period;
         accepted.rosterRoot = ZkSysServiceTypesV1.wrapperLeaf(candidate);
         accepted.proofHash = bytes32(0);
         vm.prank(vm.addr(SEQUENCER_KEY));
@@ -560,6 +589,32 @@ contract ZkSysProofGateTest is Test {
         (uint8 sv, bytes32 sr, bytes32 ss) = vm.sign(SEQUENCER_KEY, digest);
         (uint8 wv, bytes32 wr, bytes32 ws) = vm.sign(WRAPPER_KEY, digest);
         return (abi.encodePacked(sr, ss, sv), abi.encodePacked(wr, ws, wv));
+    }
+
+    function testNextPeriodServicePackagePreservesEarlierDutyPeriod() public {
+        duties[0].period = 5;
+        accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+        (ZkSysWrapperCoordinatorV1 coordinator, WrapperCandidateV1 memory candidate) = _activateAndOpenPeriod(6);
+        (bytes memory seqSig, bytes memory wrapSig) = _jointSignatures(coordinator);
+        gate.submit(accepted, duties, outputs, proofData, candidate, new bytes32[](0), seqSig, wrapSig);
+        assertEq(settlement.verified(), 2);
+        assertEq(duties[0].period, 5);
+        assertEq(coordinator.acceptedParent(), gate.lastAcceptedPackage());
+        assertEq(
+            GateMessenger(address(0x8008)).lastMessage(),
+            abi.encode(gate.ACCEPTED_DOMAIN(), gate.lastAcceptedPackage(), false)
+        );
+    }
+
+    function testServicePackageCannotImportFutureDutyPeriod() public {
+        duties[0].period = 7;
+        accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
+        (ZkSysWrapperCoordinatorV1 coordinator, WrapperCandidateV1 memory candidate) = _activateAndOpenPeriod(6);
+        (bytes memory seqSig, bytes memory wrapSig) = _jointSignatures(coordinator);
+        vm.expectRevert(ZkSysProofGateV1.InvalidDutyStatement.selector);
+        gate.submit(accepted, duties, outputs, proofData, candidate, new bytes32[](0), seqSig, wrapSig);
+        assertEq(settlement.verified(), 0);
+        assertTrue(coordinator.packageOpen());
     }
 
     function testJointPackageNativeFailureRollsBackCoordinatorAndRetrySucceeds() public {

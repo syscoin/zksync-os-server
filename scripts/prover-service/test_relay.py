@@ -318,6 +318,43 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(len(self.signatures()), 1)
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def test_history_continues_past_256_and_migration_preserves_pending_proof(self):
+        self.rpc.send_interrupt = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.relayer().step(self.operation_id, True)
+        state = self.store.load(self.settings, self.limits)
+        original = copy.deepcopy(state["operations"][self.operation_id])
+        for number in range(1, 514):
+            historical_hash = "0x" + f"{1000 + number:064x}"
+            previous = copy.deepcopy(original)
+            previous.update(status="stale_unsigned", package_hash=historical_hash, unsigned_transaction=None,
+                            raw_transaction=None, transaction_hash=None, receipt=None, acceptance=None)
+            state["operations"][historical_hash[2:]] = previous
+        self.store.save(state)
+        f = copy.deepcopy(self.f)
+        f["proposal"]["accepted_package"]["turn"] += 1
+        prepared = prepare(f)
+        sidecar = s.complete_package(self.settings, prepared, sign(prepared["sequencer_request"], "sequencer"),
+                                     sign(prepared["wrapper_request"], "wrapper"))
+        following = r.artifact(self.settings, sidecar, prepared["proof_data"])
+        self.rpc.item = following
+        self.rpc.turn = following["sidecar"]["accepted_package"]["turn"]
+        identifier = self.relayer().stage(following)
+        self.assertNotEqual(identifier, self.operation_id)
+        state = self.store.load(self.settings, self.limits)
+        self.assertEqual(len(state["operations"]), 515)
+        self.assertEqual(state["operations"][self.operation_id], original)
+        self.relayer().step(identifier, True)
+        self.assertEqual(len(self.signatures()), 1)
+        self.rpc.item = self.item
+        self.rpc.turn = self.item["sidecar"]["accepted_package"]["turn"]
+        self.rpc.send_interrupt = False
+        self.rpc.accept_receipt()
+        self.rpc.advance()
+        self.assertEqual(self.relayer().step(self.operation_id, True)["status"], "accepted")
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+
     def test_ambiguous_send_restart_rebroadcasts_only_same_raw(self):
         self.rpc.send_error = s.Error("rpc_transport_failure")
         self.assertEqual(self.relayer().step(self.operation_id, execute=True)["status"], "send_uncertain")

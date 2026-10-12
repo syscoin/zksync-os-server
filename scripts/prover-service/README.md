@@ -357,6 +357,50 @@ missing retry history, wrong signers and domain mutation. The shared vectors
 also feed Rust/Solidity regression tests. These are protocol tests with synthetic
 proofs; they do not constitute production proving or live-chain validation.
 
+## Packages crossing a period boundary
+
+Before the first paid period starts, an activated gate's nonrewarded control proof
+can use its existing authenticated bootstrap journal to carry the peer activation
+message. Ordinary paid work requires a service journal. This is part of the
+one-time launch phase.
+
+The wrapper roster period selects who endorses a package. A FRI receipt retains
+its original period, quota slot, subscription and assignment ID even when the
+package opens in the next period. Service receipts can be credited through that
+original period's existing receipt-grace window. Independent wrapper audits exclude
+bootstrap-journal receipts from service reward reports. On-chain checks reject future
+and pre-service-period duties and reuse of already credited bootstrap batches.
+If delivery to the Registry crosses an older duty's grace deadline, it authenticates
+the complete accepted report, consumes that expired batch without credit, and
+continues crediting still-open duties. A consumed batch cannot be relabeled into a
+newer reward period.
+The native validity proof and original accepted receipt remain audit evidence
+after grace closes, without earning credit in a different period.
+
+A cross-period package uses a signed schema-2 manifest containing independently
+signed original journal manifests and an aggregate schema-3 audit. Each journal
+keeps its own canonical enrollment anchor, signed checkpoint and complete event
+history. Archive paths are `audit-events/<journal-id-without-0x>/`. Wrappers need
+an independently provisioned trust file for every included journal and refuse
+omission of independently known receipts in the package's batch range. Operators
+may rotate between periods; each receipt uses its original subscription.
+
+The audit checks native batch coverage across all contexts, then applies the
+current journal's quota-exhaustion rule only to uncovered native work. If an old
+credit window closes during wrapping, the wrapper returns the verified proof
+without endorsing the stale report. The coordinator retains that proof and repairs
+the report through `repairPackage`, preserving the original draw, turn deadlines,
+manifest and receipt history. The repaired package must be endorsed again.
+
+Recovery also refreshes the reward projection before preparing a persisted
+snapshot. Its original signed manifests, receipts and audit prefixes remain
+immutable; expired duties are omitted from the prepared reward report.
+
+Deploy the paired Registry/ProofGate and Rust validation changes with these tools.
+Update trusted contract bytecode hashes from the newly built contracts. The ABI,
+receipt signing fields, native verifier and VK are unchanged; no CRS regeneration
+is required. This is prelaunch code and does not require deployed-state migration.
+
 ## Live trusted-host FRI dispatcher
 
 `dispatcher.py` connects the signed service workflow to the existing native FRI
@@ -364,11 +408,20 @@ pick/submit API. It is opt-in (`--execute` is required), runs on the trusted
 sequencer host, and never receives wallet private keys. Keep one protected journal
 per sequencer, period, and bootstrap/service phase. Never run competing journals
 or rewind a journal from a backup: the durable cursor and per-account slots are the
-allocation authority. The adapter supports up to 256 enrolled accounts and 2,000
-retained assignment attempts per journal; its commands hold an exclusive process
-lock. Initialization requires the full eligible account count times its shared
-quota to fit that limit, counting the child/Gateway quota once. Deployment sizing
-must also leave retry headroom and stay within the enrollment bound. Fair
+allocation authority. The adapter supports up to 256 enrolled accounts; its
+commands hold an exclusive process lock. Assignment and audit history continue
+on disk within the same period identity, without a lifetime assignment count
+cutoff. Large journals migrate from JSON to an indexed SQLite store, retaining
+the account cursor, credit slots, readiness nonces, leases and signed receipts.
+Keep the metadata file and its database together when backing up or restoring;
+the small JSON metadata file alone is not a complete journal. Audit history is
+streamed and checked as one complete hash chain, with bounded records and
+transport chunks. This continuation does not reset enrollment or create another
+quota. Each signed streamed audit needs its own private artifact directory with
+an `audit-events/` subdirectory; keep that complete archive with the audit JSON
+when transporting or restoring it. Auditors currently replay from genesis using
+temporary disk indexes, so CPU and I/O work grow with the epoch history; this is
+not constant-time verification. The separate 256-account enrollment bound still applies. Fair
 allocation assumes the trusted sequencer preserves authenticated
 readiness requests and delivers its signed offers; the journal does not prove
 that a malicious sequencer has withheld neither. This is a trusted dispatcher,
@@ -391,6 +444,24 @@ The account snapshot is fixed for that journal, so finish bootstrap enrollment
 before initializing it. A later bootstrap applicant waits for the next assessment
 snapshot with no failure mark. Never reset or create a competing same-period
 journal to add applicants: that would reuse duty slots and readiness nonces.
+
+After the initial journal is configured, `work-request` and `pick` follow the
+finalized registry clock automatically. A new period or bootstrap-to-service phase
+gets an immutable journal under `periods/<period>-<phase>/`, populated from the
+complete canonical eligible enrollment at one finalized block. No new round is
+created while the boundary remains unfinalized or no eligible subscribers exist.
+Operators must maintain their on-chain subscriptions and sign fresh readiness
+for the new journal; old readiness signatures are never reused.
+
+New-journal picks return scoped handles such as
+`periods/6-service/job-000000`. Pass the complete handle to later offer, proof,
+submit and export commands. A bare handle applies to the explicitly supplied
+`--state` directory; a manifest cannot mix journals. `--fixed-epoch` disables
+automatic routing for old-work reconciliation, including `recover-pick` and
+historical audit exports. It does not reopen an expired readiness window. Old
+journals and lease capabilities remain intact. Wrapper enrollment anchors and
+independent audit trust pins still require their own authenticated configuration;
+automatic FRI routing does not authorize trusting an unreviewed wrapper snapshot.
 
 ```sh
 python3 scripts/prover-service/dispatcher.py --execute --state /private/service-round-5 \
@@ -422,8 +493,17 @@ Registration or readiness earns
 no credit. Authenticated ready accounts receive nonempty native batches in sorted
 account round-robin order, one outstanding assignment per account. No job,
 unregistered identities, expired readiness, and empty work consume no service
-opportunity. A signed offer consumes one opportunity; `report` distinguishes the
-number offered from native successes and says whether the whole quota was offered.
+opportunity. The first quota of signed offers consumes the account's credit
+opportunities. Ready operators continue receiving assignments in the same
+round-robin order after that quota; the quota caps credit, not proving work.
+Those assignments use `slot == duties_per_round` as an uncredited marker and
+retain the same signatures, native verification, lease and retry checks. Their
+accepted receipts are audited but excluded from the rewarded duty report.
+`report` distinguishes offered credit opportunities from native successes and
+says whether the whole quota was offered. Operators choose when to sign readiness;
+this adapter does not implement bans for declining further work.
+Upgrade the dispatcher, service tools and wrapper audit together before exporting
+post-quota work or streamed audit history; older tools reject these handoffs.
 Sparse demand is not an asserted service failure and never creates synthetic
 successes or reward weight.
 
@@ -470,7 +550,8 @@ operator duty signing and package construction. Remote endpoints require HTTPS;
 plain HTTP is limited to loopback native APIs.
 
 The shared Runpod [pool](../prover-rental/pool-README.md) can enqueue this stripped
-payload and evidence in its external-input mode. It returns a proof artifact
+payload and evidence in its external-input mode, including uncredited work after
+the quota. It returns a proof artifact
 without acquiring or submitting another native lease. The dispatcher remains the
 sole owner of its origin lease and signed duty slot.
 
@@ -492,9 +573,12 @@ python3 scripts/prover-service/dispatcher.py --execute --state /private/service-
 ```
 
 Only the native verifier's accepted disposition, or recovery of exactly the same
-retained proof and canonical metadata, produces `duty.json`. The private job folder
-also retains the exact submission and `authority.json` accepted evidence consumed
-by `service.py prepare-duty`. Never export that authority, `picked-wire.json`,
+retained proof and canonical metadata, produces `duty.json`. For post-quota work,
+this file is an authenticated uncredited receipt and must not enter the rewarded
+duty report. The private job folder
+also retains the exact submission and `authority.json` accepted evidence; the
+`service.py duty` command accepts only credit-bearing assignments. Never export
+that authority, `picked-wire.json`,
 `submission.json`, the BasicAuth secret, or the state journal: they contain live
 capabilities. `export` copies an allowlist and includes the signed duty only after
 native acceptance. Native FRI acceptance remains separate from on-chain package
@@ -522,8 +606,10 @@ For a multi-batch package, `manifest-request --operations job-000000 job-000001
 --output package-manifest-request.json` returns the exact combined payload and
 sequencer signing request, including retry history. Assemble its signed manifest
 as `{"payload": ..., "sequencer_signature": "0x..."}` and pass it with the retained
-accepted duties, signed dispatch audit, and canonical native evidence to the
+accepted credit-bearing duties, signed dispatch audit, and canonical native evidence to the
 package workflow. The wrapper checks the native proofs before endorsement.
+The audit retains all accepted receipts, including post-quota work; the rewarded
+duties list contains only slots below `duties_per_round`.
 Do not count an older assignment as a second duty for the same batch.
 All operations in one package must belong to the same execution lane; the tool
 rejects a mixed-chain manifest. Each lane uses its own gate, parent, native proof,

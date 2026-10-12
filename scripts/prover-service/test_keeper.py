@@ -182,6 +182,14 @@ class KeeperTests(unittest.TestCase):
         self.rpc.frozen_override = s.struct_hash("AcceptedPackageV1", s.PACKAGE, k.normalized(accepted))
         self.assertTrue(self.permit()["state"]["control_work"])
 
+    def test_uncredited_receipt_cannot_authorize_extra_reward_in_compute_package(self):
+        f = fixture(batch_count=6)
+        request = {key: f[key] for key in ("proposal", "manifest", "subscriptions", "duties")}
+        self.assertEqual(len(k.prepare(f["settings"], request, f["evidence"], f["fri_payload"])["duties"]), 4)
+        request["duties"] = f["receipts"]
+        with self.assertRaisesRegex(s.Error, "uncredited_assignment_not_rewardable"):
+            k.prepare(f["settings"], request, f["evidence"], f["fri_payload"])
+
     def test_open_and_repair_use_independent_cast_calldata_and_zero_proof_wrapper(self):
         for action in ("open", "repair"):
             result = k.package_call(self.config, self.rpc, self.request, self.f["evidence"], self.f["fri_payload"], 1000, action)
@@ -191,11 +199,11 @@ class KeeperTests(unittest.TestCase):
             self.assertEqual(result["transaction"]["data"], expected)
             self.assertFalse(result["broadcast"])
 
-    def test_cached_package_calls_skip_registry_but_still_validate_native_state(self):
+    def test_cached_package_calls_keep_consent_but_refresh_finalization_and_native_state(self):
         authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
         with patch.object(k, "registry_rpc_for", side_effect=AssertionError("unexpected registry connection")), \
-                patch.object(self.registry_rpc, "call", side_effect=AssertionError("unexpected registry lookup")), \
-                patch.object(self.registry_rpc, "contract", side_effect=AssertionError("unexpected registry view")), \
+                patch("enrollment.enrollment_snapshot", side_effect=AssertionError("unexpected consent rescan")), \
+                patch.object(self.registry_rpc, "contract", wraps=self.registry_rpc.contract) as registry, \
                 patch.object(self.rpc, "call", wraps=self.rpc.call) as native:
             for action in ("open", "repair"):
                 with self.subTest(action=action):
@@ -204,11 +212,27 @@ class KeeperTests(unittest.TestCase):
                     self.assertEqual(result["action"], action + "Package")
             self.assertTrue(any(call.args[0] == "eth_getCode" for call in native.call_args_list))
             self.assertTrue(any(call.args[0] == "eth_call" for call in native.call_args_list))
+            self.assertTrue(registry.call_args_list)
+            self.assertTrue(all(call.args[1] == "isRoundFinalized(uint256)" for call in registry.call_args_list))
         self.assertEqual(len(self.rpc.simulated), 2)
         self.rpc.bad_code = True
         with self.assertRaisesRegex(s.Error, "gate_code_changed"):
             k.package_call(self.config, self.rpc, self.request, self.f["evidence"],
                            self.f["fri_payload"], 1000, "open", enrollment=authority)
+
+    def test_closed_original_duty_period_refuses_compute_before_native_rpc(self):
+        authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
+        contract = self.registry_rpc.contract
+        def closed(address, signature, values, anchor):
+            if signature == "isRoundFinalized(uint256)":
+                self.assertEqual((values, anchor), ([5], h(100)))
+                return s.word(1)
+            return contract(address, signature, values, anchor)
+        with patch.object(self.registry_rpc, "contract", side_effect=closed), patch.object(self.rpc, "call") as native:
+            with self.assertRaisesRegex(s.Error, "closed_duty_period"):
+                k.permit(self.config, self.rpc, self.request, self.f["evidence"], self.f["fri_payload"],
+                         1000, 50, enrollment=authority)
+            self.assertEqual(native.call_count, 0)
 
     def test_cached_package_authority_mismatches_fail_before_native_rpc(self):
         authority = k.enrollment_for(self.config, self.request, self.registry_rpc)
