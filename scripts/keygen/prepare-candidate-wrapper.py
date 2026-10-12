@@ -14,8 +14,8 @@ except ImportError:
     import tomli as tomllib
 
 
-PROVER_TOOLING_COMMIT = "3033d6c1ffbce5080d74d7a2eeb11b922ca78834"
-PROVER_TOOLING_TREE = "6fa29f5c5f16f7811b23ccd76a2ef754932fb6d0"
+PROVER_TOOLING_COMMIT = "51edf5cf1c457f9ff91b937dbc19272ddd0438a1"
+PROVER_TOOLING_TREE = "6528eee69ddf74e07d2bef02e50f66b8dfe514b3"
 WRAPPER_COMMIT = "585595f145cb53a09a130706ca36f80ddcac3961"
 UPSTREAM = "https://github.com/matter-labs/zksync-airbender"
 UPSTREAM_COMMIT = "03454c7a41053a4b88bb421e97fb9efe893a92f5"
