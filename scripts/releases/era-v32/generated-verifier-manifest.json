@@ -2,11 +2,11 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "08bc65200c2813c818573aeae85d74d206e24b77",
-  "candidate_tree": "3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3",
-  "source_patch_sha256": "f095498adc428c686cbdf3c35f7449380fb5ddc2ac6bc9c5d8dc2bc2e0fe889d",
-  "source_applicator_sha256": "ff45c84709a2d65990128e7ce68468b46ae8756208fe3451c62f466e14e8a772",
-  "overlay_sha256": "7f670e876b272d6123d227f4eb76a31ab203369019452faac873a23e87afe764",
+  "reviewed_source_tree": "5e62f430c3755fdc04982b8c36cbeebaee7b21cb",
+  "candidate_tree": "709b50d9a74ee417560436cab34e6342eee793c7",
+  "source_patch_sha256": "2b9d8bb1527f42a1a98096a10ac5e0932e22133b8f4b7baf0bd6f8f2a9a6724c",
+  "source_applicator_sha256": "3454d1626cf342490b56a98992d02f4b6cfd9ed4312a247620be5998c330e8c2",
+  "overlay_sha256": "c0f12ce84690bd7cdd6551171d2f071e04a1f886115d67157be6cb503b12b3d7",
   "overlay_size": 120679,
   "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
   "inventory_rows": 278,
@@ -17,7 +17,7 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "47bc12d4a2858aa63dd43f0656cfa9e9bc853d10e0ec4020f63a89d8d777985d"
+      "sha256": "dfec7bb945ea88c604b71356200c4cc831afa2e6cac693793e1b5258a4e7505b"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
@@ -40,16 +40,33 @@
   "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
-    "status": "completed_targeted_admin_inventory_refresh",
-    "result_sha256": "1b0865801dd8bd8ca31b4d8459f43bd057076c21363cef98b34847b4aa94d554",
-    "reviewed_source_tree": "08bc65200c2813c818573aeae85d74d206e24b77",
-    "candidate_tree": "3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3",
+    "status": "completed_priority_admission_inventory_refresh",
+    "result_sha256": "60e4344a40e31bef505e5de663062cd4b86f90371f65d61deb8bcfc28125b2e3",
+    "reviewed_source_tree": "5e62f430c3755fdc04982b8c36cbeebaee7b21cb",
+    "candidate_tree": "709b50d9a74ee417560436cab34e6342eee793c7",
     "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
-    "changed_inventory_rows": ["l1-contracts/AdminFacet"],
-    "baseline_inventory_row_reproduced": true,
+    "changed_inventory_rows": [
+      "l1-contracts/AdminFacet",
+      "l1-contracts/DefaultUpgrade",
+      "l1-contracts/DiamondInit",
+      "l1-contracts/EraChainTypeManager",
+      "l1-contracts/EraSettlementLayerV31Upgrade",
+      "l1-contracts/GatewayCTMDeployerCTM",
+      "l1-contracts/GatewayCTMDeployerCTMZKsyncOS",
+      "l1-contracts/L1GenesisUpgrade",
+      "l1-contracts/L1V29Upgrade",
+      "l1-contracts/L1ZKsyncOSV30Upgrade",
+      "l1-contracts/MailboxFacet",
+      "l1-contracts/ZKsyncOSChainTypeManager",
+      "l1-contracts/ZKsyncOSSettlementLayerV31Upgrade"
+    ],
+    "baseline_inventory_rows_reproduced": 13,
+    "generated_baseline_inventory_rows_reproduced": 2,
+    "existing_state_migration_implemented": false,
     "evm_and_zk_abi_unchanged": true,
+    "canonical_da_relay_identity_unchanged": true,
     "full_contract_hash_recomputation_passed": false,
-    "scope": "Pinned Foundry, EVM Solc and zk compiler before/after builds reproduce the prior AdminFacet row exactly and refresh its five changed fields for the paused-deposit guard. Only AdminFacet bytecodes change within the compiled 46-EVM/39-zk artifact closure; the other 277 inventory rows, verifier/key and genesis bytes are retained, not newly regenerated or requalified. No complete storage-layout, fresh proof/EVM proof acceptance, deployment, settlement, fixture or public rollout qualification is asserted."
+    "scope": "Pinned before/after EVM and zk compilation of all 13 L1 inventory roots importing the isolated PriorityGasLimits.sol and the two generated-verifier roots. Baseline identities and canonical DA relay bytecode reproduced exactly; measured changed rows refreshed. Config.sol and relay identities, other package rows, genesis, verifier/key and historical proof evidence retained. No live deployment, proof acceptance, settlement, fixture or rollout qualification."
   },
   "historical_pre_paused_guard_contract_generation_provenance": {
     "status": "completed_contract_generation_only",
@@ -165,5 +182,17 @@
     "real_evm_tests": 10,
     "real_evm_verified_record_sha256": "7b9e216483593fbb28c6675ca4f5c6a171e38f539c9d6d772fafa0a904611d6a",
     "scope": "Historical PR323 crypto artifacts for the old c1ab verification key only. These real-proof, EVM, Cancun artifact and native build archive records do not qualify the new d5bc key, new generated tree, or any current deployment."
+  },
+  "historical_pre_priority_cap_contract_generation_provenance": {
+    "status": "completed_targeted_admin_inventory_refresh",
+    "result_sha256": "1b0865801dd8bd8ca31b4d8459f43bd057076c21363cef98b34847b4aa94d554",
+    "reviewed_source_tree": "08bc65200c2813c818573aeae85d74d206e24b77",
+    "candidate_tree": "3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3",
+    "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
+    "changed_inventory_rows": ["l1-contracts/AdminFacet"],
+    "baseline_inventory_row_reproduced": true,
+    "evm_and_zk_abi_unchanged": true,
+    "full_contract_hash_recomputation_passed": false,
+    "scope": "Pinned Foundry, EVM Solc and zk compiler before/after builds reproduce the prior AdminFacet row exactly and refresh its five changed fields for the paused-deposit guard. Only AdminFacet bytecodes change within the compiled 46-EVM/39-zk artifact closure; the other 277 inventory rows, verifier/key and genesis bytes are retained, not newly regenerated or requalified. No complete storage-layout, fresh proof/EVM proof acceptance, deployment, settlement, fixture or public rollout qualification is asserted."
   }
 }

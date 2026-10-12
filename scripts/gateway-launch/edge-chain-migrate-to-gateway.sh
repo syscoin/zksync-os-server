@@ -1399,6 +1399,9 @@ def rpc(method: str, params: list[object]) -> object:
         raise SystemExit("invalid L1 RPC response while quoting via-Gateway repair")
     return payload["result"]
 
+# SYSCOIN: Match the ordinary priority envelope used by AdminFunctions and the fresh Gateway.
+PRIORITY_TX_MAX_GAS_LIMIT = 1 << 24
+
 def quote_outer_value(intent: dict[str, str], value: int) -> tuple[int, int]:
     block = rpc("eth_getBlockByNumber", ["latest", False])
     if not isinstance(block, dict):
@@ -1412,7 +1415,7 @@ def quote_outer_value(intent: dict[str, str], value: int) -> tuple[int, int]:
         (
             abi_word(uint(intent["destination_chain_id"], "destination_chain_id")),
             abi_word(effective_gas_price),
-            abi_word(72_000_000),
+            abi_word(PRIORITY_TX_MAX_GAS_LIMIT),
             abi_word(800),
         )
     ).hex()
@@ -1437,7 +1440,7 @@ def expected_sequence_calldata(intent: dict[str, str], outer_value: int) -> str:
             abi_address(intent["target"]),
             abi_word(uint(intent["value_wei"], "value_wei")),
             abi_word(9 * 32),
-            abi_word(72_000_000),
+            abi_word(PRIORITY_TX_MAX_GAS_LIMIT),
             abi_word(800),
             abi_word(9 * 32 + len(abi_bytes(l2_calldata))),
             abi_address(intent["refund_recipient"]),

@@ -51,7 +51,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
-PUBLISHED_ERA_PATCHED_TREE = "08bc65200c2813c818573aeae85d74d206e24b77"
+PUBLISHED_ERA_PATCHED_TREE = "5e62f430c3755fdc04982b8c36cbeebaee7b21cb"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -3068,7 +3068,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                         address(target),
                         word(args["value_wei"]),
                         word(9 * 32),
-                        word(72_000_000),
+                        word(72_000_000 if mutation == "old_priority_envelope" else 1 << 24),
                         word(800),
                         word(9 * 32 + len(encoded_l2_data)),
                         address(args["refund_recipient"]),
@@ -3284,7 +3284,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
             self.assertEqual(rpc_calls[0]["params"], ["latest", False])
             expected_quote_data = "0x71623274" + "".join(
-                f"{value:064x}" for value in (57001, 1_000_000_000, 72_000_000, 800)
+                f"{value:064x}" for value in (57001, 1_000_000_000, 1 << 24, 800)
             )
             self.assertEqual(
                 rpc_calls[1]["params"],
@@ -3373,7 +3373,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )["transactions"][0]["transaction"]
             self.assertEqual(
                 hashlib.sha256(dry_transaction["input"].encode()).hexdigest(),
-                "0c7d8e03b52b97f7b1e521f21f8f21a0a4d5dd280589f6cc7613f47747dc59a6",
+                "6df83b0972ae74156cb9eaf62e41a67eb25a179b80610964d8679134778557f1",
             )
             self.assertEqual(
                 json.loads(prepared_path.read_text(encoding="utf-8")),
@@ -3513,6 +3513,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 ("60", {"FAKE_FORGE_OUTER_VALUE": "109"}),
                 ("63", {"FAKE_SEQUENCE_MUTATION": "target"}),
                 ("71", {"FAKE_SEQUENCE_MUTATION": "trailing"}),
+                ("72", {"FAKE_SEQUENCE_MUTATION": "old_priority_envelope"}),
             )
             for suffix, mutation in sequence_mutations:
                 with self.subTest(sequence_mutation=mutation):
@@ -3550,7 +3551,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             ][0]["transaction"]["input"]
             self.assertEqual(
                 hashlib.sha256(committer_tx.encode()).hexdigest(),
-                "b878bf7c7ba813ef4c746ca3853aad312c42907d66eaebe0651f072dd4bcfe91",
+                "19e815663ccdb93d22993147a49fff008e9d51f381c3eb8827813c73aa7e4bcb",
             )
             tampered_public.write_bytes(tampered_public.read_bytes() + b"\n")
             tampered = run(
@@ -7560,6 +7561,35 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
 
 
 class EraAttestationStaticTests(unittest.TestCase):
+    def test_priority_gas_constants_are_isolated_from_frozen_relay_metadata(self) -> None:
+        patch = (REPO_ROOT / "scripts/patches/era-contracts-syscoin.patch").read_text()
+        helper = (REPO_ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_text()
+        self.assertNotIn("diff --git a/l1-contracts/contracts/common/Config.sol ", patch)
+        self.assertIn(
+            'verify_exact_file "l1-contracts/contracts/common/Config.sol" "15357"',
+            helper,
+        )
+        self.assertIn("9d7e6e94bfea59d78961c3fb80831246c60788ca8b9f34f39547a9eaedbca351", helper)
+        limits = patch.split(
+            "diff --git a/l1-contracts/contracts/common/PriorityGasLimits.sol ", 1
+        )[1].split("\ndiff --git ", 1)[0]
+        self.assertIn("+uint256 constant PRIORITY_TX_MAX_GAS_LIMIT = 1 << 24;", limits)
+        self.assertIn("+uint256 constant UPGRADE_TX_MAX_GAS_LIMIT = 72_000_000;", limits)
+        for consumer in (
+            "contracts/state-transition/chain-deps/DiamondInit.sol",
+            "contracts/state-transition/chain-deps/facets/Admin.sol",
+            "contracts/state-transition/chain-deps/facets/Mailbox.sol",
+            "contracts/upgrades/BaseZkSyncUpgrade.sol",
+            "contracts/upgrades/L1GenesisUpgrade.sol",
+            "deploy-scripts/upgrade/default-upgrade/CTMUpgradeBase.sol",
+            "deploy-scripts/utils/Utils.sol",
+        ):
+            delta = patch.split(f"diff --git a/l1-contracts/{consumer} ", 1)[1].split(
+                "\ndiff --git ", 1
+            )[0]
+            self.assertIn('PriorityGasLimits.sol";', delta, consumer)
+            self.assertIn(consumer, helper)
+
     def test_plonk_generator_derives_domain_and_ci_runs_native_regressions(self) -> None:
         patch = (REPO_ROOT / "scripts/patches/era-contracts-syscoin.patch").read_text()
         workflow = (REPO_ROOT / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
@@ -7624,10 +7654,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1450462"',
-            'EXPECTED_PATCH_SHA256="f095498adc428c686cbdf3c35f7449380fb5ddc2ac6bc9c5d8dc2bc2e0fe889d"',
-            'EXPECTED_PATCH_PATH_COUNT="70"',
-            'EXPECTED_PATCH_PATHS_SHA256="c3c7bf6bd3ad0bb2511a46f69a3706856362fabae371cc7ec68f9f04435848f1"',
+            'EXPECTED_PATCH_SIZE="1496724"',
+            'EXPECTED_PATCH_SHA256="2b9d8bb1527f42a1a98096a10ac5e0932e22133b8f4b7baf0bd6f8f2a9a6724c"',
+            'EXPECTED_PATCH_PATH_COUNT="87"',
+            'EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -7678,18 +7708,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 70)
+        self.assertEqual(len(patch_paths), 87)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "c3c7bf6bd3ad0bb2511a46f69a3706856362fabae371cc7ec68f9f04435848f1",
+            "5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 70)
+        self.assertEqual(len(manifest_entries), 87)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
@@ -7789,7 +7819,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/deploy-scripts/utils/Utils.sol",
-                "403b4a65b437bf1e0d2dcd7eb567d86bb9418a3b128dc11147249bd3f266d8f3",
+                "14dfe27b1eaa1914b49944dd1a4bac86abc3d55c991b50087d84a31f8e981487",
             ),
             (
                 "l1-contracts/contracts/script-interfaces/IAdminFunctions.sol",
@@ -7813,7 +7843,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol",
-                "a0deb9cded95eedb6d8944e6e6cd026841edfbae6cd14d821978e4e321c7c364",
+                "f74c9569989e12867e8d9375eeb899259acb784036bd083ca5998a6cba1cdf0b",
             ),
         ):
             self.assertIn(path, helper)
@@ -7962,10 +7992,15 @@ class EraAttestationStaticTests(unittest.TestCase):
             self.assertIn(expected, admin_function)
         self.assertIn("governance.getOperationState(operationId)", patch)
         self.assertIn("ownership operation is not ready", patch)
-        self.assertNotIn(
-            "diff --git a/l1-contracts/deploy-scripts/utils/Utils.sol",
-            patch,
+        utils_delta = patch.split(
+            "diff --git a/l1-contracts/deploy-scripts/utils/Utils.sol ", 1
+        )[1].split("\ndiff --git ", 1)[0]
+        self.assertIn(
+            "+    uint256 internal constant MAX_PRIORITY_TX_GAS = PRIORITY_TX_MAX_GAS_LIMIT;",
+            utils_delta,
         )
+        # Priority budget separation must leave the restored ownership-call implementation intact.
+        self.assertNotIn("executeCalls(", utils_delta)
         self.assertIn(
             "diff --git a/configs/genesis/zksync-os/latest.json",
             patch,
@@ -8112,9 +8147,9 @@ class EraAttestationStaticTests(unittest.TestCase):
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "70"',
+            'ERA_PATCH_PATH_COUNT: "87"',
             "ERA_PATCH_PATHS_SHA256: "
-            "c3c7bf6bd3ad0bb2511a46f69a3706856362fabae371cc7ec68f9f04435848f1",
+            "5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105",
             f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
             "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
             'ERA_GENESIS_SIZE: "557518"',
