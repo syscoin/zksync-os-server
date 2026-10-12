@@ -77,8 +77,8 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn('HEAD^{tree}', candidate)
         self.assertLess(workflow.index('scripts/keygen/prepare-candidate-wrapper.py'),
                         workflow.index('compute-aux-params'))
-        self.assertIn('PROVER_TOOLING_COMMIT: cadb0543f98519104235c47d6f10a6ce84ba90ef', workflow)
-        self.assertIn('PROVER_TOOLING_TREE: 3f54a1640e40a68b67a7bf718fa9111099fc2e44', workflow)
+        self.assertIn('PROVER_TOOLING_COMMIT: 3e76c396ac5acef199b1fbd65b0846963c9a08dc', workflow)
+        self.assertIn('PROVER_TOOLING_TREE: ca726e425dd2a8ab6c9ac593f154ec764a07552f', workflow)
         self.assertIn('?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}', stock)
         self.assertNotIn('scripts/keygen/prepare-candidate-wrapper.py', stock)
         self.assertIn('--manifest-path "${WORK_DIR}/wrapper/Cargo.toml"', stock)
