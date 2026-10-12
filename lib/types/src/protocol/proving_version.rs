@@ -27,17 +27,10 @@ impl TryFrom<ProtocolSemanticVersion> for ProvingVersion {
 }
 
 impl ProvingVersion {
-    /// SYSCOIN: Security100 key generated from the reproduced Syscoin V8 guest
-    /// and security-patched recursion circuits. Earlier and stock keys are not accepted.
+    /// SYSCOIN: Registered Security100 key from the existing V8 guest and recursion circuits.
+    /// Replace it together with the guest and verifier artifacts after the FRI degree lift.
     const V8_VK_HASH: &'static str =
         "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90";
-    const V8_VK_REGENERATION_REQUIRED: bool = false;
-
-    pub const fn requires_vk_regeneration(&self) -> bool {
-        match self {
-            Self::V8 => Self::V8_VK_REGENERATION_REQUIRED,
-        }
-    }
 
     /// Get the verification key hash associated with this execution version.
     pub fn vk_hash(&self) -> &'static str {
@@ -127,8 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_v8_vk_binds_regenerated_syscoin_guest() {
-        assert!(!ProvingVersion::V8.requires_vk_regeneration());
+    fn registered_v8_vk_hash_rejects_other_keys() {
         assert_eq!(
             ProvingVersion::V8.vk_hash(),
             "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90"

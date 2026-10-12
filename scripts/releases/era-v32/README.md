@@ -1,5 +1,11 @@
 # Generated Era sources and separate canonical fixture certification
 
+The FRI degree-lift source update supersedes the source and key used for the
+generated verifier described below. Rebuild recursive guests, FRI and SNARK
+setup artifacts, the app-bound key, and Era verifier sources from the updated
+overlays before qualifying the lifted proof stack. The existing manifest and
+receipts record the earlier candidate; they do not qualify the lifted source.
+
 The overlay, manifest and read-only checker bind the newly generated Security100
 verifier to the reviewed source tree containing the paused-deposit guard and native priority observation
 getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source
@@ -102,7 +108,7 @@ deployment and canonical fixture acceptance remain unqualified.
 
 Key generation used one host under the explicitly approved validation constraint.
 It is not two-independent-host reproduction. The existing production workflow's
-identity sentinels and two-runner reconciliation remain gated and are not claimed
+identity checks and two-runner reconciliation remain outstanding and are not claimed
 to have passed. Those historical workflow results must not be invented, and that
 workflow is not a prerequisite imposed by this source-materialization helper.
 
@@ -206,5 +212,5 @@ also preserved byte-for-byte at its historical source tree. It is not consumed
 as current deployment authorization. Before a fresh service deployment, rebuild
 and rederive the full CTM configuration, including the new Getters facet address
 and selectors, and recheck the critical timelock/relay identities against those
-artifacts. The production identity and canonical fixture regeneration gates
-remain closed.
+artifacts. Production identity qualification and canonical fixture regeneration
+remain outstanding.

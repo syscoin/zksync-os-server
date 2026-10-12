@@ -1,5 +1,159 @@
+diff --git a/circuit_defs/bigint_with_control/verifier/src/lib.rs b/circuit_defs/bigint_with_control/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/bigint_with_control/verifier/src/lib.rs
++++ b/circuit_defs/bigint_with_control/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/blake2_with_compression/verifier/src/lib.rs b/circuit_defs/blake2_with_compression/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/blake2_with_compression/verifier/src/lib.rs
++++ b/circuit_defs/blake2_with_compression/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/keccak_special5/verifier/src/lib.rs b/circuit_defs/keccak_special5/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/keccak_special5/verifier/src/lib.rs
++++ b/circuit_defs/keccak_special5/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/add_sub_lui_auipc_mop/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/add_sub_lui_auipc_mop/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/add_sub_lui_auipc_mop/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/add_sub_lui_auipc_mop/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/inits_and_teardowns/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/inits_and_teardowns/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/inits_and_teardowns/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/inits_and_teardowns/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/jump_branch_slt/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/jump_branch_slt/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/jump_branch_slt/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/jump_branch_slt/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/load_store_subword_only/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/load_store_subword_only/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/load_store_subword_only/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/load_store_subword_only/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/load_store_word_only/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/load_store_word_only/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/load_store_word_only/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/load_store_word_only/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/mul_div/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/mul_div/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/mul_div/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/mul_div/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/mul_div_unsigned/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/mul_div_unsigned/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/mul_div_unsigned/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/mul_div_unsigned/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/circuit_defs/unrolled_circuits/shift_binary_csr/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/shift_binary_csr/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/shift_binary_csr/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/shift_binary_csr/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
 diff --git a/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/circuit_layout.rs b/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/circuit_layout.rs
-index 2b5099f62fa32924e74a2e3cc77ad1d0488a293d..83c63dda479283b8216749afa230bc7c97b790b0 100644
+index 2b5099f..83c63dd 100644
 --- a/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/circuit_layout.rs
 +++ b/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/circuit_layout.rs
 @@ -1537,6 +1537,15 @@ pub const VERIFIER_COMPILED_LAYOUT: VerifierCompiledCircuitArtifact<'static, Mer
@@ -19,7 +173,7 @@ index 2b5099f62fa32924e74a2e3cc77ad1d0488a293d..83c63dda479283b8216749afa230bc7c
                  quadratic_terms: &[(
                      Mersenne31Field(1u32),
 diff --git a/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/layout b/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/layout
-index 9d9c1f8fffc8bcc2afeab892c0f553d7968178d1..a63adff74145e370ee9f058814d616a1fb530084 100644
+index 9d9c1f8..a63adff 100644
 --- a/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/layout
 +++ b/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/layout
 @@ -2524,6 +2524,28 @@
@@ -52,7 +206,7 @@ index 9d9c1f8fffc8bcc2afeab892c0f553d7968178d1..a63adff74145e370ee9f058814d616a1
        "quadratic_terms": [
          [
 diff --git a/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/quotient.rs b/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/quotient.rs
-index 5f23d1e9c539b194b235b0f57adf2be2c37afcf6..3af56546ee96b8068cd7254d747be65d46494fe4 100644
+index 5f23d1e..3af5654 100644
 --- a/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/quotient.rs
 +++ b/circuit_defs/unrolled_circuits/unified_reduced_machine/generated/quotient.rs
 @@ -1492,6 +1492,27 @@ unsafe fn evaluate_every_row_except_last(
@@ -84,7 +238,7 @@ index 5f23d1e9c539b194b235b0f57adf2be2c37afcf6..3af56546ee96b8068cd7254d747be65d
              field_ops::mul_assign(&mut accumulated_contribution, &quotient_alpha);
              let contribution = {
 diff --git a/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/circuit_layout.rs b/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/circuit_layout.rs
-index 2b5099f62fa32924e74a2e3cc77ad1d0488a293d..83c63dda479283b8216749afa230bc7c97b790b0 100644
+index 2b5099f..83c63dd 100644
 --- a/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/circuit_layout.rs
 +++ b/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/circuit_layout.rs
 @@ -1537,6 +1537,15 @@ pub const VERIFIER_COMPILED_LAYOUT: VerifierCompiledCircuitArtifact<'static, Mer
@@ -104,7 +258,7 @@ index 2b5099f62fa32924e74a2e3cc77ad1d0488a293d..83c63dda479283b8216749afa230bc7c
                  quadratic_terms: &[(
                      Mersenne31Field(1u32),
 diff --git a/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/quotient.rs b/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/quotient.rs
-index 5f23d1e9c539b194b235b0f57adf2be2c37afcf6..3af56546ee96b8068cd7254d747be65d46494fe4 100644
+index 5f23d1e..3af5654 100644
 --- a/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/quotient.rs
 +++ b/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/generated/quotient.rs
 @@ -1492,6 +1492,27 @@ unsafe fn evaluate_every_row_except_last(
@@ -135,8 +289,22 @@ index 5f23d1e9c539b194b235b0f57adf2be2c37afcf6..3af56546ee96b8068cd7254d747be65d
          {
              field_ops::mul_assign(&mut accumulated_contribution, &quotient_alpha);
              let contribution = {
+diff --git a/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/lib.rs b/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/lib.rs
++++ b/circuit_defs/unrolled_circuits/unified_reduced_machine/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
 diff --git a/cs/src/machine/machine_configurations/full_isa_no_exceptions/basic_state_transition.rs b/cs/src/machine/machine_configurations/full_isa_no_exceptions/basic_state_transition.rs
-index 8d145b839e2ebdc5f9e09892407942bb437687af..64d6dd9b16ea16282224d854b28fa4dfb752332c 100644
+index 8d145b8..64d6dd9 100644
 --- a/cs/src/machine/machine_configurations/full_isa_no_exceptions/basic_state_transition.rs
 +++ b/cs/src/machine/machine_configurations/full_isa_no_exceptions/basic_state_transition.rs
 @@ -266,6 +266,7 @@ pub(crate) fn base_isa_state_transition<
@@ -148,7 +316,7 @@ index 8d145b839e2ebdc5f9e09892407942bb437687af..64d6dd9b16ea16282224d854b28fa4df
          application_results.push(application_result);
      };
 diff --git a/cs/src/machine/machine_configurations/full_isa_no_exceptions/optimized_state_transition.rs b/cs/src/machine/machine_configurations/full_isa_no_exceptions/optimized_state_transition.rs
-index 101bd45c59e585df95d67df1e3eefd074ac20bd3..9e7f1c50d76ef5aff8191f0b14a0f4bd7fcf7cef 100644
+index 101bd45..9e7f1c5 100644
 --- a/cs/src/machine/machine_configurations/full_isa_no_exceptions/optimized_state_transition.rs
 +++ b/cs/src/machine/machine_configurations/full_isa_no_exceptions/optimized_state_transition.rs
 @@ -259,6 +259,7 @@ pub(crate) fn optimized_base_isa_state_transition<
@@ -160,7 +328,7 @@ index 101bd45c59e585df95d67df1e3eefd074ac20bd3..9e7f1c50d76ef5aff8191f0b14a0f4bd
          application_results.push(application_result);
      };
 diff --git a/cs/src/machine/machine_configurations/minimal_no_exceptions/basic_state_transition.rs b/cs/src/machine/machine_configurations/minimal_no_exceptions/basic_state_transition.rs
-index 65f33c316f46dfd405cb5411c625726ce9261e28..6980f88737a568f8197f2f54c843f53d25805741 100644
+index 65f33c3..6980f88 100644
 --- a/cs/src/machine/machine_configurations/minimal_no_exceptions/basic_state_transition.rs
 +++ b/cs/src/machine/machine_configurations/minimal_no_exceptions/basic_state_transition.rs
 @@ -276,6 +276,7 @@ pub(crate) fn reduced_isa_state_transition<
@@ -172,7 +340,7 @@ index 65f33c316f46dfd405cb5411c625726ce9261e28..6980f88737a568f8197f2f54c843f53d
          application_results.push(application_result);
      };
 diff --git a/cs/src/machine/machine_configurations/minimal_no_exceptions/optimized_state_transition.rs b/cs/src/machine/machine_configurations/minimal_no_exceptions/optimized_state_transition.rs
-index 2eb500480fd8d6c28029b044d75f3c75fd7b8789..0741530c882e4df7f81455c298cb459158fb2cf1 100644
+index 2eb5004..0741530 100644
 --- a/cs/src/machine/machine_configurations/minimal_no_exceptions/optimized_state_transition.rs
 +++ b/cs/src/machine/machine_configurations/minimal_no_exceptions/optimized_state_transition.rs
 @@ -243,6 +243,7 @@ pub(crate) fn optimized_reduced_isa_state_transition<
@@ -184,7 +352,7 @@ index 2eb500480fd8d6c28029b044d75f3c75fd7b8789..0741530c882e4df7f81455c298cb4591
          application_results.push(application_result);
      };
 diff --git a/cs/src/machine/ops/common_impls/csr_with_delegation.rs b/cs/src/machine/ops/common_impls/csr_with_delegation.rs
-index 8df867ea763c92f0e3fd5315179b2029738482ee..5426d99034ebfd6cd59548b437b93b607edf2d2b 100644
+index 8df867e..5426d99 100644
 --- a/cs/src/machine/ops/common_impls/csr_with_delegation.rs
 +++ b/cs/src/machine/ops/common_impls/csr_with_delegation.rs
 @@ -18,6 +18,8 @@ pub fn apply_csr_with_delegation<
@@ -212,7 +380,7 @@ index 8df867ea763c92f0e3fd5315179b2029738482ee..5426d99034ebfd6cd59548b437b93b60
              let offset = src1.0[1];
  
 diff --git a/cs/src/machine/ops/unrolled/reduced_machine_ops.rs b/cs/src/machine/ops/unrolled/reduced_machine_ops.rs
-index 1179d864f170edb90a2061f2bb873f85746ea49f..1280e8caeb35178b246bd34a0112c7046c10b44c 100644
+index 1179d86..1280e8c 100644
 --- a/cs/src/machine/ops/unrolled/reduced_machine_ops.rs
 +++ b/cs/src/machine/ops/unrolled/reduced_machine_ops.rs
 @@ -279,6 +279,7 @@ fn apply_reduced_machine_circuit<
@@ -224,7 +392,7 @@ index 1179d864f170edb90a2061f2bb873f85746ea49f..1280e8caeb35178b246bd34a0112c704
          application_results.push(application_result);
      };
 diff --git a/execution_utils/src/lib.rs b/execution_utils/src/lib.rs
-index ea31de9b5101ee52275a9571a9cbcca0bd1b6ba2..674d91cbf6084e1d6bfc3341bbe3ad43045fee7d 100644
+index ea31de9..674d91c 100644
 --- a/execution_utils/src/lib.rs
 +++ b/execution_utils/src/lib.rs
 @@ -19,6 +19,8 @@ mod proofs;
@@ -238,7 +406,7 @@ index ea31de9b5101ee52275a9571a9cbcca0bd1b6ba2..674d91cbf6084e1d6bfc3341bbe3ad43
  pub mod unified_circuit;
 diff --git a/execution_utils/src/setup_summaries.rs b/execution_utils/src/setup_summaries.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..236afd34e989f99d92c33e1cb9dbb404dd6e8da1
+index 0000000..236afd3
 --- /dev/null
 +++ b/execution_utils/src/setup_summaries.rs
 @@ -0,0 +1,276 @@
@@ -519,7 +687,7 @@ index 0000000000000000000000000000000000000000..236afd34e989f99d92c33e1cb9dbb404
 +    }
 +}
 diff --git a/execution_utils/src/unrolled_gpu.rs b/execution_utils/src/unrolled_gpu.rs
-index f5d1bab55b200753e45ccab052827a88bfa39e6a..2bed4c3ac4adeecef01f49535a87c67d7b30a100 100644
+index f5d1bab..2bed4c3 100644
 --- a/execution_utils/src/unrolled_gpu.rs
 +++ b/execution_utils/src/unrolled_gpu.rs
 @@ -1,4 +1,5 @@
@@ -733,8 +901,24 @@ index f5d1bab55b200753e45ccab052827a88bfa39e6a..2bed4c3ac4adeecef01f49535a87c67d
      }
  
      pub fn prove(
+diff --git a/gpu_prover/native/stage4.cu b/gpu_prover/native/stage4.cu
+index d187b07..47b3dee 100644
+--- a/gpu_prover/native/stage4.cu
++++ b/gpu_prover/native/stage4.cu
+@@ -168,7 +168,9 @@ EXTERN __launch_bounds__(512, 2) __global__ void ab_deep_quotient_kernel(
+   acc_z = e4::mul(acc_z, denom_z);
+   acc_z_omega = e4::mul(acc_z_omega, denom_z_omega);
+ 
+-  quotient.set(e4::add(acc_z, acc_z_omega));
++  // Restore the degree lost by opening before constructing the FRI codeword.
++  const e2 x = get_power_of_w(raw_row << (CIRCLE_GROUP_LOG_ORDER - log_n), false);
++  quotient.set(e4::mul(e4::add(acc_z, acc_z_omega), x));
+ }
+ 
+ } // namespace airbender::stage4
+\ No newline at end of file
 diff --git a/gpu_prover/src/execution/cpu_worker.rs b/gpu_prover/src/execution/cpu_worker.rs
-index 25d86655ec0f9ab186918da022c8e2c9c51fbd50..a5ac41470af8de340c851d9518a87b851459f5bd 100644
+index 25d8665..a5ac414 100644
 --- a/gpu_prover/src/execution/cpu_worker.rs
 +++ b/gpu_prover/src/execution/cpu_worker.rs
 @@ -3,7 +3,8 @@ use crate::circuit_type::{CircuitType, UnrolledCircuitType};
@@ -796,7 +980,7 @@ index 25d86655ec0f9ab186918da022c8e2c9c51fbd50..a5ac41470af8de340c851d9518a87b85
                      sequence_id,
 diff --git a/gpu_prover/src/execution/empty_inits_and_teardowns.rs b/gpu_prover/src/execution/empty_inits_and_teardowns.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..d1e999733cdc6c70fab448fb1889354437f5e33a
+index 0000000..d1e9997
 --- /dev/null
 +++ b/gpu_prover/src/execution/empty_inits_and_teardowns.rs
 @@ -0,0 +1,155 @@
@@ -956,7 +1140,7 @@ index 0000000000000000000000000000000000000000..d1e999733cdc6c70fab448fb18893544
 +    }
 +}
 diff --git a/gpu_prover/src/execution/gpu_worker.rs b/gpu_prover/src/execution/gpu_worker.rs
-index 90ec085c6bfb6ede72b68503f1dd5b5f3e66c750..eb444ece0f45b31c98f2edba303d0d5804b00fe7 100644
+index 90ec085..eb444ec 100644
 --- a/gpu_prover/src/execution/gpu_worker.rs
 +++ b/gpu_prover/src/execution/gpu_worker.rs
 @@ -16,10 +16,10 @@ use crate::prover::setup::SetupPrecomputations;
@@ -991,7 +1175,7 @@ index 90ec085c6bfb6ede72b68503f1dd5b5f3e66c750..eb444ece0f45b31c98f2edba303d0d58
      let mut context = ProverContext::new(&prover_context_config)?;
      let preset = context.get_memory_preset();
 diff --git a/gpu_prover/src/execution/simulation_runner.rs b/gpu_prover/src/execution/simulation_runner.rs
-index a62de81bb7dd46efcb190cd4231d1fa09b765692..4a31ca8652a1b77f87200625b5164321e01810d3 100644
+index a62de81..4a31ca8 100644
 --- a/gpu_prover/src/execution/simulation_runner.rs
 +++ b/gpu_prover/src/execution/simulation_runner.rs
 @@ -1,4 +1,5 @@
@@ -1055,8 +1239,84 @@ index a62de81bb7dd46efcb190cd4231d1fa09b765692..4a31ca8652a1b77f87200625b5164321
          let trace = self.trace.take().unwrap();
          let result = WorkerResult::SnapshotProduced;
          self.results.as_ref().unwrap().send(result).unwrap();
+diff --git a/prover/src/prover_stages/stage4.rs b/prover/src/prover_stages/stage4.rs
+index 4386624..9730eaa 100644
+--- a/prover/src/prover_stages/stage4.rs
++++ b/prover/src/prover_stages/stage4.rs
+@@ -575,11 +575,13 @@ pub fn prover_stage_4<const N: usize, A: GoodAllocator, T: MerkleTreeConstructor
+                 let mut deep_poly_trace_view = deep_poly_trace.row_view(range.clone());
+                 let mut z_minus_omega_powers_view = z_minus_omega_powers_values.row_view(range);
+                 let omega_inv = twiddles.omega_inv;
++                let omega = twiddles.omega;
+ 
+                 Worker::smart_spawn(
+                     scope,
+                     thread_idx == geometry.len() - 1,
+                     move |_| {
++                    let mut omega_power = omega.pow(chunk_start as u32);
+                     for _i in 0..chunk_size {
+                         let (exec_trace_view_row, exec_trace_view_next_row) =
+                             exec_trace_view.current_and_next_row_ref();
+@@ -791,6 +793,10 @@ pub fn prover_stage_4<const N: usize, A: GoodAllocator, T: MerkleTreeConstructor
+ 
+                         let mut accumulated = contribution_at_z;
+                         accumulated.add_assign(&contribution_at_z_omega);
++                        // A linear opening lowers the degree by one. Restore it before FRI
++                        // so a degree-N source cannot fit the degree-<N codeword bound.
++                        accumulated.mul_assign_by_base(&omega_power);
++                        omega_power.mul_assign(&omega);
+ 
+                         // write back accumulated value
+                         deep_poly_trace_view_row_ptr.write(accumulated);
+@@ -811,13 +817,13 @@ pub fn prover_stage_4<const N: usize, A: GoodAllocator, T: MerkleTreeConstructor
+     dbg!(now.elapsed());
+ 
+     if DEBUG_QUOTIENT == true {
+-        // check that we have highest monomial coefficient 0
++        // X times an honest DEEP quotient has zero constant coefficient.
+         let mut tmp = deep_poly_trace.clone();
+         parallel_row_major_full_line_partial_ifft(&mut tmp, &twiddles.inverse_twiddles, worker);
+ 
+-        // NOTE: output is bitreversed, but we are interested at the highest monomial coefficient,
+-        // so it stays at the same place
+-        let row_view = tmp.row_view((trace_len - 1)..trace_len);
++        // The constant coefficient stays at index zero under bit reversal. A nonzero
++        // value also detects wrapping a degree-N lifted term on the main subgroup.
++        let row_view = tmp.row_view(0..1);
+         let row = row_view.current_row_ref();
+         for el in row {
+             assert!(el.is_zero());
+diff --git a/prover/src/prover_stages/stage5.rs b/prover/src/prover_stages/stage5.rs
+index 815af1b..05ab509 100644
+--- a/prover/src/prover_stages/stage5.rs
++++ b/prover/src/prover_stages/stage5.rs
+@@ -100,20 +100,20 @@ pub fn prover_stage_5<const N: usize, A: GoodAllocator, T: MerkleTreeConstructor
+         }
+ 
+         assert_eq!(
+-            *monomials_from_main_domain.0.last().unwrap(),
++            *monomials_from_main_domain.0.first().unwrap(),
+             Mersenne31Complex::ZERO
+         );
+         assert_eq!(
+-            *monomials_from_main_domain.1.last().unwrap(),
++            *monomials_from_main_domain.1.first().unwrap(),
+             Mersenne31Complex::ZERO
+         );
+ 
+         assert_eq!(
+-            *monomials_from_coset.0.last().unwrap(),
++            *monomials_from_coset.0.first().unwrap(),
+             Mersenne31Complex::ZERO
+         );
+         assert_eq!(
+-            *monomials_from_coset.1.last().unwrap(),
++            *monomials_from_coset.1.first().unwrap(),
+             Mersenne31Complex::ZERO
+         );
+     }
 diff --git a/tools/cli/src/prover_utils.rs b/tools/cli/src/prover_utils.rs
-index adbdd65a434ff9a4941d9915be80bfda4bca1741..7f18a36aaa240d4e7246209f9fb66e5746c8814a 100644
+index adbdd65..7f18a36 100644
 --- a/tools/cli/src/prover_utils.rs
 +++ b/tools/cli/src/prover_utils.rs
 @@ -1,4 +1,5 @@
@@ -1157,7 +1417,7 @@ index adbdd65a434ff9a4941d9915be80bfda4bca1741..7f18a36aaa240d4e7246209f9fb66e57
                  #[cfg(not(feature = "gpu"))]
                  {
 diff --git a/tools/generator/src/unrolled_layouts.rs b/tools/generator/src/unrolled_layouts.rs
-index 17181d66591678733e0e6d2bfbddb279e1292e00..6ffb3668ef54279e41a0ab1115f4466da831fedc 100644
+index 17181d6..6ffb366 100644
 --- a/tools/generator/src/unrolled_layouts.rs
 +++ b/tools/generator/src/unrolled_layouts.rs
 @@ -95,3 +95,85 @@ pub(crate) fn unified_reduced_machine_circuit_layout() -> (
@@ -1247,7 +1507,7 @@ index 17181d66591678733e0e6d2bfbddb279e1292e00..6ffb3668ef54279e41a0ab1115f4466d
 +    }
 +}
 diff --git a/tools/pow_config_generator/src/main.rs b/tools/pow_config_generator/src/main.rs
-index e7a224f9c88bc4255dd505f93325d75f9ab0d639..d48467f013363f3d02d7683f38edd2c5023bed16 100644
+index e7a224f..d48467f 100644
 --- a/tools/pow_config_generator/src/main.rs
 +++ b/tools/pow_config_generator/src/main.rs
 @@ -10,12 +10,44 @@ pub mod pow_computation;
@@ -5698,8 +5958,185 @@ delta 86
 zcmWN=w+(<W002SRn4EJC-jw2Ln1UgYn1EF%nE_6^<JraWUlB+Q6ebon4lW)(0U;4F
 e2`L#l1tk?V4J{o#10xeN%c;9tZsHnlt=<pbL>w9b
 
+diff --git a/verifier/src/lib.rs b/verifier/src/lib.rs
+index 1bb112b..df7c33f 100644
+--- a/verifier/src/lib.rs
++++ b/verifier/src/lib.rs
+@@ -852,6 +852,9 @@ pub unsafe fn verify_with_configuration<
+             };
+ 
+             let mut expected_value = expected_value;
++            // Restore the degree lost by the linear opening before FRI. Use the
++            // full coset point, before folding mutates it or applies tau scaling.
++            expected_value.mul_assign_by_base(&evaluation_point);
+             let mut evaluation_point = evaluation_point;
+ 
+             let mut domain_size_log_2 = TRACE_LEN_LOG2;
+diff --git a/verifier_common/src/fri_folding.rs b/verifier_common/src/fri_folding.rs
+index 5d8b21d..2fddaec 100644
+--- a/verifier_common/src/fri_folding.rs
++++ b/verifier_common/src/fri_folding.rs
+@@ -282,3 +282,158 @@ pub unsafe fn fri_fold_by_log_n_with_fma<const FOLDING_DEGREE_LOG2: usize>(
+     *tree_index >>= FOLDING_DEGREE_LOG2;
+     *domain_index = shared_bits_in_folding;
+ }
++
++#[cfg(test)]
++mod degree_lift_tests {
++    use super::*;
++
++    const SOURCE_DEGREE_BOUND: u32 = 8;
++
++    fn honest_source(x: Mersenne31Complex) -> Mersenne31Complex {
++        x + x.pow(SOURCE_DEGREE_BOUND - 1)
++    }
++
++    fn boundary_source(x: Mersenne31Complex) -> Mersenne31Complex {
++        Mersenne31Complex::ONE + x.pow(SOURCE_DEGREE_BOUND)
++    }
++
++    fn opened_value(
++        source: fn(Mersenne31Complex) -> Mersenne31Complex,
++        x: Mersenne31Complex,
++        lift_degree: bool,
++    ) -> Mersenne31Quartic {
++        let z = Mersenne31Complex::TWO_ADICITY_GENERATORS[5];
++        let mut quotient = source(z) - source(x);
++        quotient.mul_assign(&(z - x).inverse().unwrap());
++        if lift_degree {
++            quotient.mul_assign(&x);
++        }
++        Mersenne31Quartic::from_base(quotient)
++    }
++
++    fn base_words(value: Mersenne31Quartic) -> [Mersenne31Field; 4] {
++        [value.c0.c0, value.c0.c1, value.c1.c0, value.c1.c1]
++    }
++
++    fn fold_query(
++        source: fn(Mersenne31Complex) -> Mersenne31Complex,
++        lift_degree: bool,
++        coset: usize,
++        index: usize,
++        challenge: Mersenne31Quartic,
++    ) -> (Mersenne31Complex, Mersenne31Quartic) {
++        let omega = Mersenne31Complex::TWO_ADICITY_GENERATORS[3];
++        let tau = Mersenne31Complex::TWO_ADICITY_GENERATORS[4];
++        let offset = if coset == 0 {
++            Mersenne31Complex::ONE
++        } else {
++            tau
++        };
++        let x = offset * omega.pow(index as u32);
++        let pair_x = offset * omega.pow((index % 4) as u32);
++        let first = opened_value(source, pair_x, lift_degree);
++        let second = opened_value(source, pair_x * omega.pow(4), lift_degree);
++        let leaf = [base_words(first), base_words(second)].concat();
++        let mut expected_value = opened_value(source, x, lift_degree);
++        let mut evaluation_point = x;
++        let mut domain_size_log_2 = 3;
++        let mut domain_index = index;
++        let mut tree_index = index.reverse_bits() >> (usize::BITS - 3);
++        let mut offset_inv = offset.inverse().unwrap();
++        unsafe {
++            fri_fold_by_log_n::<1>(
++                &mut expected_value,
++                &mut evaluation_point,
++                &mut domain_size_log_2,
++                &mut domain_index,
++                &mut tree_index,
++                &mut offset_inv,
++                &leaf,
++                &[challenge],
++                &[Mersenne31Complex::ONE],
++            );
++        }
++        assert_eq!(domain_size_log_2, 2);
++        assert_eq!(domain_index, index % 4);
++        assert_eq!(evaluation_point, x.pow(2));
++        (evaluation_point, expected_value)
++    }
++
++    fn folded_cosets(
++        source: fn(Mersenne31Complex) -> Mersenne31Complex,
++        lift_degree: bool,
++    ) -> [[(Mersenne31Complex, Mersenne31Quartic); 4]; 2] {
++        let challenge = Mersenne31Quartic::from_array_of_base([
++            Mersenne31Field::new(2),
++            Mersenne31Field::new(3),
++            Mersenne31Field::new(5),
++            Mersenne31Field::new(7),
++        ]);
++        let mut samples = [[(Mersenne31Complex::ZERO, Mersenne31Quartic::ZERO); 4]; 2];
++        for coset in 0..2 {
++            for index in 0..4 {
++                samples[coset][index] = fold_query(source, lift_degree, coset, index, challenge);
++                // The opposite member of each FRI leaf must produce the same folded value.
++                assert_eq!(
++                    samples[coset][index],
++                    fold_query(source, lift_degree, coset, index + 4, challenge)
++                );
++            }
++        }
++        samples
++    }
++
++    fn terminal_coefficients(
++        main_coset: &[(Mersenne31Complex, Mersenne31Quartic); 4],
++    ) -> [Mersenne31Quartic; 4] {
++        let inverse_four = Mersenne31Field::new(4).inverse().unwrap();
++        let inverse_four = Mersenne31Complex::from_base(inverse_four);
++        let mut coefficients = [Mersenne31Quartic::ZERO; 4];
++        for (degree, coefficient) in coefficients.iter_mut().enumerate() {
++            for &(point, value) in main_coset {
++                let weight = point.inverse().unwrap().pow(degree as u32);
++                let mut term = value;
++                term.mul_assign_by_base(&weight);
++                coefficient.add_assign(&term);
++            }
++            coefficient.mul_assign_by_base(&inverse_four);
++        }
++        coefficients
++    }
++
++    fn evaluate_terminal(
++        coefficients: &[Mersenne31Quartic; 4],
++        point: Mersenne31Complex,
++    ) -> Mersenne31Quartic {
++        let mut result = Mersenne31Quartic::ZERO;
++        for coefficient in coefficients.iter().rev() {
++            result.mul_assign_by_base(&point);
++            result.add_assign(coefficient);
++        }
++        result
++    }
++
++    #[test]
++    fn degree_lift_excludes_opening_quotient_at_source_degree_boundary() {
++        let honest_lifted = folded_cosets(honest_source, true);
++        let boundary_unlifted = folded_cosets(boundary_source, false);
++        let boundary_lifted = folded_cosets(boundary_source, true);
++
++        for samples in [&honest_lifted, &boundary_unlifted] {
++            let coefficients = terminal_coefficients(&samples[0]);
++            for coset in samples {
++                for &(point, value) in coset {
++                    assert_eq!(evaluate_terminal(&coefficients, point), value);
++                }
++            }
++        }
++
++        let boundary_coefficients = terminal_coefficients(&boundary_lifted[0]);
++        for &(point, value) in &boundary_lifted[0] {
++            assert_eq!(evaluate_terminal(&boundary_coefficients, point), value);
++        }
++        for &(point, value) in &boundary_lifted[1] {
++            assert_ne!(evaluate_terminal(&boundary_coefficients, point), value);
++        }
++    }
++}
 diff --git a/verifier_common/src/lib.rs b/verifier_common/src/lib.rs
-index 786e67568002d272a3959a35ce3005d926748781..22ccfdc3da7abcad6159deb93717aa7cb9d28508 100644
+index 786e675..22ccfdc 100644
 --- a/verifier_common/src/lib.rs
 +++ b/verifier_common/src/lib.rs
 @@ -28,6 +28,17 @@ impl SecurityModel {
@@ -5721,7 +6158,7 @@ index 786e67568002d272a3959a35ce3005d926748781..22ccfdc3da7abcad6159deb93717aa7c
  #[cfg(not(feature = "worst_case_config_generation"))]
  #[allow(dead_code)]
 diff --git a/verifier_common/src/pow_config_worst_constants.rs b/verifier_common/src/pow_config_worst_constants.rs
-index 248df6fe4b8b98cf39c5bb65a3f11674c4edac5c..b47cdd15a8e9f180295ee6a15ccd8d7a29441475 100644
+index 248df6f..b47cdd1 100644
 --- a/verifier_common/src/pow_config_worst_constants.rs
 +++ b/verifier_common/src/pow_config_worst_constants.rs
 @@ -7,7 +7,7 @@ const MAX_NUM_OPENINGS_AT_Z: usize = 1225usize;

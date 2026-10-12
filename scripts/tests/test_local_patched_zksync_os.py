@@ -6391,9 +6391,6 @@ gl_checkpoint_assert_fingerprint_matches
         )
 
         self.assertIn(
-            "const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = false;", verifier
-        )
-        self.assertIn(
             'const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";',
             verifier,
         )
@@ -6412,10 +6409,7 @@ gl_checkpoint_assert_fingerprint_matches
             )
             self.assertIsNotNone(values)
             self.assertEqual([int(x) for x in re.findall(r"\d+", values[1])], expected)
-        self.assertLess(
-            verifier.index("if v8_verifier::V8_APP_IDENTITY_REGENERATION_REQUIRED"),
-            verifier.index("validate_v8_proof_shape(proof)?;"),
-        )
+        self.assertIn("expected_chain, V8_SECURITY100_EXPECTED_CHAIN,", verifier)
 
     def test_keygen_security100_identity_uses_wrapper_aux_params(self) -> None:
         workflow = (

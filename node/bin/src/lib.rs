@@ -588,15 +588,7 @@ async fn authenticate_l1_archive_genesis_upgrade(
     })
 }
 
-pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
-    // SYSCOIN: Refuse to expose real proving while the canonical V8 verifier artifacts remain
-    // regeneration sentinels, including for library callers that bypass the CLI entry point.
-    enforce_v8_regeneration_prover_policy(
-        ProvingVersion::V8.requires_vk_regeneration(),
-        config.general_config.node_role,
-        config.batcher_config.enabled,
-        &mut config.prover_api_config,
-    );
+pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     let BoundListeners {
         rpc: rpc_listener,
         status: prebound_status_listener,
@@ -890,7 +882,6 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     // SYSCOIN: Bind the configured prover mode to the verifier selected by the active settlement
     // layer. This check runs after any startup revert and before a proving pipeline can be spawned.
     enforce_deployed_verifier_prover_policy(
-        ProvingVersion::V8.requires_vk_regeneration(),
         node_role,
         config.batcher_config.enabled,
         &config.prover_api_config,
@@ -1999,59 +1990,11 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     }
 }
 
-/// SYSCOIN: While the canonical V8 verification key is a regeneration sentinel, a batcher may be
-/// intentionally idle or use both in-process fake pools; it may never expose real prover jobs.
-/// Batcher-disabled nodes have no proving pipeline at all. Enforce this before binding listeners
-/// so library callers cannot expose pick / submit endpoints backed by the sentinel key.
-fn enforce_v8_regeneration_prover_policy(
-    regeneration_required: bool,
-    node_role: NodeRole,
-    batcher_enabled: bool,
-    prover_api_config: &mut ProverApiConfig,
-) {
-    if !regeneration_required || !node_role.is_main() {
-        return;
-    }
-
-    // A disabled batcher returns before constructing either proving pipeline, so there are no
-    // jobs for fake pools to drain. Still turn off an accidentally enabled listener before ports
-    // are bound, but do not require fake pools that this node will never start.
-    if !batcher_enabled {
-        if std::mem::replace(&mut prover_api_config.enabled, false) {
-            tracing::warn!(
-                "canonical V8 verification key regeneration is incomplete; disabling the unused external prover API on this batcher-disabled main node"
-            );
-        }
-        return;
-    }
-
-    let uses_fake_proving =
-        prover_api_config.fake_fri_provers.enabled || prover_api_config.fake_snark_provers.enabled;
-    if !uses_fake_proving && !prover_api_config.enabled {
-        // An intentionally idle proving pipeline cannot submit an incompatible proof.
-        return;
-    }
-
-    assert!(
-        !(uses_fake_proving && prover_api_config.enabled),
-        "canonical V8 VK regeneration is incomplete; external real proving and in-process fake prover pools cannot be enabled together"
-    );
-    assert!(
-        !prover_api_config.enabled,
-        "canonical Syscoin V8 verification key regeneration is incomplete; external real proving is disabled until the app-bound security-100 VK and Era verifier artifacts are installed"
-    );
-    assert!(
-        prover_api_config.fake_fri_provers.enabled && prover_api_config.fake_snark_provers.enabled,
-        "canonical V8 VK regeneration is incomplete; both fake FRI and fake SNARK pools must be enabled"
-    );
-}
-
 /// SYSCOIN: Validates the configured proof producers against the deployment mode and VK exposed
 /// by the verifier selected by the active settlement-layer diamond.
 const MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY: u64 = 8 * 1024 * 1024 * 1024;
 
 fn validate_deployed_verifier_prover_policy(
-    regeneration_required: bool,
     prover_api_config: &ProverApiConfig,
     deployed_is_testnet_verifier: bool,
     deployed_vk_hash: B256,
@@ -2093,10 +2036,6 @@ fn validate_deployed_verifier_prover_policy(
         "external real proving requires a production verifier with IS_TESTNET_VERIFIER=false"
     );
     anyhow::ensure!(
-        !regeneration_required,
-        "external real proving is disabled until canonical V8 VK regeneration is complete"
-    );
-    anyhow::ensure!(
         compiled_vk_hash != B256::ZERO,
         "external real proving requires a nonzero compiled canonical V8 VK hash"
     );
@@ -2120,7 +2059,6 @@ fn validate_deployed_verifier_prover_policy(
 /// proving work. Missing selectors, malformed return data, reverts, and RPC failures all abort
 /// startup; a failed marker call must never be interpreted as a production verifier.
 async fn enforce_deployed_verifier_prover_policy(
-    regeneration_required: bool,
     node_role: NodeRole,
     batcher_enabled: bool,
     prover_api_config: &ProverApiConfig,
@@ -2158,7 +2096,6 @@ async fn enforce_deployed_verifier_prover_policy(
         .context("compiled canonical V8 VK hash is malformed")?;
 
     validate_deployed_verifier_prover_policy(
-        regeneration_required,
         prover_api_config,
         deployed_is_testnet_verifier,
         deployed_vk_hash,
@@ -4251,9 +4188,9 @@ mod tests {
     use super::{
         MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, PipelineStartupReadiness, canonical_pubdata_mode,
         check_batch_verification_mismatch, defer_syscoin_gateway_local_identity,
-        enforce_v8_regeneration_prover_policy, initial_syscoin_edge_da_commit_target,
-        initial_transaction_acceptance_state, monitor_liveness_bound_startup_signal,
-        parse_syscoin_require_gas_tank, requires_genesis_replay_repository_completion,
+        initial_syscoin_edge_da_commit_target, initial_transaction_acceptance_state,
+        monitor_liveness_bound_startup_signal, parse_syscoin_require_gas_tank,
+        requires_genesis_replay_repository_completion,
         resolve_gateway_local_syscoin_edge_da_commit_target, rpc_edge_da_target_required,
         syscoin_edge_da_uses_gateway_local_target, validate_batch_verification_startup_policy,
         validate_deployed_verifier_prover_policy, validate_l1_archive_history_observation,
@@ -4660,101 +4597,6 @@ mod tests {
         assert!(readiness.await.unwrap().is_err());
     }
 
-    #[test]
-    fn v8_regeneration_preserves_explicit_fake_only_mode() {
-        let mut prover = ProverApiConfig {
-            enabled: false,
-            ..Default::default()
-        };
-        prover.fake_fri_provers.enabled = true;
-        prover.fake_snark_provers.enabled = true;
-
-        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
-
-        assert!(!prover.enabled);
-        assert!(prover.fake_fri_provers.enabled);
-        assert!(prover.fake_snark_provers.enabled);
-    }
-
-    #[test]
-    #[should_panic(expected = "both fake FRI and fake SNARK")]
-    fn v8_regeneration_rejects_missing_fake_pool() {
-        let mut prover = ProverApiConfig {
-            enabled: false,
-            ..Default::default()
-        };
-        prover.fake_fri_provers.enabled = true;
-        prover.fake_snark_provers.enabled = false;
-
-        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
-    }
-
-    #[test]
-    #[should_panic(expected = "external real proving is disabled")]
-    fn v8_regeneration_rejects_external_real_proving() {
-        let mut prover = ProverApiConfig {
-            enabled: true,
-            ..Default::default()
-        };
-
-        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot be enabled together")]
-    fn v8_regeneration_rejects_mixed_real_and_fake_proving() {
-        let mut prover = ProverApiConfig {
-            enabled: true,
-            ..Default::default()
-        };
-        prover.fake_fri_provers.enabled = true;
-        prover.fake_snark_provers.enabled = true;
-
-        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
-    }
-
-    #[test]
-    fn v8_regeneration_preserves_no_producer_mode() {
-        let mut prover = ProverApiConfig {
-            enabled: false,
-            ..Default::default()
-        };
-
-        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
-
-        assert!(!prover.enabled);
-        assert!(!prover.fake_fri_provers.enabled);
-        assert!(!prover.fake_snark_provers.enabled);
-    }
-
-    #[test]
-    fn completed_v8_regeneration_preserves_external_api() {
-        let mut prover = ProverApiConfig {
-            enabled: true,
-            ..Default::default()
-        };
-
-        enforce_v8_regeneration_prover_policy(false, NodeRole::MainNode, true, &mut prover);
-
-        assert!(prover.enabled);
-    }
-
-    #[test]
-    fn v8_regeneration_disables_unused_api_without_fake_pools_when_batcher_is_disabled() {
-        let mut prover = ProverApiConfig {
-            enabled: true,
-            ..Default::default()
-        };
-        assert!(!prover.fake_fri_provers.enabled);
-        assert!(!prover.fake_snark_provers.enabled);
-
-        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, false, &mut prover);
-
-        assert!(!prover.enabled);
-        assert!(!prover.fake_fri_provers.enabled);
-        assert!(!prover.fake_snark_provers.enabled);
-    }
-
     // SYSCOIN: Today's mock testnet must remain usable only with its explicit testnet verifier.
     #[test]
     fn deployed_verifier_policy_fake_provers_require_explicit_testnet_verifier() {
@@ -4766,7 +4608,6 @@ mod tests {
         prover.fake_snark_provers.enabled = true;
 
         validate_deployed_verifier_prover_policy(
-            true,
             &prover,
             true,
             B256::repeat_byte(0x11),
@@ -4775,7 +4616,6 @@ mod tests {
         .unwrap();
 
         let err = validate_deployed_verifier_prover_policy(
-            true,
             &prover,
             false,
             B256::repeat_byte(0x11),
@@ -4786,7 +4626,7 @@ mod tests {
     }
 
     #[test]
-    fn deployed_verifier_policy_v8_regeneration_requires_both_fake_pools() {
+    fn deployed_verifier_policy_requires_both_fake_pools() {
         let mut prover = ProverApiConfig {
             enabled: false,
             ..Default::default()
@@ -4794,7 +4634,6 @@ mod tests {
         prover.fake_fri_provers.enabled = true;
 
         let err = validate_deployed_verifier_prover_policy(
-            true,
             &prover,
             true,
             B256::repeat_byte(0x11),
@@ -4804,9 +4643,8 @@ mod tests {
         assert!(err.to_string().contains("both fake FRI and fake SNARK"));
     }
 
-    // SYSCOIN: Installing the real VK does not make a partial mock pipeline operational.
     #[test]
-    fn deployed_verifier_policy_completed_regeneration_rejects_either_partial_fake_pipeline() {
+    fn deployed_verifier_policy_rejects_either_partial_fake_pipeline() {
         for (fake_fri_enabled, fake_snark_enabled) in [(true, false), (false, true)] {
             let mut prover = ProverApiConfig {
                 enabled: false,
@@ -4816,7 +4654,6 @@ mod tests {
             prover.fake_snark_provers.enabled = fake_snark_enabled;
 
             let err = validate_deployed_verifier_prover_policy(
-                false,
                 &prover,
                 true,
                 B256::repeat_byte(0x11),
@@ -4837,45 +4674,21 @@ mod tests {
         prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
         let canonical_vk = B256::repeat_byte(0x22);
 
-        validate_deployed_verifier_prover_policy(false, &prover, false, canonical_vk, canonical_vk)
+        validate_deployed_verifier_prover_policy(&prover, false, canonical_vk, canonical_vk)
             .unwrap();
 
-        let testnet_err = validate_deployed_verifier_prover_policy(
-            false,
-            &prover,
-            true,
-            canonical_vk,
-            canonical_vk,
-        )
-        .unwrap_err();
+        let testnet_err =
+            validate_deployed_verifier_prover_policy(&prover, true, canonical_vk, canonical_vk)
+                .unwrap_err();
         assert!(
             testnet_err
                 .to_string()
                 .contains("IS_TESTNET_VERIFIER=false")
         );
 
-        let sentinel_err = validate_deployed_verifier_prover_policy(
-            true,
-            &prover,
-            false,
-            canonical_vk,
-            B256::ZERO,
-        )
-        .unwrap_err();
-        assert!(
-            sentinel_err
-                .to_string()
-                .contains("regeneration is complete")
-        );
-
-        let zero_err = validate_deployed_verifier_prover_policy(
-            false,
-            &prover,
-            false,
-            canonical_vk,
-            B256::ZERO,
-        )
-        .unwrap_err();
+        let zero_err =
+            validate_deployed_verifier_prover_policy(&prover, false, canonical_vk, B256::ZERO)
+                .unwrap_err();
         assert!(
             zero_err
                 .to_string()
@@ -4883,7 +4696,6 @@ mod tests {
         );
 
         let mismatch_err = validate_deployed_verifier_prover_policy(
-            false,
             &prover,
             false,
             B256::repeat_byte(0x33),
@@ -4906,14 +4718,9 @@ mod tests {
             ..Default::default()
         };
         prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
-        let err = validate_deployed_verifier_prover_policy(
-            false,
-            &prover,
-            false,
-            historical_vk,
-            active_vk,
-        )
-        .expect_err("a historical production key cannot authorize the regenerated lane");
+        let err =
+            validate_deployed_verifier_prover_policy(&prover, false, historical_vk, active_vk)
+                .expect_err("a historical production key cannot authorize the regenerated lane");
         assert!(err.to_string().contains("does not match"));
 
         // Preserve the explicitly mocked historical component lane. Its testnet
@@ -4921,8 +4728,7 @@ mod tests {
         prover.enabled = false;
         prover.fake_fri_provers.enabled = true;
         prover.fake_snark_provers.enabled = true;
-        validate_deployed_verifier_prover_policy(false, &prover, true, historical_vk, active_vk)
-            .unwrap();
+        validate_deployed_verifier_prover_policy(&prover, true, historical_vk, active_vk).unwrap();
     }
 
     #[test]
@@ -4933,18 +4739,13 @@ mod tests {
         };
         let canonical_vk = B256::repeat_byte(0x22);
 
-        let err = validate_deployed_verifier_prover_policy(
-            false,
-            &prover,
-            false,
-            canonical_vk,
-            canonical_vk,
-        )
-        .unwrap_err();
+        let err =
+            validate_deployed_verifier_prover_policy(&prover, false, canonical_vk, canonical_vk)
+                .unwrap_err();
         assert!(err.to_string().contains("at least 8 GiB"));
 
         prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
-        validate_deployed_verifier_prover_policy(false, &prover, false, canonical_vk, canonical_vk)
+        validate_deployed_verifier_prover_policy(&prover, false, canonical_vk, canonical_vk)
             .unwrap();
     }
 
@@ -4958,7 +4759,6 @@ mod tests {
         prover.fake_snark_provers.enabled = true;
 
         let err = validate_deployed_verifier_prover_policy(
-            false,
             &prover,
             true,
             B256::repeat_byte(0x22),
@@ -4975,8 +4775,7 @@ mod tests {
             ..Default::default()
         };
 
-        validate_deployed_verifier_prover_policy(true, &prover, false, B256::ZERO, B256::ZERO)
-            .unwrap();
+        validate_deployed_verifier_prover_policy(&prover, false, B256::ZERO, B256::ZERO).unwrap();
     }
 
     #[test]

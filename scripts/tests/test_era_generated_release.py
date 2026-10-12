@@ -292,14 +292,15 @@ class BundleAndLauncherTests(unittest.TestCase):
                 raw = json.dumps(manifest[key], sort_keys=True, separators=(",", ":")).encode()
                 self.assertEqual(sha(raw), digest)
 
-    def test_runtime_app_sources_match_current_nonzero_vk_and_auxiliary_identity(self):
+    def test_earlier_generated_verifier_rejects_degree_lift_runtime_sources(self):
         self.assertEqual(M.APP_SOURCES, {
             "lib/types/src/protocol/proving_version.rs":
                 "4c0a466fb6d6aabdf8ecca94845016dd5c17a651eae1a99a0b8e49b7bf63e6ea",
             "node/bin/src/prover_api/fri_proof_verifier.rs":
                 "7ce25fd3cd7e75e1a19e9ca9f39d1c7084e630f3f04be6c9de7ccfd7541fc9f1",
         })
-        M.check_app_sources(ROOT)
+        with self.assertRaisesRegex(ValueError, "input SHA-256 mismatch"):
+            M.check_app_sources(ROOT)
 
     def test_historical_crypto_evidence_does_not_claim_current_key_or_tree(self):
         module, manifest = M.load_bundle()

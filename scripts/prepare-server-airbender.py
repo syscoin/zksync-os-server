@@ -30,8 +30,8 @@ UPSTREAM = "https://github.com/matter-labs/zksync-airbender"
 COMMIT = "03454c7a41053a4b88bb421e97fb9efe893a92f5"
 TREE = "3af54eb50c31d8e78575434c3f0ab4386891c131"
 TAG = "v0.6.0-rc.2"
-PATCHED_TREE = "98a3e82a726bca322340ec675263a4533857250a"
-PATCH_SHA = "aa05f0fe4d22bcb60fd8dc4f45558e7d9d771e592a66634765cb6757040d3b25"
+PATCHED_TREE = "f6a8eb9bd6c1e262e294e15b21d479c6f6f5835b"
+PATCH_SHA = "f5dbff3814b551a970d25c90908de8df35d7de1a26baf55b13c235bf6532bf1f"
 SELECTED = "git+" + UPSTREAM + "?tag=" + TAG + "#" + COMMIT
 LEGACY = ("git+" + UPSTREAM
           + "?rev=73d69b5#73d69b5346b3c2350fa104a56ec4df78840cea99")
@@ -113,7 +113,7 @@ def load_pins(path=MANIFEST):
                 f"unreviewed server Airbender identity: {key}")
     require(isinstance(pins["purpose"], str) and pins["purpose"], "missing purpose")
     rows = pins["changed_files"]
-    require(isinstance(rows, dict) and len(rows) == 29, "wrong changed-source inventory")
+    require(isinstance(rows, dict) and len(rows) == 46, "wrong changed-source inventory")
     for relative, row in rows.items():
         require(isinstance(relative, str) and re.fullmatch(r"[A-Za-z0-9_./-]+", relative)
                 and not Path(relative).is_absolute() and ".." not in Path(relative).parts
