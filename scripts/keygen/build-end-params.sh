@@ -5,12 +5,12 @@ umask 077
 
 fail() { printf 'end-params build: %s\n' "$*" >&2; exit 1; }
 [[ $# -eq 2 ]] || fail 'usage: build-end-params.sh PRISTINE_AIRBENDER_CHECKOUT NEW_BUILD_DIRECTORY'
-readonly airbender_commit=e8f380777b7e90388c7323d6fd80a3b58c589f17
-readonly airbender_tree=799e018339df40d0e456ba3fa0fc768ce0691853
+readonly airbender_commit=553fdd31b9d7a0b354845c7b6b8e7c3d13337c52
+readonly airbender_tree=6693fdafa31c45ebf8acf26e9a1f3dfc3edcffdc
 readonly toolchain=nightly-2026-02-10
 readonly source_sha256=95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7
-readonly manifest_sha256=dc2ca3c5ad7126733eb26dcddaf6cb4e130a5770e6c363f23d3962a8d6634b89
-readonly lock_sha256=0b004f8fe8b536edfb841f99f1c5d78d058df598d2c7f093c457b7932f55e2e6
+readonly manifest_sha256=0e8cfad6794132cc2f1fc15b00b4c8ea2b62932c096bc82bb6df4deb42ef736c
+readonly lock_sha256=c66345caf250a899a3106094ff5cd6c4aaf2edf6c737e300a22ef8d2efe795de
 helper_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly helper_dir
 readonly assets_dir="${helper_dir}/end-params"

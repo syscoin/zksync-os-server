@@ -15,11 +15,11 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 KEYGEN = REPO / "scripts/keygen"
-COMMIT = "e8f380777b7e90388c7323d6fd80a3b58c589f17"
-TREE = "799e018339df40d0e456ba3fa0fc768ce0691853"
+COMMIT = "553fdd31b9d7a0b354845c7b6b8e7c3d13337c52"
+TREE = "6693fdafa31c45ebf8acf26e9a1f3dfc3edcffdc"
 SOURCE_HASH = "95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7"
-MANIFEST_HASH = "dc2ca3c5ad7126733eb26dcddaf6cb4e130a5770e6c363f23d3962a8d6634b89"
-LOCK_HASH = "0b004f8fe8b536edfb841f99f1c5d78d058df598d2c7f093c457b7932f55e2e6"
+MANIFEST_HASH = "0e8cfad6794132cc2f1fc15b00b4c8ea2b62932c096bc82bb6df4deb42ef736c"
+LOCK_HASH = "c66345caf250a899a3106094ff5cd6c4aaf2edf6c737e300a22ef8d2efe795de"
 
 
 class EndParamsAssetTests(unittest.TestCase):
@@ -77,8 +77,8 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn('HEAD^{tree}', candidate)
         self.assertLess(workflow.index('scripts/keygen/prepare-candidate-wrapper.py'),
                         workflow.index('compute-aux-params'))
-        self.assertIn('PROVER_TOOLING_COMMIT: 51edf5cf1c457f9ff91b937dbc19272ddd0438a1', workflow)
-        self.assertIn('PROVER_TOOLING_TREE: 6528eee69ddf74e07d2bef02e50f66b8dfe514b3', workflow)
+        self.assertIn('PROVER_TOOLING_COMMIT: cadb0543f98519104235c47d6f10a6ce84ba90ef', workflow)
+        self.assertIn('PROVER_TOOLING_TREE: 3f54a1640e40a68b67a7bf718fa9111099fc2e44', workflow)
         self.assertIn('?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}', stock)
         self.assertNotIn('scripts/keygen/prepare-candidate-wrapper.py', stock)
         self.assertIn('--manifest-path "${WORK_DIR}/wrapper/Cargo.toml"', stock)
@@ -151,9 +151,9 @@ class EndParamsBuildWrapperTests(unittest.TestCase):
             if args[-1] == '--show-toplevel':
                 print(os.environ['FAKE_AIRBENDER'])
             elif args[-1] == 'HEAD':
-                print(os.environ.get('FAKE_COMMIT', 'e8f380777b7e90388c7323d6fd80a3b58c589f17'))
+                print(os.environ.get('FAKE_COMMIT', '553fdd31b9d7a0b354845c7b6b8e7c3d13337c52'))
             elif args[-1] == 'HEAD^{tree}':
-                print(os.environ.get('FAKE_TREE', '799e018339df40d0e456ba3fa0fc768ce0691853'))
+                print(os.environ.get('FAKE_TREE', '6693fdafa31c45ebf8acf26e9a1f3dfc3edcffdc'))
             elif args[-1] == '--porcelain':
                 print(os.environ.get('FAKE_STATUS', ''), end='')
             else:
