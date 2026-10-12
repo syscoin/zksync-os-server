@@ -58,7 +58,7 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn('"${WORK_DIR}/end-params-helper/target/release/end_params"', block)
         self.assertNotIn('--manifest-path "${WORK_DIR}/airbender/Cargo.toml"', block)
         self.assertIn('grep -Fqx "app_end_params = ${APP_END_PARAMS}"', block)
-        self.assertIn('--manifest-path "${WORK_DIR}/wrapper/Cargo.toml"', block)
+        self.assertIn('--manifest-path "${WORK_DIR}/candidate-proving-sources/zkos-wrapper/Cargo.toml"', block)
         self.assertIn("compute-aux-params", block)
         self.assertIn('[[ "${commitment}" == "${SECURITY100_COMMITMENT}" ]]', block)
         self.assertIn("${SECURITY100_WORDS}", block)
@@ -68,16 +68,61 @@ class EndParamsAssetTests(unittest.TestCase):
 
     def test_candidate_wrapper_uses_fork_and_stock_control_stays_upstream(self):
         workflow = (REPO / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
-        candidate = workflow.split("      - name: Check out exact Airbender and wrapper sources", 1)[1]
+        candidate = workflow.split("      - name: Prepare exact Airbender, wrapper, and common crypto sources", 1)[1]
         candidate = candidate.split("      - name:", 1)[0]
         stock = workflow.split("  stock-control:", 1)[1]
-        self.assertIn('scripts/keygen/pin-wrapper-airbender.py', candidate)
+        self.assertIn('scripts/keygen/prepare-candidate-wrapper.py', candidate)
+        self.assertIn('"${WORK_DIR}/prover-tooling" "${WORK_DIR}/airbender"', candidate)
         self.assertIn('?rev=${AIRBENDER_COMMIT}#${AIRBENDER_COMMIT}', candidate)
         self.assertIn('HEAD^{tree}', candidate)
+        self.assertLess(workflow.index('scripts/keygen/prepare-candidate-wrapper.py'),
+                        workflow.index('compute-aux-params'))
+        self.assertIn('PROVER_TOOLING_COMMIT: 3033d6c1ffbce5080d74d7a2eeb11b922ca78834', workflow)
+        self.assertIn('PROVER_TOOLING_TREE: 6fa29f5c5f16f7811b23ccd76a2ef754932fb6d0', workflow)
         self.assertIn('?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}', stock)
-        self.assertNotIn('scripts/keygen/pin-wrapper-airbender.py', stock)
+        self.assertNotIn('scripts/keygen/prepare-candidate-wrapper.py', stock)
+        self.assertIn('--manifest-path "${WORK_DIR}/wrapper/Cargo.toml"', stock)
         self.assertNotIn("V8_VK_REGENERATION_REQUIRED", workflow)
         self.assertNotIn("V8_APP_IDENTITY_REGENERATION_REQUIRED", workflow)
+
+    def test_candidate_vk_replacement_updates_both_registered_literals(self):
+        workflow = (REPO / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
+        candidate = workflow.split("      - name: Produce fail-closed server candidate", 1)[1]
+        candidate = candidate.split("      - name:", 1)[0]
+        self.assertEqual(candidate.count('"${proving_version}")" == "2" ]]'), 3)
+        self.assertIn("'s/\\Q$ENV{OLD_HASH}\\E/$ENV{VK_HASH}/g'", candidate)
+        self.assertIn('checked_out_server_vk_remains_registered: true', candidate)
+        self.assertNotIn('checked_out_server_vk_remains_zero', candidate)
+        original = (REPO / "lib/types/src/protocol/proving_version.rs").read_text()
+        old_hash = '0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90'
+        new_hash = '0x' + 'ab' * 32
+        self.assertEqual(original.count(f'"{old_hash}"'), 2)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "lib/types/src/protocol/proving_version.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text(original)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "lib/types/src/protocol/proving_version.rs"],
+                           cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                            "commit", "-qm", "fixture"], cwd=root, check=True)
+            output = root / "work/final"
+            output.mkdir(parents=True)
+            (output / "syscoin-v8-vk-hash.txt").write_text(new_hash + "\n")
+            script = candidate.split("        run: |\n", 1)[1]
+            script = textwrap.dedent(script[:script.index("          plonk_key_sha=")])
+            result = subprocess.run(["bash", "-c", script], cwd=root,
+                                    capture_output=True, text=True,
+                                    env={**os.environ, "WORK_DIR": str(root / "work"),
+                                         "REGISTERED_V8_VK_HASH": old_hash})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(source.read_text(), original)
+            patch = output / "zksync-os-server-v8-plonk-candidate.patch"
+            self.assertTrue(patch.is_file())
+            additions = [line for line in patch.read_text().splitlines()
+                         if line.startswith("+") and f'"{new_hash}"' in line]
+            self.assertEqual(len(additions), 2)
 
 
 class EndParamsBuildWrapperTests(unittest.TestCase):

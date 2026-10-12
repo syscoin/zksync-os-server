@@ -63,6 +63,9 @@ env:
   AIRBENDER_PLATFORM_VERSION: 0.2.4
   WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git
   WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
+  PROVER_TOOLING_REPOSITORY: https://github.com/syscoin/zksync-airbender-prover.git
+  PROVER_TOOLING_COMMIT: 3033d6c1ffbce5080d74d7a2eeb11b922ca78834
+  PROVER_TOOLING_TREE: 6fa29f5c5f16f7811b23ccd76a2ef754932fb6d0
   PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
   PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
   REGISTERED_V8_VK_HASH: "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90"
@@ -807,7 +810,7 @@ jobs:
           cp "${app_dir}/app.text" "${WORK_DIR}/out/app/"
           cp "${app_dir}/manifest.toml" "${WORK_DIR}/out/app/"
 
-      - name: Check out exact Airbender and wrapper sources
+      - name: Prepare exact Airbender, wrapper, and common crypto sources
         run: |
           set -euo pipefail
           git clone --no-tags "${AIRBENDER_REPOSITORY}" "${WORK_DIR}/airbender"
@@ -815,21 +818,23 @@ jobs:
           [[ "$(git -C "${WORK_DIR}/airbender" rev-parse HEAD)" == "${AIRBENDER_COMMIT}" ]]
           [[ "$(git -C "${WORK_DIR}/airbender" rev-parse 'HEAD^{tree}')" == "${AIRBENDER_TREE}" ]]
 
-          git clone --no-tags "${WRAPPER_REPOSITORY}" "${WORK_DIR}/wrapper"
-          git -C "${WORK_DIR}/wrapper" checkout --detach "${WRAPPER_COMMIT}"
-          [[ "$(git -C "${WORK_DIR}/wrapper" rev-parse HEAD)" == "${WRAPPER_COMMIT}" ]]
-          python3 "${GITHUB_WORKSPACE}/scripts/keygen/pin-wrapper-airbender.py" \
-            "${WORK_DIR}/wrapper"
+          git clone --no-tags "${PROVER_TOOLING_REPOSITORY}" "${WORK_DIR}/prover-tooling"
+          git -C "${WORK_DIR}/prover-tooling" checkout --detach "${PROVER_TOOLING_COMMIT}"
+          [[ "$(git -C "${WORK_DIR}/prover-tooling" rev-parse HEAD)" == "${PROVER_TOOLING_COMMIT}" ]]
+          [[ "$(git -C "${WORK_DIR}/prover-tooling" rev-parse 'HEAD^{tree}')" == "${PROVER_TOOLING_TREE}" ]]
+          python3 "${GITHUB_WORKSPACE}/scripts/keygen/prepare-candidate-wrapper.py" \
+            "${WORK_DIR}/prover-tooling" "${WORK_DIR}/airbender" \
+            "${WORK_DIR}/candidate-proving-sources"
 
           mapfile -t airbender_sources < <(
             grep -F 'source = "git+https://github.com/syscoin/zksync-airbender' \
-              "${WORK_DIR}/wrapper/Cargo.lock"
+              "${WORK_DIR}/candidate-proving-sources/zkos-wrapper/Cargo.lock"
           )
           (( ${#airbender_sources[@]} > 0 ))
           for source in "${airbender_sources[@]}"; do
             [[ "${source}" == *"?rev=${AIRBENDER_COMMIT}#${AIRBENDER_COMMIT}\"" ]]
           done
-          grep -Fqx 'default = ["security_100"]' "${WORK_DIR}/wrapper/wrapper/Cargo.toml"
+          grep -Fqx 'default = ["security_100"]' "${WORK_DIR}/candidate-proving-sources/zkos-wrapper/wrapper/Cargo.toml"
 
       - name: Download and attest an independent CRS copy
         run: |
@@ -870,7 +875,7 @@ jobs:
           RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
             --locked \
             --release \
-            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            --manifest-path "${WORK_DIR}/candidate-proving-sources/zkos-wrapper/Cargo.toml" \
             -p zkos-wrapper \
             --bin wrapper \
             -- \
@@ -932,7 +937,7 @@ jobs:
             RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
               --locked \
               --release \
-              --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+              --manifest-path "${WORK_DIR}/candidate-proving-sources/zkos-wrapper/Cargo.toml" \
               -p zkos-wrapper \
               --bin wrapper \
               -- \
@@ -953,7 +958,7 @@ jobs:
           RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
             --locked \
             --release \
-            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            --manifest-path "${WORK_DIR}/candidate-proving-sources/zkos-wrapper/Cargo.toml" \
             -p zkos-wrapper \
             --bin wrapper \
             -- \
@@ -1720,15 +1725,15 @@ jobs:
           # Generated output cannot activate the new key without a reviewed source update.
           git diff --quiet -- "${proving_version}"
           [[ "${syscoin_vk_hash}" != "${REGISTERED_V8_VK_HASH}" ]]
-          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "1" ]]
+          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "2" ]]
           restore_server_gate() {
             git restore --source=HEAD --worktree -- "${proving_version}"
           }
           trap restore_server_gate EXIT
           OLD_HASH="${REGISTERED_V8_VK_HASH}" VK_HASH="${syscoin_vk_hash}" perl -0pi -e \
-            's/\Q$ENV{OLD_HASH}\E/$ENV{VK_HASH}/' \
+            's/\Q$ENV{OLD_HASH}\E/$ENV{VK_HASH}/g' \
             "${proving_version}"
-          [[ "$(grep -Fc "\"${syscoin_vk_hash}\"" "${proving_version}")" == "1" ]]
+          [[ "$(grep -Fc "\"${syscoin_vk_hash}\"" "${proving_version}")" == "2" ]]
           ! grep -Fq "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}"
           git diff --check -- "${proving_version}"
           git diff --binary --no-ext-diff -- "${proving_version}" > \
@@ -1737,7 +1742,7 @@ jobs:
           restore_server_gate
           trap - EXIT
           git diff --quiet -- "${proving_version}"
-          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "1" ]]
+          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "2" ]]
           git apply --check "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
 
           plonk_key_sha="$(sha256sum "${output_dir}/era/ZKsyncOS_plonk_scheduler_key.json" | awk '{print $1}')"
@@ -1749,9 +1754,12 @@ jobs:
           server_patch_sha="$(sha256sum "${output_dir}/zksync-os-server-v8-plonk-candidate.patch" | awk '{print $1}')"
           era_candidate_tree="$(< "${output_dir}/era/era-patched-tree.txt")"
           [[ "${era_candidate_tree}" =~ ^[0-9a-f]{40}$ ]]
+          candidate_wrapper="${WORK_DIR}/candidate-proving-sources/zkos-wrapper"
+          candidate_wrapper_manifest_sha="$(sha256sum "${candidate_wrapper}/Cargo.toml" | awk '{print $1}')"
+          candidate_wrapper_lock_sha="$(sha256sum "${candidate_wrapper}/Cargo.lock" | awk '{print $1}')"
 
           jq -n \
-            --arg schema "syscoin-v32-v8-security100-keygen-v3" \
+            --arg schema "syscoin-v32-v8-security100-keygen-v4" \
             --arg server_revision "${GITHUB_SHA}" \
             --arg zksync_os_base "${ZKSYNC_OS_BASE_COMMIT}" \
             --arg zksync_os_patched_tree "${ZKSYNC_OS_PATCHED_TREE}" \
@@ -1768,6 +1776,12 @@ jobs:
             --arg airbender_release "${AIRBENDER_RELEASE}" \
             --arg cargo_airbender "${AIRBENDER_PLATFORM_COMMIT}" \
             --arg wrapper "${WRAPPER_COMMIT}" \
+            --arg prover_tooling_commit "${PROVER_TOOLING_COMMIT}" \
+            --arg prover_tooling_tree "${PROVER_TOOLING_TREE}" \
+            --arg wrapper_patched_tree "$(jq -r .patched_tree "${WORK_DIR}/prover-tooling/patches/zkos-wrapper-buffered-os-rng.json")" \
+            --arg crypto_patched_tree "$(jq -r .patched_tree "${WORK_DIR}/prover-tooling/patches/zksync-crypto-native-fri-query-count.json")" \
+            --arg candidate_wrapper_manifest_sha "${candidate_wrapper_manifest_sha}" \
+            --arg candidate_wrapper_lock_sha "${candidate_wrapper_lock_sha}" \
             --arg upstream_prover "${PROVER_COMMIT}" \
             --arg era_base "${ERA_BASE_COMMIT}" \
             --arg era_source_patched_tree "${ERA_SOURCE_PATCHED_TREE}" \
@@ -1806,6 +1820,12 @@ jobs:
                 airbender_release: $airbender_release,
                 cargo_airbender: $cargo_airbender,
                 wrapper: $wrapper,
+                prover_tooling_commit: $prover_tooling_commit,
+                prover_tooling_tree: $prover_tooling_tree,
+                wrapper_patched_tree: $wrapper_patched_tree,
+                common_crypto_patched_tree: $crypto_patched_tree,
+                candidate_wrapper_manifest_sha256: $candidate_wrapper_manifest_sha,
+                candidate_wrapper_lock_sha256: $candidate_wrapper_lock_sha,
                 upstream_prover: $upstream_prover,
                 era_base: $era_base,
                 era_source_patched_tree: $era_source_patched_tree
@@ -1861,8 +1881,8 @@ jobs:
                 zksync_os_fflonk_proof_route_present: false,
                 testnet_mock_route_retained: true,
                 testnet_mock_candidate_generated: false,
-                checked_out_server_vk_remains_zero: true,
-                server_regeneration_sentinel_cleared: false,
+                checked_out_server_vk_remains_registered: true,
+                canonical_fixture_regeneration_sentinel_cleared: false,
                 note: "Fail closed: both atomic candidates require separate release review; this key-generation workflow only uploads attestations and never activates, deploys, tags, or pushes them."
               }
             }' > "${output_dir}/attestation.json"
