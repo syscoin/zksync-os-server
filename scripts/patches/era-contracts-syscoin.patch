@@ -1,26 +1,26 @@
 diff --git a/.gitignore b/.gitignore
-index 7e1d9037d..71702e655 100644
+index 7e1d9037d1af2b602eea82ae24fa9be43257d8b7..71702e655fcca420358e6bc76b63af47cf2363e4 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -31,0 +32,2 @@ l1-contracts/script-config/*
 +# SYSCOIN: track the exact V32 compact Edge-DA relay deployment manifest.
 +!l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd18..934720bd7 100644
+index a0200fd182658c7022ea47a09af2e1771a077e3a..4e67bcb162ec794438574d1fd07b88994536bcc3 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
 -    "zkBytecodeHash": "0x01000681430b50cf58ac6268220767ba361480c1c9630f00f1b5fad6aad6d1de",
-+    "zkBytecodeHash": "0x01000681773d037ea0e9042e563c195244247e1f369eac1bf73423ff3c226aae",
++    "zkBytecodeHash": "0x01000681e9f7a284435bff065c8a17b4eda7f60851ea73ce5aff06479726757d",
 @@ -746 +746 @@
 -    "evmBytecodeHash": "0xd82a2cb279e2f74b918cda3c6913ef187494f9bf18e7fa9cadf32112264e8116",
-+    "evmBytecodeHash": "0x3b83a29445c23347797e2a09ec694a3de1e9672f466f34de778ff0814e957e0b",
++    "evmBytecodeHash": "0x48ff1d69f4c629c7dd618ab4b621c60243a8e7b4cd675030a636986c0fda804a",
 @@ -748,3 +748,3 @@
 -    "evmDeployedBytecodeHash": "0x008089eb8772a53bb30b1f15621508612eba06991f2aa98bba882681e45ce412",
 -    "evmDeployedBytecodeBlakeHash": "0xbcc160f051b65d4dec825475503382d81cffdc296ba5610384e421eeebd1a8fe",
 -    "evmDeployedBytecodeLength": 22512
-+    "evmDeployedBytecodeHash": "0x2bacea0c59544314e21714624db4af1e72909f8441c01f6ed28e772cab25c2d0",
-+    "evmDeployedBytecodeBlakeHash": "0x1c20bb26f87848232928ebcfeb787fd2a96c418cdedf4267e2d8c96744bb4015",
++    "evmDeployedBytecodeHash": "0x12db27dcfeb2096463cfcc3d450a2ad83b0c27699657f44829160878472c92a8",
++    "evmDeployedBytecodeBlakeHash": "0xb4154cc067773a06976fa98434269fac45f27a0e926a26c8d1b7999657193521",
 +    "evmDeployedBytecodeLength": 22490
 @@ -774 +774 @@
 -    "zkBytecodeHash": "0x0100008122a3b2a0c8c105d07f0193b35f26f7aab2324decae9d54c523c5c950",
@@ -125,37 +125,37 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeBlakeHash": "0x642d90498350230128c16cfdaa14ffc530b5b2d6b8731acd8fa57a1b1f4887e2",
 @@ -944 +944 @@
 -    "zkBytecodeHash": "0x01000271e70d853291d955af7b7b57f6d4091e4ba4af39170769a6c55a045b94",
-+    "zkBytecodeHash": "0x01000271e66e4e88f58d3937c67efa6fc948ffeba4899f54bab22780322abf19",
++    "zkBytecodeHash": "0x01000271865f025bc90b86253f97292eaf756696e299d44069e7d6778f0ee333",
 @@ -946 +946 @@
 -    "evmBytecodeHash": "0x3448d5fbaca5e22dbc5e558c02ee3ac5e9de4f63a28b7fc123b448ad227c108f",
-+    "evmBytecodeHash": "0x4f7484925b31089e3e88b45ccdfe5f6603bde4057f28f2b4a05466fe93b40c10",
++    "evmBytecodeHash": "0x010fbeb2e0b4fca941a2412b1d24a1eeac41ae4f253d6cedaedf7a25525be80b",
 @@ -948,2 +948,2 @@
 -    "evmDeployedBytecodeHash": "0x9ba9875fd0463a34b8f54023b0cf032125c328d9b6ffc4b950574f4be9c836ed",
 -    "evmDeployedBytecodeBlakeHash": "0x94f971f4f1e13ca98a8605cbdbc6ca0d48bdfd7c8a387f0a904cad3669ac4993",
-+    "evmDeployedBytecodeHash": "0xc4009b1d0049c9e9de2a9f1a06d8ddebc225376ff5c1592ec8e88b70c3f4d843",
-+    "evmDeployedBytecodeBlakeHash": "0x88ab72f9d0c8c5f6b6945c2cbf6cd556058a2ba7023868860a5a1fb5a4283f80",
++    "evmDeployedBytecodeHash": "0xd901b323728f854e300f00cfde48c5f4b675c840777efc699f254b345d8f0bd3",
++    "evmDeployedBytecodeBlakeHash": "0xb4a03bda8e53ee58354f44813b2fa3dd1ca53a9f04899d2593c5a8b7032b4eb5",
 @@ -964 +964 @@
 -    "zkBytecodeHash": "0x010000fd3d8801b175efc651752001831110f7e6a024e9f5f197310e67632b21",
-+    "zkBytecodeHash": "0x010000fdf768aa7c03d3681056e4f418fc9170c7a520fd2864f2e70a1e4acff0",
++    "zkBytecodeHash": "0x010000fd25e130e4ba9a6158d0b3ffd95e409942fffc7f8bc249253b47351c31",
 @@ -966 +966 @@
 -    "evmBytecodeHash": "0x84f07129681cb04e7c199425185f7f8a65122b150fa5637c9c08a769292c1993",
-+    "evmBytecodeHash": "0xb60ac02f8d26b15524ed2d7d81a54afc7b09556e12beaa9617a010c98f8f597c",
++    "evmBytecodeHash": "0x1af8ff00dc139c96c016489d80c33b5fd385e266139198698c791dfce3ad7550",
 @@ -968,2 +968,2 @@
 -    "evmDeployedBytecodeHash": "0x6052fcb2cbb81c34c9142a14b7ee52809f2210033fb4e9931e9c079d2732ad61",
 -    "evmDeployedBytecodeBlakeHash": "0xd21f35416009acb67c9589f53864500406dd8890db3f24b87261bbcebe2caa00",
-+    "evmDeployedBytecodeHash": "0x683128fb124e7f045e0e036df940596b297a56a4abaa744949216e3e58648aca",
-+    "evmDeployedBytecodeBlakeHash": "0x4ec93f15fbd06938666298d849c80a458f098a234f2c2f3dd18cda870cf5eb4f",
++    "evmDeployedBytecodeHash": "0xb38c8a2caefb3faa9c1c52bf2b522a02840e435257758a59e2eeb33118dc851e",
++    "evmDeployedBytecodeBlakeHash": "0x125bc24e7859acc7633993464fb08e424f3890f2948f25900f28b19be5527ef0",
 @@ -1074 +1074 @@
 -    "zkBytecodeHash": "0x0100098fd0ba86d112b69a1c213e723e8e991aa6d65b70d880f0d1659da643c5",
-+    "zkBytecodeHash": "0x0100098fe74a13789376ce9b29061eca834dc52e35b76ad63fafe92cba1c78cd",
++    "zkBytecodeHash": "0x0100098f0ad43450d81b9674243e20bd9b6ce224dfd85cebc17e9a9463462a48",
 @@ -1076 +1076 @@
 -    "evmBytecodeHash": "0x99099ec1e7b4ec0d1b376e7d38b5b4299f44edb86caa92c3d0e46300ef8c1325",
-+    "evmBytecodeHash": "0x292ac00319172f1416d8b5648e2f08e3b6ff9cc5496f761588fde907af0f92b0",
++    "evmBytecodeHash": "0x58acf3d1e8dbdf2192d9e91c300509d9bf99197924dee209cc4a8444657752c6",
 @@ -1078,2 +1078,2 @@
 -    "evmDeployedBytecodeHash": "0x35bda8dc8b28f02f251a053ffbc5b96349c5d1dd1f7772f8359271abf55b0955",
 -    "evmDeployedBytecodeBlakeHash": "0xd7e07c96ea0cf69f450d2004b18e435ef6aadd4b1e4e8edd8adfe4a37565901e",
-+    "evmDeployedBytecodeHash": "0xcbbcc1b51f9940782843a8c399690896d7a9d41fa17b794bf18085e7341fd7a2",
-+    "evmDeployedBytecodeBlakeHash": "0x8ccf0afd6c87c82a343f6380fa6b86025a74520c4be94a378218c13c37c85f15",
++    "evmDeployedBytecodeHash": "0xe88e50efbe1c5d0ac3c14ba6338c899f430d2805949cd190d1a6bd29e5e683c0",
++    "evmDeployedBytecodeBlakeHash": "0x4eb8d15d81feaf3d74a207f4c98e88169a06368b9ea3b435de5f0266434e478d",
 @@ -1094 +1094 @@
 -    "zkBytecodeHash": "0x01000cbba194294c3b9fd77bfb9efc7a076a07e73aaa3b158c5a1c075fab408f",
 +    "zkBytecodeHash": "0x01000cbb471f58a0101362d138582f2ade3b0c37d2475935629744a17deeba45",
@@ -169,15 +169,15 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeBlakeHash": "0xee3cd68d630f53428fb30839c3c51a47e40d2c75703e62536b15b3389370fa42",
 @@ -1104 +1104 @@
 -    "zkBytecodeHash": "0x0100056bd4d78290b002da77fde86ce8311e8d7e86b5975668299edcc07a7a5e",
-+    "zkBytecodeHash": "0x0100056bb55e2ba5cfce0192640a92dfe356e078e48467a48aa41f0cbeeca4bc",
++    "zkBytecodeHash": "0x0100056bd03be11d0b4d96148b659bf31b295a3607d5f00cdb98b9975d4579fe",
 @@ -1106 +1106 @@
 -    "evmBytecodeHash": "0x89e6d027bf4fb897d38a40f249448913ee2846b52a8ef2df85653d3b3fb47fbb",
-+    "evmBytecodeHash": "0x27377590b03c923f7cd26eafc75a700e4c9b07c33b307f83a66865dc76fb3e59",
++    "evmBytecodeHash": "0xab45eb501baed6eb11ba03a1acd768ff72e1d78ac8de5a59b4acf9d2782ce2ab",
 @@ -1108,2 +1108,2 @@
 -    "evmDeployedBytecodeHash": "0xb39b8a75663269bcd595023603d449c2419c51f17b27cd038c496de0c0ff933c",
 -    "evmDeployedBytecodeBlakeHash": "0xe428482a798aaf82ac7bf3e98c37586a468a80f5f9ea81123916451646313db1",
-+    "evmDeployedBytecodeHash": "0xbd5afad19061d86e55e20a45a0a9bf5e2a75b956bfc7293ee98d06fc1fbe8145",
-+    "evmDeployedBytecodeBlakeHash": "0x7b194165ad7abfe67e34b898be4a89cb225e9edce4c6694e48c464eb445eaaf1",
++    "evmDeployedBytecodeHash": "0x5046813f3bf80e3a7a28ca873d0c135fbc9f570d9594bfa7cb851068d6277f58",
++    "evmDeployedBytecodeBlakeHash": "0xb5b05873d1a1f0a755b8cfc20e2436288050069a4e4ef27bf15a86d1c756f149",
 @@ -1124 +1124 @@
 -    "zkBytecodeHash": "0x010009bf6dae531d1ba77a34c6bdda076befb2c39b7874aac789f3e88a47c630",
 +    "zkBytecodeHash": "0x010009bff9cf24120171909534c3332d892a16ebc936aa8c4c77460422776012",
@@ -228,26 +228,26 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeBlakeHash": "0xfd36745f0ee8b64d510d4014fd344b950514c9d37ae2f67b173c2a3a22a7f9b6",
 @@ -1184 +1184 @@
 -    "zkBytecodeHash": "0x0100023f227f5a5b45edbc38c240e7bf29b9de93d853564063f0d5751a2f9496",
-+    "zkBytecodeHash": "0x0100023fb5d5dcadc37152465d3685931a305e81ca8c9d7bcca1b0873a835e7a",
++    "zkBytecodeHash": "0x0100023f1018b6d254239ad89ae3e1f94df3099d5240cf7ecbfc4743039aa3a2",
 @@ -1186 +1186 @@
 -    "evmBytecodeHash": "0x77145307e4c5fcfc3e13fdd33e31b28482be7ba397bba5c5bfbb86f9070391a0",
-+    "evmBytecodeHash": "0x1f557542a9df5febcb882ec834e7d4a1640061790a8015f184568983802f1a35",
++    "evmBytecodeHash": "0x12bddf75f43649bb03bd5f3212f3eab54c1eb5644991b96f5c3db36904cadb32",
 @@ -1188,2 +1188,2 @@
 -    "evmDeployedBytecodeHash": "0x5b4af1d9ac3abcc011642a99ed08006dc18775d6e0e47feaaca17f72c7663906",
 -    "evmDeployedBytecodeBlakeHash": "0xe75205973d2d39a6364eeefd15e27b404e66fc28cc9622128b2415ea21da8799",
-+    "evmDeployedBytecodeHash": "0xf9d108468d37e07b3e411c948564125779deb27db735fec0f69974b27d88f538",
-+    "evmDeployedBytecodeBlakeHash": "0x009aed45ac5303a086dafa5bfd1279935d97fc3a314d5ed9c8619efe406b5c7a",
++    "evmDeployedBytecodeHash": "0x105e8d6f6b2b8228b04fd94b323ccd3b8a9bdb5e7d180965e7263ee2bd504f8c",
++    "evmDeployedBytecodeBlakeHash": "0x8f6b3a6ebb975ebd953729d5a893759623f171901cdc07ebae8d4350f4c71569",
 @@ -1194 +1194 @@
 -    "zkBytecodeHash": "0x0100023fb13e526f1f8ee01a00cc89b695f226f5eb13a85dff1bd6c957a701eb",
-+    "zkBytecodeHash": "0x0100023f63e5d37a4bac4cae55981a00cf21fb73b27b0929fcfa8eb52a797d5d",
++    "zkBytecodeHash": "0x0100023fb96e32b278434366ec7e538f6ace6bdef9064a334d47f586f1fc5377",
 @@ -1196 +1196 @@
 -    "evmBytecodeHash": "0x94a29c2e75706dce1158dd7627641003878b145485b7827a7d632950abc8dd4c",
-+    "evmBytecodeHash": "0x71f113e13eb660c266f74e29f670f6a0488cbbfcd51a83c104f4d3362c7d939b",
++    "evmBytecodeHash": "0xfd267f77592e1b5da99c8894a6be0c9993704f4eca9f4074d39631a2ac351ade",
 @@ -1198,2 +1198,2 @@
 -    "evmDeployedBytecodeHash": "0xc3b931228533cc7429ac0c1fa30bc3249a5da4cbc500c338d98c7fe030b3ad6d",
 -    "evmDeployedBytecodeBlakeHash": "0x01dd00b31b0b5c57e179ebec9bbc00094d01e246d34046b2fa325b6936a3e85f",
-+    "evmDeployedBytecodeHash": "0x8997ac4c9d429b19ef991b8cc035d2c9fefc8267dce7343d700be0510b0874c4",
-+    "evmDeployedBytecodeBlakeHash": "0xef75eb85a93b7fa59d7fd2e5644127afe9fd60a61aad5b7af548aee26bd7a1e9",
++    "evmDeployedBytecodeHash": "0xd363da10dbc3fc70728d4415575f75a12785dd4ae0d4eb8f2239307f727c91c2",
++    "evmDeployedBytecodeBlakeHash": "0x442bd9968808c91ef58794eff57372c2223683395a8632c9b2826389a15f2645",
 @@ -1204 +1204 @@
 -    "zkBytecodeHash": "0x01000095075b2026b457e4fabbaba91d4d1bd475e7f95ed6271940521646b374",
 +    "zkBytecodeHash": "0x0100008b9e5390830cca43529e55f3360d5140d749c1ae3f07153ce12c228a25",
@@ -406,15 +406,15 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeBlakeHash": "0xe2c6917a0126c593b6080c565afdf6d95ec0c7b871e46b5e1119abcaeba33446",
 @@ -1374 +1374 @@
 -    "zkBytecodeHash": "0x01000691ff03055586dd622749f6aaf80b8197f53d4cb29d344f33fb431d6fe4",
-+    "zkBytecodeHash": "0x01000691dbd07ff39e2bb1720ea6096ad5080e63e6ca0d2bc6df3dfb7884d5d1",
++    "zkBytecodeHash": "0x01000693b32651b74132a6f4d4cf33d9c5de22eda74370adc22b6ebc3cd7b572",
 @@ -1376 +1376 @@
 -    "evmBytecodeHash": "0xd4ddb986040d9b953942acbd5b3fd6d381b5403a8214fdf804eb0836121878ba",
-+    "evmBytecodeHash": "0xc8b55f4a6cd807bffb8792729c22a83fab4e72dbe0ee3b132e0852f961c24bcf",
++    "evmBytecodeHash": "0x567f0037448800346b9f3be750f8694f193dafc27446c7a1131c4c8adfd8b17f",
 @@ -1378,2 +1378,2 @@
 -    "evmDeployedBytecodeHash": "0xf7573b58cc619db85838430231afee68d626c0a3ebfbb951147361e5ec03f31a",
 -    "evmDeployedBytecodeBlakeHash": "0x6dc0d5e038695f3d7fc1fb12b562cd015c3649f7666f0947f3fbdef56e8bf2aa",
-+    "evmDeployedBytecodeHash": "0x2d9b33b2ad403f3807d68e0d0675793346d72e8f5e586aa9911c4b5995af9d45",
-+    "evmDeployedBytecodeBlakeHash": "0xe88a71b8dd35412950a53e5cd8add659d27c3908fdd47b8298cd18dd48ef5444",
++    "evmDeployedBytecodeHash": "0xb896696a33a088009d368837f71c82fef2a9968ef2925abd2d7f190fd540f544",
++    "evmDeployedBytecodeBlakeHash": "0x1efd0761c6c1b2e93483e898c475fc71e5a13d65cb6d556e2bf4237f89d4ba90",
 @@ -1394 +1394 @@
 -    "zkBytecodeHash": "0x0100079bdc32ddcc50b0de08ff8060bd6b316f701d2cd644fbf09ef195a74b0d",
 +    "zkBytecodeHash": "0x0100079bd82fd82b6e6f97528f39a896fe6ebd63b4a5562d368d98fe70203f73",
@@ -461,26 +461,26 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeBlakeHash": "0xe9f1f9f89acdb37e05c5a886f3cf6b85e3b8b3b333da8aac932b229ebf0ad0b8",
 @@ -1444 +1444 @@
 -    "zkBytecodeHash": "0x010002bdf5c74171efd5a9ab0a286aae1ea312d7de04d84a155b434ff1118bd3",
-+    "zkBytecodeHash": "0x010002bd984ee110034a1afeb1080f54aeef221d6f00dd017d8a7394852f3f51",
++    "zkBytecodeHash": "0x010002bd27f5e4c586ae53121f89d6f38ef49b53a25443fd570127c07ffb016a",
 @@ -1446 +1446 @@
 -    "evmBytecodeHash": "0x942839b6e21b212f35c5eba32e0d3068e2de3259b9abbe98163871e67a240a8d",
-+    "evmBytecodeHash": "0xf7025472e2276a57c492f379a572ab33793d48ae1e4bcc033216060d7d81bbab",
++    "evmBytecodeHash": "0xfbf7b69b9480ed3bf1bb1ea9ace4ba517ccdf1ee45e89f1b8acf82e8a6a535e6",
 @@ -1448,2 +1448,2 @@
 -    "evmDeployedBytecodeHash": "0x5ea1ce53c99f91b6e3207189ebcbc1d3a29e27c6532763143a2c35bbfc31a1bc",
 -    "evmDeployedBytecodeBlakeHash": "0xcd321ba409633d1f7adbd424a07d66945dad70e2ef6fab3b7f4cb4265ef97352",
-+    "evmDeployedBytecodeHash": "0x729459dd0cf49d3e61a573bd84de5df31b96e3d03c2764df089744a7494d8c50",
-+    "evmDeployedBytecodeBlakeHash": "0x02042c6ffc11b7e2e9942615c73285dba5f99264361cc6a0a0c32105bdc56a43",
++    "evmDeployedBytecodeHash": "0x7f9728903d502ed0cf40329a995324b0a0e08b005313937de25ff645ad076ec5",
++    "evmDeployedBytecodeBlakeHash": "0x437568bbcca2029b53f0df9b2208d1be9674feed9c58852f5dd7d00434ff166f",
 @@ -1454 +1454 @@
 -    "zkBytecodeHash": "0x01000275df4c03885c5b659a1064fa6beb1d5d6d7e7e68a7bc6286c2b893e6d5",
-+    "zkBytecodeHash": "0x01000275d33ffc03c1ab6811fdd7a6d26a3b3c06b9e1d67912487a031e849cf7",
++    "zkBytecodeHash": "0x01000275887273a5738c1b53b3887e7a370196f6df7bee1581ef37708436342b",
 @@ -1456 +1456 @@
 -    "evmBytecodeHash": "0x85063c1095dab62c56d24b199b60468d2b6fc8e41a011017708755711a9d8548",
-+    "evmBytecodeHash": "0x4579a81d705bdcd155500396f2915eebd2c1045e9746bffe3a0273cacaae3eee",
++    "evmBytecodeHash": "0x570e708d88a791cce333a28fe3a4f54203043c2d9719101cb11c0aff5fdefed9",
 @@ -1458,2 +1458,2 @@
 -    "evmDeployedBytecodeHash": "0xf1c9c97b99d347e7a9334596c84f95cac26a00e908392ffab0cdb0ee02e4b331",
 -    "evmDeployedBytecodeBlakeHash": "0xdaa74aad29bc7ecce1a7b40f850f4242efc285aee30b7f525abec845b50f8215",
-+    "evmDeployedBytecodeHash": "0xe307f470a5740afb7d2cebe6677ce44bba99441132627c3c0e1f6309280be242",
-+    "evmDeployedBytecodeBlakeHash": "0x63c3ddf42f2bcacfeb93ded1e2b32492b8b9ef384033f0146000fd665bbdd0df",
++    "evmDeployedBytecodeHash": "0xcc2edc5b091332cf31f0cb98d9c3fe191309804d61708b94bd9b1499744dfe6a",
++    "evmDeployedBytecodeBlakeHash": "0xd1cbaf80d05cb569fd566a1b440c4268d0fb214f1c48f7c5aa0bdd4cb03efbf8",
 @@ -1474 +1474 @@
 -    "zkBytecodeHash": "0x01000721c0cd9d553afd693e315e9caf0c758a929706b7ab624d429734283a63",
 +    "zkBytecodeHash": "0x010007212653e0c93c990f7f7268a993dbce2499854c7ab1fec5abd860445db2",
@@ -692,15 +692,15 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeBlakeHash": "0x948c38d7ebd623c813f46c8936ba513c1306c60d2e25d2c836d16a85ff0ca96f",
 @@ -1714 +1714 @@
 -    "zkBytecodeHash": "0x010007d3add673a51b82126d1952df5155ccbde114e2565a78fd932fd6e9b604",
-+    "zkBytecodeHash": "0x010007d33ecb37a194a8d79fd95be1e2af949241da603756f950472c984ad56f",
++    "zkBytecodeHash": "0x010007d3346119d360a054cbeaccec2ffa1fff1060473caa72641c49830a708c",
 @@ -1716 +1716 @@
 -    "evmBytecodeHash": "0x44a930f76765e559b26ff973caf3846d3992c9da349f8eb1a6507ed927658a22",
-+    "evmBytecodeHash": "0xf2cd4d212eaba3f80cd7eed81e2271730368b5d5c552560deab6a28b68ee74b7",
++    "evmBytecodeHash": "0xa3be3c0d46d3d6042ab64e6109ae0493a6a36f706a0307aa6bb6498414ce9d5b",
 @@ -1718,2 +1718,2 @@
 -    "evmDeployedBytecodeHash": "0x085bc97cc5cb8abb60b0fce05f889102bf189c2b8dcf03cda5da44e206816f85",
 -    "evmDeployedBytecodeBlakeHash": "0xcd266c469ca77e5dd058e52897ab7f03e59d808826d3fd6c6d6b675476fe64ef",
-+    "evmDeployedBytecodeHash": "0xd987031deebd52f819f1448956af5ccd465c129b8a688d94b0975cdceadcb0b8",
-+    "evmDeployedBytecodeBlakeHash": "0x19404b7920615f01ccd13c6c4530306b70357fc4b8433bdf39d60a238213b094",
++    "evmDeployedBytecodeHash": "0x7719f2778cc3b1285314a25f92d7858d827244ddb9bf59b0ef18437f794a5649",
++    "evmDeployedBytecodeBlakeHash": "0xbc1a8fc6b37ccf8c3702bb4e9d79f4dad4e83d98df2da6b2ab218c0c01204333",
 @@ -1754 +1754 @@
 -    "zkBytecodeHash": "0x01000007a7e66b8ea80b6645cf46c845b44684d5ee55de56d954b7a6bbf4a535",
 +    "zkBytecodeHash": "0x01000007d47388e4a29526e2f98037614f7caa714602b7eec441827eadc35518",
@@ -889,15 +889,15 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeBlakeHash": "0xc0c92c37c52b0fdc4fbeb2666a4d68b87fc6b0a88bcb122ada9a658fcadbd004",
 @@ -2274 +2294 @@
 -    "zkBytecodeHash": "0x0100098dfc157491c5a0cf7eeeca35634373130d629138b8730deddd09f2b7ac",
-+    "zkBytecodeHash": "0x0100098d2f016f7e3a555b24c39b561137e33d70496ee0158ba08826a958457c",
++    "zkBytecodeHash": "0x0100098d27d9e30db950e5adae8f21cb49b1200a82fe6eff37c1dbe2cb200a90",
 @@ -2276 +2296 @@
 -    "evmBytecodeHash": "0x5d824df6bff20e935599a70eade3bf37cdb091fba9e326954e443bf2967bdb41",
-+    "evmBytecodeHash": "0x1b24d066d50b2735a5df919efaafe67b7f92defbbfc246d6abc07b71a5680aee",
++    "evmBytecodeHash": "0x561ab83dbac4e6f163202e1449ab641a64829a340764325607cbe38c1eb401a5",
 @@ -2278,2 +2298,2 @@
 -    "evmDeployedBytecodeHash": "0x3d080c08f73e5eb9b9733d422138b83e78b64aeb3e4c8a843d16ef05ca030099",
 -    "evmDeployedBytecodeBlakeHash": "0x7455ae9a80c5f26f3c9d79e09f6bdc6718f6fa336da9856e853d53b3a605efd5",
-+    "evmDeployedBytecodeHash": "0x2ace22ddbd60c51e249e0927eb3a6f46a48faaebec93cec0f111ca2d1b9bdb90",
-+    "evmDeployedBytecodeBlakeHash": "0xd18919f0508d48ed0c57a4d7681013d2b3714b1387069cec7d102eb400c5301a",
++    "evmDeployedBytecodeHash": "0xd813f481d0a5d92de6347c80c78ae1cd2b8152b1da9b1c4365651e66dfaaf6d5",
++    "evmDeployedBytecodeBlakeHash": "0x2f0ca039754e41c036f9650cee3b57a4cea6eb55f53bb78d793e3578926be4aa",
 @@ -2284 +2304 @@
 -    "zkBytecodeHash": "0x010001a7986c28318cfe12aa1c2c8841ac32e7101761bdfab6b9e3d98cd45aba",
 +    "zkBytecodeHash": "0x010001b7f286d41d11df31eae55022103e9c4446418453d35018a220d8cd8277",
@@ -913,15 +913,15 @@ index a0200fd18..934720bd7 100644
 +    "evmDeployedBytecodeLength": 4650
 @@ -2294 +2314 @@
 -    "zkBytecodeHash": "0x01000567a46996730ff088fe4e7bab7d23599259a03b2afe19b22751464b3c37",
-+    "zkBytecodeHash": "0x010005677757b12fa4ed555182c35502134e2131d0a53b2ddfa95bd0c182d5c8",
++    "zkBytecodeHash": "0x010005676742b27e296ad8f831e07776cd0f91537acc8621b3527f2c3ca7c868",
 @@ -2296 +2316 @@
 -    "evmBytecodeHash": "0x6cb3e0345ed52df48ce7a1af4b593aa44c3c4c675e05c732b67a55d92d252f8b",
-+    "evmBytecodeHash": "0xe3483e64e27a86ce66c56e54ac589d9922c89b94a9fea5f376931e6d373c811e",
++    "evmBytecodeHash": "0x8f74697996ecc7e034647e19f8a9c6eb21e09859a81253f2bac6e9d62200718a",
 @@ -2298,2 +2318,2 @@
 -    "evmDeployedBytecodeHash": "0xd8212a2b61632db78466dda83bf97adad7541c4c67c704b60f6c5ca381119fab",
 -    "evmDeployedBytecodeBlakeHash": "0xee198966954e7dcdc22d817798a50c895453fa09448849a330c2ccfb228928f6",
-+    "evmDeployedBytecodeHash": "0xc001744cdc2553f6cb16a5761fa1ee62e2f87ed81e590f2689831d292815c117",
-+    "evmDeployedBytecodeBlakeHash": "0x8726e49d237e7b438aa75cbd36bc1990d19d75c881d669025ba7b8b9ecd79fdc",
++    "evmDeployedBytecodeHash": "0x9139b2b7093962129dd7f597b548f295f2adfb72bb0cc4251f1b4c6181a595a8",
++    "evmDeployedBytecodeBlakeHash": "0x3fe228bbaf4448b70a1a9da4ccf83d486a44da504580fdbf31bd5bf588518c7f",
 @@ -2304 +2324 @@
 -    "zkBytecodeHash": "0x010001cda9ae6717824365af9964e228b644d2952028683f75e1cdbb7ee023e7",
 +    "zkBytecodeHash": "0x010001e1d8e0a46811718897140dfb15ae22934d290bd740cd299900eef6b402",
@@ -971,7 +971,7 @@ index a0200fd18..934720bd7 100644
 +    "zkBytecodeHash": null,
 +    "zkBytecodePath": null
 diff --git a/configs/genesis/zksync-os/latest.json b/configs/genesis/zksync-os/latest.json
-index 204f07972..447090751 100644
+index 204f079721879f4e2e0547af75b83333550a384b..447090751079d1a52f8dff50b017a8c235bb4a50 100644
 --- a/configs/genesis/zksync-os/latest.json
 +++ b/configs/genesis/zksync-os/latest.json
 @@ -5 +5 @@
@@ -1194,7 +1194,7 @@ index 204f07972..447090751 100644
 +}
 \ No newline at end of file
 diff --git a/da-contracts/contracts/DAContractsErrors.sol b/da-contracts/contracts/DAContractsErrors.sol
-index 6768d02e2..3978dbbb6 100644
+index 6768d02e23a6c8793e6545b0c9329fd715c7887a..3978dbbb60ce5d45e4bae258eed5a4fd3a7a8473 100644
 --- a/da-contracts/contracts/DAContractsErrors.sol
 +++ b/da-contracts/contracts/DAContractsErrors.sol
 @@ -53,0 +54,6 @@ error InvalidBlobsPublished(bytes32 publishedHash, bytes32 expectedHash);
@@ -1206,7 +1206,7 @@ index 6768d02e2..3978dbbb6 100644
 +error BitcoinDAVerificationFailed();
 diff --git a/da-contracts/contracts/SyscoinDAUtils.sol b/da-contracts/contracts/SyscoinDAUtils.sol
 new file mode 100644
-index 000000000..9f975fac1
+index 0000000000000000000000000000000000000000..9f975fac1f193530411217e55d4a3f26a95e37dd
 --- /dev/null
 +++ b/da-contracts/contracts/SyscoinDAUtils.sol
 @@ -0,0 +1,15 @@
@@ -1227,7 +1227,7 @@ index 000000000..9f975fac1
 +uint256 constant SYSCOIN_DA_MAX_BLOBS_PER_BATCH = 32;
 diff --git a/da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol b/da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
 new file mode 100644
-index 000000000..5c7c7ff65
+index 0000000000000000000000000000000000000000..5c7c7ff65d731035068735d97a0178ccdf0ba4e2
 --- /dev/null
 +++ b/da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
 @@ -0,0 +1,71 @@
@@ -1304,7 +1304,7 @@ index 000000000..5c7c7ff65
 +}
 diff --git a/da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol b/da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol
 new file mode 100644
-index 000000000..e05ea53bc
+index 0000000000000000000000000000000000000000..e05ea53bcc5b8b66318dbaecf3ca650e53493787
 --- /dev/null
 +++ b/da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol
 @@ -0,0 +1,115 @@
@@ -1424,7 +1424,7 @@ index 000000000..e05ea53bc
 +    }
 +}
 diff --git a/l1-contracts/contracts/bridge/BridgeHelper.sol b/l1-contracts/contracts/bridge/BridgeHelper.sol
-index 2fc7fee09..3b02410e4 100644
+index 2fc7fee092bf4c79a1598639021a60a1375b5ee7..3b02410e4b06f1f6c548aae772e57347760297ff 100644
 --- a/l1-contracts/contracts/bridge/BridgeHelper.sol
 +++ b/l1-contracts/contracts/bridge/BridgeHelper.sol
 @@ -25,3 +25,3 @@ library BridgeHelper {
@@ -1434,8 +1434,27 @@ index 2fc7fee09..3b02410e4 100644
 +            // SYSCOIN: the native-token sentinel represents SYS on this deployment.
 +            name = abi.encode("Syscoin");
 +            symbol = abi.encode("SYS");
+diff --git a/l1-contracts/contracts/common/PriorityGasLimits.sol b/l1-contracts/contracts/common/PriorityGasLimits.sol
+new file mode 100644
+index 0000000000000000000000000000000000000000..7eea9cdb82b2518d492362b0a5bcdb82885bc31a
+--- /dev/null
++++ b/l1-contracts/contracts/common/PriorityGasLimits.sol
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: MIT
++
++pragma solidity 0.8.28;
++
++/// @dev SYSCOIN: Isolate admission limits from Config.sol to retain the frozen DA relay identity.
++/// The untouched vendor gas constants in Config.sol are not used by admission or upgrade paths.
++uint256 constant PRIORITY_TX_MAX_GAS_LIMIT = 1 << 24;
++
++/// @dev Genesis and protocol upgrades keep their separate execution allowance.
++uint256 constant UPGRADE_TX_MAX_GAS_LIMIT = 72_000_000;
++
++/// @dev Fresh chains start with the same bounded priority-admission ceiling.
++uint64 constant DEFAULT_PRIORITY_TX_MAX_GAS_LIMIT = uint64(PRIORITY_TX_MAX_GAS_LIMIT);
 diff --git a/l1-contracts/contracts/common/StateTransitionTypes.sol b/l1-contracts/contracts/common/StateTransitionTypes.sol
-index 1be4adfd8..6ba332113 100644
+index 1be4adfd806633e8074b275e65295be6e336fbc0..6ba3321134efcc4221e7636621a9e5fe01bc1754 100644
 --- a/l1-contracts/contracts/common/StateTransitionTypes.sol
 +++ b/l1-contracts/contracts/common/StateTransitionTypes.sol
 @@ -30,0 +31 @@ struct Verifiers {
@@ -1451,7 +1470,7 @@ index 1be4adfd8..6ba332113 100644
 +    /// @notice SYSCOIN: Legacy ABI slot; canonical deployments leave it zero.
 diff --git a/l1-contracts/contracts/common/SyscoinConfig.sol b/l1-contracts/contracts/common/SyscoinConfig.sol
 new file mode 100644
-index 000000000..80cb767ce
+index 0000000000000000000000000000000000000000..80cb767ce100bf3b49c3af35a2df246be01b3819
 --- /dev/null
 +++ b/l1-contracts/contracts/common/SyscoinConfig.sol
 @@ -0,0 +1,18 @@
@@ -1475,7 +1494,7 @@ index 000000000..80cb767ce
 +uint256 constant SYSCOIN_DA_MAX_REFS_PER_BATCH = 32;
 diff --git a/l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol b/l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol
 new file mode 100644
-index 000000000..528308d0c
+index 0000000000000000000000000000000000000000..528308d0c93ffcab624ff5d730aa087bb3f8a570
 --- /dev/null
 +++ b/l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol
 @@ -0,0 +1,18 @@
@@ -1498,7 +1517,7 @@ index 000000000..528308d0c
 +error SyscoinEdgeDARelayArtifactHashMismatch(bytes32 expected, bytes32 actual);
 +error SyscoinEdgeDARelayAddressMismatch(address expected, address actual);
 diff --git a/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol b/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
-index 177a12c88..71ea1fa1e 100644
+index 177a12c889dd0598082a725faf498d4a277915de..71ea1fa1ec3166afc87c55c10d610977c8ed982c 100644
 --- a/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
 +++ b/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
 @@ -213,0 +214,14 @@ interface IAdminFunctions {
@@ -1517,7 +1536,7 @@ index 177a12c88..71ea1fa1e 100644
 +        bool shouldSend
 +    ) external;
 diff --git a/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol b/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
-index 86bac78cd..6b4f9fa10 100644
+index 86bac78cd2230e994b56b6ecf5e80aaa6eef3106..6b4f9fa106ce5d097478aad5188a3460632b23fd 100644
 --- a/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 +++ b/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 @@ -12 +12 @@ interface IDeployL2Contracts {
@@ -1539,7 +1558,7 @@ index 86bac78cd..6b4f9fa10 100644
 -    /// @param _daValidatorType The DA validator type (0=Rollup, 1=NoDA, 2=Avail)
 +    /// @param _daValidatorType SYSCOIN: Reserved for ABI compatibility; must be zero.
 diff --git a/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol b/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
-index d4ce4bdae..b1bb7af37 100644
+index d4ce4bdaec988f89cc59799adaab7e185a7dd1c9..b1bb7af373e0c8b353aa0324d84b70ec23a24ef4 100644
 --- a/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
 +++ b/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
 @@ -106,0 +107,11 @@ error PubdataLengthTooBig(uint256 pubdataLength, uint256 totalBlobSizeBytes);
@@ -1554,32 +1573,48 @@ index d4ce4bdae..b1bb7af37 100644
 +error SyscoinEdgeDARefInputMalformed(uint256 offset);
 +// 0x05dc7af9
 +error SyscoinEdgeDARefsRootMismatch(bytes32 expectedRoot, bytes32 actualRoot);
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/DiamondInit.sol b/l1-contracts/contracts/state-transition/chain-deps/DiamondInit.sol
+index 8769d8079a410b184643618072c7f9406c61b9ed..fe1aae6697f3059a0ae279247336fca3bac52178 100644
+--- a/l1-contracts/contracts/state-transition/chain-deps/DiamondInit.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/DiamondInit.sol
+@@ -6,0 +7 @@ import {ZKChainBase} from "./facets/ZKChainBase.sol";
++import {DEFAULT_PRIORITY_TX_MAX_GAS_LIMIT} from "../../common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -15,2 +16 @@ import {
+-    DEFAULT_PUBDATA_PRICING_MODE,
+-    DEFAULT_PRIORITY_TX_MAX_GAS_LIMIT
++    DEFAULT_PUBDATA_PRICING_MODE
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
-index 8cae1a630..e4622b987 100644
+index 8cae1a6306556e85ba60c590f83dc7afdfe22acf..44e1a47ac15de0cb46762c964a53ea4fbad23df6 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
-@@ -17,2 +17,2 @@ import {
+@@ -7,0 +8 @@ import {Diamond} from "../../libraries/Diamond.sol";
++import {PRIORITY_TX_MAX_GAS_LIMIT} from "../../../common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -10 +10,0 @@ import {
+-    MAX_GAS_PER_TRANSACTION,
+@@ -17,2 +17 @@ import {
 -    ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT,
 -    ZKSYNC_OS_MAX_BLOCK_GAS_LIMIT
-+    // SYSCOIN: V8 fixes the only accepted transaction-gas cap to this canonical value.
 +    ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT
-@@ -179 +179,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
+@@ -168 +167 @@ contract AdminFacet is ZKChainBase, IAdmin {
+-        if (_newPriorityTxMaxGasLimit > MAX_GAS_PER_TRANSACTION) {
++        if (_newPriorityTxMaxGasLimit > PRIORITY_TX_MAX_GAS_LIMIT) {
+@@ -179 +178,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
 -        // The cap may only be raised above Ethereum's EIP-7825 single-tx gas limit, never below.
 +        // SYSCOIN: the canonical protocol V32 / execution V7 / proving V8 application fixes the
 +        // chain config to Ethereum's EIP-7825 single-transaction gas limit. Until dynamic chain
 +        // config is supported end-to-end, this
 +        // setter may only idempotently persist that value.
-@@ -183,2 +186 @@ contract AdminFacet is ZKChainBase, IAdmin {
+@@ -183,2 +185 @@ contract AdminFacet is ZKChainBase, IAdmin {
 -        // The cap must not exceed the ZKsync OS block gas limit: a higher value will halt the block production.
 -        if (_newMaxTxGasLimit > ZKSYNC_OS_MAX_BLOCK_GAS_LIMIT) {
 +        if (_newMaxTxGasLimit > ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT) {
-@@ -421,0 +424,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
+@@ -421,0 +423,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
 +        // SYSCOIN: Match the migration pause guard; Priority Mode requires an open priority-request path.
 +        if (s.pausedDepositsTimestamp != 0) {
 +            revert NotCompatibleWithPriorityMode();
 +        }
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
-index b8d073a5b..a73e7f3bb 100644
+index b8d073a5bd4a969c850a26a53e0004f2733faf0b..a73e7f3bb2f4c72a7e1a7dc7987c5b41cc5b696e 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 @@ -18,0 +19,10 @@ import {
@@ -1810,7 +1845,7 @@ index b8d073a5b..a73e7f3bb 100644
 +                // SYSCOIN: Bind the proven batch output to the ordered compact edge-DA root.
 +                _newBatch.edgeDARefsRoot
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
-index 2f5c0c0d7..0425dfe7a 100644
+index 2f5c0c0d7c1de24431abfebc4102006961385de8..0425dfe7ae8fe041284ba43c6ab74322ec26abf0 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
 @@ -126,0 +127,16 @@ contract GettersFacet is ZKChainBase, IGetters, ILegacyGetters {
@@ -1830,8 +1865,20 @@ index 2f5c0c0d7..0425dfe7a 100644
 +        return s.priorityTree.tree._sides.length - 1;
 +    }
 +
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Mailbox.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Mailbox.sol
+index f20c210314d7d9b539707195c07a65ab4220e2a9..c5d52d638f94fa593342beebe8016ae3af6430ab 100644
+--- a/l1-contracts/contracts/state-transition/chain-deps/facets/Mailbox.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Mailbox.sol
+@@ -28,0 +29 @@ import {ZKChainBase} from "./ZKChainBase.sol";
++import {PRIORITY_TX_MAX_GAS_LIMIT} from "../../../common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -390 +391 @@ contract MailboxFacet is ZKChainBase, IMailboxImpl, MessageVerification, IMailbo
+-                l2GasLimit: 72_000_000,
++                l2GasLimit: PRIORITY_TX_MAX_GAS_LIMIT,
+@@ -411 +412 @@ contract MailboxFacet is ZKChainBase, IMailboxImpl, MessageVerification, IMailbo
+-                l2GasLimit: 72_000_000,
++                l2GasLimit: PRIORITY_TX_MAX_GAS_LIMIT,
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
-index 55ce6a6cc..be486cebf 100644
+index 55ce6a6cceedb5e56681d3295954cc50ba0e003f..be486cebf95ffcc888029ef354cca3a12af3b7bf 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
 @@ -5,3 +5,2 @@ pragma solidity 0.8.28;
@@ -1884,7 +1931,7 @@ index 55ce6a6cc..be486cebf 100644
 +        SyscoinRollupDAManager rollupDAManager = new SyscoinRollupDAManager{salt: _config.salt}(relay);
 +        rollupDAManager.updateDAPair(result.rollupSLDAValidator, SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME, true);
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
-index 563262451..b1d63eaec 100644
+index 563262451cc93724f877653d7cdd408ae0e3f89d..b1d63eaec5e88b1405ce8a5a1d58ca4606c92889 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
 @@ -22 +22,2 @@ import {GatewayVerifiersDeployerConfig} from "./GatewayCTMDeployer.sol";
@@ -1920,7 +1967,7 @@ index 563262451..b1d63eaec 100644
 @@ -63 +66,0 @@ contract GatewayCTMDeployerVerifiersZKsyncOS {
 -        }
 diff --git a/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol b/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
-index d282201b8..14b4d4ab7 100644
+index d282201b88b360bebe78c1e80691f7209145f344..14b4d4ab7d071e5b785075669e4c7750573873dd 100644
 --- a/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
 +++ b/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
 @@ -50,0 +51,2 @@ struct CommitBatchInfo {
@@ -1931,7 +1978,7 @@ index d282201b8..14b4d4ab7 100644
 +    bytes edgeDARefsInput;
 +    bytes32 edgeDARefsRoot;
 diff --git a/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol b/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
-index bfcfaed2c..a2697948c 100644
+index bfcfaed2c927500db3e4c640f1aa89610665817c..a2697948cc44c61033fba975b9767ed45c9d4b9b 100644
 --- a/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
 +++ b/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
 @@ -8 +8 @@ import {IVerifier} from "./IVerifier.sol";
@@ -1946,7 +1993,7 @@ index bfcfaed2c..a2697948c 100644
 +    /// @notice Explicitly binds server fake/real prover mode to the deployed wrapper.
 +    function IS_TESTNET_VERIFIER() external view returns (bool);
 diff --git a/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol b/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
-index eceda676a..da456c7fb 100644
+index eceda676a453cf9bc69b16a9ef6c3845c982c185..da456c7fbc20d79bf4c1d835261c5a6d6443eccd 100644
 --- a/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
 +++ b/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
 @@ -56,0 +57 @@ contract RollupDAManager is Ownable2Step {
@@ -1956,7 +2003,7 @@ index eceda676a..da456c7fb 100644
 +    ) external virtual onlyOwner validDAConfiguration(_l1DAValidator, _l2DACommitmentScheme) {
 diff --git a/l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol b/l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
 new file mode 100644
-index 000000000..8503aab0d
+index 0000000000000000000000000000000000000000..8503aab0d1da042ce798c65779e2832a10f22982
 --- /dev/null
 +++ b/l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
 @@ -0,0 +1,68 @@
@@ -2030,7 +2077,7 @@ index 000000000..8503aab0d
 +}
 diff --git a/l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol b/l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
 new file mode 100644
-index 000000000..6c320e5f0
+index 0000000000000000000000000000000000000000..6c320e5f0e9ba53c7da5f1dbe290b642b82e7605
 --- /dev/null
 +++ b/l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
 @@ -0,0 +1,44 @@
@@ -2079,7 +2126,7 @@ index 000000000..6c320e5f0
 +    }
 +}
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
-index 6cda4e543..18422e3cf 100644
+index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574ace8a982 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 @@ -8,0 +9,2 @@ import {
@@ -2205,7 +2252,7 @@ index 6cda4e543..18422e3cf 100644
 +    }
 +
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
-index 5813db4c4..83f11bd02 100644
+index 5813db4c4d0cd494ccad3cc757b2b1a5765556a5..83f11bd02e5fc2ab3395f0b38d710b4e809f3d9c 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 @@ -8,0 +9,2 @@ import {InvalidMockProofLength, InvalidProof} from "../../common/L1ContractError
@@ -2243,16 +2290,36 @@ index 5813db4c4..83f11bd02 100644
 @@ -25 +40 @@ contract ZKsyncOSTestnetVerifier is ZKsyncOSDualVerifier {
 -    /// @dev Verifies the correctness of public input, doesn't check the validity of proof itself.
 +    /// @dev Verifies the fake proof's public-input binding without checking a cryptographic proof.
+diff --git a/l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol b/l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol
+index a1fe072d67e49da101f5d8f25bc0f24e28d89f0d..f369189699560a00310739b04dea401b7449d1a2 100644
+--- a/l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol
++++ b/l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol
+@@ -12,0 +13 @@ import {ProposedUpgrade} from "../state-transition/libraries/ProposedUpgradeLib.
++import {UPGRADE_TX_MAX_GAS_LIMIT} from "../common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -240 +241 @@ abstract contract BaseZkSyncUpgrade is ZKChainBase {
+-            s.priorityTxMaxGasLimit,
++            UPGRADE_TX_MAX_GAS_LIMIT, // SYSCOIN: Disabled/lower user admission must not prevent upgrades.
 diff --git a/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol b/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
-index 5e083b2a1..6a860a1e8 100644
+index 5e083b2a126bae7ecde4a67cfe2347553915ade2..6a860a1e880f97212561d9e0343ec3bfddf0205b 100644
 --- a/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
 +++ b/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
 @@ -49 +49,2 @@ abstract contract L1FixedForceDeploymentsHelper {
 -            tokenData = TokenMetadata({name: string("Ether"), symbol: string("ETH"), decimals: 18});
 +            // SYSCOIN: the native-token sentinel represents SYS on this deployment.
 +            tokenData = TokenMetadata({name: string("Syscoin"), symbol: string("SYS"), decimals: 18});
+diff --git a/l1-contracts/contracts/upgrades/L1GenesisUpgrade.sol b/l1-contracts/contracts/upgrades/L1GenesisUpgrade.sol
+index d9e3ce8aafcb00f4b8de624bbde09ae2c954fb3a..a8ae5eae0f261e37c7a9106ff7244823d3338607 100644
+--- a/l1-contracts/contracts/upgrades/L1GenesisUpgrade.sol
++++ b/l1-contracts/contracts/upgrades/L1GenesisUpgrade.sol
+@@ -20 +20,2 @@ import {
+-import {PRIORITY_TX_MAX_GAS_LIMIT, REQUIRED_L2_GAS_PRICE_PER_PUBDATA} from "../common/Config.sol";
++import {UPGRADE_TX_MAX_GAS_LIMIT} from "../common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
++import {REQUIRED_L2_GAS_PRICE_PER_PUBDATA} from "../common/Config.sol";
+@@ -79 +80 @@ contract L1GenesisUpgrade is IL1GenesisUpgrade, BaseZkSyncUpgradeGenesis, L1Fixe
+-                gasLimit: PRIORITY_TX_MAX_GAS_LIMIT,
++                gasLimit: UPGRADE_TX_MAX_GAS_LIMIT, // SYSCOIN: Keep the full genesis force-deployment budget.
 diff --git a/l1-contracts/deploy-scripts/AdminFunctions.s.sol b/l1-contracts/deploy-scripts/AdminFunctions.s.sol
-index 45471632f..67700bccc 100644
+index 45471632f3edbafe8de99d9de75bf8643cd595f4..67700bccc77b591b551bcd4f2e61ee0dfecec727 100644
 --- a/l1-contracts/deploy-scripts/AdminFunctions.s.sol
 +++ b/l1-contracts/deploy-scripts/AdminFunctions.s.sol
 @@ -19,0 +20 @@ import {ChainAdmin} from "contracts/governance/ChainAdmin.sol";
@@ -2398,7 +2465,7 @@ index 45471632f..67700bccc 100644
 +                adminChainId: _adminChainId,
 +                destinationChainId: _gatewayChainId,
 diff --git a/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol b/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
-index 440479469..c71e07ef6 100644
+index 4404794692bd9f4fdea51b51b9ce6f47ecee6286..c71e07ef6ea99f2311b9d63455b85d62926757d4 100644
 --- a/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 +++ b/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 @@ -27,6 +27 @@ contract DeployL2Script is Script, IDeployL2Contracts {
@@ -2420,7 +2487,7 @@ index 440479469..c71e07ef6 100644
 -        config.validatorType = DAValidatorType(daValidatorType);
 -
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-index e00f6b595..9c03d56c5 100644
+index e00f6b595e88b8f5126b9620c426a2f5caa3d318..9c03d56c5af75f5798be79b2ba24ab0c5f6f20b1 100644
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 @@ -17,0 +18,2 @@ import {RollupDAManager} from "contracts/state-transition/data-availability/Roll
@@ -2514,7 +2581,7 @@ index e00f6b595..9c03d56c5 100644
 +        vm.serializeAddress("deployed_addresses", "avail_l1_da_validator_addr", address(0));
 +        // SYSCOIN: Preserve the upstream output schema without advertising unsupported DA deployments.
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol b/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
-index 4ff16fd26..a97820fde 100644
+index 4ff16fd260b4d63ee08242a6395a21d594c932b9..a97820fdee0d3356e5f78638bea7c7906b0547f8 100644
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 @@ -49,3 +49,2 @@ enum CTMContract {
@@ -2656,7 +2723,7 @@ index 4ff16fd26..a97820fde 100644
 -
 +        // SYSCOIN: removed legacy DA identifiers fail closed instead of resolving old bytecode.
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
-index 4028b5f85..387632fc4 100644
+index 4028b5f8545f0c3e7b86cc914b97317b62370c71..387632fc4bdd1f2be91e044d25b2965c5c27636d 100644
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 @@ -17,2 +17 @@ import {Utils} from "../utils/Utils.sol";
@@ -2713,7 +2780,7 @@ index 4028b5f85..387632fc4 100644
 +                // would otherwise leave governance only as pending owner with no accept call.
 +                verifierOwner: ctmAddresses.admin.governance,
 diff --git a/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol b/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
-index f5bf734e7..ca8507780 100644
+index f5bf734e7deeb01a47c0754280b2803fe8abf1a3..ca850778095dfcab65e23a14e0bb2ea3f5cf1f9c 100644
 --- a/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
 @@ -214,0 +215,2 @@ contract RegisterZKChainScript is Create2FactoryUtils, IRegisterZKChain {
@@ -2726,7 +2793,7 @@ index f5bf734e7..ca8507780 100644
 -
 +        // SYSCOIN: Leave pubdata pricing in Rollup mode; the removed Validium branch is unsupported.
 diff --git a/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol b/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
-index 8e983d6dd..29da2611a 100644
+index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..29da2611af1f202dd207ec3cd705e00f330b1bb6 100644
 --- a/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 +++ b/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 @@ -30,0 +31,10 @@ import {BytecodeUtils} from "../utils/bytecode/BytecodeUtils.s.sol";
@@ -2908,7 +2975,7 @@ index 8e983d6dd..29da2611a 100644
 +        require(config.isZKsyncOS, "Only the canonical Syscoin ZKsync OS Gateway deployment is supported");
 +        return new bytes[](0);
 diff --git a/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol b/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
-index 22e61fdcd..14e29b2c9 100644
+index 22e61fdcd205914eed42629fed8dc0b205aa1cee..6f187fb32e073ef9e7120f1593386d52850add11 100644
 --- a/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
 +++ b/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
 @@ -24 +24 @@ import {ServerNotifier} from "contracts/governance/ServerNotifier.sol";
@@ -2923,6 +2990,9 @@ index 22e61fdcd..14e29b2c9 100644
 -        // Deploy DA contracts (RollupDAManager, ValidiumL1DAValidator, RelayedSLDAValidator)
 +        // SYSCOIN: Genesis already contains the offline-attested constructorless relay. The DA
 +        // deployer rechecks its live runtime before binding the constrained RollupDAManager.
+@@ -233 +237 @@ contract GatewayVotePreparation is DeployCTMUtils, GatewayGovernanceUtils {
+-            l2GasLimit: 72_000_000,
++            l2GasLimit: Utils.MAX_PRIORITY_TX_GAS,
 @@ -248,0 +253 @@ contract GatewayVotePreparation is DeployCTMUtils, GatewayGovernanceUtils {
 +        // SYSCOIN: Persist the canonical compact-relay addresses and a zero legacy Validium slot.
 @@ -254 +259 @@ contract GatewayVotePreparation is DeployCTMUtils, GatewayGovernanceUtils {
@@ -2930,8 +3000,17 @@ index 22e61fdcd..14e29b2c9 100644
 +            validiumDAValidator: address(0),
 @@ -436,0 +442 @@ contract GatewayVotePreparation is DeployCTMUtils, GatewayGovernanceUtils {
 +        // SYSCOIN: Preserve the upstream output key without enabling the unsupported Validium mode.
+diff --git a/l1-contracts/deploy-scripts/upgrade/default-upgrade/CTMUpgradeBase.sol b/l1-contracts/deploy-scripts/upgrade/default-upgrade/CTMUpgradeBase.sol
+index 46a02b59fe42eb3943a66f48168c85223f0d9a2b..b0a36161597a70eb1c3f2616f8b80632d4240d60 100644
+--- a/l1-contracts/deploy-scripts/upgrade/default-upgrade/CTMUpgradeBase.sol
++++ b/l1-contracts/deploy-scripts/upgrade/default-upgrade/CTMUpgradeBase.sol
+@@ -17,0 +18 @@ import {UpgradeHelperLib} from "./UpgradeHelperLib.sol";
++import {UPGRADE_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -66 +67 @@ abstract contract CTMUpgradeBase is DeployCTMScript {
+-            gasLimit: 72_000_000,
++            gasLimit: UPGRADE_TX_MAX_GAS_LIMIT, // SYSCOIN: Upgrade work is not user priority admission.
 diff --git a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
-index 42142bfed..933137de4 100644
+index 42142bfed1d775724e67a1947c2236eff73e7785..933137de47169e686b502b776036e73ffaa6fc68 100644
 --- a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 +++ b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 @@ -32,0 +33,2 @@ import {CTMDeployedAddresses} from "../../ctm/DeployCTMUtils.s.sol";
@@ -2954,7 +3033,7 @@ index 42142bfed..933137de4 100644
 +            vm.envOr("SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER", false)
 +        );
 diff --git a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
-index d5bcd6f96..6cb0b9c47 100644
+index d5bcd6f9673ee32ea429454f8ce0114765890acd..6cb0b9c47a80bfd2579491400b8678a26b0530b8 100644
 --- a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
 +++ b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
 @@ -42,0 +43,2 @@ import {RollupDAManager} from "contracts/state-transition/data-availability/Roll
@@ -2979,7 +3058,7 @@ index d5bcd6f96..6cb0b9c47 100644
 -            (gatewayConfig.gatewayDA.rollupSLDAValidator, getRollupL2DACommitmentScheme(), true)
 +            (gatewayConfig.gatewayDA.rollupSLDAValidator, SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME, true)
 diff --git a/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol b/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
-index 2d6dba706..139f0dc6b 100644
+index 2d6dba706c31af457ead82fc253d0a5423a1a160..139f0dc6bc34eefc8abca70047da3bd33c60809f 100644
 --- a/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
 +++ b/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
 @@ -245 +245,2 @@ library AddressIntrospector {
@@ -2992,8 +3071,18 @@ index 2d6dba706..139f0dc6b 100644
 @@ -509 +510 @@ library AddressIntrospector {
 -    /// @param _isZKsyncOS If true, uses ZKsyncOSDualVerifier interface; otherwise EraDualVerifier
 +    /// @param _isZKsyncOS If true, returns the canonical zkOS V8 pair; otherwise returns Era's pair.
+diff --git a/l1-contracts/deploy-scripts/utils/Utils.sol b/l1-contracts/deploy-scripts/utils/Utils.sol
+index ed9a412fecff9ffc82e7b782e051714300dfb09d..77bff2c83eed440086fe1a3094528b5e75625060 100644
+--- a/l1-contracts/deploy-scripts/utils/Utils.sol
++++ b/l1-contracts/deploy-scripts/utils/Utils.sol
+@@ -22,0 +23 @@ import {Call} from "contracts/governance/Common.sol";
++import {PRIORITY_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -139 +140,2 @@ library Utils {
+-    uint256 internal constant MAX_PRIORITY_TX_GAS = 72000000;
++    // SYSCOIN: Deployment requests must fit the same envelope enforced before queue insertion.
++    uint256 internal constant MAX_PRIORITY_TX_GAS = PRIORITY_TX_MAX_GAS_LIMIT;
 diff --git a/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol b/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
-index 212ecb26e..c540f0869 100644
+index 212ecb26eb5c53bc2add3408f1de20c6ab09c89b..c540f0869d2456a9c0e63067c1d1e0f0ddd99ccc 100644
 --- a/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 +++ b/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 @@ -45 +45,3 @@ library ContractsBytecodesLib {
@@ -3017,7 +3106,7 @@ index 212ecb26e..c540f0869 100644
 +            // SYSCOIN: pinned-upstream dormant artifact; the V8 wrapper does not route proofs here.
 diff --git a/l1-contracts/script-config/syscoin-edge-da-relay-v1.json b/l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 new file mode 100644
-index 000000000..7918b2a11
+index 0000000000000000000000000000000000000000..7918b2a110fb7473b3090c5416427257ebcf7996
 --- /dev/null
 +++ b/l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 @@ -0,0 +1,19 @@
@@ -3041,7 +3130,7 @@ index 000000000..7918b2a11
 +  "expectedAddress": "0x758b06cDA80BDD016F79AFd0df1A984039067A21"
 +}
 diff --git a/l1-contracts/selectors b/l1-contracts/selectors
-index 35a078048..eed27f374 100644
+index 35a0780488837d99489ba9d69295cc2e8d675568..eed27f374710f9bdf38c31b32fbc395cd76f7247 100644
 --- a/l1-contracts/selectors
 +++ b/l1-contracts/selectors
 @@ -1650,2 +1649,0 @@ CommitterFacet
@@ -3217,9 +3306,41 @@ index 35a078048..eed27f374 100644
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
+diff --git a/l1-contracts/src.ts/constants.ts b/l1-contracts/src.ts/constants.ts
+index adceb890e7fe26e459cfce51a5177335bc03bfc6..b1d6c8b42a277a057a9090f219e6f25df4ded477 100644
+--- a/l1-contracts/src.ts/constants.ts
++++ b/l1-contracts/src.ts/constants.ts
+@@ -16,0 +17 @@ export const SYSTEM_UPGRADE_L2_TX_TYPE = 254;
++export const PRIORITY_TX_MAX_GAS_LIMIT = 1 << 24;
+diff --git a/l1-contracts/src.ts/deploy-test-process.ts b/l1-contracts/src.ts/deploy-test-process.ts
+index f56db097256292081772f730b8a3d7aecf34054f..a9a8afa6471bf723c8650038de594924dee802d7 100644
+--- a/l1-contracts/src.ts/deploy-test-process.ts
++++ b/l1-contracts/src.ts/deploy-test-process.ts
+@@ -41 +41 @@ export async function loadDefaultEnvVarsForTests(deployWallet: Wallet) {
+-  process.env.CONTRACTS_PRIORITY_TX_MAX_GAS_LIMIT = "72000000";
++  process.env.CONTRACTS_PRIORITY_TX_MAX_GAS_LIMIT = "16777216";
+diff --git a/l1-contracts/src.ts/deploy.ts b/l1-contracts/src.ts/deploy.ts
+index 84e33ecb45c5128b70e17268a9723db329c0d4fd..35d807de72f2c80e086b655caff743ddc09c19fd 100644
+--- a/l1-contracts/src.ts/deploy.ts
++++ b/l1-contracts/src.ts/deploy.ts
+@@ -56,0 +57 @@ import {
++  PRIORITY_TX_MAX_GAS_LIMIT,
+@@ -1311 +1312 @@ export class Deployer {
+-    const l2GasLimit = ethers.BigNumber.from(72_000_000);
++    const l2GasLimit = ethers.BigNumber.from(PRIORITY_TX_MAX_GAS_LIMIT);
+diff --git a/l1-contracts/src.ts/utils.ts b/l1-contracts/src.ts/utils.ts
+index 04fa35b192374bed3e5c64a6cc8bf5fb9de00930..b153dbca343a5827de560e5b64c676c8877d2600 100644
+--- a/l1-contracts/src.ts/utils.ts
++++ b/l1-contracts/src.ts/utils.ts
+@@ -13 +13 @@ import { Wallet as ZkWallet, Provider } from "zksync-ethers";
+-import { L2_NATIVE_TOKEN_VAULT_ADDRESS, L1_TO_L2_ALIAS_OFFSET } from "./constants";
++import { L2_NATIVE_TOKEN_VAULT_ADDRESS, L1_TO_L2_ALIAS_OFFSET, PRIORITY_TX_MAX_GAS_LIMIT } from "./constants";
+@@ -228 +228 @@ function checkValidInitialCutHashParams(
+-  const EXPECTED_PRIORITY_TX_MAX_GAS_LIMIT = 72_000_000;
++  const EXPECTED_PRIORITY_TX_MAX_GAS_LIMIT = PRIORITY_TX_MAX_GAS_LIMIT;
 diff --git a/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol b/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
 new file mode 100644
-index 000000000..59585e1f8
+index 0000000000000000000000000000000000000000..59585e1f8bf82634dfdef8bad073d9756792a943
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
 @@ -0,0 +1,31 @@
@@ -3255,7 +3376,7 @@ index 000000000..59585e1f8
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol b/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
-index 768ae92ec..f7441a616 100644
+index 768ae92ec8d019f7a6333bb3c9aa8a74c5fdc1b2..f7441a6165e9105f239cfea0b7b838c2ac43067b 100644
 --- a/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 @@ -20,0 +21,2 @@ import {IChainTypeManager} from "contracts/state-transition/IChainTypeManager.so
@@ -3307,8 +3428,17 @@ index 768ae92ec..f7441a616 100644
 +            SYSCOIN_CANONICAL_STORED_BATCH_ZERO,
 +            "Unexpected CTM stored batch zero"
 +        );
+diff --git a/l1-contracts/test/foundry/l1/integration/L1GatewayTests.t.sol b/l1-contracts/test/foundry/l1/integration/L1GatewayTests.t.sol
+index 43a9831a2cb48e6db0055fd1dce51d9d9cbae028..8462015f18ac14c6f4a2db1cc0c7014c4721cdbf 100644
+--- a/l1-contracts/test/foundry/l1/integration/L1GatewayTests.t.sol
++++ b/l1-contracts/test/foundry/l1/integration/L1GatewayTests.t.sol
+@@ -23,0 +24 @@ import {L2TxMocker} from "./_SharedL2TxMocker.t.sol";
++import {PRIORITY_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -273 +274 @@ contract L1GatewayTests is L1ContractDeployer, ZKChainDeployer, TokenDeployer, L
+-            72000000, // l2GasLimit
++            PRIORITY_TX_MAX_GAS_LIMIT, // SYSCOIN: Gateway requests use the bounded admission envelope.
 diff --git a/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol b/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
-index a7ff69cc1..3e204149b 100644
+index a7ff69cc1b6d8c8d36a4e4b4799bc5c781d2b75b..3e204149bd41e97c5c1873b3de9e6ff92e663912 100644
 --- a/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
 @@ -347,3 +347,2 @@ contract UpgradeIntegrationTestBase is Test {
@@ -3318,7 +3448,7 @@ index a7ff69cc1..3e204149b 100644
 +        // SYSCOIN: zkOS CTM output binds the canonical manager rather than a legacy blob-validator alias.
 +        address rollupDAManager = outputDeployCTMToml.readAddress("$.deployed_addresses.l1_rollup_da_manager");
 diff --git a/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol b/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
-index d8860cf35..0465b36b3 100644
+index d8860cf3554618faa93e0123f1913eb859ad55c4..0465b36b37046d438d41f92b9890c4483c140728 100644
 --- a/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
 @@ -15 +15 @@ import {PublishFactoryDepsResult} from "../../../../deploy-scripts/utils/bytecod
@@ -3394,7 +3524,7 @@ index d8860cf35..0465b36b3 100644
 +        stdstore.target(eraChainDiamond).sig(IGetters.getProtocolVersion.selector).checked_write(oldProtocolVersion);
 +
 diff --git a/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol b/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
-index 13884feda..11133719b 100644
+index 13884feda03aa3bf327ef7ceaec2a97f7075c69d..11133719b74928af01ab3a1e613beaec954a2bf3 100644
 --- a/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
 @@ -21,0 +22 @@ import {IOwnable} from "contracts/common/interfaces/IOwnable.sol";
@@ -3407,7 +3537,7 @@ index 13884feda..11133719b 100644
 +        assertEq(verifier.pendingOwner(), address(0), "verifier ownership handoff is incomplete");
 +
 diff --git a/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol b/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
-index d85c74f2a..322451c92 100644
+index d85c74f2a6537cd584f390042dc153b34e7d4f01..322451c922039201c4d4bbe5fa6589f47e3ca834 100644
 --- a/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
 @@ -9 +9,3 @@ import {RegisterZKChainConfig as ChainConfig} from "contracts/script-interfaces/
@@ -3436,7 +3566,7 @@ index d85c74f2a..322451c92 100644
 +        // SYSCOIN: Keep generated fixture input explicitly fail-closed to validium mode.
 +        vm.serializeUint("chain", "validium_mode", 0);
 diff --git a/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol b/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
-index 06e675359..bf8f1701e 100644
+index 06e6753597bbb23c9764593f2a13808d5af5c771..bf8f1701e91ebdb5ca16d541addd11b0e408bf2f 100644
 --- a/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
 +++ b/l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
 @@ -17,0 +18,5 @@ contract DeployCTMIntegrationScript is Script, DeployCTMScript {
@@ -3446,15 +3576,24 @@ index 06e675359..bf8f1701e 100644
 +    }
 +
 diff --git a/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml b/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
-index 4448fe81f..9330a54af 100644
+index 4448fe81faeadab92a6664896791ed368ec271ce..9330a54af287d2f247443fa81e906644dbd356fd 100644
 --- a/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 +++ b/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 @@ -5 +5,2 @@ support_l2_legacy_shared_bridge_test = false
 -is_zk_sync_os = false
 +# SYSCOIN: Exercise the zkOS-only CTM path used by the V32 deployment fixture.
 +is_zk_sync_os = true
+diff --git a/l1-contracts/test/foundry/l1/integration/l2-tests-abstract/_SharedL2ContractDeployer.sol b/l1-contracts/test/foundry/l1/integration/l2-tests-abstract/_SharedL2ContractDeployer.sol
+index f68b430d7d06877037578a88bb8252614613d7c2..c1c629f8ad21ec4c6d2f16ce110c43100ec8e586 100644
+--- a/l1-contracts/test/foundry/l1/integration/l2-tests-abstract/_SharedL2ContractDeployer.sol
++++ b/l1-contracts/test/foundry/l1/integration/l2-tests-abstract/_SharedL2ContractDeployer.sol
+@@ -35,0 +36 @@ import {
++import {PRIORITY_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -306 +307 @@ abstract contract SharedL2ContractDeployer is UtilsCallMockerTest, DeployIntegra
+-                l2GasLimit: 72_000_000,
++                l2GasLimit: PRIORITY_TX_MAX_GAS_LIMIT, // SYSCOIN: Deployment is ordinary priority work.
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
-index c621e20e7..20fc395c6 100644
+index c621e20e759f413df914499e0ca9f8c6c0f0363d..20fc395c6a98cfeff2c8156fc8bc05da497eec87 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 @@ -4 +4 @@ pragma solidity 0.8.28;
@@ -4320,24 +4459,620 @@ index c621e20e7..20fc395c6 100644
 +        bytes32 dataHash = bytes32(uint256(11));
 +        (bytes memory input, bytes32 root, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, abi.encodePacked(dataHash));
 +        _commitSyscoinWithEdgeRefs(input, root, abi.encodeWithSelector(SyscoinEdgeDANotAvailable.selector, dataHash));
-diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
-index 631f8f7dc..3d2ca8dd1 100644
---- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
-+++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
-@@ -8 +7,0 @@ import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncO
--import {IVerifierV2} from "contracts/state-transition/chain-interfaces/IVerifierV2.sol";
-@@ -9,0 +9 @@ import {IVerifier} from "contracts/state-transition/chain-interfaces/IVerifier.s
-+import {IVerifierV2} from "contracts/state-transition/chain-interfaces/IVerifierV2.sol";
-@@ -62 +62,6 @@ contract ZKsyncOSPublicInputTest is Test {
--        verifier = new ZKsyncOSDualVerifier(IVerifierV2(address(1)), IVerifier(address(2)), address(this));
-+        // SYSCOIN: The hardened dual-verifier constructor requires verifier addresses with deployed code.
-+        verifier = new ZKsyncOSDualVerifier(
-+            IVerifierV2(address(executor)),
-+            IVerifier(address(executor)),
-+            address(this)
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
+new file mode 100644
+index 0000000000000000000000000000000000000000..d27e6a1e289b4a8dca9ea5c73708e0b6bbef31fd
+--- /dev/null
++++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
+@@ -0,0 +1,606 @@
++// SPDX-License-Identifier: MIT
++// Foundry test names and co-located inspection harnesses follow the existing fixture conventions.
++/* solhint-disable func-name-mixedcase, one-contract-per-file */
++pragma solidity 0.8.28;
++
++// SYSCOIN: fresh-chain priority admission is capped independently of system upgrade gas.
++
++import {Vm} from "forge-std/Test.sol";
++import {ExecutorTest} from "./_Executor_Shared.t.sol";
++import {Utils} from "../Utils/Utils.sol";
++import {Diamond} from "contracts/state-transition/libraries/Diamond.sol";
++import {ZKChainBase} from "contracts/state-transition/chain-deps/facets/ZKChainBase.sol";
++import {MailboxFacet} from "contracts/state-transition/chain-deps/facets/Mailbox.sol";
++import {IEIP7702Checker} from "contracts/state-transition/chain-interfaces/IEIP7702Checker.sol";
++import {IAdmin} from "contracts/state-transition/chain-interfaces/IAdmin.sol";
++import {IChainTypeManager} from "contracts/state-transition/IChainTypeManager.sol";
++import {IBridgehubBase, L2TransactionRequestDirect} from "contracts/core/bridgehub/IBridgehubBase.sol";
++import {IL1SharedBridgeLegacy} from "contracts/bridge/interfaces/IL1SharedBridgeLegacy.sol";
++import {IL1AssetRouter} from "contracts/bridge/asset-router/IL1AssetRouter.sol";
++import {INativeTokenVaultBase} from "contracts/bridge/ntv/INativeTokenVaultBase.sol";
++import {PriorityTree} from "contracts/state-transition/libraries/PriorityTree.sol";
++import {DefaultUpgrade} from "contracts/upgrades/DefaultUpgrade.sol";
++import {L1GenesisUpgrade} from "contracts/upgrades/L1GenesisUpgrade.sol";
++import {ProposedUpgrade} from "contracts/upgrades/BaseZkSyncUpgrade.sol";
++import {VerifierParams} from "contracts/state-transition/chain-interfaces/IVerifier.sol";
++import {FeeParams} from "contracts/state-transition/chain-deps/ZKChainStorage.sol";
++import {SemVer} from "contracts/common/libraries/SemVer.sol";
++import {BridgehubL2TransactionRequest, L2CanonicalTransaction} from "contracts/common/Messaging.sol";
++import {PRIORITY_TX_MAX_GAS_LIMIT, UPGRADE_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
++import {
++    REQUIRED_L2_GAS_PRICE_PER_PUBDATA,
++    ZKSYNC_OS_SYSTEM_UPGRADE_L2_TX_TYPE,
++    ETH_TOKEN_ADDRESS
++} from "contracts/common/Config.sol";
++import {L2_FORCE_DEPLOYER_ADDR} from "contracts/common/l2-helpers/L2ContractAddresses.sol";
++import {
++    TooMuchGas,
++    Unauthorized,
++    PubdataGreaterThanLimit,
++    ValidateTxnNotEnoughGas
++} from "contracts/common/L1ContractErrors.sol";
++import {InvalidTxType, L2UpgradeNonceNotEqualToNewProtocolVersion} from "contracts/upgrades/ZkSyncUpgradeErrors.sol";
++import {NotL1} from "contracts/state-transition/L1StateTransitionErrors.sol";
++
++uint256 constant LOWER_PRIORITY_GAS_LIMIT = 1_000_000;
++
++/// @dev Inspection only: no test fixture is permitted to write relevant state directly.
++contract PriorityGasInspection is ZKChainBase {
++    using PriorityTree for PriorityTree.Tree;
++
++    function admissionSnapshot() external view returns (uint256, bytes32, uint256, bytes32) {
++        return (
++            s.priorityTxMaxGasLimit,
++            s.priorityTree.getRoot(),
++            s.priorityOpsRequestTimestamp[0],
++            s.l2SystemContractsUpgradeTxHash
 +        );
++    }
++
++    function storedProtocolVersion() external view returns (uint256) {
++        return s.protocolVersion;
++    }
++
++    function admissionFeeParams() external view returns (FeeParams memory) {
++        return s.feeParams;
++    }
++}
++
++contract PriorityGasMailboxHarness is MailboxFacet {
++    constructor(
++        uint256 _chainId,
++        address _chainAssetHandler,
++        IEIP7702Checker _checker
++    ) MailboxFacet(_chainId, block.chainid, _chainAssetHandler, _checker, false) {}
++
++    /// @dev Isolates the existing internal free entry point, retaining bridgehub authorization.
++    function requestFree(BridgehubL2TransactionRequest calldata _request) external onlyBridgehub returns (bytes32) {
++        return _requestL2TransactionFree(_request);
++    }
++}
++
++contract PriorityGasLimitTest is ExecutorTest {
++    PriorityGasMailboxHarness private mailboxHarness;
++    PriorityGasInspection private inspection;
++    address private registrationSender;
++    bytes32 private constant LIMIT_EVENT = keccak256("NewPriorityTxMaxGasLimit(uint256,uint256)");
++
++    function isZKsyncOS() internal pure override returns (bool) {
++        return true;
++    }
++
++    function setUp() public {
++        registrationSender = makeAddr("registrationSender");
++        // Isolate chain registration plumbing, not admission, state initialization, or authorization.
++        vm.mockCall(
++            address(dummyBridgehub),
++            abi.encodeWithSelector(IBridgehubBase.chainRegistrationSender.selector),
++            abi.encode(registrationSender)
++        );
++        vm.mockCall(
++            address(dummyBridgehub),
++            abi.encodeWithSelector(IBridgehubBase.whitelistedSettlementLayers.selector, l2ChainId),
++            abi.encode(true)
++        );
++        PriorityGasMailboxHarness implementation = new PriorityGasMailboxHarness(
++            l2ChainId,
++            address(chainAssetHandler),
++            IEIP7702Checker(Utils.deployEIP7702Checker())
++        );
++        bytes4[] memory mailboxSelectors = new bytes4[](3);
++        mailboxSelectors[0] = PriorityGasMailboxHarness.requestFree.selector;
++        mailboxSelectors[1] = MailboxFacet.requestL2ServiceTransaction.selector;
++        mailboxSelectors[2] = MailboxFacet.requestL2TransactionToGatewayMailboxWithBalanceChange.selector;
++        _install(address(implementation), Diamond.Action.Add, mailboxSelectors);
++        mailboxHarness = PriorityGasMailboxHarness(address(mailbox));
++
++        bytes4[] memory inspectionSelectors = new bytes4[](3);
++        inspectionSelectors[0] = PriorityGasInspection.admissionSnapshot.selector;
++        inspectionSelectors[1] = PriorityGasInspection.storedProtocolVersion.selector;
++        inspectionSelectors[2] = PriorityGasInspection.admissionFeeParams.selector;
++        _install(address(new PriorityGasInspection()), Diamond.Action.Add, inspectionSelectors);
++        inspection = PriorityGasInspection(address(mailbox));
++    }
++
++    function test_freshDiamondInitializesPriorityCap() public view {
++        (uint256 storedLimit, , , bytes32 upgradeHash) = inspection.admissionSnapshot();
++        assertEq(storedLimit, PRIORITY_TX_MAX_GAS_LIMIT);
++        assertEq(getters.getPriorityTxMaxGasLimit(), PRIORITY_TX_MAX_GAS_LIMIT);
++        assertEq(upgradeHash, bytes32(0));
++        assertEq(getters.getPriorityQueueSize(), 0);
++        assertEq(getters.getFirstUnprocessedPriorityTx(), 0);
++    }
++
++    function test_paidBoundaryAcceptsCapAndRejectsNextGas() public {
++        _acceptPaid(PRIORITY_TX_MAX_GAS_LIMIT);
++        _rejectPaid(PRIORITY_TX_MAX_GAS_LIMIT + 1);
++    }
++
++    function test_lowerLimitRemainsEffective() public {
++        _setLimit(LOWER_PRIORITY_GAS_LIMIT);
++        assertEq(getters.getPriorityTxMaxGasLimit(), LOWER_PRIORITY_GAS_LIMIT);
++        _acceptPaid(LOWER_PRIORITY_GAS_LIMIT);
++        _rejectPaid(LOWER_PRIORITY_GAS_LIMIT + 1);
++        _rejectFree(LOWER_PRIORITY_GAS_LIMIT + 1);
++    }
++
++    function test_zeroLimitDisablesNewPriorityAdmission() public {
++        _setLimit(0);
++        assertEq(getters.getPriorityTxMaxGasLimit(), 0);
++        _rejectPaid(LOWER_PRIORITY_GAS_LIMIT);
++        _rejectFree(LOWER_PRIORITY_GAS_LIMIT);
++        _rejectServiceAndWrapper();
++    }
++
++    function test_freeBoundaryAcceptsCapAndRejectsNextGas() public {
++        vm.recordLogs();
++        vm.prank(address(dummyBridgehub));
++        bytes32 hash = mailboxHarness.requestFree(_freeRequest(PRIORITY_TX_MAX_GAS_LIMIT));
++        _assertAdmission(hash, PRIORITY_TX_MAX_GAS_LIMIT, 0, vm.getRecordedLogs());
++        _rejectFree(PRIORITY_TX_MAX_GAS_LIMIT + 1);
++    }
++
++    function test_serviceBuilderUsesFixedPriorityCap() public {
++        vm.recordLogs();
++        vm.prank(registrationSender);
++        bytes32 hash = mailbox.requestL2ServiceTransaction(makeAddr("serviceTarget"), hex"1234");
++        _assertAdmission(hash, PRIORITY_TX_MAX_GAS_LIMIT, 0, vm.getRecordedLogs());
++    }
++
++    function test_gatewayWrapperUsesFixedPriorityCap() public {
++        vm.recordLogs();
++        vm.prank(address(mailbox));
++        bytes32 hash = mailbox.requestL2TransactionToGatewayMailboxWithBalanceChange({
++            _chainId: l2ChainId,
++            _canonicalTxHash: keccak256("inner transaction"),
++            _expirationTimestamp: 0,
++            _baseTokenAmount: 0,
++            _getBalanceChange: false
++        });
++        _assertAdmission(hash, PRIORITY_TX_MAX_GAS_LIMIT, 0, vm.getRecordedLogs());
++    }
++
++    function test_fixedServiceAndWrapperRejectLowerAdmissionLimit() public {
++        _setLimit(LOWER_PRIORITY_GAS_LIMIT);
++        _rejectServiceAndWrapper();
++    }
++
++    function test_setterBoundaryAndEvent() public {
++        _setLimit(0);
++        vm.expectEmit(address(admin));
++        emit IAdmin.NewPriorityTxMaxGasLimit(0, PRIORITY_TX_MAX_GAS_LIMIT);
++        vm.prank(getters.getChainTypeManager());
++        admin.setPriorityTxMaxGasLimit(PRIORITY_TX_MAX_GAS_LIMIT);
++        assertEq(getters.getPriorityTxMaxGasLimit(), PRIORITY_TX_MAX_GAS_LIMIT);
++        _rejectSetter(PRIORITY_TX_MAX_GAS_LIMIT + 1);
++    }
++
++    function testFuzz_setterPreservesEveryAllowedLimit(uint256 _limit) public {
++        _limit = bound(_limit, 0, PRIORITY_TX_MAX_GAS_LIMIT);
++        vm.expectEmit(address(admin));
++        emit IAdmin.NewPriorityTxMaxGasLimit(PRIORITY_TX_MAX_GAS_LIMIT, _limit);
++        _setLimit(_limit);
++        (uint256 storedLimit, , , ) = inspection.admissionSnapshot();
++        assertEq(storedLimit, _limit);
++        assertEq(getters.getPriorityTxMaxGasLimit(), _limit);
++    }
++
++    function testFuzz_setterRejectsEveryAboveCapLimit(uint256 _limit) public {
++        _limit = bound(_limit, PRIORITY_TX_MAX_GAS_LIMIT + 1, type(uint256).max);
++        _rejectSetter(_limit);
++    }
++
++    function testFuzz_setterRejectsUnauthorizedCaller(address _caller, uint256 _limit) public {
++        vm.assume(_caller != getters.getChainTypeManager());
++        bytes32 beforeState = _stateDigest();
++        vm.recordLogs();
++        vm.prank(_caller);
++        vm.expectRevert(abi.encodeWithSelector(Unauthorized.selector, _caller));
++        admin.setPriorityTxMaxGasLimit(_limit);
++        assertEq(vm.getRecordedLogs().length, 0);
++        assertEq(_stateDigest(), beforeState);
++    }
++
++    function test_setterRetainsL1OnlyCheck() public {
++        uint256 wrongChain = block.chainid + 1;
++        bytes32 beforeState = _stateDigest();
++        vm.chainId(wrongChain);
++        vm.prank(getters.getChainTypeManager());
++        vm.expectRevert(abi.encodeWithSelector(NotL1.selector, wrongChain));
++        admin.setPriorityTxMaxGasLimit(PRIORITY_TX_MAX_GAS_LIMIT);
++        assertEq(_stateDigest(), beforeState);
++    }
++
++    function test_upgradeAccepts72MIndependentlyOfLowerPriorityLimit() public {
++        _setLimit(LOWER_PRIORITY_GAS_LIMIT);
++        _assertSuccessfulUpgrade(LOWER_PRIORITY_GAS_LIMIT);
++    }
++
++    function test_upgradeAccepts72MWithPriorityAdmissionDisabled() public {
++        _setLimit(0);
++        _assertSuccessfulUpgrade(0);
++    }
++
++    function test_upgradeRejects72MPlusOneWithoutSideEffects() public {
++        _setLimit(0);
++        ProposedUpgrade memory proposal = _proposal();
++        proposal.l2ProtocolUpgradeTx.gasLimit = UPGRADE_TX_MAX_GAS_LIMIT + 1;
++        _rejectUpgrade(proposal, abi.encodeWithSelector(TooMuchGas.selector));
++    }
++
++    function test_upgradeRetainsPubdataValidation() public {
++        _setLimit(0);
++        ProposedUpgrade memory proposal = _proposal();
++        proposal.l2ProtocolUpgradeTx.gasPerPubdataByteLimit = 1;
++        uint256 maxPubdata = inspection.admissionFeeParams().priorityTxMaxPubdata;
++        _rejectUpgrade(
++            proposal,
++            abi.encodeWithSelector(PubdataGreaterThanLimit.selector, maxPubdata, UPGRADE_TX_MAX_GAS_LIMIT)
++        );
++    }
++
++    function test_upgradeRetainsMinimumGasValidation() public {
++        _setLimit(0);
++        ProposedUpgrade memory proposal = _proposal();
++        proposal.l2ProtocolUpgradeTx.gasLimit = 1;
++        _rejectUpgrade(proposal, abi.encodeWithSelector(ValidateTxnNotEnoughGas.selector));
++    }
++
++    function test_upgradeRetainsTypeValidation() public {
++        _setLimit(0);
++        ProposedUpgrade memory proposal = _proposal();
++        proposal.l2ProtocolUpgradeTx.txType = 1;
++        _rejectUpgrade(proposal, abi.encodeWithSelector(InvalidTxType.selector, 1));
++    }
++
++    function test_upgradeRetainsNonceValidation() public {
++        _setLimit(0);
++        ProposedUpgrade memory proposal = _proposal();
++        proposal.l2ProtocolUpgradeTx.nonce = 2;
++        _rejectUpgrade(proposal, abi.encodeWithSelector(L2UpgradeNonceNotEqualToNewProtocolVersion.selector, 2, 1));
++    }
++
++    function test_lowerAndZeroSetterPreserveQueuedWork() public {
++        _acceptPaid(PRIORITY_TX_MAX_GAS_LIMIT);
++        (, bytes32 oldRoot, uint256 oldTimestamp, bytes32 oldUpgradeHash) = inspection.admissionSnapshot();
++        uint256 oldTotal = getters.getTotalPriorityTxs();
++        uint256 oldFirst = getters.getFirstUnprocessedPriorityTx();
++        bytes32 oldGenesisHash = getters.storedBatchHash(0);
++        _setLimit(LOWER_PRIORITY_GAS_LIMIT);
++        _setLimit(0);
++        (uint256 newLimit, bytes32 newRoot, uint256 newTimestamp, bytes32 newUpgradeHash) = inspection
++            .admissionSnapshot();
++        assertEq(newLimit, 0);
++        assertEq(newRoot, oldRoot);
++        assertEq(newTimestamp, oldTimestamp);
++        assertEq(newUpgradeHash, oldUpgradeHash);
++        assertEq(getters.getTotalPriorityTxs(), oldTotal);
++        assertEq(getters.getPriorityQueueSize(), oldTotal - oldFirst);
++        assertEq(getters.getFirstUnprocessedPriorityTx(), oldFirst);
++        assertEq(getters.storedBatchHash(0), oldGenesisHash);
++        _rejectPaid(PRIORITY_TX_MAX_GAS_LIMIT);
++    }
++
++    function testFuzz_upgradePreservesEveryAllowedPriorityLimit(uint256 _limit) public {
++        _limit = bound(_limit, 0, PRIORITY_TX_MAX_GAS_LIMIT);
++        _setLimit(_limit);
++        _assertSuccessfulUpgrade(_limit);
++    }
++
++    function test_genesisBuilderKeeps72MSeparateFromPriorityCap() public {
++        L1GenesisUpgrade genesis = new L1GenesisUpgrade();
++        address router = dummyBridgehub.assetRouter();
++        // Isolate base-token metadata/NTV wiring: execute the actual genesis builder and its upgrade validation.
++        vm.mockCall(
++            address(dummyBridgehub),
++            abi.encodeWithSelector(IBridgehubBase.baseToken.selector, l2ChainId),
++            abi.encode(ETH_TOKEN_ADDRESS)
++        );
++        vm.mockCall(
++            router,
++            abi.encodeWithSelector(IL1SharedBridgeLegacy.l2BridgeAddress.selector, l2ChainId),
++            abi.encode(address(0))
++        );
++        address nativeVault = makeAddr("genesisNativeVault");
++        vm.mockCall(router, abi.encodeWithSelector(IL1AssetRouter.nativeTokenVault.selector), abi.encode(nativeVault));
++        vm.mockCall(
++            nativeVault,
++            abi.encodeWithSelector(INativeTokenVaultBase.originChainId.selector, baseTokenAssetId),
++            abi.encode(block.chainid)
++        );
++        vm.mockCall(
++            nativeVault,
++            abi.encodeWithSelector(INativeTokenVaultBase.originToken.selector, baseTokenAssetId),
++            abi.encode(ETH_TOKEN_ADDRESS)
++        );
++        // Genesis keeps the initialized version, unlike ordinary upgrades.
++        vm.recordLogs();
++        _cut(
++            new Diamond.FacetCut[](0),
++            address(genesis),
++            abi.encodeCall(
++                L1GenesisUpgrade.genesisUpgrade,
++                (address(genesis), l2ChainId, 0, makeAddr("ctmDeployer"), bytes(""), new bytes[](0))
++            )
++        );
++        Vm.Log[] memory logs = vm.getRecordedLogs();
++        // The nested genesis cut precedes the outer DiamondCut and ExecuteUpgrade events.
++        (L2CanonicalTransaction memory transaction, bytes[] memory deps) = abi.decode(
++            logs[logs.length - 3].data,
++            (L2CanonicalTransaction, bytes[])
++        );
++        assertEq(transaction.gasLimit, UPGRADE_TX_MAX_GAS_LIMIT);
++        assertEq(transaction.txType, ZKSYNC_OS_SYSTEM_UPGRADE_L2_TX_TYPE);
++        assertEq(transaction.nonce, 0);
++        assertEq(logs[logs.length - 3].emitter, address(mailbox));
++        assertEq(logs[logs.length - 3].topics[1], bytes32(uint256(uint160(address(mailbox)))));
++        assertEq(logs[logs.length - 3].topics[2], bytes32(0));
++        assertEq(deps.length, 0);
++        (uint256 storedLimit, , , bytes32 hash) = inspection.admissionSnapshot();
++        assertEq(storedLimit, PRIORITY_TX_MAX_GAS_LIMIT);
++        assertEq(hash, keccak256(abi.encode(transaction)));
++        assertEq(getters.getPriorityQueueSize(), 0);
++    }
++
++    function _assertSuccessfulUpgrade(uint256 _expectedLimit) private {
++        ProposedUpgrade memory proposal = _proposal();
++        bytes32 expectedUpgradeHash = keccak256(abi.encode(proposal.l2ProtocolUpgradeTx));
++        vm.recordLogs();
++        _upgrade(proposal);
++        assertEq(_countLimitEvents(vm.getRecordedLogs()), 0);
++        (uint256 storedLimit, , , bytes32 hash) = inspection.admissionSnapshot();
++        assertEq(storedLimit, _expectedLimit);
++        assertEq(getters.getPriorityTxMaxGasLimit(), _expectedLimit);
++        assertEq(hash, expectedUpgradeHash);
++        assertEq(inspection.storedProtocolVersion(), proposal.newProtocolVersion);
++        assertEq(getters.getPriorityQueueSize(), 0);
++    }
++
++    function _rejectUpgrade(ProposedUpgrade memory _proposal, bytes memory _reason) private {
++        // Deploy before expectRevert: the expected revert must be on the authorized diamond cut itself.
++        DefaultUpgrade upgrade = new DefaultUpgrade();
++        bytes32 beforeState = _stateDigest();
++        Diamond.DiamondCutData memory cut = Diamond.DiamondCutData({
++            facetCuts: new Diamond.FacetCut[](0),
++            initAddress: address(upgrade),
++            initCalldata: abi.encodeCall(DefaultUpgrade.upgrade, (_proposal))
++        });
++        vm.recordLogs();
++        vm.prank(getters.getChainTypeManager());
++        vm.expectRevert(_reason);
++        admin.executeUpgrade(cut);
++        // recordLogs includes attempted logs from reverted delegatecalls. The bubbled revert rolls
++        // these two preliminary events back; no completion, DiamondCut, or ExecuteUpgrade is reached.
++        Vm.Log[] memory logs = vm.getRecordedLogs();
++        assertEq(logs.length, 2);
++        assertEq(logs[0].topics[0], keccak256("NewProtocolVersion(uint256,uint256)"));
++        assertEq(logs[1].topics[0], keccak256("NewVerifier(address,address)"));
++        assertEq(logs[0].emitter, address(mailbox));
++        assertEq(logs[1].emitter, address(mailbox));
++        assertEq(_stateDigest(), beforeState);
++    }
++
++    function _proposal() private pure returns (ProposedUpgrade memory proposal) {
++        proposal.l2ProtocolUpgradeTx = L2CanonicalTransaction({
++            txType: ZKSYNC_OS_SYSTEM_UPGRADE_L2_TX_TYPE,
++            from: uint256(uint160(L2_FORCE_DEPLOYER_ADDR)),
++            to: uint256(uint160(L2_FORCE_DEPLOYER_ADDR)),
++            gasLimit: UPGRADE_TX_MAX_GAS_LIMIT,
++            gasPerPubdataByteLimit: REQUIRED_L2_GAS_PRICE_PER_PUBDATA,
++            maxFeePerGas: 0,
++            maxPriorityFeePerGas: 0,
++            paymaster: 0,
++            nonce: 1,
++            value: 0,
++            reserved: [uint256(0), 0, 0, 0],
++            data: bytes(""),
++            signature: bytes(""),
++            factoryDeps: new uint256[](0),
++            paymasterInput: bytes(""),
++            reservedDynamic: bytes("")
++        });
++        proposal.verifierParams = VerifierParams(bytes32(0), bytes32(0), bytes32(0));
++        proposal.newProtocolVersion = SemVer.packSemVer(0, 1, 0);
++    }
++
++    function _upgrade(ProposedUpgrade memory _proposal) private {
++        _cut(
++            new Diamond.FacetCut[](0),
++            address(new DefaultUpgrade()),
++            abi.encodeCall(DefaultUpgrade.upgrade, (_proposal))
++        );
++    }
++
++    function _setLimit(uint256 _limit) private {
++        vm.prank(getters.getChainTypeManager());
++        admin.setPriorityTxMaxGasLimit(_limit);
++    }
++
++    function _rejectSetter(uint256 _limit) private {
++        bytes32 beforeState = _stateDigest();
++        vm.recordLogs();
++        vm.prank(getters.getChainTypeManager());
++        vm.expectRevert(TooMuchGas.selector);
++        admin.setPriorityTxMaxGasLimit(_limit);
++        assertEq(vm.getRecordedLogs().length, 0);
++        assertEq(_stateDigest(), beforeState);
++    }
++
++    function _install(address _implementation, Diamond.Action _action, bytes4[] memory _selectors) private {
++        Diamond.FacetCut[] memory cuts = new Diamond.FacetCut[](1);
++        cuts[0] = Diamond.FacetCut(_implementation, _action, true, _selectors);
++        _cut(cuts, address(0), bytes(""));
++    }
++
++    function _cut(Diamond.FacetCut[] memory _cuts, address _initializer, bytes memory _calldata) private {
++        uint256 version = SemVer.packSemVer(0, 1, 0);
++        vm.mockCall(
++            getters.getChainTypeManager(),
++            abi.encodeWithSelector(IChainTypeManager.protocolVersionVerifier.selector, version),
++            abi.encode(getters.getVerifier())
++        );
++        Diamond.DiamondCutData memory data = Diamond.DiamondCutData(_cuts, _initializer, _calldata);
++        vm.prank(getters.getChainTypeManager());
++        admin.executeUpgrade(data);
++    }
++
++    function _paidRequest(uint256 _gasLimit) private view returns (L2TransactionRequestDirect memory request) {
++        uint256 cost = mailbox.l2TransactionBaseCost(tx.gasprice, _gasLimit, REQUIRED_L2_GAS_PRICE_PER_PUBDATA);
++        request = L2TransactionRequestDirect({
++            chainId: l2ChainId,
++            mintValue: cost,
++            l2Contract: address(uint160(0x1234)),
++            l2Value: 0,
++            l2Calldata: bytes(""),
++            l2GasLimit: _gasLimit,
++            l2GasPerPubdataByteLimit: REQUIRED_L2_GAS_PRICE_PER_PUBDATA,
++            factoryDeps: new bytes[](0),
++            refundRecipient: registrationSender
++        });
++    }
++
++    function _acceptPaid(uint256 _gasLimit) private {
++        uint256 beforeTotal = getters.getTotalPriorityTxs();
++        L2TransactionRequestDirect memory request = _paidRequest(_gasLimit);
++        vm.deal(registrationSender, request.mintValue);
++        vm.recordLogs();
++        vm.prank(registrationSender, registrationSender);
++        bytes32 hash = dummyBridgehub.requestL2TransactionDirect{value: request.mintValue}(request);
++        _assertAdmission(hash, _gasLimit, beforeTotal, vm.getRecordedLogs());
++    }
++
++    function _rejectPaid(uint256 _gasLimit) private {
++        L2TransactionRequestDirect memory request = _paidRequest(_gasLimit);
++        vm.deal(registrationSender, request.mintValue);
++        bytes32 beforeState = _stateDigest();
++        uint256 senderBalance = registrationSender.balance;
++        uint256 bridgeBalance = address(sharedBridge).balance;
++        vm.recordLogs();
++        vm.prank(registrationSender, registrationSender);
++        vm.expectRevert(TooMuchGas.selector);
++        dummyBridgehub.requestL2TransactionDirect{value: request.mintValue}(request);
++        assertEq(vm.getRecordedLogs().length, 0);
++        assertEq(_stateDigest(), beforeState);
++        assertEq(registrationSender.balance, senderBalance);
++        assertEq(address(sharedBridge).balance, bridgeBalance);
++    }
++
++    function _freeRequest(uint256 _gasLimit) private view returns (BridgehubL2TransactionRequest memory request) {
++        request = BridgehubL2TransactionRequest({
++            sender: registrationSender,
++            contractL2: address(uint160(0x1234)),
++            mintValue: 0,
++            l2Value: 0,
++            l2GasLimit: _gasLimit,
++            l2Calldata: bytes(""),
++            l2GasPerPubdataByteLimit: REQUIRED_L2_GAS_PRICE_PER_PUBDATA,
++            factoryDeps: new bytes[](0),
++            refundRecipient: address(0)
++        });
++    }
++
++    function _rejectFree(uint256 _gasLimit) private {
++        BridgehubL2TransactionRequest memory request = _freeRequest(_gasLimit);
++        bytes32 beforeState = _stateDigest();
++        vm.recordLogs();
++        vm.prank(address(dummyBridgehub));
++        vm.expectRevert(TooMuchGas.selector);
++        mailboxHarness.requestFree(request);
++        assertEq(vm.getRecordedLogs().length, 0);
++        assertEq(_stateDigest(), beforeState);
++    }
++
++    function _rejectServiceAndWrapper() private {
++        bytes32 beforeState = _stateDigest();
++        vm.recordLogs();
++        vm.prank(registrationSender);
++        vm.expectRevert(TooMuchGas.selector);
++        mailbox.requestL2ServiceTransaction(address(uint160(0x1234)), bytes(""));
++        assertEq(vm.getRecordedLogs().length, 0);
++        assertEq(_stateDigest(), beforeState);
++        vm.recordLogs();
++        vm.prank(address(mailbox));
++        vm.expectRevert(TooMuchGas.selector);
++        mailbox.requestL2TransactionToGatewayMailboxWithBalanceChange({
++            _chainId: l2ChainId,
++            _canonicalTxHash: keccak256("inner"),
++            _expirationTimestamp: 0,
++            _baseTokenAmount: 0,
++            _getBalanceChange: false
++        });
++        assertEq(vm.getRecordedLogs().length, 0);
++        assertEq(_stateDigest(), beforeState);
++    }
++
++    function _assertAdmission(bytes32 _hash, uint256 _gasLimit, uint256 _nonce, Vm.Log[] memory _logs) private view {
++        assertEq(_logs.length, 2, "priority admission emits both canonical events");
++        (uint256 id, bytes32 hash, uint64 expiry, L2CanonicalTransaction memory transaction, bytes[] memory deps) = abi
++            .decode(_logs[0].data, (uint256, bytes32, uint64, L2CanonicalTransaction, bytes[]));
++        assertEq(_logs[0].emitter, address(mailbox));
++        assertEq(id, _nonce);
++        assertEq(hash, _hash);
++        assertEq(expiry, 0);
++        assertEq(transaction.nonce, _nonce);
++        assertEq(transaction.gasLimit, _gasLimit);
++        assertEq(hash, keccak256(abi.encode(transaction)));
++        assertEq(deps.length, 0);
++        assertEq(_logs[1].topics[0], keccak256("NewPriorityRequestId(uint256,bytes32)"));
++        assertEq(_logs[1].topics[1], bytes32(_nonce));
++        assertEq(_logs[1].topics[2], _hash);
++        assertEq(getters.getTotalPriorityTxs(), _nonce + 1);
++        assertEq(getters.getPriorityQueueSize(), _nonce + 1);
++        (, bytes32 root, uint256 timestamp, ) = inspection.admissionSnapshot();
++        if (_nonce == 0) {
++            assertEq(root, _hash, "first real leaf becomes the tree root");
++            assertEq(timestamp, block.timestamp);
++        }
++    }
++
++    function _stateDigest() private view returns (bytes32) {
++        (uint256 limit, bytes32 root, uint256 timestamp, bytes32 upgradeHash) = inspection.admissionSnapshot();
++        return
++            keccak256(
++                abi.encode(
++                    limit,
++                    root,
++                    timestamp,
++                    upgradeHash,
++                    inspection.storedProtocolVersion(),
++                    getters.getVerifier(),
++                    getters.getTotalPriorityTxs(),
++                    getters.getPriorityQueueSize(),
++                    getters.getFirstUnprocessedPriorityTx(),
++                    getters.storedBatchHash(0)
++                )
++            );
++    }
++
++    function _countLimitEvents(Vm.Log[] memory _logs) private view returns (uint256 count) {
++        uint256 length = _logs.length;
++        for (uint256 i; i < length; ++i) {
++            if (_logs[i].emitter == address(admin) && _logs[i].topics[0] == LIMIT_EVENT) {
++                ++count;
++            }
++        }
++    }
++}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
-index b5800169e..2e8b79cbd 100644
+index b5800169ee25ff944a0738ea81ebebbf047ab103..2e8b79cbd18f6ce81294ac0a40dad2c399897605 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
 @@ -7 +6,0 @@ import {IL1DAValidator, L1DAValidatorOutput} from "contracts/state-transition/ch
@@ -4419,8 +5154,24 @@ index b5800169e..2e8b79cbd 100644
 +        // SYSCOIN: Compact Bitcoin-DA fixtures do not carry Ethereum blob arrays.
 +        bytes32[] memory blobHashes = new bytes32[](0);
 +        bytes32[] memory blobCommitments = new bytes32[](0);
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
+index 631f8f7dc93808c794c1603737f972be4812a4be..3d2ca8dd17110d00283ae6e0817e675123811ab7 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
+@@ -8 +7,0 @@ import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncO
+-import {IVerifierV2} from "contracts/state-transition/chain-interfaces/IVerifierV2.sol";
+@@ -9,0 +9 @@ import {IVerifier} from "contracts/state-transition/chain-interfaces/IVerifier.s
++import {IVerifierV2} from "contracts/state-transition/chain-interfaces/IVerifierV2.sol";
+@@ -62 +62,6 @@ contract ZKsyncOSPublicInputTest is Test {
+-        verifier = new ZKsyncOSDualVerifier(IVerifierV2(address(1)), IVerifier(address(2)), address(this));
++        // SYSCOIN: The hardened dual-verifier constructor requires verifier addresses with deployed code.
++        verifier = new ZKsyncOSDualVerifier(
++            IVerifierV2(address(executor)),
++            IVerifier(address(executor)),
++            address(this)
++        );
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
-index 57e1a62a0..d61e22d61 100644
+index 57e1a62a013a96071324deae1897bc264df53ebc..d61e22d61d366b60fe3e80bad86382c970dee682 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 @@ -16,0 +17,2 @@ import {ETH_TOKEN_ADDRESS, TESTNET_COMMIT_TIMESTAMP_NOT_OLDER} from "contracts/c
@@ -4486,7 +5237,7 @@ index 57e1a62a0..d61e22d61 100644
 +            edgeDARefsInput: "",
 +            edgeDARefsRoot: bytes32(0),
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
-index f6532b05c..e3863c35d 100644
+index f6532b05c6d0999f82ff1c45a37af538057d7b8a..e3863c35d9997c2bbfa719c227d238ca54d27ee3 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 @@ -7,0 +8,11 @@ import {Verifiers} from "contracts/common/StateTransitionTypes.sol";
@@ -4620,7 +5371,7 @@ index f6532b05c..e3863c35d 100644
 +        assertTrue(results.verifiersResult.verifierPlonk != address(0), "zkOS PLONK must be deployed");
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 new file mode 100644
-index 000000000..73743384d
+index 0000000000000000000000000000000000000000..73743384d3f90e1efdd7df720f109e4e7f563b0e
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 @@ -0,0 +1,131 @@
@@ -4756,7 +5507,7 @@ index 000000000..73743384d
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol b/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
-index 13b32d96b..50ef27deb 100644
+index 13b32d96bb1afa9a14032bff18221f3884f3d060..50ef27deb1b648aa796c0f35452b6d57ca28978e 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 @@ -765,2 +765,3 @@ library Utils {
@@ -4770,8 +5521,18 @@ index 13b32d96b..50ef27deb 100644
 -        bytes memory bytecode = ContractsBytecodesLib.getCreationCodeEVM("BlobsL1DAValidatorZKsyncOS");
 +    function deployEIP7702Checker() internal returns (address) {
 +        bytes memory bytecode = ContractsBytecodesLib.getCreationCodeEVM("EIP7702Checker");
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/AdminExtended.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/AdminExtended.t.sol
+index c19e259f480ab34f246db6ef25aa0b7b89821d49..6ca8e904c4ea2b5079c6265f8cb816bee8686329 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/AdminExtended.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/AdminExtended.t.sol
+@@ -22 +22 @@ import {
+-import {MAX_GAS_PER_TRANSACTION} from "contracts/common/Config.sol";
++import {PRIORITY_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets. // SYSCOIN: Test the new admission ceiling.
+@@ -60 +60 @@ contract AdminExtendedTest is AdminTest {
+-        adminFacet.setPriorityTxMaxGasLimit(MAX_GAS_PER_TRANSACTION + 1);
++        adminFacet.setPriorityTxMaxGasLimit(PRIORITY_TX_MAX_GAS_LIMIT + 1);
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
-index 0ced729f9..6f00621a4 100644
+index 0ced729f96c63ef23ec23ec41aad6c0063314c26..6f00621a4c27cc8589fcd2415b956798a5ea9d0e 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
 @@ -164,0 +165,18 @@ contract MakePermanentRollupTest is AdminTest {
@@ -4793,8 +5554,18 @@ index 0ced729f9..6f00621a4 100644
 +        vm.expectRevert(InvalidDAForPermanentRollup.selector);
 +        adminFacet.setDAValidatorPair(l1DAValidator, L2DACommitmentScheme.BLOBS_AND_PUBDATA_KECCAK256);
 +    }
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetPriorityTxMaxGasLimit.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetPriorityTxMaxGasLimit.t.sol
+index 9156c380381a4de5d0980641be06d6ed37e4e5d7..d9adb883545349f3c82074c3ecb81da7e6016a7c 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetPriorityTxMaxGasLimit.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetPriorityTxMaxGasLimit.t.sol
+@@ -7 +7 @@ import {AdminTest} from "./_Admin_Shared.t.sol";
+-import {MAX_GAS_PER_TRANSACTION} from "contracts/common/Config.sol";
++import {PRIORITY_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets. // SYSCOIN: Test the new admission ceiling.
+@@ -24 +24 @@ contract SetPriorityTxMaxGasLimitTest is AdminTest {
+-        uint256 newPriorityTxMaxGasLimit = MAX_GAS_PER_TRANSACTION + 1;
++        uint256 newPriorityTxMaxGasLimit = PRIORITY_TX_MAX_GAS_LIMIT + 1;
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
-index 10d0ddc1a..25d33e9ee 100644
+index 10d0ddc1a9f852030fb7f7b95f0766073ea0b6bf..25d33e9eeacb4d05b820a63b3c4adc12fdce4016 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
 @@ -6 +6 @@ import {AdminTest} from "./_Admin_Shared.t.sol";
@@ -4857,7 +5628,7 @@ index 10d0ddc1a..25d33e9ee 100644
 +        adminFacet.setZKsyncOSMaxTxGasLimit(ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT);
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol
 new file mode 100644
-index 000000000..31d351c37
+index 0000000000000000000000000000000000000000..31d351c37ea4a55e987b33f1dfe556c9bd709987
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol
 @@ -0,0 +1,65 @@
@@ -4928,7 +5699,7 @@ index 000000000..31d351c37
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 new file mode 100644
-index 000000000..02cbef307
+index 0000000000000000000000000000000000000000..02cbef307f52ec31b035a5f689c826512ce5014f
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 @@ -0,0 +1,93 @@
@@ -5027,7 +5798,7 @@ index 000000000..02cbef307
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
 new file mode 100644
-index 000000000..e29f75645
+index 0000000000000000000000000000000000000000..e29f756454421fc073a29f9bccc327e7568ea02e
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
 @@ -0,0 +1,79 @@
@@ -5111,7 +5882,7 @@ index 000000000..e29f75645
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-index 23d9ea906..347003f8c 100644
+index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a9580543716257b 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 @@ -6,0 +7 @@ import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncO
@@ -5438,8 +6209,23 @@ index 23d9ea906..347003f8c 100644
 @@ -349 +480 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        proof[0] = verifierType; // type in lower 8 bits, version 0
 +        proof[0] = verifierType | (8 << 8); // type in lower 8 bits, canonical version 8
+diff --git a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol b/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
+index 74ade949075a9889c33a7be8d41e0c531765fb1c..10192452ee643862e7940bc2cfa5bf48bb916966 100644
+--- a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
++++ b/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
+@@ -8,5 +8,2 @@ import {VerifierParams} from "contracts/state-transition/chain-interfaces/IVerif
+-import {
+-    PRIORITY_TX_MAX_GAS_LIMIT,
+-    REQUIRED_L2_GAS_PRICE_PER_PUBDATA,
+-    SYSTEM_UPGRADE_L2_TX_TYPE
+-} from "contracts/common/Config.sol";
++import {UPGRADE_TX_MAX_GAS_LIMIT} from "contracts/common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
++import {REQUIRED_L2_GAS_PRICE_PER_PUBDATA, SYSTEM_UPGRADE_L2_TX_TYPE} from "contracts/common/Config.sol";
+@@ -78 +75 @@ contract BaseUpgrade is Test {
+-            gasLimit: PRIORITY_TX_MAX_GAS_LIMIT,
++            gasLimit: UPGRADE_TX_MAX_GAS_LIMIT,
 diff --git a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
-index 4a3d0d54d..f4778d271 100644
+index 4a3d0d54d5802b9005e5d84f5d3147b4cef1a48f..f4778d2710e095fd86da551022451549c4adce10 100644
 --- a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 +++ b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 @@ -7,0 +8,4 @@ import {Verifiers} from "contracts/common/StateTransitionTypes.sol";
@@ -5604,7 +6390,7 @@ index 4a3d0d54d..f4778d271 100644
 +        new GatewayCTMDeployerCTMZKsyncOS(ctmConfig);
 diff --git a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
 new file mode 100644
-index 000000000..1af7f7cbb
+index 0000000000000000000000000000000000000000..1af7f7cbb376554e79d0a5457341bd7767a62c00
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
 @@ -0,0 +1,107 @@
@@ -5716,7 +6502,7 @@ index 000000000..1af7f7cbb
 +    }
 +}
 diff --git a/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json b/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
-index c649ae4b5..06969faec 100644
+index c649ae4b5f0ba3672bdd45bae94200158cbd29d9..06969faecf72f4e4f7f79d5f012d81b3714f097d 100644
 --- a/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
 +++ b/l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
 @@ -131,0 +132,53 @@
@@ -5774,7 +6560,7 @@ index c649ae4b5..06969faec 100644
 +    "stateMutability": "nonpayable"
 +  },
 diff --git a/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json b/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json
-index 5873bd029..c5c339deb 100644
+index 5873bd029bf41884dc5afbbc5d079e39f8c15846..c5c339deb458e11c39eddec688009b47abe57eb1 100644
 --- a/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json
 +++ b/l1-contracts/zkstack-out/IAdminFunctions.sol/IAdminFunctions.json
 @@ -102,0 +103,53 @@
@@ -5832,7 +6618,7 @@ index 5873bd029..c5c339deb 100644
 +        "name": "data",
 +        "type": "bytes",
 diff --git a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json b/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
-index db8384ac8..19848634e 100644
+index db8384ac8af81a81859c0604ba90fed0a9ed8edd..19848634ee081ff943d1402106e96aff57be667f 100644
 --- a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
 +++ b/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
 @@ -360,5 +359,0 @@
@@ -5982,7 +6768,7 @@ index 962b1305c9e72435118425185d6c1fa9ef8caead..2e0cf567f789706e538a9a49ab701c20
 +    }
 +}
 diff --git a/tools/zksync-os-genesis-gen/src/consts.rs b/tools/zksync-os-genesis-gen/src/consts.rs
-index 3d6e12e1e..c25a57e4e 100644
+index 3d6e12e1ec56803b412afc0581e742f6dc8812c3..c25a57e4ef096e65865fed3b7ac7016942bd0508 100644
 --- a/tools/zksync-os-genesis-gen/src/consts.rs
 +++ b/tools/zksync-os-genesis-gen/src/consts.rs
 @@ -91,0 +92,6 @@ pub const CREATE2_FACTORY_RUNTIME_BYTECODE: &[u8] = &hex_literal::hex!(

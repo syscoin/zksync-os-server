@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1450462"
-EXPECTED_PATCH_SHA256="f095498adc428c686cbdf3c35f7449380fb5ddc2ac6bc9c5d8dc2bc2e0fe889d"
-EXPECTED_PATCH_PATH_COUNT="70"
-EXPECTED_PATCH_PATHS_SHA256="c3c7bf6bd3ad0bb2511a46f69a3706856362fabae371cc7ec68f9f04435848f1"
+EXPECTED_PATCH_SIZE="1496724"
+EXPECTED_PATCH_SHA256="2b9d8bb1527f42a1a98096a10ac5e0932e22133b8f4b7baf0bd6f8f2a9a6724c"
+EXPECTED_PATCH_PATH_COUNT="87"
+EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="08bc65200c2813c818573aeae85d74d206e24b77"
+EXPECTED_PATCHED_TREE="5e62f430c3755fdc04982b8c36cbeebaee7b21cb"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -166,22 +166,25 @@ verify_postimage_manifest() {
     manifest_paths+="${relative_path}"$'\n'
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
-160049 c9cc2ebc081a88f5289b8ff66edc554f70a91a06f530967ff8912e2e62ea2696 AllContractsHashes.json
+160049 e0962de3ca23a9d60792dacb52fe804017f4cd8ae7114c0ac74ddc59402cc8e2 AllContractsHashes.json
 557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
 2999 24fcd082bee0ef29de5b4bd09b8e493a1bb1ef6759235ec71120668a19c417f4 da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
 5124 3f2388aba687e978b757ebc667bcc2639791a83404b7c205244c3c7429e03d89 da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol
 2214 21f230d3d1fe830ce140d2c18275c66d96f66e335d08da021d55148ed0df0747 l1-contracts/contracts/bridge/BridgeHelper.sol
+611 b8e71ea2a0b9ddb20ef45f31e5b99d542b9ac1437e3d4f4dcdf2a2cb9290b3be l1-contracts/contracts/common/PriorityGasLimits.sol
 2792 36124022c94f3add992b220027d1e7a1f22ad9c813d3becf4d722f3f907f3d17 l1-contracts/contracts/common/StateTransitionTypes.sol
 833 63a9033b60dd77f0c166c4f6f2177693717163e526bded1e6724196b5ad7422a l1-contracts/contracts/common/SyscoinConfig.sol
 1311 c2138ea375da32973ecf228abd97adcf0c7099b48a38162bf9a223d81a7361b7 l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol
 7470 f01a15779e7bae75756ee0fe12b29e72648dca609adffad6745d8e55ca82345a l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
 3945 6c64f59cf560d21a8c7223d86475df69c28a5348edc523f16f891a55b572fbd5 l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 4350 46879b879bee93b99f2d1c549e64b304da215fe2da1281f54a658fb97d0ea98e l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
-26189 a0deb9cded95eedb6d8944e6e6cd026841edfbae6cd14d821978e4e321c7c364 l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
+6429 e469f541b0970a0633ab4893c2c99f60ffc69de4ecf1f9a92feda8d398d547bb l1-contracts/contracts/state-transition/chain-deps/DiamondInit.sol
+26210 f74c9569989e12867e8d9375eeb899259acb784036bd083ca5998a6cba1cdf0b l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 49179 54751bc0aa7880c6c9182219aa418728986ae03eaca9abe98a14df1108316c8a l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 12329 dcb558cecf683fc47232e9d141429965c9fcfe4869c77da21dc403c8e072a436 l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
+27778 51151ecd14ec79bc2c6400c034779af6c7845a02c4f63fdab396b0508ff72ff3 l1-contracts/contracts/state-transition/chain-deps/facets/Mailbox.sol
 2643 b9c43c8e79f715eb7b57eeaf17e3e9ae2f3157bc6f8496d9972b457c7afe8e97 l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
 3211 e5d289cbcb0bbd9f77b7a89f01fba3cc6bcb07f847754517c56d60b2f6c194bd l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
 8312 6825ecb5c046f7bcf1875c9b2045790dc96c67816b1fea2b0efaf6d20af1fec6 l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
@@ -191,7 +194,9 @@ verify_postimage_manifest() {
 2303 a7a77cf790b20e91573ab5d5c30458b4aa1dc06f550e211d74e7f4afb448c04f l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
 10526 c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 2210 99b2f630ccb303dc130e6010ae91ab2c462218a4cc813602ed307b9f05b95fe3 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
+17587 45ab5b716efaec429ed8adf414e953145b09b8c69203058f444274479b9b2d85 l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol
 6707 2428a3ae1112ab7014cc332f0f087027d474055790e80d2c6d8957d8ce13ec05 l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
+5918 cfb42daf6a1451f6df9b808a68b638d8bc419550a57fce6debac9f931510bc29 l1-contracts/contracts/upgrades/L1GenesisUpgrade.sol
 60893 225721828b3d6b66598253093e4139612accbfadbbbd8d3e3f6d662fa342bbc0 l1-contracts/deploy-scripts/AdminFunctions.s.sol
 10730 73b5cd2659d89e12ecdbefe2ed0e9753b1967eadaa4bf7ddfe5877ffe56c72dd l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 32049 1d9f2945a858c26cbab9dbe005af579bf40f53ed9382ebb7cec72ec8ab826c84 l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
@@ -199,34 +204,46 @@ verify_postimage_manifest() {
 21890 285f15bd41c33ac64f19e20fb3853e867bd8491625b4d6968666166bb3a02260 l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 26354 9fdb904b1613e219fa29f9e4dbaea017ba2311bec6e2ca358c41beb341bb2f36 l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
 41665 9bf5790131827c8671a648587e2f68794ff7bdc7b54b6a5539c6ee95aed91cca l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
-21027 6ebceffb5d2a5f6c083c8d78e79e0b97110e2653e5bd64c164f53d3cdc63f6de l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
+21042 ba7c42c0854cae8f76c9d37d2931a9c305a3a7f8ccd8d8f47382a42690799c91 l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
+9068 d47238fb0376c80783220e0d5f5a61e5a4898ef896a7b699b7ca7dfb03fe129e l1-contracts/deploy-scripts/upgrade/default-upgrade/CTMUpgradeBase.sol
 45338 212349849a53a7712cd68cb1065e00cc5a1abc451c2e4481df4c200c804ef3ed l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 31333 13eb6e18cd1806cf5154083c82299e4f1da1107d16812e125ee5040fd8832e5c l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
 23029 aff6be7d88b5426e117626bfbb717d292ca0531a7a5488620d5c4dfecd8ed27b l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
+61167 14dfe27b1eaa1914b49944dd1a4bac86abc3d55c991b50087d84a31f8e981487 l1-contracts/deploy-scripts/utils/Utils.sol
 11325 50276f9a9c4f059305b67471943159f0c195cc6c901968d6c2c1f9382db02754 l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 858 9a6796cad5a4b8955ed797df04c19cdfc3d95494693f64bb818b1dc991635387 l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 2308748 28a05b287d08418e1a1cb0d51a0d20d82685e560ef3a5460af3a60d490221207 l1-contracts/selectors
+3480 dc0056da0791e586f44618c76fb9076bad13232d9077565aee93a49beb5b8c75 l1-contracts/src.ts/constants.ts
+15362 3c0bf5e9175a2a83b220c0e8011ccf520e51747e6a91dda17e2b273904269ae5 l1-contracts/src.ts/deploy-test-process.ts
+74313 0cf8c3d4479adc204c4c371aeac7cbcc025154917c062eb92520451319efb092 l1-contracts/src.ts/deploy.ts
+13083 0d974d46232882550f820f931ee80d8fe5b6b3681d7e7e8716ab11ebc3afce52 l1-contracts/src.ts/utils.ts
 1276 8a4ff3fb4014d7c4d2d3fa6213b755ae554a9546776984281580a3baf09a9a02 l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
 18811 881846d3c06c9c660c8ee451ae5eb95d1fe324b65126a1a848ebe298cb93bf84 l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
+39037 d7e6cc427d13b94207ed654b2cf7fd9b2b2670874c2afb0f57c39106c76ccd72 l1-contracts/test/foundry/l1/integration/L1GatewayTests.t.sol
 17959 27e8c3a9f751b94e17a9c47b2303240cb5b375d0c09c1dbafda9b3039a1757a8 l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
 19299 1934c2776adb7c9c6b49fe5425cd0c19d4d27910d2fd3dbcadff3cd2240e4bab l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
 8296 b18605c0bc27bdb37e37ed58bc5c3484b92dfb2b2e2f56e3a9d5b0804e9fe752 l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
 10900 6b9598f13155fc24026d0976332842a7ed6c10739a6fdb2c1cff567d4712ff49 l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
 3186 788ede9e9d6ea55e56ddb50df96f2fd6653180e05fbfaece984a9bfd6ade8583 l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
 9378 0381dc84f5bb96727bfb06de2f9351d34ba5eae5b5423964f3a39e4aa731bf00 l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
+23946 b164c5d60b5162c5738afe55997fa16144e0ec750df84c0b39a70f378d80b800 l1-contracts/test/foundry/l1/integration/l2-tests-abstract/_SharedL2ContractDeployer.sol
 17139 7555ab6bee81f7c7133343d56e555a566b12d3ceabe6f61146d4bee53ccdad07 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
+27602 4b81477a2329c8c4a274f1e999a420161ce61f4ce1f13181488dba2eefeef42c l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
 9793 cc9f52f161e2f2593447507c26f50a1965fe7a819a5e31ce0ea328686150ffe4 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
 6691 88562d3c06e6339b4059966c0e3173eceb98a458205cb011bbb861ee7d5b7955 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
 23829 ff5b24f0b2e9e22a132702e13363993927b4bbbf244b8b6c403dc10da9a1551f l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 19467 e487d9ef43ae3d7bcbc941f035ec25e06b38ff8686629a7276a2fbaaf0e94943 l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 4828 3912fe8d417ec07ecb74a3a7e1e773907169bcafb56e4105cbdbfb0416f79da9 l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 37262 e6cb6d802f989a56ac8904a2b7d941a7203f664e8e2dbb8a3bf56f6dab74c069 l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
+11293 a4f1df2bd9186d9a841d9c18f4c1235e6bbae7a705dbc2802871b60fb13a2832 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/AdminExtended.t.sol
 7994 ee66867257ad8f7856ddcd660f44c36db9aea6c33c1c1ff8c75bde2221d03887 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
+2024 b8342f4b8ccc91052c370bb9068ce44bf1767ea4188c50d3c18712a2a2caf4a8 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetPriorityTxMaxGasLimit.t.sol
 4368 cac4d80e69aed56f6732cb6024706e5286b01fb3d2868917716081da5f6d9c3b l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
 2581 92124a76d6a7c6cce50ddc06dca8140a8bd5d28d49c61020b52bb59ac0969621 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol
 4147 72dc6373a6093ea18a8d71522dda3836d66d9b3056660787c00ced1499a24967 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 3454 9cc8e015664c0fe9b5bfca6e12a29120cf611775df6dbbd7d00d45e90dc74ea8 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
 18331 8600ed5a07fa68e2cb180674320406523a98660c0b6f78a538568ef935ec140e l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
+4684 57e513f0ecde656c7a75a8509a6021417a927136ce532eee3c203117be67894e l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
 17824 85171d93961f63606c4449f9cfbae0e8341daa942d659513d42ed0018850a758 l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 5070 2bbab9425954d54c8dc0e0f963e4f9befb35eae6a34bcdb8ccb854409526487f l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
 24286 0cc30a0c43f9799d1f48b6f2223bbbee65e8837f7692bbc32621532b14266f04 l1-contracts/zkstack-out/AdminFunctions.s.sol/AdminFunctions.json
@@ -247,13 +264,12 @@ SYSCOIN_POSTIMAGE_MANIFEST
   [[ "${manifest_paths}" == "${PATCH_PATHS}" ]] ||
     die "postimage manifest does not exactly match the canonical patch path set"
 
-  # SYSCOIN: Ownership retry intentionally restores generic Utils.executeCalls
-  # byte-for-byte to upstream. Attest that security boundary even though the
-  # canonical patch envelope no longer modifies Utils.sol.
+  # SYSCOIN: Ownership retry retains upstream Utils.executeCalls. The exact postimage
+  # also binds the newly bounded envelope for ordinary deployment requests.
   verify_exact_file \
     "l1-contracts/deploy-scripts/utils/Utils.sol" \
-    "60917" \
-    "403b4a65b437bf1e0d2dcd7eb567d86bb9418a3b128dc11147249bd3f266d8f3"
+    "61167" \
+    "14dfe27b1eaa1914b49944dd1a4bac86abc3d55c991b50087d84a31f8e981487"
 }
 
 require_text() {
@@ -281,6 +297,35 @@ verify_semantics() {
         ;;
     esac
   done <<< "${PATCH_PATHS}"
+
+  # SYSCOIN: Fresh admission is bounded independently of genesis/upgrade execution.
+  require_text "l1-contracts/contracts/common/PriorityGasLimits.sol" \
+    "uint256 constant PRIORITY_TX_MAX_GAS_LIMIT = 1 << 24;"
+  require_text "l1-contracts/contracts/common/PriorityGasLimits.sol" \
+    "uint256 constant UPGRADE_TX_MAX_GAS_LIMIT = 72_000_000;"
+  require_text "l1-contracts/contracts/common/PriorityGasLimits.sol" \
+    "uint64 constant DEFAULT_PRIORITY_TX_MAX_GAS_LIMIT = uint64(PRIORITY_TX_MAX_GAS_LIMIT);"
+  # SYSCOIN: Preserve the frozen relay's metadata dependency, not a legacy admission path.
+  verify_exact_file "l1-contracts/contracts/common/Config.sol" "15357" \
+    "9d7e6e94bfea59d78961c3fb80831246c60788ca8b9f34f39547a9eaedbca351"
+  local priority_consumer
+  for priority_consumer in \
+    "contracts/state-transition/chain-deps/DiamondInit.sol" \
+    "contracts/state-transition/chain-deps/facets/Admin.sol" \
+    "contracts/state-transition/chain-deps/facets/Mailbox.sol" \
+    "contracts/upgrades/BaseZkSyncUpgrade.sol" \
+    "contracts/upgrades/L1GenesisUpgrade.sol" \
+    "deploy-scripts/upgrade/default-upgrade/CTMUpgradeBase.sol" \
+    "deploy-scripts/utils/Utils.sol"
+  do
+    require_text "l1-contracts/${priority_consumer}" 'PriorityGasLimits.sol";'
+  done
+  require_text "l1-contracts/contracts/state-transition/chain-deps/facets/Mailbox.sol" \
+    "l2GasLimit: PRIORITY_TX_MAX_GAS_LIMIT,"
+  require_text "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol" \
+    "if (_newPriorityTxMaxGasLimit > PRIORITY_TX_MAX_GAS_LIMIT) {"
+  require_text "l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol" \
+    "UPGRADE_TX_MAX_GAS_LIMIT, // SYSCOIN: Disabled/lower user admission must not prevent upgrades."
 
   # The most security-sensitive application-bound ABI restrictions are tagged in place.
   require_text \

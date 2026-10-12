@@ -1,13 +1,14 @@
 # Generated Era sources and separate canonical fixture certification
 
 The overlay, manifest and read-only checker bind the newly generated Security100
-verifier to the reviewed source tree containing the paused-deposit guard and native priority observation
-getters. The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source
-tree `08bc65200c2813c818573aeae85d74d206e24b77`, and generated tree
-`3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3`. Only four exact paths are overlaid.
+verifier to the reviewed source tree containing bounded priority admission,
+the paused-deposit guard and native priority observation getters. The base is
+`8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source tree
+`5e62f430c3755fdc04982b8c36cbeebaee7b21cb`, and generated tree
+`709b50d9a74ee417560436cab34e6342eee793c7`. Only four exact paths are overlaid.
 All 278 inventory identities and retained FFLONK remain unchanged; only the hash
 and length fields of the PLONK verifier and its Gateway deployer may change.
-The manifest binds the targeted Admin inventory refresh separately from the
+The manifest binds the priority-admission inventory refresh separately from the
 pending current proof/EVM qualification and explicitly historical evidence.
 The bundle is not a live fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
@@ -16,6 +17,39 @@ all four exact postimages. Both the intermediate source tree and final generated
 tree are checked, including the ignored generated source copy.
 
 ## Paused-deposit guard; retained verifier generation and pending proof qualification
+
+### Fresh-release priority admission and independent upgrade budget
+
+New priority admission uses `2^24` (16,777,216) gas, including the default chain
+setting, CTM setter ceiling, free service requests, Gateway relay wrappers and
+ordinary deployment helpers. Genesis and protocol-upgrade transactions retain
+a separate 72,000,000 gas allowance, independent of lower or zero user admission
+limits. Generic minimum-gas and pubdata checks are retained.
+
+This canonical release has not deployed. No existing-state migration,
+getter reinterpretation, queue rewriting, block-budget reduction or new runtime
+gas rejection of previously queued work is introduced.
+
+The gas constants live in `PriorityGasLimits.sol`, with every admission/default
+and upgrade consumer explicitly importing that module. The untouched vendor
+constants in `Config.sol` have no authoritative admission or upgrade consumer.
+This keeps the canonical DA relay's complete bytecode, metadata and CREATE2
+identity unchanged; no relay repinning or genesis regeneration is needed.
+
+Pinned EVM and zk builds reproduce the 13 affected source inventory rows and
+the two generated-verifier baseline rows. Those 13 source rows are refreshed;
+the generated overlay retains its existing verifier-generation delta. ABIs
+remain unchanged. The exact build evidence has SHA-256
+`60e4344a40e31bef505e5de663062cd4b86f90371f65d61deb8bcfc28125b2e3`.
+Other package rows, genesis and verifier/key bytes are retained, not newly
+regenerated or requalified. This is changed-closure contract qualification, not
+full storage-layout, fresh-proof, deployment or public-rollout acceptance.
+
+The complete previous Admin-only receipt is retained unchanged under
+`historical_pre_priority_cap_contract_generation_provenance`, bound to source
+tree `08bc65200c2813c818573aeae85d74d206e24b77` and generated tree
+`3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3`. The following guard evidence is
+historical; it is not relabeled as qualification of the priority-cap change.
 
 `permanentlyAllowPriorityMode()` now rejects a nonzero deposit-pause timestamp
 with the existing `NotCompatibleWithPriorityMode` error, matching the reverse
