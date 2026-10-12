@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1443360"
-EXPECTED_PATCH_SHA256="0cac53c803b502e67c4a14ccf8eef4f0f576a0430fa0ee007276becbf124e2c6"
-EXPECTED_PATCH_PATH_COUNT="69"
-EXPECTED_PATCH_PATHS_SHA256="4afed5f77d26310c59716977f377a5b6dc5a47752ab1670c41d11ca183523327"
+EXPECTED_PATCH_SIZE="1450462"
+EXPECTED_PATCH_SHA256="f095498adc428c686cbdf3c35f7449380fb5ddc2ac6bc9c5d8dc2bc2e0fe889d"
+EXPECTED_PATCH_PATH_COUNT="70"
+EXPECTED_PATCH_PATHS_SHA256="c3c7bf6bd3ad0bb2511a46f69a3706856362fabae371cc7ec68f9f04435848f1"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="264d98e758c3a032942dfb08ee7d87a3f46288b4"
+EXPECTED_PATCHED_TREE="08bc65200c2813c818573aeae85d74d206e24b77"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -166,7 +166,7 @@ verify_postimage_manifest() {
     manifest_paths+="${relative_path}"$'\n'
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
-160049 eb903648d3472a013c7980c4fd7faa2954e866a41775e6b5854c0f7153385e05 AllContractsHashes.json
+160049 c9cc2ebc081a88f5289b8ff66edc554f70a91a06f530967ff8912e2e62ea2696 AllContractsHashes.json
 557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
@@ -179,7 +179,7 @@ verify_postimage_manifest() {
 7470 f01a15779e7bae75756ee0fe12b29e72648dca609adffad6745d8e55ca82345a l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
 3945 6c64f59cf560d21a8c7223d86475df69c28a5348edc523f16f891a55b572fbd5 l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 4350 46879b879bee93b99f2d1c549e64b304da215fe2da1281f54a658fb97d0ea98e l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
-25974 b8afdf177f76cb229a5a98c3367775d3def34e7d7868b567bd08efb742d0698e l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
+26189 a0deb9cded95eedb6d8944e6e6cd026841edfbae6cd14d821978e4e321c7c364 l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 49179 54751bc0aa7880c6c9182219aa418728986ae03eaca9abe98a14df1108316c8a l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 12329 dcb558cecf683fc47232e9d141429965c9fcfe4869c77da21dc403c8e072a436 l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
 2643 b9c43c8e79f715eb7b57eeaf17e3e9ae2f3157bc6f8496d9972b457c7afe8e97 l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
@@ -215,8 +215,9 @@ verify_postimage_manifest() {
 3186 788ede9e9d6ea55e56ddb50df96f2fd6653180e05fbfaece984a9bfd6ade8583 l1-contracts/test/foundry/l1/integration/deploy-scripts/DeployCTMIntegration.s.sol
 9378 0381dc84f5bb96727bfb06de2f9351d34ba5eae5b5423964f3a39e4aa731bf00 l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 17139 7555ab6bee81f7c7133343d56e555a566b12d3ceabe6f61146d4bee53ccdad07 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
+9793 cc9f52f161e2f2593447507c26f50a1965fe7a819a5e31ce0ea328686150ffe4 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
 6691 88562d3c06e6339b4059966c0e3173eceb98a458205cb011bbb861ee7d5b7955 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
-22740 dad85086f482c0d710834f2b6c8002946f2dd626c0cc44da0c0d0cdb0b45b045 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
+23829 ff5b24f0b2e9e22a132702e13363993927b4bbbf244b8b6c403dc10da9a1551f l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 19467 e487d9ef43ae3d7bcbc941f035ec25e06b38ff8686629a7276a2fbaaf0e94943 l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 4828 3912fe8d417ec07ecb74a3a7e1e773907169bcafb56e4105cbdbfb0416f79da9 l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 37262 e6cb6d802f989a56ac8904a2b7d941a7203f664e8e2dbb8a3bf56f6dab74c069 l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
@@ -594,6 +595,14 @@ verify_semantics() {
   forbid_text \
     "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol" \
     "ZKSYNC_OS_MAX_BLOCK_GAS_LIMIT"
+
+  # Keep migration pausing and irreversible Priority Mode opt-in mutually exclusive.
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol" \
+    "if (s.pausedDepositsTimestamp != 0) {"
+  require_text \
+    "l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol" \
+    "function testFuzz_revertWhen_permanentlyAllowPriorityMode_depositsPaused(uint32 _delay) public"
 
   # Direct-L1 and Gateway deployment entrypoints are hardwired to the compact Syscoin pair.
   require_text \

@@ -13,12 +13,12 @@ import tempfile
 
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
-CHECKER_SHA = "ce9116a6f1e9cdbef11e603ba4ab5eaf2fcb994289944b3f84ab7f2d286a2b69"
-MANIFEST_SHA = "560c5ee4eb7a56258ff4bef1216afe164f930a3f683f6a4a2270290864e26493"
+CHECKER_SHA = "77c3976405bd4d63504d06d98a0e4d174d257b284e7f815a03c877b1465f5904"
+MANIFEST_SHA = "01d84dccd4bdce9b00ff5a726c4dbc0049979bd42ace9b4cf00a4b39eba8cfd7"
 VK = "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
-        "sha256": "eb903648d3472a013c7980c4fd7faa2954e866a41775e6b5854c0f7153385e05"},
+        "sha256": "c9cc2ebc081a88f5289b8ff66edc554f70a91a06f530967ff8912e2e62ea2696"},
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {"size": 95217,
         "sha256": "9926cf03b65cd404dfb1e5b2d6d9b487c60d2ead2d5b7998fcf0e3dd2249bb15"},
     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol": None,
