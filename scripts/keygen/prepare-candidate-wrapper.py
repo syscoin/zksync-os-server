@@ -15,17 +15,17 @@ except ImportError:
     import tomli as tomllib
 
 
-PROVER_TOOLING_COMMIT = "3070f1b4d49dcf104400471063324e97a213f7c6"
-PROVER_TOOLING_TREE = "2f72324196fee1dcf1f30be423d0994635e94347"
+PROVER_TOOLING_COMMIT = "dced2f067b070e7f208b78659ce843eb93b3f9d2"
+PROVER_TOOLING_TREE = "c0b8e4c6e7ca1400ac1d346ef4ec5197dc5bab37"
 WRAPPER_REPOSITORY = "https://github.com/syscoin/zkos-wrapper.git"
-WRAPPER_COMMIT = "88aa2e1a5bb3778e1b1e07f64d95ab5ac5332da8"
-WRAPPER_TREE = "914a0cd1402f289cabccd83cf6cafa1c148385ad"
+WRAPPER_COMMIT = "816a3598c60fac37d02cf1dcd1bc48b2e2c75de1"
+WRAPPER_TREE = "a1e9a551b9588b1dfab5c5088554fc69770c0e85"
 CRYPTO_URL = "https://github.com/matter-labs/zksync-crypto.git"
 CRYPTO_COMMIT = "bf2797e4ca13475bf797aa43e085389cdd6732f9"
 CRYPTO_PATCHED_TREE = "f8d7b132a841e0bfbfccd27614314a279d523887"
 FORK = "https://github.com/syscoin/zksync-airbender"
-FORK_COMMIT = "553fdd31b9d7a0b354845c7b6b8e7c3d13337c52"
-FORK_TREE = "6693fdafa31c45ebf8acf26e9a1f3dfc3edcffdc"
+FORK_COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
+FORK_TREE = "a41a4a18eeb102b405bcb63ad7ca85e9b6b13213"
 NEW_SOURCE = f"git+{FORK}?rev={FORK_COMMIT}#{FORK_COMMIT}"
 AIRBENDER_DEPS = {
     "unified_reduced_machine_verifier", "blake_verifier", "execution_utils",

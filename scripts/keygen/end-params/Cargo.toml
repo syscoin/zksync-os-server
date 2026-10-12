@@ -9,9 +9,9 @@ name = "end_params"
 path = "src/end_params.rs"
 
 [dependencies]
-execution_utils = { git = "https://github.com/syscoin/zksync-airbender", rev = "553fdd31b9d7a0b354845c7b6b8e7c3d13337c52", default-features = false, features = ["prover", "verifier_binaries"] }
-riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "553fdd31b9d7a0b354845c7b6b8e7c3d13337c52", default-features = false }
-verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "553fdd31b9d7a0b354845c7b6b8e7c3d13337c52", default-features = false }
+execution_utils = { git = "https://github.com/syscoin/zksync-airbender", rev = "0d8c852954afcae1f160151a17fe80886f1755b0", default-features = false, features = ["prover", "verifier_binaries"] }
+riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "0d8c852954afcae1f160151a17fe80886f1755b0", default-features = false }
+verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "0d8c852954afcae1f160151a17fe80886f1755b0", default-features = false }
 
 # Match the pinned upstream release profile, not the companion prover's build profile.
 [profile.release]

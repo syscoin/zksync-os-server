@@ -95,9 +95,9 @@ class CandidateWrapperTests(unittest.TestCase):
         self.assertEqual(CANDIDATE.SOURCE_IDENTITY["wrapper_repository"],
                          "https://github.com/syscoin/zkos-wrapper.git")
         self.assertEqual(CANDIDATE.SOURCE_IDENTITY["wrapper_commit"],
-                         "88aa2e1a5bb3778e1b1e07f64d95ab5ac5332da8")
+                         "816a3598c60fac37d02cf1dcd1bc48b2e2c75de1")
         self.assertEqual(CANDIDATE.SOURCE_IDENTITY["wrapper_tree"],
-                         "914a0cd1402f289cabccd83cf6cafa1c148385ad")
+                         "a1e9a551b9588b1dfab5c5088554fc69770c0e85")
 
     def test_rejects_upstream_airbender_manifest_or_lock(self):
         manifest_path = self.wrapper / "Cargo.toml"

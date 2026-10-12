@@ -15,11 +15,11 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 KEYGEN = REPO / "scripts/keygen"
-COMMIT = "553fdd31b9d7a0b354845c7b6b8e7c3d13337c52"
-TREE = "6693fdafa31c45ebf8acf26e9a1f3dfc3edcffdc"
+COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
+TREE = "a41a4a18eeb102b405bcb63ad7ca85e9b6b13213"
 SOURCE_HASH = "95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7"
-MANIFEST_HASH = "0e8cfad6794132cc2f1fc15b00b4c8ea2b62932c096bc82bb6df4deb42ef736c"
-LOCK_HASH = "c66345caf250a899a3106094ff5cd6c4aaf2edf6c737e300a22ef8d2efe795de"
+MANIFEST_HASH = "6c3cece11db29eb3c470a2185955b2e2253d469c6ec90fd4a19ce41651fb8e5e"
+LOCK_HASH = "3f905502022eda649948767e26ded3e7d44158fc6f413ac65eec0b4797cf272f"
 
 
 class EndParamsAssetTests(unittest.TestCase):
@@ -77,8 +77,8 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn('HEAD^{tree}', candidate)
         self.assertLess(workflow.index('scripts/keygen/prepare-candidate-wrapper.py'),
                         workflow.index('compute-aux-params'))
-        self.assertIn('PROVER_TOOLING_COMMIT: 3070f1b4d49dcf104400471063324e97a213f7c6', workflow)
-        self.assertIn('PROVER_TOOLING_TREE: 2f72324196fee1dcf1f30be423d0994635e94347', workflow)
+        self.assertIn('PROVER_TOOLING_COMMIT: dced2f067b070e7f208b78659ce843eb93b3f9d2', workflow)
+        self.assertIn('PROVER_TOOLING_TREE: c0b8e4c6e7ca1400ac1d346ef4ec5197dc5bab37', workflow)
         self.assertIn('WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git', workflow)
         self.assertIn('WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961', workflow)
         self.assertIn('?tag=${AIRBENDER_RELEASE}#${STOCK_AIRBENDER_COMMIT}', stock)
@@ -157,9 +157,9 @@ class EndParamsBuildWrapperTests(unittest.TestCase):
             if args[-1] == '--show-toplevel':
                 print(os.environ['FAKE_AIRBENDER'])
             elif args[-1] == 'HEAD':
-                print(os.environ.get('FAKE_COMMIT', '553fdd31b9d7a0b354845c7b6b8e7c3d13337c52'))
+                print(os.environ.get('FAKE_COMMIT', '0d8c852954afcae1f160151a17fe80886f1755b0'))
             elif args[-1] == 'HEAD^{tree}':
-                print(os.environ.get('FAKE_TREE', '6693fdafa31c45ebf8acf26e9a1f3dfc3edcffdc'))
+                print(os.environ.get('FAKE_TREE', 'a41a4a18eeb102b405bcb63ad7ca85e9b6b13213'))
             elif args[-1] == '--porcelain':
                 print(os.environ.get('FAKE_STATUS', ''), end='')
             else:
