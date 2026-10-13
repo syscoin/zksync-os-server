@@ -308,7 +308,7 @@ class BundleAndLauncherTests(unittest.TestCase):
             "lib/types/src/protocol/proving_version.rs":
                 "5b5f37b5104c6afbb6ae61bed566848e320bc34f6dd68abe89a1b4b5cc32c11e",
             "node/bin/src/prover_api/fri_proof_verifier.rs":
-                "3775503eedc4ae370f364a093e67399adc74293f6d8f017a920c6b70e085fbd0",
+                "1ec3df17b7e4c3e89e53a9e8829415e75ad06894e22072eba7288c0681dc8077",
         })
         M.check_app_sources(ROOT)
         with tempfile.TemporaryDirectory() as temporary:
