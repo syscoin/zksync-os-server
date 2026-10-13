@@ -113,6 +113,8 @@ def capture_unit(unit, proc=Path("/proc"), get_state=unit_state):
     gateway = Path(env("GATEWAY_DIR"))
     require(gateway.is_absolute(), "missing_workspace_binding")
     gateway = gateway.resolve(strict=True)
+    require(bool(env("PROTOCOL_VERSION")), "missing_protocol_binding")
+    require(bool(env("SYSCOIN_EDGE_DA_COMMIT_TARGET")) and bool(env("SYSCOIN_GAS_TANK_ADDRESS")), "missing_compiled_input_binding")
     exe = (process / "exe").resolve(strict=True)
     require(exe.name == "zksync-os-server" and exe.parent.name == "release", "unexpected_server_binary")
     workspace = exe.parent.parent.name
@@ -133,9 +135,12 @@ def capture_unit(unit, proc=Path("/proc"), get_state=unit_state):
             configs.extend(arg.split("=", 1)[1].split(":"))
     require(configs and all(Path(p).is_absolute() for p in configs), "missing_explicit_config")
     config_hashes = [file_digest(p, MAX_INPUT) for p in configs]
-    require(get_state(unit) == before and start_time() == start, "process_changed_during_capture")
     require(file_digest(process / "exe") == running and file_digest(exe) == on_disk, "binary_changed_during_capture")
     require(source_fingerprint(source_root) == source and [file_digest(p, MAX_INPUT) for p in configs] == config_hashes, "inputs_changed_during_capture")
+    require(Path(str(exe) + ".sha256").read_text().strip() == stamp, "stamp_changed_during_capture")
+    # SYSCOIN: Hashing itself takes time. This must be the last observation,
+    # after every file/stamp reread, so a late restart cannot qualify an old PID.
+    require(get_state(unit) == before and start_time() == start, "process_changed_during_capture")
     return {"unit": unit, "pid": int(pid), "active": True, "source_sha256": source, "running_elf_sha256": running, "on_disk_elf_sha256": on_disk, "stock_stamp_matches": context == stamp, "config_sha256": config_hashes}
 
 
@@ -207,7 +212,7 @@ def main():
             require(0 < args.max_age_seconds <= 3600 and len(args.snapshot) <= 32, "invalid_capture_bounds")
             result = verify_inventory(read_json(args.manifest), [read_json(x) for x in args.snapshot], max_age=args.max_age_seconds)
         print(json.dumps(result, sort_keys=True))
-    except (ValueError, TypeError, AttributeError, KeyError, OSError, subprocess.SubprocessError) as error:
+    except (ValueError, SyntaxError, TypeError, AttributeError, KeyError, OSError, subprocess.SubprocessError) as error:
         # SYSCOIN: Files and process environments may contain credentials. Do
         # not forward exception text, subprocess output or arbitrary config.
         print(json.dumps({"schema": SCHEMA, "release_inventory_matches": False, "error": str(error) if type(error) is ValueError and re.fullmatch(r"[a-z_]+", str(error)) else type(error).__name__}))

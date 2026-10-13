@@ -49,8 +49,15 @@ python3 scripts/gateway-launch/check-server-release-inventory.py verify \
 Snapshots expire after five minutes by default (bounded to one hour if explicitly
 configured). Missing, undeclared, duplicate, inactive, stale-source,
 mismatched-running-ELF, changed-config and invalid-stock-stamp instances fail
-closed. The capture assumes Linux `/proc`,
-systemd, an explicit `--config` and the existing stock launcher environment.
+closed. The capture assumes Linux `/proc`, systemd and an explicit `--config`.
+The process environment must export `ZKSYNC_OS_SERVER_PATH`, `GATEWAY_DIR`,
+`PROTOCOL_VERSION`, `SYSCOIN_EDGE_DA_COMMIT_TARGET` and `SYSCOIN_GAS_TANK_ADDRESS`.
+These are the stock source/workspace/protocol and compiled-consensus bindings,
+not operator credentials. A shell-only default such as the stock launcher's
+unexported `PROTOCOL_VERSION` is not visible in `/proc`; such a direct launch
+fails capture. Qualify the actual exported startup bindings through the normal
+launcher process before capture. Do not invent missing values or relabel a
+running process to make the inventory pass.
 Capture failure is not an acceptable substitute for a role's snapshot. Read-only
 filesystem/process changes detected during capture also reject the observation.
 Config hashes describe observed files, not a guarantee they were the bytes loaded
