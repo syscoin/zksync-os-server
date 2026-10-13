@@ -1,8 +1,33 @@
 # Generated Era sources and separate canonical fixture certification
 
-## Current optimized Security100 offline qualification
+## Canonical query-bit candidate: offline proof and EVM qualification
 
-The current app-bound key is
+The candidate key-generation source pins common crypto
+`5eafa1f914519d88a13c577a9e8cc5c7db1dfc77` (tree
+`c52391d0df82126d27e5c76810e9df85c61875d0`) for canonical recursive transcript
+query-bit constraints and modulus-boundary addition witnesses. The workflow pins the
+paired Prover candidate `875975949ba3b856faaf5b0c092b8b81762c947a`; its normal
+producer qualification remains pending. The new app-bound VK is
+`0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153`.
+One new compression proof and one dependent zero-knowledge SNARK passed stock and
+independent CPU verification, reusing the unchanged RISC proof/VK for the retained
+batch-1/batch-2 input. No RISC proof or old performance baseline was rerun.
+
+The generated verifier accepted that actual proof on isolated Anvil with the normal
+Solc 0.8.28 / Prague / 9,999,999-run profile. Changed public input and a canonical
+scalar-opening mutation both reverted with the exact quotient-evaluation error;
+estimated verification gas was 414,006. Normal L1 EVM/EraVM compilation and the full
+278-row inventory check changed only PLONK and its embedding Gateway deployer.
+The generated tree is `39aba041f59da6733f1562f2dee74ef39fc0c024`; the source tree
+retains the merged Gateway priority-limit setter fix.
+
+Independent CPU key-generation comparison and normal producer release builds are
+still pending. This does not qualify live deployment, fixture activation or an
+overall release. Historical qualification below remains bound to its old source/key.
+
+## Preceding optimized Security100 offline qualification
+
+The preceding app-bound key is
 `0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144`.
 It binds the preserved guest source tree
 `6935489bdbc7b1ed31e608677d1b2418b10691b5`, Security100 continuation commitment
