@@ -309,7 +309,7 @@ class StockLauncherBindingTests(unittest.TestCase):
                     self.assertEqual(observed["argv"], [chain, "--", "exec-prebuilt", "--",
                                                        "--config", str(config)])
 
-    def test_final_deployment_builds_actual_generated_default_and_additional_edge(self):
+    def test_final_deployment_reuses_or_rebuilds_gateway_before_default_and_additional_edge(self):
         generator = (ROOT / "scripts/gateway-launch/generate-os-server-configs.sh").read_text()
         template = re.search(r'(?m)^    build_script = f""".*?^"""', generator, re.S).group()
         self.assertIn('write_text(out_dir / "build-node.sh", build_script)', generator)
@@ -324,44 +324,73 @@ class StockLauncherBindingTests(unittest.TestCase):
             source = root / "server source"
             runner = source / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
             self.probe_binary(runner)
+            runner.write_text(runner.read_text().replace(
+                "#!/usr/bin/env bash\n",
+                '#!/usr/bin/env bash\nprintf "build:%s\\n" "$1" >> "$TEST_EVENTS"\n'
+                '[ "$1" != "${FAILED_BUILD_ROLE:-}" ] || exit 7\n', 1))
             gateway = root / "gateway"
             fake_tools = root / "tools"
             fake_tools.mkdir()
             renderer = fake_tools / "generate-os-server-configs.sh"
-            renderer.write_text('#!/usr/bin/env bash\nprintf "generated\\n"\nexit "${RENDER_RC:-0}"\n')
+            renderer.write_text('#!/usr/bin/env bash\nprintf "generate\\n" >> "$TEST_EVENTS"\nprintf "generated\\n"\nexit "${RENDER_RC:-0}"\n')
             renderer.chmod(0o755)
-            command = 'set -euo pipefail\ngl_require() { :; }\ngl_validate_zkstack_chain_name() { :; }\n' + helper + '\ngl_prepare_final_os_configs\n'
+            checker = fake_tools / "run-os-server-with-patched-zksync-os.sh"
+            checker.write_text('#!/usr/bin/env bash\n[ "$2:$3" = --:check-prebuilt ] || exit 98\nprintf "check:%s\\n" "$1" >> "$TEST_EVENTS"\nexit "${GATEWAY_CHECK_RC:-0}"\n')
+            # Match checkpoint's conditional call, which suppresses errexit inside the helper.
+            command = 'set -euo pipefail\ngl_require() { :; }\ngl_validate_zkstack_chain_name() { :; }\n' + helper + '\nif gl_prepare_final_os_configs; then\n  printf "final-probe\\n" >> "$TEST_EVENTS"\nelse\n  exit $?\nfi\n'
             for explicit_edge in (None, "edge-b"):
                 chain = explicit_edge or "zksys"
                 with self.subTest(chain=chain), patch.dict(os.environ, {
                     "GATEWAY_CHAIN_NAME": "gateway", "EDGE_CHAIN_NAME": chain,
                     "EDGE_CHAIN_ID": "57057", "PROTOCOL_VERSION": "v32.0",
                 }):
-                    context = dict(server_root=source, gateway_dir=gateway, os=os, chain_name=chain)
-                    exec(compile(ast.parse(template.lstrip()), "main-build-template", "exec"), context)
-                    build = gateway / "os-server-configs" / chain / "build-node.sh"
-                    build.parent.mkdir(parents=True, exist_ok=True)
-                    build.write_text(context["build_script"])
-                    env = dict(self.clean_env(root), GL_DIR=str(fake_tools), GATEWAY_DIR=str(gateway))
+                    for role in ("gateway", chain):
+                        context = dict(server_root=source, gateway_dir=gateway, os=os, chain_name=role)
+                        exec(compile(ast.parse(template.lstrip()), "main-build-template", "exec"), context)
+                        build = gateway / "os-server-configs" / role / "build-node.sh"
+                        build.parent.mkdir(parents=True, exist_ok=True)
+                        build.write_text(context["build_script"])
+                    events = root / "events"
+                    env = dict(self.clean_env(root), GL_DIR=str(fake_tools), GATEWAY_DIR=str(gateway),
+                               TEST_EVENTS=str(events))
                     if explicit_edge is not None:
                         env["EDGE_CHAIN_NAME"] = explicit_edge
-                    result = subprocess.run(["bash", "-c", command], capture_output=True,
-                                            text=True, env=env)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    generated, built = result.stdout.splitlines()
-                    self.assertEqual(generated, "generated")
-                    observed = json.loads(built)
-                    self.assertEqual(observed["argv"], [chain, "--", "build-prebuilt"])
-                    self.assertEqual(observed["env"]["ZKSYNC_OS_SERVER_PATH"], str(source))
-                    self.assertEqual(observed["env"]["GATEWAY_DIR"], str(gateway))
+                    for state, check_rc in (("cached", "0"), ("missing", "1"), ("stale", "2")):
+                        with self.subTest(gateway=state):
+                            events.write_text("")
+                            result = subprocess.run(["bash", "-c", command], capture_output=True,
+                                                    text=True, env=dict(env, GATEWAY_CHECK_RC=check_rc))
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            lines = result.stdout.splitlines()
+                            self.assertEqual(lines[0], "generated")
+                            roles = [chain] if check_rc == "0" else ["gateway", chain]
+                            self.assertEqual(len(lines), len(roles) + 1)
+                            for line, role in zip(lines[1:], roles):
+                                observed = json.loads(line)
+                                self.assertEqual(observed["argv"], [role, "--", "build-prebuilt"])
+                                self.assertEqual(observed["env"]["ZKSYNC_OS_SERVER_PATH"], str(source))
+                                self.assertEqual(observed["env"]["GATEWAY_DIR"], str(gateway))
+                            self.assertEqual(events.read_text().splitlines(), ["generate", "check:gateway",
+                                             *[f"build:{role}" for role in roles], "final-probe"])
+                    events.write_text("")
                     failed_render = subprocess.run(["bash", "-c", command], capture_output=True,
                                                    text=True, env=dict(env, RENDER_RC="9"))
                     self.assertEqual(failed_render.returncode, 9)
                     self.assertEqual(failed_render.stdout, "generated\n")
-                    build.write_text("#!/usr/bin/env bash\nexit 7\n")
-                    failed_build = subprocess.run(["bash", "-c", command], capture_output=True,
-                                                  text=True, env=env)
-                    self.assertEqual(failed_build.returncode, 7)
+                    self.assertEqual(events.read_text().splitlines(), ["generate"])
+                    for failed_role, check_rc, attempted in (
+                        ("gateway", "1", ["gateway"]),
+                        (chain, "0", [chain]),
+                        (chain, "1", ["gateway", chain]),
+                    ):
+                        with self.subTest(failed_role=failed_role, check_rc=check_rc):
+                            events.write_text("")
+                            failed_build = subprocess.run(["bash", "-c", command], capture_output=True,
+                                                          text=True, env=dict(env, GATEWAY_CHECK_RC=check_rc,
+                                                                              FAILED_BUILD_ROLE=failed_role))
+                            self.assertEqual(failed_build.returncode, 7)
+                            self.assertEqual(events.read_text().splitlines(), ["generate", "check:gateway",
+                                             *[f"build:{role}" for role in attempted]])
 
     def test_final_checkpoint_requires_both_existing_prebuilt_stamps(self):
         common = (ROOT / "scripts/gateway-launch/_common.sh").read_text()

@@ -71,11 +71,12 @@ separately.
 The config generator remains compiler-free and emits a separate `build-node.sh`
 and `start-node.sh` for each Gateway/Edge main node. Both start scripts use the
 stock `exec-prebuilt` path; they never compile during service restart. The
-canonical launcher builds Gateway before its supervised first boot, then renders
-final configs and builds Edge after migration. Final checkpoint validation checks
+canonical launcher builds Gateway before its supervised first boot. After
+migration, final-config preparation renders configs, checks Gateway's existing
+stamp and rebuilds it only if needed, then builds Edge. The supported final-config
+repair follows the same path; it can recover either role's missing or stale build
+without starting a node or replaying initialization/migration. Validation checks
 both existing binary/source/context stamps with read-only `check-prebuilt`.
-Missing or stale stamps require the normal final-config repair/build, not replay
-of initialization or migration.
 
 For standalone config generation, additional edges or later source upgrades,
 explicitly run the affected role's generated `build-node.sh` before installing or

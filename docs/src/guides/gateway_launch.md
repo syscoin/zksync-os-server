@@ -1403,7 +1403,10 @@ publisher; a packet or syntax test alone is not deployment readiness.
 
 The canonical launcher builds the stamped Gateway binary before that first boot,
 then builds the stamped Edge binary during the final-config checkpoint after
-migration. Generated `start-node.sh` scripts for both roles execute those
+migration. Final-config preparation and repair reuse a valid Gateway build or
+rebuild a missing/stale one before building Edge; they do not start nodes or
+replay initialization/migration. Generated `start-node.sh` scripts for both roles
+execute those
 prebuilt binaries; a service restart does not compile or leave Cargo as its
 parent process. The final checkpoint rejects missing or stale build stamps.
 

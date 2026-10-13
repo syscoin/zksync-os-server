@@ -6031,12 +6031,19 @@ gl_assert_edge_chain_admin_owned_by_configured_governor() {
 }
 
 # SYSCOIN: Keep the final config renderer compiler-free, while making the
-# deployment checkpoint prepare the Edge release before publishing completion.
+# deployment checkpoint prepare both required releases before completion.
 gl_prepare_final_os_configs() {
   gl_require GATEWAY_DIR
+  local gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   local edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  gl_validate_zkstack_chain_name "${gateway_chain_name}" GATEWAY_CHAIN_NAME
   gl_validate_zkstack_chain_name "${edge_chain_name}" EDGE_CHAIN_NAME
   "${GL_DIR}/generate-os-server-configs.sh" || return $?
+  # SYSCOIN: The earlier supervised boot normally prepared Gateway already;
+  # repair must recover a missing/stale build without re-running that lifecycle.
+  if ! bash "${GL_DIR}/run-os-server-with-patched-zksync-os.sh" "${gateway_chain_name}" -- check-prebuilt; then
+    bash "${GATEWAY_DIR}/os-server-configs/${gateway_chain_name}/build-node.sh" || return $?
+  fi
   bash "${GATEWAY_DIR}/os-server-configs/${edge_chain_name}/build-node.sh"
 }
 
