@@ -3,12 +3,12 @@
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
   "reviewed_source_tree": "0cb850a5c77436f17b49e747a1117dac5ee90888",
-  "candidate_tree": "d194956535ddeded60829706e9301e9adbe6cb5b",
+  "candidate_tree": "39aba041f59da6733f1562f2dee74ef39fc0c024",
   "source_patch_sha256": "bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df",
   "source_applicator_sha256": "eaa60f4652bd279637e21a08611f72ed673ed94d1ebd74fbe77472b31336efc8",
-  "overlay_sha256": "aa2a50fa290f3e450e40b1124b5847e33731e428838fa00c3e335df0c1d847c6",
-  "overlay_size": 120424,
-  "verification_key_hash": "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
+  "overlay_sha256": "d7eead029a5d8ef71a3f63093f6792064bcefed757f14891f5b933210af79e55",
+  "overlay_size": 120678,
+  "verification_key_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
   "inventory_rows": 278,
   "permitted_inventory_rows": [
     "l1-contracts/ZKsyncOSVerifierPlonk",
@@ -17,19 +17,19 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "cd98a1aabe4188052f36f5b6ee5b031c47f3a8465036a8dbf04d1e305997642f"
+      "sha256": "6642cde552fa4b3391a122b92399a7d16c1b46c939143977d7959c8206b18cd4"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
-      "sha256": "5abc85e5e33751defd4228c2f8775dfba540e5820b430325a7cb410f83e89feb"
+      "sha256": "a51be347eb47aa8a3bba353c3f452b8990e0b326da2129cff1c7da7c39fac238"
     },
     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
-      "sha256": "5abc85e5e33751defd4228c2f8775dfba540e5820b430325a7cb410f83e89feb"
+      "sha256": "a51be347eb47aa8a3bba353c3f452b8990e0b326da2129cff1c7da7c39fac238"
     },
     "tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json": {
-      "size": 8075,
-      "sha256": "bb450c0875bdd35f00dea3c5cea54fe5c0d9182046fc934e2944df979126ed56"
+      "size": 8073,
+      "sha256": "668ee187e12fe8c1639018872c5dd7080a96d02475377a29f42cd308ca5d0da2"
     }
   },
   "retained_fflonk_source_sha256": "9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48",
@@ -40,6 +40,43 @@
   "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
+    "status": "completed_canonical_query_normal_profile_incremental_inventory",
+    "candidate_tree": "39aba041f59da6733f1562f2dee74ef39fc0c024",
+    "crypto_commit": "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77",
+    "crypto_tree": "c52391d0df82126d27e5c76810e9df85c61875d0",
+    "reviewed_source_tree": "0cb850a5c77436f17b49e747a1117dac5ee90888",
+    "previous_candidate_tree": "d194956535ddeded60829706e9301e9adbe6cb5b",
+    "verification_key_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
+    "runner_sha256": "a5337de906820fb3b0484d219bfb55928be7520f959ad8b82179e5dc9d755e8a",
+    "log_sha256": "177683129d675aff12c29c304dd6e6280af0a39f89418931c0bb60cada30fbf1",
+    "inventory_comparison_sha256": "48bb3fa314ae04240c306a65ec3c862d619ad96d309a872ac2a215ab25f0330a",
+    "time_sha256": "dbf4618a8520c1121db1003a8993bcd4f42a13df5ab4ae2cc60c039022c05395",
+    "normal_l1_evm_and_eravm_build_passed": true,
+    "full_contract_hash_recomputation_passed": true,
+    "contract_hash_check_passed": true,
+    "inventory_rows": 278,
+    "changed_inventory_rows": [
+      "l1-contracts/GatewayCTMDeployerVerifiersZKsyncOS",
+      "l1-contracts/ZKsyncOSVerifierPlonk"
+    ],
+    "unchanged_inventory_rows": 276,
+    "elapsed_seconds": 35.618,
+    "actual_artifact_sha256": {
+      "plonk_evm": "d65ec8345ce23b8eed375ce693ddda99df0046f19cb83af8dadb0211971070dd",
+      "plonk_eravm": "80690ef91062d9d1e0eb5c09660181510f80a74d395a10296fbbbe565b55a78a",
+      "gateway_deployer_evm": "4eece5beaa932753ed2319cef3c0057d0e3976767ac305a6c19b86f35f6e0348",
+      "gateway_deployer_eravm": "e1ebe5eeefd541bb7adffef2d70109c0930f9f68f7a284389509dcf445a5cf1b"
+    },
+    "compiler": {
+      "evm_solc_version": "0.8.28+commit.7893614a",
+      "era_solc_version": "0.8.28-1.0.1",
+      "zksolc_version": "1.5.11",
+      "evm_version": "prague",
+      "optimizer_runs": 9999999
+    },
+    "scope": "Actual generated canonical-query PLONK source/key, normal pinned L1 EVM/EraVM compilation, and full stock 278-row inventory hash recomputation/check. Only PLONK and its embedding Gateway deployer changed relative to the retained PR346 inventory; 276 rows and all composite identities remained exact. Prior all-package baseline and Admin regression results are historical, not rerun. No live deployment, fixture activation or complete producer release is certified."
+  },
+  "historical_pre_canonical_query_contract_generation_provenance": {
     "status": "completed_gateway_priority_setter_inventory_refresh",
     "reviewed_source_tree": "0cb850a5c77436f17b49e747a1117dac5ee90888",
     "candidate_tree": "d194956535ddeded60829706e9301e9adbe6cb5b",
@@ -130,6 +167,100 @@
     "scope": "One-host generation from the fresh canonical guest-bound key, native PLONK generator tests, full contract inventory recomputation/check, retained FFLONK reproduction and byte-identical genesis regeneration. No fresh real-proof, EVM proof acceptance, deployment, settlement, fixture activation or independent-host keygen qualification is asserted."
   },
   "proof_qualification": {
+    "status": "completed_offline_compression_snark_normal_evm_cpu_keys_loaders_and_gpu_builds_release_pending",
+    "verification_key_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
+    "crypto_commit": "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77",
+    "crypto_tree": "c52391d0df82126d27e5c76810e9df85c61875d0",
+    "program_commitment": "0xff43db6564b43491d6c25a613270e7802a4fca2bc67ad621e5cb08dd57d22975",
+    "plonk_source_sha256": "a51be347eb47aa8a3bba353c3f452b8990e0b326da2129cff1c7da7c39fac238",
+    "result_sha256": {
+      "build": "3e58ad3e6db71b4f0f5b1f22d7e9533328ec351736ffb5b6ac769ff5e5aa89dc",
+      "prepared_source": "87607dcd08a7dffbb71ea388cd44150d7d7947cac23e4d2fb51d42788fae5e5c",
+      "compression_snark": "2bd6abd4d98715ffaa34727f30f4d8400e41a99118c51e5048c8c20723caa89e",
+      "evm": "e4b0de9143c620f13a2fc3b57128272b84afe899707e2253ae389a16ff49ac55",
+      "root_evm_acceptance": "a9dd3bc45a1cebf533a672254dcfed281369c48eb557eb842d41f2c556e4018e",
+      "root_cpu_keygen_acceptance": "6811744f568d88de692213dcb8f7d15d4e8bbea0c6d907d52418632fe69025cc",
+      "cpu_keygen_log": "b6461d9bcec4353eebf0959aed70f8b742fafc5e0d00d271e00777c75b7b7ed8",
+      "cpu_keygen_time": "8646dc2b139ee18955c94c27da08f80fcae7870ab7570d8562a93e7afaf78d69",
+      "root_cpu_loaders_acceptance": "6ac85a26a0596e143c4cf2d579b7dce03d611ecdc9a693b0c472607a614fe3f5",
+      "cpu_loaders_build_attestation": "378a51f1bc9e5c0f9a80f42ce3ef8e8afa124ac221072542bde9d5b17ada5ceb",
+      "cpu_loaders_log": "ebe0620310557c51524790423735d7144a39ce7a694c82c7973e28f67847544c",
+      "root_gpu_workers_acceptance": "2de3251f37e191c71a8faaf1e5d8a4f7d1baa04f1b27d8f8a3cce7bee386c533",
+      "gpu_workers_build_attestation": "05080505a1f09c21d43457f4b33db80de850fd4a38738234ef311e293afb9da4",
+      "gpu_workers_log": "fef5975c50ac74a6c762b61b24ebc681e0c95919e5f00b628b09cae851f8965e",
+      "gpu_workers_time": "85e2686a5c9a1ef08592ce5b772f31d309d096de49b0aa151e5fc4c4b4af0499"
+    },
+    "native_compression_proof_sha256": "4070b9c5a1c3098b6802018cee146c42f9154eadfd518060b22bf211ed880f4a",
+    "native_compression_vk_sha256": "72c18395a5e8db710e2afe16f2d8b8dd4e607b2785b84beded753bd260b08f39",
+    "native_snark_proof_sha256": "558cbac6ead1c74139abdcae60298a8c80caa74b0444751d1a4fd0c50e49863f",
+    "native_snark_vk_sha256": "668ee187e12fe8c1639018872c5dd7080a96d02475377a29f42cd308ca5d0da2",
+    "genuine_serialized_calldata_sha256": "df7f4ad40c97582c9740b3dfaaa214634dff206deea6ffd7c6e5a71fdac57961",
+    "retained_risc_proof_sha256": "ef50b617fe6fbbce664a3ee121a0f197ebd3ec412e56a9f7bdbe5392361998a7",
+    "retained_risc_vk_sha256": "52c41727ee5e90d4f140c846bf5f21e30c100f8ab8c8ccced66e4008edb7c2f6",
+    "input_batch_range": {"from": 1, "to": 2},
+    "real_proof_verified": true,
+    "native_wrapper_stages_verified": 2,
+    "independent_cpu_verifications_passed": 2,
+    "retained_risc_stage_reused": true,
+    "cpu_gpu_setup_keys_byte_identical": true,
+    "independent_cpu_keygen_pending": false,
+    "independent_cpu_keygen": {
+      "exit_code": 0,
+      "script_sha256": "a68fb6499e7bc050327d02b252cfd753c12e8690d426fa2ac301b7d4651f8cf7",
+      "risc_vk_sha256": "52c41727ee5e90d4f140c846bf5f21e30c100f8ab8c8ccced66e4008edb7c2f6",
+      "compression_vk_sha256": "72c18395a5e8db710e2afe16f2d8b8dd4e607b2785b84beded753bd260b08f39",
+      "snark_vk_sha256": "668ee187e12fe8c1639018872c5dd7080a96d02475377a29f42cd308ca5d0da2",
+      "all_three_keys_match_byte_for_byte": true,
+      "risc_key_unchanged": true
+    },
+    "normal_cpu_release_loaders": {
+      "source_commit": "875975949ba3b856faaf5b0c092b8b81762c947a",
+      "source_tree": "ac0a431ca1d4738b07a23bad1e9f7fd4274a0066",
+      "archive_sha256": "c3a29c41186bbd05eafa6ff9d5b7084d425640efa7dfe14b8298e791707df9c0",
+      "exit_code": 0,
+      "passed_tests": {"protocol_version": 4, "fri": 12, "snark": 54, "total": 70},
+      "failed_tests": 0,
+      "ignored_tests": 0,
+      "normal_locked_prepared_sources": true,
+      "inputs_reverified": true,
+      "bundled_fri_loaded": true,
+      "bundled_commitment_loaded": true,
+      "proofs_run": 0,
+      "workers_started": 0
+    },
+    "normal_gpu_worker_build": {
+      "source_commit": "875975949ba3b856faaf5b0c092b8b81762c947a",
+      "source_tree": "ac0a431ca1d4738b07a23bad1e9f7fd4274a0066",
+      "archive_sha256": "c3a29c41186bbd05eafa6ff9d5b7084d425640efa7dfe14b8298e791707df9c0",
+      "exit_code": 0,
+      "binaries_sha256": {
+        "zksync-os-prover-service": "4324e19759a4dd777df29926303eb51593fe989f40d1deba2e164d6445da5823",
+        "zksync_os_snark_prover": "9d9b8f7b6d7b8cfb348e09c669e9d52bdb9cb65210e3a9cd74890f968f8dc0ac"
+      },
+      "attested_file_count": 53,
+      "attested_application_and_tooling_inputs_match": true,
+      "normal_locked_prepared_sources": true,
+      "inputs_reverified": true,
+      "gpu_memory_overlay_retained": true,
+      "proofs_run": 0,
+      "workers_started": 0
+    },
+    "normal_gpu_worker_build_pending": false,
+    "normal_gpu_worker_build_passed": true,
+    "normal_producer_build_loader_qualification_completed": true,
+    "normal_producer_release_pending": true,
+    "real_evm_verified": true,
+    "real_evm_controls_passed": 2,
+    "estimated_verifier_gas": 414006,
+    "normal_evm_artifact_sha256": "d65ec8345ce23b8eed375ce693ddda99df0046f19cb83af8dadb0211971070dd",
+    "local_evm_original_transaction": "0x7aecca2680b74e9d37675346ac7230584d5408636a33700e82d6cf2502a94fe5",
+    "local_evm_original_publications": 1,
+    "live_submission_used": false,
+    "deployment_attested": false,
+    "release_promoted": false,
+    "scope": "One new Security100 compression proof and one dependent zero-knowledge SNARK from the retained native batch-1/batch-2 RISC proof/VK. Both new stages passed stock verification and independent CPU verification. The exact normal-profile EVM bytecode accepted the actual serialized proof and rejected changed public input and a canonical scalar opening with the exact quotient error. The RISC stage was not rerun. Independent CPU key generation reproduced all three keys byte-for-byte, including the unchanged RISC key. Normal locked CPU release-loader tests passed 70 cases at the recorded Prover source commit. Normal locked GPU combined and standalone SNARK worker builds completed from that same source snapshot, with exact binary hashes and verified application/tooling inputs. These loader/build runs did not start a proof or worker. Normal producer build/loader qualification is complete; CI completion, final release promotion, live service and fixture acceptance remain separate gates. No live submission, fixture activation or overall release acceptance."
+  },
+  "historical_pre_canonical_query_proof_qualification": {
     "status": "completed_offline_minimal_input_native_and_normal_profile_evm_qualification",
     "verification_key_hash": "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
     "program_commitment": "0xff43db6564b43491d6c25a613270e7802a4fca2bc67ad621e5cb08dd57d22975",

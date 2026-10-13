@@ -262,9 +262,9 @@ class CandidateWrapperTests(unittest.TestCase):
         self.assertEqual(CANDIDATE.SOURCE_IDENTITY["common_crypto_repository"],
                          "https://github.com/syscoin/zksync-crypto.git")
         self.assertEqual(CANDIDATE.SOURCE_IDENTITY["common_crypto_commit"],
-                         "4f1e95bf742ff87fe4ce18acfad4e2a305b94c7a")
+                         "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77")
         self.assertEqual(CANDIDATE.SOURCE_IDENTITY["common_crypto_tree"],
-                         "4fda70a408c7817474fe67fba46b38cfbe420e59")
+                         "c52391d0df82126d27e5c76810e9df85c61875d0")
 
 
 if __name__ == "__main__":

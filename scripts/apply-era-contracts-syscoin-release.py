@@ -13,9 +13,9 @@ import tempfile
 
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
-CHECKER_SHA = "072c9d3a0eeb5899e079e720cfb6079df24a05b1ee5aba5c75c8bab3fedcc64a"
-MANIFEST_SHA = "3289eb1384a6dedd2f8af2a3e7e2b97f0caad2aac044a440c1fbc5a7c0920092"
-VK = "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144"
+CHECKER_SHA = "cd4bdf971e264c7c397cf422ccdf4ccfc196693ca7e679eccb5b46b334844c53"
+MANIFEST_SHA = "f00baf57ce96c7fdf5606a3b54448f72c400972a7b03fedde7fac21674f55636"
+VK = "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
         "sha256": "1b7091768db408bc065f3e95dd43c441d15aca43d9b48b48c099ab004fee07ac"},
@@ -27,7 +27,7 @@ PREIMAGES = {
 }
 APP_SOURCES = {
     "lib/types/src/protocol/proving_version.rs":
-        "5b5f37b5104c6afbb6ae61bed566848e320bc34f6dd68abe89a1b4b5cc32c11e",
+        "b1396be72c197077e4167686399caeee73f40d4f020be9da01bad48919574a63",
     "node/bin/src/prover_api/fri_proof_verifier.rs":
         "1ec3df17b7e4c3e89e53a9e8829415e75ad06894e22072eba7288c0681dc8077",
 }

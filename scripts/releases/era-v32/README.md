@@ -1,8 +1,53 @@
 # Generated Era sources and separate canonical fixture certification
 
-## Current optimized Security100 offline qualification
+## Canonical query-bit candidate: offline proof and EVM qualification
 
-The current app-bound key is
+The candidate key-generation source pins common crypto
+`5eafa1f914519d88a13c577a9e8cc5c7db1dfc77` (tree
+`c52391d0df82126d27e5c76810e9df85c61875d0`) for canonical recursive transcript
+query-bit constraints and modulus-boundary addition witnesses. The workflow pins the
+paired Prover candidate `981137adde3d2e45c40441c3045000b48ecfeb47`; its executable
+inputs match the source snapshot qualified by the normal GPU builds and CPU loader
+tests below. The later Prover changes are limited to adoption tests and documentation.
+CI completion and final release promotion remain pending. The new app-bound VK is
+`0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153`.
+One new compression proof and one dependent zero-knowledge SNARK passed stock and
+independent CPU verification, reusing the unchanged RISC proof/VK for the retained
+batch-1/batch-2 input. No RISC proof or old performance baseline was rerun.
+
+The generated verifier accepted that actual proof on isolated Anvil with the normal
+Solc 0.8.28 / Prague / 9,999,999-run profile. Changed public input and a canonical
+scalar-opening mutation both reverted with the exact quotient-evaluation error;
+estimated verification gas was 414,006. Normal L1 EVM/EraVM compilation and the full
+278-row inventory check changed only PLONK and its embedding Gateway deployer.
+The generated tree is `39aba041f59da6733f1562f2dee74ef39fc0c024`; the source tree
+retains the merged Gateway priority-limit setter fix.
+
+Independent CPU key generation completed and reproduced all three keys byte-for-byte,
+including the unchanged RISC key. The normal locked CPU release-loader run at Prover
+commit `875975949ba3b856faaf5b0c092b8b81762c947a`, tree
+`ac0a431ca1d4738b07a23bad1e9f7fd4274a0066`, passed all 70 tests: 4 protocol,
+12 FRI and 54 SNARK tests. It loaded the new runtime bundles and started no proof or
+worker. The build-attestation SHA-256 is
+`378a51f1bc9e5c0f9a80f42ce3ef8e8afa124ac221072542bde9d5b17ada5ceb`.
+The normal locked GPU combined and standalone SNARK worker builds also completed
+from that same source snapshot, with build-attestation SHA-256
+`05080505a1f09c21d43457f4b33db80de850fd4a38738234ef311e293afb9da4`.
+The combined binary SHA-256 is
+`4324e19759a4dd777df29926303eb51593fe989f40d1deba2e164d6445da5823`;
+the standalone SNARK binary SHA-256 is
+`9d9b8f7b6d7b8cfb348e09c669e9d52bdb9cb65210e3a9cd74890f968f8dc0ac`.
+All 53 attested GPU application/tooling file hashes match the current executable
+inputs; later test/documentation changes do not relabel these as new binary builds.
+These builds started no proof or worker. The current `proof_qualification` manifest
+object records the exact acceptance, key-generation, loader and build-log hashes.
+Normal producer build/loader qualification is complete, while CI completion, final
+release promotion, live service, fixture activation and overall release acceptance
+remain separate gates. Historical qualification below remains bound to its old source/key.
+
+## Preceding optimized Security100 offline qualification
+
+The preceding app-bound key is
 `0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144`.
 It binds the preserved guest source tree
 `6935489bdbc7b1ed31e608677d1b2418b10691b5`, Security100 continuation commitment
