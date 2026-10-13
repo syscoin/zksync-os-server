@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -79,8 +80,8 @@ class EndParamsAssetTests(unittest.TestCase):
                         workflow.index('compute-aux-params'))
         preparer = (KEYGEN / "prepare-candidate-wrapper.py").read_text()
         for name, value in (
-            ("PROVER_TOOLING_COMMIT", "26c1400fe6881ee53513f3f1add20590fe90b081"),
-            ("PROVER_TOOLING_TREE", "d1ec668027830bf7b85c77b700f430c9641610d6"),
+            ("PROVER_TOOLING_COMMIT", "4263a735fbac02c5b557c41a6d1f3425482b13dd"),
+            ("PROVER_TOOLING_TREE", "61e7c63b050d81c4d077957d8db773de68bc33fc"),
         ):
             self.assertIn(f"{name}: {value}", workflow)
             self.assertIn(f'{name} = "{value}"', preparer)
@@ -105,7 +106,10 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertIn('checked_out_server_vk_remains_registered: true', candidate)
         self.assertNotIn('checked_out_server_vk_remains_zero', candidate)
         original = (REPO / "lib/types/src/protocol/proving_version.rs").read_text()
-        old_hash = '0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90'
+        registered = re.search(
+            r'^  REGISTERED_V8_VK_HASH: "(0x[0-9a-f]{64})"$', workflow, re.M)
+        self.assertIsNotNone(registered)
+        old_hash = registered.group(1)
         new_hash = '0x' + 'ab' * 32
         self.assertEqual(original.count(f'"{old_hash}"'), 2)
         with tempfile.TemporaryDirectory() as temporary:
