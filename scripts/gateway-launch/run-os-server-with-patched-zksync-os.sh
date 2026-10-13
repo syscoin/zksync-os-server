@@ -12,6 +12,7 @@ usage() {
 Usage:
   run-os-server-with-patched-zksync-os.sh <workspace-name> -- <cargo args...>
   run-os-server-with-patched-zksync-os.sh <workspace-name> -- build-prebuilt
+  run-os-server-with-patched-zksync-os.sh <workspace-name> -- check-prebuilt
   run-os-server-with-patched-zksync-os.sh <workspace-name> -- exec-prebuilt -- <binary args...>
 Examples:
   run-os-server-with-patched-zksync-os.sh gateway -- build-prebuilt
@@ -236,13 +237,21 @@ refresh_os_server_config_credentials() {
   done
 }
 
-if [ "${1:-}" = "exec-prebuilt" ]; then
+if [ "${1:-}" = "exec-prebuilt" ] || [ "${1:-}" = "check-prebuilt" ]; then
+  PREBUILT_CHECK_ONLY=false
+  [ "${1}" != "check-prebuilt" ] || PREBUILT_CHECK_ONLY=true
   shift
-  [ "${1:-}" = "--" ] || usage
-  shift
-  [ $# -gt 0 ] || usage
+  if [ "${PREBUILT_CHECK_ONLY}" = true ]; then
+    # SYSCOIN: Release checkpoint probes must not refresh credentials or start
+    # the executable merely to validate its existing build provenance.
+    [ $# -eq 0 ] || usage
+  else
+    [ "${1:-}" = "--" ] || usage
+    shift
+    [ $# -gt 0 ] || usage
+    refresh_os_server_config_credentials -- "$@"
+  fi
 
-  refresh_os_server_config_credentials -- "$@"
   configure_build_context
   PREBUILT_BINARY="$(prebuilt_binary_path)"
   PREBUILT_STAMP="${PREBUILT_BINARY}.sha256"
@@ -257,6 +266,7 @@ if [ "${1:-}" = "exec-prebuilt" ]; then
   CURRENT_DIGEST="$(prebuilt_digest "${PREBUILT_BINARY}" "${CURRENT_SOURCE_DIGEST}")"
   [ "${CURRENT_DIGEST}" = "${STAMPED_DIGEST}" ] || \
     gl_die "prebuilt zksync-os-server binary or build context does not match its stamp; run the deployment build step first"
+  [ "${PREBUILT_CHECK_ONLY}" != true ] || exit 0
   exec "${PREBUILT_BINARY}" "$@"
 fi
 

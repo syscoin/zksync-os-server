@@ -66,6 +66,24 @@ Config hashes describe observed files, not a guarantee they were the bytes loade
 at process startup; check effective configuration and namespace/bind policy
 separately.
 
+## Prepare main-node binaries before service installation
+
+The config generator remains compiler-free and emits a separate `build-node.sh`
+and `start-node.sh` for each Gateway/Edge main node. Both start scripts use the
+stock `exec-prebuilt` path; they never compile during service restart. The
+canonical launcher builds Gateway before its supervised first boot, then renders
+final configs and builds Edge after migration. Final checkpoint validation checks
+both existing binary/source/context stamps with read-only `check-prebuilt`.
+Missing or stale stamps require the normal final-config repair/build, not replay
+of initialization or migration.
+
+For standalone config generation, additional edges or later source upgrades,
+explicitly run the affected role's generated `build-node.sh` before installing or
+starting its service. Preserve customized configs and use the reviewed in-place
+upgrade process below rather than blindly re-rendering them. Direct `cargo run`
+through the patched runner remains supported for development; it is not a
+stamped production release or an accepted fleet-inventory process.
+
 ## Update existing ENs without rebuilding the chain
 
 1. Record each EN's current config hash, database directory identity, network-key

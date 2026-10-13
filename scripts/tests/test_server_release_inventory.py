@@ -242,7 +242,7 @@ class StockLauncherBindingTests(unittest.TestCase):
 
     def clean_env(self, root):
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith(("SYSCOIN_", "ZKSYNC_OS_", "GATEWAY_", "GL_"))}
+               if not key.startswith(("SYSCOIN_", "ZKSYNC_OS_", "GATEWAY_", "EDGE_", "GL_"))}
         env.pop("PROTOCOL_VERSION", None)
         env.update(HOME=str(root), OS_SERVER_NOFILE_TARGET="1",
                    OS_SERVER_NOFILE_RECOMMENDED="1", OS_SERVER_NOFILE_MIN="1")
@@ -276,6 +276,11 @@ class StockLauncherBindingTests(unittest.TestCase):
         generator = (ROOT / "scripts/gateway-launch/generate-os-server-configs.sh").read_text()
         # Evaluate the actual emitted template, without executing config/deployment jobs.
         template = re.search(r'(?m)^    start_script = f""".*?^"""', generator, re.S).group()
+        program = generator.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        mode = next(node for node in ast.walk(ast.parse(program))
+                    if isinstance(node, ast.Assign) and any(
+                        isinstance(target, ast.Name) and target.id == "runner_mode"
+                        for target in node.targets))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "server source"
@@ -288,9 +293,11 @@ class StockLauncherBindingTests(unittest.TestCase):
                 with self.subTest(chain=chain), patch.dict(os.environ, env):
                     config = gateway / chain / "config.yaml"
                     context = dict(server_root=source, gateway_dir=gateway, os=os,
-                                   chain_name=chain, runner_mode="exec-prebuilt --",
+                                   chain_name=chain,
                                    start_config_args=f'--config "{config}"',
                                    refresh_cookie_block="", operator_lock_block="")
+                    exec(compile(ast.Module(body=[mode], type_ignores=[]),
+                                 "main-runner-mode", "exec"), context)
                     exec(compile(ast.parse(template.lstrip()), "main-start-template", "exec"), context)
                     result = subprocess.run(["bash"], input=context["start_script"],
                                             capture_output=True, text=True, env=self.clean_env(root))
@@ -301,6 +308,84 @@ class StockLauncherBindingTests(unittest.TestCase):
                     self.assertEqual(observed["env"]["PROTOCOL_VERSION"], "v32.0")
                     self.assertEqual(observed["argv"], [chain, "--", "exec-prebuilt", "--",
                                                        "--config", str(config)])
+
+    def test_final_deployment_builds_actual_generated_default_and_additional_edge(self):
+        generator = (ROOT / "scripts/gateway-launch/generate-os-server-configs.sh").read_text()
+        template = re.search(r'(?m)^    build_script = f""".*?^"""', generator, re.S).group()
+        self.assertIn('write_text(out_dir / "build-node.sh", build_script)', generator)
+        common = (ROOT / "scripts/gateway-launch/_common.sh").read_text()
+        helper = re.search(r"(?m)^gl_prepare_final_os_configs\(\) \{.*?^\}", common, re.S).group()
+        launcher = (ROOT / "scripts/gateway-launch/run-gateway-launch.sh").read_text()
+        repair = (ROOT / "scripts/gateway-launch/gateway-launch-repair.sh").read_text()
+        self.assertIn('"gl.os_configs_final" validate_os_configs_final gl_prepare_final_os_configs', launcher)
+        self.assertIn('gl.os_configs_final)\n    gl_prepare_final_os_configs', repair)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "server source"
+            runner = source / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
+            self.probe_binary(runner)
+            gateway = root / "gateway"
+            fake_tools = root / "tools"
+            fake_tools.mkdir()
+            renderer = fake_tools / "generate-os-server-configs.sh"
+            renderer.write_text('#!/usr/bin/env bash\nprintf "generated\\n"\nexit "${RENDER_RC:-0}"\n')
+            renderer.chmod(0o755)
+            command = 'set -euo pipefail\ngl_require() { :; }\ngl_validate_zkstack_chain_name() { :; }\n' + helper + '\ngl_prepare_final_os_configs\n'
+            for explicit_edge in (None, "edge-b"):
+                chain = explicit_edge or "zksys"
+                with self.subTest(chain=chain), patch.dict(os.environ, {
+                    "GATEWAY_CHAIN_NAME": "gateway", "EDGE_CHAIN_NAME": chain,
+                    "EDGE_CHAIN_ID": "57057", "PROTOCOL_VERSION": "v32.0",
+                }):
+                    context = dict(server_root=source, gateway_dir=gateway, os=os, chain_name=chain)
+                    exec(compile(ast.parse(template.lstrip()), "main-build-template", "exec"), context)
+                    build = gateway / "os-server-configs" / chain / "build-node.sh"
+                    build.parent.mkdir(parents=True, exist_ok=True)
+                    build.write_text(context["build_script"])
+                    env = dict(self.clean_env(root), GL_DIR=str(fake_tools), GATEWAY_DIR=str(gateway))
+                    if explicit_edge is not None:
+                        env["EDGE_CHAIN_NAME"] = explicit_edge
+                    result = subprocess.run(["bash", "-c", command], capture_output=True,
+                                            text=True, env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    generated, built = result.stdout.splitlines()
+                    self.assertEqual(generated, "generated")
+                    observed = json.loads(built)
+                    self.assertEqual(observed["argv"], [chain, "--", "build-prebuilt"])
+                    self.assertEqual(observed["env"]["ZKSYNC_OS_SERVER_PATH"], str(source))
+                    self.assertEqual(observed["env"]["GATEWAY_DIR"], str(gateway))
+                    failed_render = subprocess.run(["bash", "-c", command], capture_output=True,
+                                                   text=True, env=dict(env, RENDER_RC="9"))
+                    self.assertEqual(failed_render.returncode, 9)
+                    self.assertEqual(failed_render.stdout, "generated\n")
+                    build.write_text("#!/usr/bin/env bash\nexit 7\n")
+                    failed_build = subprocess.run(["bash", "-c", command], capture_output=True,
+                                                  text=True, env=env)
+                    self.assertEqual(failed_build.returncode, 7)
+
+    def test_final_checkpoint_requires_both_existing_prebuilt_stamps(self):
+        common = (ROOT / "scripts/gateway-launch/_common.sh").read_text()
+        probe = re.search(r"(?m)^gl_probe_os_configs_final_ready\(\) \{.*?^\}", common, re.S).group()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root / "tools"
+            tools.mkdir()
+            renderer = tools / "generate-os-server-configs.sh"
+            renderer.write_text('#!/usr/bin/env bash\n[ "$*" = --check-only ] || exit 99\n')
+            renderer.chmod(0o755)
+            runner = tools / "run-os-server-with-patched-zksync-os.sh"
+            runner.write_text('#!/usr/bin/env bash\n[ "$2:$3" = --:check-prebuilt ] || exit 98\nprintf "%s\\n" "$1"\n[ "$1" != "${FAILED_ROLE:-}" ]\n')
+            command = 'set -euo pipefail\ngl_require() { :; }\ngl_probe_materialized_os_chain_ready() { :; }\n' + probe + '\ngl_probe_os_configs_final_ready\n'
+            env = dict(self.clean_env(root), GL_DIR=str(tools), GATEWAY_DIR=str(root / "gateway"))
+            accepted = subprocess.run(["bash", "-c", command], capture_output=True, text=True, env=env)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(accepted.stdout.splitlines(), ["gateway", "zksys"])
+            for role, checks in (("gateway", ["gateway"]), ("zksys", ["gateway", "zksys"])):
+                with self.subTest(role=role):
+                    rejected = subprocess.run(["bash", "-c", command], capture_output=True,
+                                              text=True, env=dict(env, FAILED_ROLE=role))
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertEqual(rejected.stdout.splitlines(), checks)
 
     def test_generated_en_launchers_already_export_their_pinned_source_root(self):
         deployer = (ROOT / "scripts/explorer/blockscout/deploy-zksys-en-rpc.sh").read_text()
@@ -355,14 +440,35 @@ class StockLauncherBindingTests(unittest.TestCase):
             stamp = inventory.stock_context(inventory.file_digest(binary), "example", "v32.0",
                                             target, tank, inventory.source_fingerprint(source))
             Path(str(binary) + ".sha256").write_text(stamp + "\n")
-            result = subprocess.run(["bash", str(source / actual_runner.relative_to(ROOT)),
-                                     "example", "--", "exec-prebuilt", "--", "--help"],
-                                    capture_output=True, text=True,
-                                    env=dict(self.clean_env(root), GATEWAY_DIR=str(gateway),
-                                             ZKSYNC_OS_STATIC_BUILD_CONTEXT="true"))
+            command = ["bash", str(source / actual_runner.relative_to(ROOT)), "example", "--"]
+            env = dict(self.clean_env(root), GATEWAY_DIR=str(gateway),
+                       ZKSYNC_OS_STATIC_BUILD_CONTEXT="true")
+            result = subprocess.run([*command, "exec-prebuilt", "--", "--help"],
+                                    capture_output=True, text=True, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["env"], dict(zip(self.BINDINGS,
                              (str(source), str(gateway), "v32.0", target, tank))))
+            # The same real stamp checks must work without executing the probe binary.
+            checked = subprocess.run([*command, "check-prebuilt"], capture_output=True,
+                                     text=True, env=env)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertEqual(checked.stdout, "")
+            invalid_args = subprocess.run([*command, "check-prebuilt", "--", "--help"],
+                                          capture_output=True, text=True, env=env)
+            self.assertNotEqual(invalid_args.returncode, 0)
+            self.assertEqual(invalid_args.stdout, "")
+            binary.write_text(binary.read_text() + "\n# changed release\n")
+            stale = subprocess.run([*command, "check-prebuilt"], capture_output=True,
+                                   text=True, env=env)
+            self.assertNotEqual(stale.returncode, 0)
+            self.assertIn("does not match its stamp", stale.stderr)
+            self.assertEqual(stale.stdout, "")
+            Path(str(binary) + ".sha256").unlink()
+            missing = subprocess.run([*command, "check-prebuilt"], capture_output=True,
+                                     text=True, env=env)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("build stamp is missing", missing.stderr)
+            self.assertEqual(missing.stdout, "")
 
 
 if __name__ == "__main__":
