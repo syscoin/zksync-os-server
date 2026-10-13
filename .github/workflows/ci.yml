@@ -112,6 +112,7 @@ jobs:
             scripts.tests.test_migration_account_arguments \
             scripts.tests.test_bootstrap_config_scalar \
             scripts.tests.test_blockscout_remote_arguments \
+            scripts.tests.test_server_release_inventory \
             scripts.tests.test_server_airbender_security \
             scripts.tests.test_gateway_settlement_fee_payer \
             scripts.tests.test_private_launch_files \
