@@ -64,9 +64,9 @@ env:
   WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git
   WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
   PROVER_TOOLING_REPOSITORY: https://github.com/syscoin/zksync-airbender-prover.git
-  # Exact paired producer candidate; normal producer qualification is still pending.
-  PROVER_TOOLING_COMMIT: 875975949ba3b856faaf5b0c092b8b81762c947a
-  PROVER_TOOLING_TREE: ac0a431ca1d4738b07a23bad1e9f7fd4274a0066
+  # Exact paired prover tooling; build/loader evidence is in the release manifest.
+  PROVER_TOOLING_COMMIT: 981137adde3d2e45c40441c3045000b48ecfeb47
+  PROVER_TOOLING_TREE: 34f01d072405171226f9bc7d6b18adb193a1cfa3
   PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
   PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
   REGISTERED_V8_VK_HASH: "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153"

@@ -182,9 +182,61 @@ class BundleAndLauncherTests(unittest.TestCase):
                          "2bd6abd4d98715ffaa34727f30f4d8400e41a99118c51e5048c8c20723caa89e")
         self.assertEqual(evidence["result_sha256"]["evm"],
                          "e4b0de9143c620f13a2fc3b57128272b84afe899707e2253ae389a16ff49ac55")
-        self.assertTrue(evidence["independent_cpu_keygen_pending"])
+        self.assertEqual(evidence["status"],
+                         "completed_offline_compression_snark_normal_evm_cpu_keys_loaders_and_gpu_builds_release_pending")
+        self.assertFalse(evidence["independent_cpu_keygen_pending"])
+        self.assertTrue(evidence["cpu_gpu_setup_keys_byte_identical"])
+        cpu_keys = evidence["independent_cpu_keygen"]
+        self.assertEqual(cpu_keys["exit_code"], 0)
+        self.assertTrue(cpu_keys["all_three_keys_match_byte_for_byte"])
+        self.assertTrue(cpu_keys["risc_key_unchanged"])
+        self.assertEqual(cpu_keys["risc_vk_sha256"], evidence["retained_risc_vk_sha256"])
+        self.assertEqual(cpu_keys["compression_vk_sha256"], evidence["native_compression_vk_sha256"])
+        self.assertEqual(cpu_keys["snark_vk_sha256"], evidence["native_snark_vk_sha256"])
+        self.assertEqual(evidence["result_sha256"]["root_cpu_keygen_acceptance"],
+                         "6811744f568d88de692213dcb8f7d15d4e8bbea0c6d907d52418632fe69025cc")
+        self.assertEqual(evidence["result_sha256"]["root_cpu_loaders_acceptance"],
+                         "6ac85a26a0596e143c4cf2d579b7dce03d611ecdc9a693b0c472607a614fe3f5")
+        self.assertEqual(evidence["result_sha256"]["cpu_loaders_build_attestation"],
+                         "378a51f1bc9e5c0f9a80f42ce3ef8e8afa124ac221072542bde9d5b17ada5ceb")
+        self.assertEqual(evidence["result_sha256"]["cpu_loaders_log"],
+                         "ebe0620310557c51524790423735d7144a39ce7a694c82c7973e28f67847544c")
+        cpu_loaders = evidence["normal_cpu_release_loaders"]
+        self.assertEqual(cpu_loaders["source_commit"], "875975949ba3b856faaf5b0c092b8b81762c947a")
+        self.assertEqual(cpu_loaders["source_tree"], "ac0a431ca1d4738b07a23bad1e9f7fd4274a0066")
+        self.assertEqual(cpu_loaders["exit_code"], 0)
+        self.assertEqual(cpu_loaders["passed_tests"],
+                         {"protocol_version": 4, "fri": 12, "snark": 54, "total": 70})
+        for key in ("failed_tests", "ignored_tests", "proofs_run", "workers_started"):
+            self.assertEqual(cpu_loaders[key], 0)
+        for key in ("normal_locked_prepared_sources", "inputs_reverified", "bundled_fri_loaded",
+                    "bundled_commitment_loaded"):
+            self.assertTrue(cpu_loaders[key])
+        gpu_build = evidence["normal_gpu_worker_build"]
+        self.assertEqual(gpu_build["source_commit"], cpu_loaders["source_commit"])
+        self.assertEqual(gpu_build["source_tree"], cpu_loaders["source_tree"])
+        self.assertEqual(gpu_build["archive_sha256"], cpu_loaders["archive_sha256"])
+        self.assertEqual(gpu_build["exit_code"], 0)
+        self.assertEqual(gpu_build["binaries_sha256"], {
+            "zksync-os-prover-service": "4324e19759a4dd777df29926303eb51593fe989f40d1deba2e164d6445da5823",
+            "zksync_os_snark_prover": "9d9b8f7b6d7b8cfb348e09c669e9d52bdb9cb65210e3a9cd74890f968f8dc0ac",
+        })
+        self.assertEqual(gpu_build["attested_file_count"], 53)
+        for key in ("attested_application_and_tooling_inputs_match", "normal_locked_prepared_sources",
+                    "inputs_reverified", "gpu_memory_overlay_retained"):
+            self.assertTrue(gpu_build[key])
+        self.assertEqual(gpu_build["proofs_run"], 0)
+        self.assertEqual(gpu_build["workers_started"], 0)
+        self.assertEqual(evidence["result_sha256"]["root_gpu_workers_acceptance"],
+                         "2de3251f37e191c71a8faaf1e5d8a4f7d1baa04f1b27d8f8a3cce7bee386c533")
+        self.assertEqual(evidence["result_sha256"]["gpu_workers_build_attestation"],
+                         "05080505a1f09c21d43457f4b33db80de850fd4a38738234ef311e293afb9da4")
+        self.assertFalse(evidence["normal_gpu_worker_build_pending"])
+        self.assertTrue(evidence["normal_gpu_worker_build_passed"])
+        self.assertTrue(evidence["normal_producer_build_loader_qualification_completed"])
+        # Full release qualification/promotion is separate from completed build/loader checks.
         self.assertTrue(evidence["normal_producer_release_pending"])
-        for key in ("cpu_gpu_setup_keys_byte_identical", "live_submission_used", "deployment_attested", "release_promoted"):
+        for key in ("live_submission_used", "deployment_attested", "release_promoted"):
             self.assertFalse(evidence[key])
 
     def test_copied_bundle_and_unactivated_source(self):

@@ -15,9 +15,9 @@ except ImportError:
     import tomli as tomllib
 
 
-# Exact paired producer candidate; normal producer qualification is still pending.
-PROVER_TOOLING_COMMIT = "875975949ba3b856faaf5b0c092b8b81762c947a"
-PROVER_TOOLING_TREE = "ac0a431ca1d4738b07a23bad1e9f7fd4274a0066"
+# Exact paired prover tooling; build/loader evidence is in the release manifest.
+PROVER_TOOLING_COMMIT = "981137adde3d2e45c40441c3045000b48ecfeb47"
+PROVER_TOOLING_TREE = "34f01d072405171226f9bc7d6b18adb193a1cfa3"
 WRAPPER_REPOSITORY = "https://github.com/syscoin/zkos-wrapper.git"
 WRAPPER_COMMIT = "816a3598c60fac37d02cf1dcd1bc48b2e2c75de1"
 WRAPPER_TREE = "a1e9a551b9588b1dfab5c5088554fc69770c0e85"
