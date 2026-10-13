@@ -2,10 +2,10 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "5e62f430c3755fdc04982b8c36cbeebaee7b21cb",
-  "candidate_tree": "7b57c826574ce2bb4d3fce6819f634ff180be5dc",
-  "source_patch_sha256": "2b9d8bb1527f42a1a98096a10ac5e0932e22133b8f4b7baf0bd6f8f2a9a6724c",
-  "source_applicator_sha256": "3454d1626cf342490b56a98992d02f4b6cfd9ed4312a247620be5998c330e8c2",
+  "reviewed_source_tree": "0cb850a5c77436f17b49e747a1117dac5ee90888",
+  "candidate_tree": "d194956535ddeded60829706e9301e9adbe6cb5b",
+  "source_patch_sha256": "bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df",
+  "source_applicator_sha256": "eaa60f4652bd279637e21a08611f72ed673ed94d1ebd74fbe77472b31336efc8",
   "overlay_sha256": "aa2a50fa290f3e450e40b1124b5847e33731e428838fa00c3e335df0c1d847c6",
   "overlay_size": 120424,
   "verification_key_hash": "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
@@ -17,7 +17,7 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "eb189b013eaade283b8891ede78aa6dc7fdbb64d1a26e8908361db52c6cf9fa7"
+      "sha256": "cd98a1aabe4188052f36f5b6ee5b031c47f3a8465036a8dbf04d1e305997642f"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
@@ -40,6 +40,33 @@
   "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
+    "status": "completed_gateway_priority_setter_inventory_refresh",
+    "reviewed_source_tree": "0cb850a5c77436f17b49e747a1117dac5ee90888",
+    "candidate_tree": "d194956535ddeded60829706e9301e9adbe6cb5b",
+    "previous_candidate_tree": "7b57c826574ce2bb4d3fce6819f634ff180be5dc",
+    "verification_key_hash": "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
+    "runner_sha256": "242855386299b0db951df284110f5549065a668d1d6b46dc6f8c19f31a76de5c",
+    "log_sha256": "a78608670bca544c0654dbb567131a10a9c3c4f64754eb2718b3f30610afc70d",
+    "admin_source_sha256": "46c34ea2f00b23a2c953ffbf50509bf2416d6550a321bb236d50175976780ce9",
+    "regression_source_sha256": "90dd5adcae10bf2da268a510e1f4db4fec73362b83da1d755ac7919d25e444e8",
+    "admin_evm_artifact_sha256": "acced34aabcd35072c08136af2947c1d3f6d3f0c531aa3293b0329cff25fd3cc",
+    "normal_l1_evm_and_eravm_build_passed": true,
+    "full_contract_hash_recomputation_passed": true,
+    "contract_hash_check_passed": true,
+    "inventory_rows": 278,
+    "changed_inventory_rows": ["l1-contracts/AdminFacet"],
+    "unchanged_inventory_rows": 277,
+    "admin_abi_unchanged": true,
+    "admin_evm_runtime_bytes": 22482,
+    "tests_passed": 28,
+    "tests_failed": 0,
+    "new_gateway_regressions": 3,
+    "generated_verifier_overlay_unchanged": true,
+    "new_proof_or_key_generation_performed": false,
+    "deployed": false,
+    "scope": "Normal pinned L1 EVM/EraVM build, 28 focused tests and full stock 278-row hash recomputation/check after allowing only the existing chain-local CTM to set the priority limit on Gateway. Only AdminFacet inventory changed; its ABI and the exact generated verifier/key artifacts are unchanged. Prior proof and full-package baseline evidence is retained separately, not rerun or relabeled. No live deployment, storage migration, current on-chain limit change or fixture activation is certified."
+  },
+  "historical_pre_gateway_priority_setter_contract_generation_provenance": {
     "status": "completed_normal_profile_incremental_full_inventory_qualification",
     "result_sha256": "c283de5f73e332f43cc125cb27b92d2b5640cff64a9a1b215b687462c82e0af1",
     "baseline_result_sha256": "4d736cc8bc457a469244df893a3f49e549d6f00a2ad37523974a7d93c3ef059f",

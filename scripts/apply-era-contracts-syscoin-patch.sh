@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1496724"
-EXPECTED_PATCH_SHA256="2b9d8bb1527f42a1a98096a10ac5e0932e22133b8f4b7baf0bd6f8f2a9a6724c"
+EXPECTED_PATCH_SIZE="1497553"
+EXPECTED_PATCH_SHA256="bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df"
 EXPECTED_PATCH_PATH_COUNT="87"
 EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="5e62f430c3755fdc04982b8c36cbeebaee7b21cb"
+EXPECTED_PATCHED_TREE="0cb850a5c77436f17b49e747a1117dac5ee90888"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -166,7 +166,7 @@ verify_postimage_manifest() {
     manifest_paths+="${relative_path}"$'\n'
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
-160049 e0962de3ca23a9d60792dacb52fe804017f4cd8ae7114c0ac74ddc59402cc8e2 AllContractsHashes.json
+160049 1b7091768db408bc065f3e95dd43c441d15aca43d9b48b48c099ab004fee07ac AllContractsHashes.json
 557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
@@ -181,7 +181,7 @@ verify_postimage_manifest() {
 3945 6c64f59cf560d21a8c7223d86475df69c28a5348edc523f16f891a55b572fbd5 l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 4350 46879b879bee93b99f2d1c549e64b304da215fe2da1281f54a658fb97d0ea98e l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
 6429 e469f541b0970a0633ab4893c2c99f60ffc69de4ecf1f9a92feda8d398d547bb l1-contracts/contracts/state-transition/chain-deps/DiamondInit.sol
-26210 f74c9569989e12867e8d9375eeb899259acb784036bd083ca5998a6cba1cdf0b l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
+26289 46c34ea2f00b23a2c953ffbf50509bf2416d6550a321bb236d50175976780ce9 l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 49179 54751bc0aa7880c6c9182219aa418728986ae03eaca9abe98a14df1108316c8a l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 12329 dcb558cecf683fc47232e9d141429965c9fcfe4869c77da21dc403c8e072a436 l1-contracts/contracts/state-transition/chain-deps/facets/Getters.sol
 27778 51151ecd14ec79bc2c6400c034779af6c7845a02c4f63fdab396b0508ff72ff3 l1-contracts/contracts/state-transition/chain-deps/facets/Mailbox.sol
@@ -228,7 +228,7 @@ verify_postimage_manifest() {
 9378 0381dc84f5bb96727bfb06de2f9351d34ba5eae5b5423964f3a39e4aa731bf00 l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 23946 b164c5d60b5162c5738afe55997fa16144e0ec750df84c0b39a70f378d80b800 l1-contracts/test/foundry/l1/integration/l2-tests-abstract/_SharedL2ContractDeployer.sol
 17139 7555ab6bee81f7c7133343d56e555a566b12d3ceabe6f61146d4bee53ccdad07 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
-27602 4b81477a2329c8c4a274f1e999a420161ce61f4ce1f13181488dba2eefeef42c l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
+28234 90dd5adcae10bf2da268a510e1f4db4fec73362b83da1d755ac7919d25e444e8 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
 9793 cc9f52f161e2f2593447507c26f50a1965fe7a819a5e31ce0ea328686150ffe4 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityMode.t.sol
 6691 88562d3c06e6339b4059966c0e3173eceb98a458205cb011bbb861ee7d5b7955 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
 23829 ff5b24f0b2e9e22a132702e13363993927b4bbbf244b8b6c403dc10da9a1551f l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
@@ -324,6 +324,8 @@ verify_semantics() {
     "l2GasLimit: PRIORITY_TX_MAX_GAS_LIMIT,"
   require_text "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol" \
     "if (_newPriorityTxMaxGasLimit > PRIORITY_TX_MAX_GAS_LIMIT) {"
+  require_text "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol" \
+    "function setPriorityTxMaxGasLimit(uint256 _newPriorityTxMaxGasLimit) external onlyChainTypeManager {"
   require_text "l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol" \
     "UPGRADE_TX_MAX_GAS_LIMIT, // SYSCOIN: Disabled/lower user admission must not prevent upgrades."
 

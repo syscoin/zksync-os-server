@@ -11,17 +11,17 @@ index a0200fd182658c7022ea47a09af2e1771a077e3a..4e67bcb162ec794438574d1fd07b8899
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
 -    "zkBytecodeHash": "0x01000681430b50cf58ac6268220767ba361480c1c9630f00f1b5fad6aad6d1de",
-+    "zkBytecodeHash": "0x01000681e9f7a284435bff065c8a17b4eda7f60851ea73ce5aff06479726757d",
++    "zkBytecodeHash": "0x01000677ab21cfd6d637e186c84fd91a531e2b173223035d74aee258396e2890",
 @@ -746 +746 @@
 -    "evmBytecodeHash": "0xd82a2cb279e2f74b918cda3c6913ef187494f9bf18e7fa9cadf32112264e8116",
-+    "evmBytecodeHash": "0x48ff1d69f4c629c7dd618ab4b621c60243a8e7b4cd675030a636986c0fda804a",
++    "evmBytecodeHash": "0x4e033ef0e853b15cb8c344a2cb31e49e7332eb8b66ab8c21764c1b4536f52472",
 @@ -748,3 +748,3 @@
 -    "evmDeployedBytecodeHash": "0x008089eb8772a53bb30b1f15621508612eba06991f2aa98bba882681e45ce412",
 -    "evmDeployedBytecodeBlakeHash": "0xbcc160f051b65d4dec825475503382d81cffdc296ba5610384e421eeebd1a8fe",
 -    "evmDeployedBytecodeLength": 22512
-+    "evmDeployedBytecodeHash": "0x12db27dcfeb2096463cfcc3d450a2ad83b0c27699657f44829160878472c92a8",
-+    "evmDeployedBytecodeBlakeHash": "0xb4154cc067773a06976fa98434269fac45f27a0e926a26c8d1b7999657193521",
-+    "evmDeployedBytecodeLength": 22490
++    "evmDeployedBytecodeHash": "0x4332c2135751af928c86b92761235e06638834a38a662313ba14413c4af3df1d",
++    "evmDeployedBytecodeBlakeHash": "0x2dbc5067a5c426a515e14a47d909d1c0862519da52b5d9adfe58af7a980dfcab",
++    "evmDeployedBytecodeLength": 22482
 @@ -774 +774 @@
 -    "zkBytecodeHash": "0x0100008122a3b2a0c8c105d07f0193b35f26f7aab2324decae9d54c523c5c950",
 +    "zkBytecodeHash": "0x010000817a75ea80986073074477c0ce73d811c7cf87eb03b9823314bd46d219",
@@ -1584,7 +1584,7 @@ index 8769d8079a410b184643618072c7f9406c61b9ed..fe1aae6697f3059a0ae279247336fca3
 -    DEFAULT_PRIORITY_TX_MAX_GAS_LIMIT
 +    DEFAULT_PUBDATA_PRICING_MODE
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
-index 8cae1a6306556e85ba60c590f83dc7afdfe22acf..44e1a47ac15de0cb46762c964a53ea4fbad23df6 100644
+index 8cae1a63..52549357 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 @@ -7,0 +8 @@ import {Diamond} from "../../libraries/Diamond.sol";
@@ -1595,20 +1595,23 @@ index 8cae1a6306556e85ba60c590f83dc7afdfe22acf..44e1a47ac15de0cb46762c964a53ea4f
 -    ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT,
 -    ZKSYNC_OS_MAX_BLOCK_GAS_LIMIT
 +    ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT
-@@ -168 +167 @@ contract AdminFacet is ZKChainBase, IAdmin {
+@@ -167,2 +166,3 @@ contract AdminFacet is ZKChainBase, IAdmin {
+-    function setPriorityTxMaxGasLimit(uint256 _newPriorityTxMaxGasLimit) external onlyChainTypeManager onlyL1 {
 -        if (_newPriorityTxMaxGasLimit > MAX_GAS_PER_TRANSACTION) {
++    // The chain-local CTM is authoritative on both L1 and Gateway settlement layers.
++    function setPriorityTxMaxGasLimit(uint256 _newPriorityTxMaxGasLimit) external onlyChainTypeManager {
 +        if (_newPriorityTxMaxGasLimit > PRIORITY_TX_MAX_GAS_LIMIT) {
-@@ -179 +178,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
+@@ -179 +179,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
 -        // The cap may only be raised above Ethereum's EIP-7825 single-tx gas limit, never below.
 +        // SYSCOIN: the canonical protocol V32 / execution V7 / proving V8 application fixes the
 +        // chain config to Ethereum's EIP-7825 single-transaction gas limit. Until dynamic chain
 +        // config is supported end-to-end, this
 +        // setter may only idempotently persist that value.
-@@ -183,2 +185 @@ contract AdminFacet is ZKChainBase, IAdmin {
+@@ -183,2 +186 @@ contract AdminFacet is ZKChainBase, IAdmin {
 -        // The cap must not exceed the ZKsync OS block gas limit: a higher value will halt the block production.
 -        if (_newMaxTxGasLimit > ZKSYNC_OS_MAX_BLOCK_GAS_LIMIT) {
 +        if (_newMaxTxGasLimit > ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT) {
-@@ -421,0 +423,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
+@@ -421,0 +424,4 @@ contract AdminFacet is ZKChainBase, IAdmin {
 +        // SYSCOIN: Match the migration pause guard; Priority Mode requires an open priority-request path.
 +        if (s.pausedDepositsTimestamp != 0) {
 +            revert NotCompatibleWithPriorityMode();
@@ -4461,10 +4464,10 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..20fc395c6a98cfeff2c8156fc8bc05da
 +        _commitSyscoinWithEdgeRefs(input, root, abi.encodeWithSelector(SyscoinEdgeDANotAvailable.selector, dataHash));
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..d27e6a1e289b4a8dca9ea5c73708e0b6bbef31fd
+index 00000000..d9b21b34
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
-@@ -0,0 +1,606 @@
+@@ -0,0 +1,621 @@
 +// SPDX-License-Identifier: MIT
 +// Foundry test names and co-located inspection harnesses follow the existing fixture conventions.
 +/* solhint-disable func-name-mixedcase, one-contract-per-file */
@@ -4507,7 +4510,6 @@ index 0000000000000000000000000000000000000000..d27e6a1e289b4a8dca9ea5c73708e0b6
 +    ValidateTxnNotEnoughGas
 +} from "contracts/common/L1ContractErrors.sol";
 +import {InvalidTxType, L2UpgradeNonceNotEqualToNewProtocolVersion} from "contracts/upgrades/ZkSyncUpgradeErrors.sol";
-+import {NotL1} from "contracts/state-transition/L1StateTransitionErrors.sol";
 +
 +uint256 constant LOWER_PRIORITY_GAS_LIMIT = 1_000_000;
 +
@@ -4688,13 +4690,29 @@ index 0000000000000000000000000000000000000000..d27e6a1e289b4a8dca9ea5c73708e0b6
 +        assertEq(_stateDigest(), beforeState);
 +    }
 +
-+    function test_setterRetainsL1OnlyCheck() public {
-+        uint256 wrongChain = block.chainid + 1;
++    function test_setterOnGatewayPreservesLimitAndEvent() public {
++        vm.chainId(block.chainid + 1);
++        _setLimit(LOWER_PRIORITY_GAS_LIMIT);
++        vm.expectEmit(address(admin));
++        emit IAdmin.NewPriorityTxMaxGasLimit(LOWER_PRIORITY_GAS_LIMIT, PRIORITY_TX_MAX_GAS_LIMIT);
++        _setLimit(PRIORITY_TX_MAX_GAS_LIMIT);
++        assertEq(getters.getPriorityTxMaxGasLimit(), PRIORITY_TX_MAX_GAS_LIMIT);
++    }
++
++    function test_setterOnGatewayRejectsAboveCapWithoutSideEffects() public {
++        vm.chainId(block.chainid + 1);
++        _rejectSetter(PRIORITY_TX_MAX_GAS_LIMIT + 1);
++    }
++
++    function testFuzz_setterOnGatewayRejectsUnauthorizedCaller(address _caller, uint256 _limit) public {
++        vm.assume(_caller != getters.getChainTypeManager());
++        vm.chainId(block.chainid + 1);
 +        bytes32 beforeState = _stateDigest();
-+        vm.chainId(wrongChain);
-+        vm.prank(getters.getChainTypeManager());
-+        vm.expectRevert(abi.encodeWithSelector(NotL1.selector, wrongChain));
-+        admin.setPriorityTxMaxGasLimit(PRIORITY_TX_MAX_GAS_LIMIT);
++        vm.recordLogs();
++        vm.prank(_caller);
++        vm.expectRevert(abi.encodeWithSelector(Unauthorized.selector, _caller));
++        admin.setPriorityTxMaxGasLimit(_limit);
++        assertEq(vm.getRecordedLogs().length, 0);
 +        assertEq(_stateDigest(), beforeState);
 +    }
 +
