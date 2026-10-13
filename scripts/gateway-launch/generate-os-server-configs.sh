@@ -1323,6 +1323,7 @@ if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_RECOMMENDED}}" ]; then
   echo "gateway-launch: warning: open-file limit is below recommended value: ${{current_nofile}} < ${{OS_SERVER_NOFILE_RECOMMENDED}}" >&2
 fi
 cd "{server_root}"
+export ZKSYNC_OS_SERVER_PATH="{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
 export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
 export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"

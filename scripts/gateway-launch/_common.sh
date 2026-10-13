@@ -25,6 +25,9 @@ fi
 # patch helpers. Do not let callers redirect that security trust root later.
 ZKSYNC_OS_SERVER_PATH="${_gl_repo_root}"
 readonly ZKSYNC_OS_SERVER_PATH
+# SYSCOIN: Children must retain this validated trust root for release inventory;
+# a shell-only binding disappears when the runner executes the server binary.
+export ZKSYNC_OS_SERVER_PATH
 unset _gl_actual_dir _gl_supplied_dir _gl_repo_root _gl_supplied_repo_root
 
 # Discover fallback tooling without replacing versions explicitly selected by callers.

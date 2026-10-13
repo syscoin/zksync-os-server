@@ -1,11 +1,15 @@
 """SYSCOIN: Whole-fleet release checks must not silently omit external nodes."""
 
+import ast
 from copy import deepcopy
 from datetime import datetime, timezone
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
+import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -228,6 +232,137 @@ class ReleaseInventoryTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["error"], "SyntaxError")
             self.assertEqual(result.stderr, "")
             self.assertNotIn("PRIVATE_DIAGNOSTIC_MARKER", result.stdout + result.stderr)
+
+
+class StockLauncherBindingTests(unittest.TestCase):
+    """Exercise emitted startup contracts without a compiler, RPC or service."""
+
+    BINDINGS = ("ZKSYNC_OS_SERVER_PATH", "GATEWAY_DIR", "PROTOCOL_VERSION",
+                "SYSCOIN_EDGE_DA_COMMIT_TARGET", "SYSCOIN_GAS_TANK_ADDRESS")
+
+    def clean_env(self, root):
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(("SYSCOIN_", "ZKSYNC_OS_", "GATEWAY_", "GL_"))}
+        env.pop("PROTOCOL_VERSION", None)
+        env.update(HOME=str(root), OS_SERVER_NOFILE_TARGET="1",
+                   OS_SERVER_NOFILE_RECOMMENDED="1", OS_SERVER_NOFILE_MIN="1")
+        return env
+
+    def probe_binary(self, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/usr/bin/env bash\nexec " + shlex.quote(sys.executable) +
+                        " -c " + shlex.quote("import json,os,sys; print(json.dumps({"
+                        "'env':{name:os.environ.get(name) for name in " +
+                        repr(self.BINDINGS) + "}, 'argv':sys.argv[1:]}))") + ' "$@"\n')
+        path.chmod(0o755)
+
+    def test_common_exports_the_validated_canonical_root_to_children(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            common = ROOT / "scripts/gateway-launch/_common.sh"
+            code = 'source "$COMMON"; exec ' + shlex.quote(sys.executable) + " -c " + shlex.quote(
+                "import os; print(os.environ.get('ZKSYNC_OS_SERVER_PATH', 'MISSING'))")
+            result = subprocess.run(["bash", "-c", code], capture_output=True, text=True,
+                                    env=dict(self.clean_env(root), COMMON=str(common)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(ROOT.resolve()))
+            rejected = subprocess.run(["bash", "-c", code], capture_output=True, text=True,
+                                      env=dict(self.clean_env(root), COMMON=str(common),
+                                               ZKSYNC_OS_SERVER_PATH=str(root)))
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("ZKSYNC_OS_SERVER_PATH must resolve", rejected.stderr)
+
+    def test_generated_main_launchers_export_their_pinned_source_root(self):
+        generator = (ROOT / "scripts/gateway-launch/generate-os-server-configs.sh").read_text()
+        # Evaluate the actual emitted template, without executing config/deployment jobs.
+        template = re.search(r'(?m)^    start_script = f""".*?^"""', generator, re.S).group()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "server source"
+            runner = source / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
+            self.probe_binary(runner)
+            gateway = root / "gateway"
+            env = {"GATEWAY_CHAIN_NAME": "gateway", "EDGE_CHAIN_NAME": "edge",
+                   "EDGE_CHAIN_ID": "57057", "PROTOCOL_VERSION": "v32.0"}
+            for chain in ("gateway", "edge"):
+                with self.subTest(chain=chain), patch.dict(os.environ, env):
+                    config = gateway / chain / "config.yaml"
+                    context = dict(server_root=source, gateway_dir=gateway, os=os,
+                                   chain_name=chain, runner_mode="exec-prebuilt --",
+                                   start_config_args=f'--config "{config}"',
+                                   refresh_cookie_block="", operator_lock_block="")
+                    exec(compile(ast.parse(template.lstrip()), "main-start-template", "exec"), context)
+                    result = subprocess.run(["bash"], input=context["start_script"],
+                                            capture_output=True, text=True, env=self.clean_env(root))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed = json.loads(result.stdout)
+                    self.assertEqual(observed["env"]["ZKSYNC_OS_SERVER_PATH"], str(source))
+                    self.assertEqual(observed["env"]["GATEWAY_DIR"], str(gateway))
+                    self.assertEqual(observed["env"]["PROTOCOL_VERSION"], "v32.0")
+                    self.assertEqual(observed["argv"], [chain, "--", "exec-prebuilt", "--",
+                                                       "--config", str(config)])
+
+    def test_generated_en_launchers_already_export_their_pinned_source_root(self):
+        deployer = (ROOT / "scripts/explorer/blockscout/deploy-zksys-en-rpc.sh").read_text()
+        function = re.search(r"(?m)^def write_node_script\(.*?^providers =", deployer, re.S).group()
+        function = function.rsplit("\nproviders =", 1)[0]
+        context = dict(Path=Path, stat=stat, q=shlex.quote)
+        exec(compile(ast.parse(function), "en-start-template", "exec"), context)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "server source"
+            self.probe_binary(source / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh")
+            for role in ("zksys-public", "zksys-debug"):
+                with self.subTest(role=role):
+                    workspace = root / role
+                    workspace.mkdir()
+                    script = workspace / "start-node.sh"
+                    config = workspace / "config.yaml"
+                    args = ["exec-prebuilt", "--", "--config", str(config)]
+                    context["write_node_script"](script, source, workspace, role, config,
+                                                 "v32.0", "0x1", args, True)
+                    result = subprocess.run(["bash", str(script)], capture_output=True,
+                                            text=True, env=self.clean_env(root))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    observed = json.loads(result.stdout)
+                    self.assertEqual(observed["env"]["ZKSYNC_OS_SERVER_PATH"], str(source))
+                    self.assertEqual(observed["env"]["GATEWAY_DIR"], str(workspace))
+                    self.assertEqual(observed["env"]["PROTOCOL_VERSION"], "v32.0")
+                    self.assertEqual(observed["argv"], [role, "--", *args])
+
+    def test_actual_prebuilt_runner_exports_defaults_after_stamp_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            (source / "lib").mkdir(parents=True)
+            (source / "node").mkdir()
+            actual_runner = ROOT / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
+            text = actual_runner.read_text()
+            program = re.search(r"prebuilt_source_digest\(\) \{.*?<<'PY'\n(.*?)\nPY\n\}", text, re.S).group(1)
+            inputs = next(ast.literal_eval(node.value) for node in ast.parse(program).body
+                          if isinstance(node, ast.Assign) and any(
+                              isinstance(target, ast.Name) and target.id == "build_inputs"
+                              for target in node.targets))
+            for name in inputs:
+                destination = source / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((ROOT / name).read_bytes())
+            gateway = root / "gateway"
+            binary = gateway / ".gateway-launch/target/example/release/zksync-os-server"
+            self.probe_binary(binary)
+            target = re.search(r"(?m)^PUBLISHED_EDGE_DA_COMMIT_TARGET=(.*)$", text).group(1)
+            tank = re.search(r"(?m)^PUBLISHED_GAS_TANK_ADDRESS=(.*)$", text).group(1)
+            stamp = inventory.stock_context(inventory.file_digest(binary), "example", "v32.0",
+                                            target, tank, inventory.source_fingerprint(source))
+            Path(str(binary) + ".sha256").write_text(stamp + "\n")
+            result = subprocess.run(["bash", str(source / actual_runner.relative_to(ROOT)),
+                                     "example", "--", "exec-prebuilt", "--", "--help"],
+                                    capture_output=True, text=True,
+                                    env=dict(self.clean_env(root), GATEWAY_DIR=str(gateway),
+                                             ZKSYNC_OS_STATIC_BUILD_CONTEXT="true"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["env"], dict(zip(self.BINDINGS,
+                             (str(source), str(gateway), "v32.0", target, tank))))
 
 
 if __name__ == "__main__":

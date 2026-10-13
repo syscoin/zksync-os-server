@@ -33,6 +33,9 @@ gl_require ZKSYNC_OS_SERVER_PATH
 # SYSCOIN: Build and run only the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 : "${ZKSYNC_OS_GIT_URL:=https://github.com/matter-labs/zksync-os.git}"
+# SYSCOIN: Keep the actual protocol used by stamp validation visible after exec,
+# including direct runner invocations that rely on this stock default.
+export PROTOCOL_VERSION
 
 # SYSCOIN: Exact consensus inputs used to build the hash-pinned canonical application.
 # A workspace-specific source rewrite would make native execution disagree

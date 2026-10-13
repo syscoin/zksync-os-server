@@ -53,11 +53,13 @@ closed. The capture assumes Linux `/proc`, systemd and an explicit `--config`.
 The process environment must export `ZKSYNC_OS_SERVER_PATH`, `GATEWAY_DIR`,
 `PROTOCOL_VERSION`, `SYSCOIN_EDGE_DA_COMMIT_TARGET` and `SYSCOIN_GAS_TANK_ADDRESS`.
 These are the stock source/workspace/protocol and compiled-consensus bindings,
-not operator credentials. A shell-only default such as the stock launcher's
-unexported `PROTOCOL_VERSION` is not visible in `/proc`; such a direct launch
-fails capture. Qualify the actual exported startup bindings through the normal
-launcher process before capture. Do not invent missing values or relabel a
-running process to make the inventory pass.
+not operator credentials. The generated main-node and EN launchers export their
+source/workspace/protocol bindings. The shared runner also exports its validated
+canonical source root and resolved protocol, including its stock default, before
+executing the server. Custom launchers must preserve these actual startup
+bindings; shell-only variables are not visible in `/proc`. Qualify them through
+the normal launcher process before capture. Do not invent missing values or
+relabel a running process to make the inventory pass.
 Capture failure is not an acceptable substitute for a role's snapshot. Read-only
 filesystem/process changes detected during capture also reject the observation.
 Config hashes describe observed files, not a guarantee they were the bytes loaded
