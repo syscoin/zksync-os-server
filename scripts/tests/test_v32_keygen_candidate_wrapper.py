@@ -60,19 +60,22 @@ class CandidateWrapperTests(unittest.TestCase):
         (self.wrapper / "Cargo.lock").write_text(lock)
         self.original = tomllib.loads(lock)
 
-    def pin(self, tree="reviewed-wrapper", head=None, dirty=""):
+    def pin(self, tree="reviewed-wrapper", head=None, dirty="",
+            crypto_head=None, crypto_tree="reviewed-crypto", crypto_dirty=""):
         def git(directory, *args):
-            if args == ("write-tree",):
-                return "reviewed-wrapper"
+            if directory == self.crypto:
+                return {("rev-parse", "HEAD"): crypto_head or CANDIDATE.CRYPTO_COMMIT,
+                        ("rev-parse", "HEAD^{tree}"): crypto_tree,
+                        ("status", "--porcelain", "--untracked-files=all"): crypto_dirty}[args]
             return {("rev-parse", "HEAD"): head or CANDIDATE.WRAPPER_COMMIT,
                     ("rev-parse", "HEAD^{tree}"): tree,
                     ("status", "--porcelain", "--untracked-files=all"): dirty}[args]
 
         with mock.patch.object(CANDIDATE, "git", side_effect=git):
             CANDIDATE.pin(self.wrapper, self.crypto, self.crypto_pins,
-                          self.crypto_paths, "reviewed-wrapper", "reviewed-wrapper")
+                          self.crypto_paths, "reviewed-wrapper", "reviewed-crypto")
 
-    def test_keeps_pinned_fork_and_exact_patched_crypto_lock_closure(self):
+    def test_keeps_pinned_forks_and_exact_crypto_lock_closure(self):
         self.pin()
         manifest = tomllib.loads((self.wrapper / "Cargo.toml").read_text())
         for name in CANDIDATE.AIRBENDER_DEPS:
@@ -132,6 +135,17 @@ class CandidateWrapperTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "wrapper"):
                     self.pin(**inputs)
                 self.assertNotIn("[patch.", (self.wrapper / "Cargo.toml").read_text())
+
+    def test_rejects_unreviewed_crypto_fork_before_mutating_inputs(self):
+        for inputs in ({"crypto_head": "0" * 40},
+                       {"crypto_tree": "different-tree"},
+                       {"crypto_dirty": " M crates/boojum/src/lib.rs\n"}):
+            with self.subTest(inputs=inputs):
+                with self.assertRaisesRegex(ValueError, "crypto fork source changed"):
+                    self.pin(**inputs)
+                self.assertNotIn("[patch.", (self.wrapper / "Cargo.toml").read_text())
+                self.assertEqual((self.wrapper / "Cargo.lock").read_text().count(
+                    self.crypto_source), 10)
 
     def downloaded_closures(self):
         self.pin()
@@ -242,6 +256,15 @@ class CandidateWrapperTests(unittest.TestCase):
             self.assertIn(f"candidate_wrapper_{field}: $candidate_sources[0].sources.wrapper_{field}", block)
         self.assertNotIn("wrapper_patched_tree", block)
         self.assertIn("candidate_wrapper_manifest_sha256_by_lane:", block)
+        for field in ("repository", "commit", "tree"):
+            self.assertIn(f"common_crypto_{field}: $candidate_sources[0].sources.common_crypto_{field}", block)
+        self.assertNotIn("common_crypto_patched_tree", block)
+        self.assertEqual(CANDIDATE.SOURCE_IDENTITY["common_crypto_repository"],
+                         "https://github.com/syscoin/zksync-crypto.git")
+        self.assertEqual(CANDIDATE.SOURCE_IDENTITY["common_crypto_commit"],
+                         "4f1e95bf742ff87fe4ce18acfad4e2a305b94c7a")
+        self.assertEqual(CANDIDATE.SOURCE_IDENTITY["common_crypto_tree"],
+                         "4fda70a408c7817474fe67fba46b38cfbe420e59")
 
 
 if __name__ == "__main__":

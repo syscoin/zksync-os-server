@@ -27,10 +27,10 @@ impl TryFrom<ProtocolSemanticVersion> for ProvingVersion {
 }
 
 impl ProvingVersion {
-    /// SYSCOIN: Registered Security100 key from the existing V8 guest and recursion circuits.
-    /// Replace it together with the guest and verifier artifacts after the FRI degree lift.
+    /// SYSCOIN: Registered Security100 key for the current guest and optimized recursion
+    /// circuits, including the transcript-randomized FRI degree lift.
     const V8_VK_HASH: &'static str =
-        "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90";
+        "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144";
 
     /// Get the verification key hash associated with this execution version.
     pub fn vk_hash(&self) -> &'static str {
@@ -123,9 +123,11 @@ mod tests {
     fn registered_v8_vk_hash_rejects_other_keys() {
         assert_eq!(
             ProvingVersion::V8.vk_hash(),
-            "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90"
+            "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144"
         );
         for other in [
+            "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
+            "0x229a4a5a7715fb19f8a5940e42d9cd53bb85f040bcf0f71c76612450fb8235b1",
             "0xd5bc91a7af04425e93a92ad4e29f4f9ab62210087b5dea105d6bb579f1218139",
             "0xc1ab3d6506620ad299672c2c2530e8732ac7bae55cdb9d8cf1fa12355b7388fe",
             "0x0000000000000000000000000000000000000000000000000000000000000000",

@@ -161,10 +161,10 @@ class BundleAndLauncherTests(unittest.TestCase):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
         self.assertEqual(module.SOURCE, "5e62f430c3755fdc04982b8c36cbeebaee7b21cb")
-        self.assertEqual(module.CANDIDATE, "709b50d9a74ee417560436cab34e6342eee793c7")
+        self.assertEqual(module.CANDIDATE, "7b57c826574ce2bb4d3fce6819f634ff180be5dc")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
-                         "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90")
+                         "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144")
         self.assertEqual(len(manifest["paths"]), 4)
         overlay = (M.BUNDLE / "generated-verifier-overlay.patch").read_bytes()
         self.assertEqual(len(overlay), manifest["overlay_size"])
@@ -174,78 +174,77 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(sha((ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_bytes()),
                          module.SOURCE_APPLICATOR_SHA)
 
-    def test_new_contract_generation_binds_actual_postimages_without_proof_claim(self):
+    def test_current_contract_generation_binds_actual_normal_profile_postimages(self):
         module, manifest = M.load_bundle()
         paths = manifest["paths"]
         self.assertEqual(paths["AllContractsHashes.json"], {
-            "size": 160049, "sha256": "dfec7bb945ea88c604b71356200c4cc831afa2e6cac693793e1b5258a4e7505b"})
+            "size": 160049, "sha256": "eb189b013eaade283b8891ede78aa6dc7fdbb64d1a26e8908361db52c6cf9fa7"})
         for rel in ("l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",
                     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol"):
             self.assertEqual(paths[rel], {
-                "size": 95216, "sha256": "265ff76ec295d3aea569e937ff54d793179d2e44576f842c588969d38f813856"})
+                "size": 95216, "sha256": "5abc85e5e33751defd4228c2f8775dfba540e5820b430325a7cb410f83e89feb"})
         self.assertEqual(paths["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"], {
-            "size": 8074, "sha256": "c3cec62f1b8d47ad23773bcf4906b1779ac1a2be58f9b7ce01f69956c0924a23"})
+            "size": 8075, "sha256": "bb450c0875bdd35f00dea3c5cea54fe5c0d9182046fc934e2944df979126ed56"})
         evidence = manifest["contract_generation_provenance"]
-        self.assertEqual(evidence["status"], "completed_priority_admission_inventory_refresh")
+        self.assertEqual(evidence["status"], "completed_normal_profile_incremental_full_inventory_qualification")
         self.assertEqual(evidence["reviewed_source_tree"], module.SOURCE)
         self.assertEqual(evidence["candidate_tree"], module.CANDIDATE)
         self.assertEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
-        self.assertEqual(len(evidence["changed_inventory_rows"]), 13)
-        self.assertIn("l1-contracts/AdminFacet", evidence["changed_inventory_rows"])
-        self.assertIn("l1-contracts/MailboxFacet", evidence["changed_inventory_rows"])
-        self.assertEqual(evidence["baseline_inventory_rows_reproduced"], 13)
-        self.assertEqual(evidence["generated_baseline_inventory_rows_reproduced"], 2)
-        self.assertFalse(evidence["existing_state_migration_implemented"])
-        self.assertTrue(evidence["evm_and_zk_abi_unchanged"])
-        self.assertFalse(evidence["full_contract_hash_recomputation_passed"])
-        self.assertEqual(evidence["result_sha256"],
-                         "60e4344a40e31bef505e5de663062cd4b86f90371f65d61deb8bcfc28125b2e3")
-
-        historical = manifest["historical_pre_priority_cap_contract_generation_provenance"]
-        self.assertEqual(historical["status"], "completed_targeted_admin_inventory_refresh")
-        self.assertEqual(historical["reviewed_source_tree"], "08bc65200c2813c818573aeae85d74d206e24b77")
-        self.assertEqual(historical["candidate_tree"], "3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3")
-        self.assertEqual(historical["changed_inventory_rows"], ["l1-contracts/AdminFacet"])
-        self.assertEqual(historical["result_sha256"],
-                         "1b0865801dd8bd8ca31b4d8459f43bd057076c21363cef98b34847b4aa94d554")
-
-        evidence = manifest["historical_pre_paused_guard_contract_generation_provenance"]
-        self.assertEqual(evidence["status"], "completed_contract_generation_only")
-        self.assertEqual(evidence["reviewed_source_tree"], "264d98e758c3a032942dfb08ee7d87a3f46288b4")
-        self.assertEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
-        self.assertEqual(evidence["result_sha256"],
-                         "2973ac60ac2d18d3c3aa9f55d43af3b8c89b8ea8118657d0a6bb9701559bd828")
-        self.assertEqual(evidence["keygen_result_sha256"],
-                         "7020f0c8447da54b15b65e319f958182e319e59df859fac1c04581b8370ae204")
-        self.assertEqual(evidence["plonk_generator_tests_passed"], 4)
-        self.assertEqual(evidence["candidate_tree"], "76af1dc7837a5c1cb1d1098ee75bb3c03a65ffae")
-        self.assertEqual(evidence["overlay_manifest_sha256"],
-                         "f7ab66498347fbea2ca9c81422b84c08eb5a444a1d334c864370560597b50e02")
+        self.assertEqual(evidence["baseline_inventory_rows_reproduced"], 278)
+        self.assertEqual(evidence["unchanged_inventory_rows"], 276)
+        self.assertEqual(set(evidence["changed_inventory_rows"]), module.ROWS)
         for flag in ("full_contract_hash_recomputation_passed", "contract_hash_check_passed",
-                     "retained_fflonk_reproduced", "genesis_regenerated_byte_identical",
-                     "source_index_preserved", "submodules_and_source_reverified"):
+                     "baseline_clean_full_package_build_passed",
+                     "new_key_incremental_l1_evm_and_eravm_build_passed",
+                     "source_index_preserved", "submodules_and_source_reverified",
+                     "retained_fflonk_reproduced", "genesis_retained_byte_identical"):
             self.assertTrue(evidence[flag])
+        self.assertFalse(evidence["genesis_regenerated_in_this_run"])
+        self.assertEqual(evidence["compiler"]["evm_version"], "prague")
+        self.assertEqual(evidence["compiler"]["optimizer_runs"], 9999999)
+        self.assertEqual(evidence["result_sha256"],
+                         "c283de5f73e332f43cc125cb27b92d2b5640cff64a9a1b215b687462c82e0af1")
+        historical = manifest["historical_pre_optimized_crypto_contract_generation_provenance"]
+        self.assertEqual(historical["status"], "completed_priority_admission_inventory_refresh")
+        self.assertEqual(historical["result_sha256"],
+                         "60e4344a40e31bef505e5de663062cd4b86f90371f65d61deb8bcfc28125b2e3")
+        self.assertFalse(historical["full_contract_hash_recomputation_passed"])
+        self.assertNotEqual(historical["verification_key_hash"], manifest["verification_key_hash"])
         self.assertFalse(manifest["independent_host_reproduction"])
 
-    def test_current_canonical_proof_qualification_is_pending_not_historical_success(self):
+    def test_current_offline_proof_is_not_live_or_fixture_acceptance(self):
         _, manifest = M.load_bundle()
         evidence = manifest["proof_qualification"]
-        self.assertEqual(evidence["status"], "pending_fresh_canonical_proof_qualification")
+        self.assertEqual(evidence["status"], "completed_offline_minimal_input_native_and_normal_profile_evm_qualification")
         self.assertEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
         self.assertEqual(evidence["program_commitment"],
-                         "0x08e47e4531d0dc3409c5ae1db30b45bfec4b61893c8444f45f80e5c254d5bd94")
+                         "0xff43db6564b43491d6c25a613270e7802a4fca2bc67ad621e5cb08dd57d22975")
         self.assertEqual(evidence["plonk_source_sha256"], manifest["paths"][
             "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol"]["sha256"])
-        self.assertFalse(evidence["real_proof_verified"])
-        self.assertFalse(evidence["real_evm_verified"])
-        self.assertEqual(evidence["native_wrapper_stages_verified"], 0)
-        self.assertEqual(evidence["real_evm_controls_passed"], 0)
-        self.assertEqual(evidence["result_sha256"], {})
-        self.assertNotIn("standard_v2_inputs_sha256", evidence)
-        self.assertNotIn("native_server_boundary", evidence)
+        self.assertTrue(evidence["real_proof_verified"])
+        self.assertTrue(evidence["real_evm_verified"])
+        self.assertEqual(evidence["native_wrapper_stages_verified"], 3)
+        self.assertEqual(evidence["independent_cpu_verifications_passed"], 3)
+        self.assertTrue(evidence["cpu_gpu_setup_keys_byte_identical"])
+        self.assertEqual(evidence["real_evm_controls_passed"], 2)
+        self.assertEqual(evidence["estimated_verifier_gas"], 406832)
+        self.assertEqual(evidence["input_batch_range"], {"from": 1, "to": 2})
+        self.assertEqual(evidence["local_evm_original_publications"], 1)
+        self.assertTrue(evidence["immediate_null_receipt_failure_preserved"])
+        self.assertTrue(evidence["completion_used_read_only_views"])
+        self.assertEqual(evidence["result_sha256"]["evm"],
+                         "7716000dc165773feb665ddd673dc5c3ab7e588b48009ba750ded73a241a513d")
         for flag in ("live_submission_used", "deployment_attested", "release_promoted"):
             self.assertFalse(evidence[flag])
         self.assertIsNone(M.CANONICAL_BINDING)
+        self.assertFalse(manifest["canonical_fixture_activated"])
+        self.assertFalse(manifest["deployed"])
+        historical = manifest["historical_2ac3_pending_proof_qualification"]
+        self.assertEqual(historical["status"], "pending_fresh_canonical_proof_qualification")
+        self.assertFalse(historical["real_proof_verified"])
+        self.assertFalse(historical["real_evm_verified"])
+        self.assertEqual(historical["result_sha256"], {})
+        self.assertNotEqual(historical["verification_key_hash"], evidence["verification_key_hash"])
 
     def test_historical_d5bc_proof_evidence_retains_results_without_qualifying_current_key(self):
         _, manifest = M.load_bundle()
@@ -304,15 +303,22 @@ class BundleAndLauncherTests(unittest.TestCase):
                 raw = json.dumps(manifest[key], sort_keys=True, separators=(",", ":")).encode()
                 self.assertEqual(sha(raw), digest)
 
-    def test_earlier_generated_verifier_rejects_degree_lift_runtime_sources(self):
+    def test_current_generated_verifier_authenticates_current_app_sources(self):
         self.assertEqual(M.APP_SOURCES, {
             "lib/types/src/protocol/proving_version.rs":
-                "4c0a466fb6d6aabdf8ecca94845016dd5c17a651eae1a99a0b8e49b7bf63e6ea",
+                "5b5f37b5104c6afbb6ae61bed566848e320bc34f6dd68abe89a1b4b5cc32c11e",
             "node/bin/src/prover_api/fri_proof_verifier.rs":
-                "7ce25fd3cd7e75e1a19e9ca9f39d1c7084e630f3f04be6c9de7ccfd7541fc9f1",
+                "1ec3df17b7e4c3e89e53a9e8829415e75ad06894e22072eba7288c0681dc8077",
         })
-        with self.assertRaisesRegex(ValueError, "input SHA-256 mismatch"):
-            M.check_app_sources(ROOT)
+        M.check_app_sources(ROOT)
+        with tempfile.TemporaryDirectory() as temporary:
+            server = Path(temporary).resolve()
+            for relative in M.APP_SOURCES:
+                put(server / relative, (ROOT / relative).read_bytes())
+            relative = next(iter(M.APP_SOURCES))
+            put(server / relative, (server / relative).read_bytes() + b"// stale identity\n")
+            with self.assertRaisesRegex(ValueError, "input SHA-256 mismatch"):
+                M.check_app_sources(server)
 
     def test_historical_crypto_evidence_does_not_claim_current_key_or_tree(self):
         module, manifest = M.load_bundle()
@@ -361,7 +367,7 @@ class BundleAndLauncherTests(unittest.TestCase):
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
         self.assertEqual(result["source_tree"], "5e62f430c3755fdc04982b8c36cbeebaee7b21cb")
-        self.assertEqual(result["candidate_tree"], "709b50d9a74ee417560436cab34e6342eee793c7")
+        self.assertEqual(result["candidate_tree"], "7b57c826574ce2bb4d3fce6819f634ff180be5dc")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])

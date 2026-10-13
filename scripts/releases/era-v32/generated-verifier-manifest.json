@@ -3,12 +3,12 @@
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
   "reviewed_source_tree": "5e62f430c3755fdc04982b8c36cbeebaee7b21cb",
-  "candidate_tree": "709b50d9a74ee417560436cab34e6342eee793c7",
+  "candidate_tree": "7b57c826574ce2bb4d3fce6819f634ff180be5dc",
   "source_patch_sha256": "2b9d8bb1527f42a1a98096a10ac5e0932e22133b8f4b7baf0bd6f8f2a9a6724c",
   "source_applicator_sha256": "3454d1626cf342490b56a98992d02f4b6cfd9ed4312a247620be5998c330e8c2",
-  "overlay_sha256": "c0f12ce84690bd7cdd6551171d2f071e04a1f886115d67157be6cb503b12b3d7",
-  "overlay_size": 120679,
-  "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
+  "overlay_sha256": "aa2a50fa290f3e450e40b1124b5847e33731e428838fa00c3e335df0c1d847c6",
+  "overlay_size": 120424,
+  "verification_key_hash": "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
   "inventory_rows": 278,
   "permitted_inventory_rows": [
     "l1-contracts/ZKsyncOSVerifierPlonk",
@@ -17,19 +17,19 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "dfec7bb945ea88c604b71356200c4cc831afa2e6cac693793e1b5258a4e7505b"
+      "sha256": "eb189b013eaade283b8891ede78aa6dc7fdbb64d1a26e8908361db52c6cf9fa7"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
-      "sha256": "265ff76ec295d3aea569e937ff54d793179d2e44576f842c588969d38f813856"
+      "sha256": "5abc85e5e33751defd4228c2f8775dfba540e5820b430325a7cb410f83e89feb"
     },
     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
-      "sha256": "265ff76ec295d3aea569e937ff54d793179d2e44576f842c588969d38f813856"
+      "sha256": "5abc85e5e33751defd4228c2f8775dfba540e5820b430325a7cb410f83e89feb"
     },
     "tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json": {
-      "size": 8074,
-      "sha256": "c3cec62f1b8d47ad23773bcf4906b1779ac1a2be58f9b7ce01f69956c0924a23"
+      "size": 8075,
+      "sha256": "bb450c0875bdd35f00dea3c5cea54fe5c0d9182046fc934e2944df979126ed56"
     }
   },
   "retained_fflonk_source_sha256": "9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48",
@@ -40,33 +40,46 @@
   "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
-    "status": "completed_priority_admission_inventory_refresh",
-    "result_sha256": "60e4344a40e31bef505e5de663062cd4b86f90371f65d61deb8bcfc28125b2e3",
+    "status": "completed_normal_profile_incremental_full_inventory_qualification",
+    "result_sha256": "c283de5f73e332f43cc125cb27b92d2b5640cff64a9a1b215b687462c82e0af1",
+    "baseline_result_sha256": "4d736cc8bc457a469244df893a3f49e549d6f00a2ad37523974a7d93c3ef059f",
+    "baseline_time_sha256": "d1ceb34625098dc2566596ea914280d69a9257348c06feffa7a43048b7b10de0",
+    "incremental_time_sha256": "79c13923ffe547618ab01757ddf1a78fc5f0b8c5c9153a46e9e64172e18e6044",
     "reviewed_source_tree": "5e62f430c3755fdc04982b8c36cbeebaee7b21cb",
-    "candidate_tree": "709b50d9a74ee417560436cab34e6342eee793c7",
-    "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
+    "candidate_tree": "7b57c826574ce2bb4d3fce6819f634ff180be5dc",
+    "verification_key_hash": "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
+    "baseline_inventory_rows_reproduced": 278,
     "changed_inventory_rows": [
-      "l1-contracts/AdminFacet",
-      "l1-contracts/DefaultUpgrade",
-      "l1-contracts/DiamondInit",
-      "l1-contracts/EraChainTypeManager",
-      "l1-contracts/EraSettlementLayerV31Upgrade",
-      "l1-contracts/GatewayCTMDeployerCTM",
-      "l1-contracts/GatewayCTMDeployerCTMZKsyncOS",
-      "l1-contracts/L1GenesisUpgrade",
-      "l1-contracts/L1V29Upgrade",
-      "l1-contracts/L1ZKsyncOSV30Upgrade",
-      "l1-contracts/MailboxFacet",
-      "l1-contracts/ZKsyncOSChainTypeManager",
-      "l1-contracts/ZKsyncOSSettlementLayerV31Upgrade"
+      "l1-contracts/ZKsyncOSVerifierPlonk",
+      "l1-contracts/GatewayCTMDeployerVerifiersZKsyncOS"
     ],
-    "baseline_inventory_rows_reproduced": 13,
-    "generated_baseline_inventory_rows_reproduced": 2,
-    "existing_state_migration_implemented": false,
-    "evm_and_zk_abi_unchanged": true,
-    "canonical_da_relay_identity_unchanged": true,
-    "full_contract_hash_recomputation_passed": false,
-    "scope": "Pinned before/after EVM and zk compilation of all 13 L1 inventory roots importing the isolated PriorityGasLimits.sol and the two generated-verifier roots. Baseline identities and canonical DA relay bytecode reproduced exactly; measured changed rows refreshed. Config.sol and relay identities, other package rows, genesis, verifier/key and historical proof evidence retained. No live deployment, proof acceptance, settlement, fixture or rollout qualification."
+    "unchanged_inventory_rows": 276,
+    "full_contract_hash_recomputation_passed": true,
+    "contract_hash_check_passed": true,
+    "baseline_clean_full_package_build_passed": true,
+    "new_key_incremental_l1_evm_and_eravm_build_passed": true,
+    "baseline_elapsed_seconds": 333.617,
+    "incremental_elapsed_seconds": 34.712,
+    "source_index_preserved": true,
+    "submodules_and_source_reverified": true,
+    "retained_fflonk_reproduced": true,
+    "genesis_retained_byte_identical": true,
+    "genesis_regenerated_in_this_run": false,
+    "compiler": {
+      "evm_solc_version": "0.8.28+commit.7893614a",
+      "era_solc_version": "0.8.28-1.0.1",
+      "zksolc_version": "1.5.11",
+      "zksolc_distribution": "linux-amd64-musl",
+      "evm_version": "prague",
+      "optimizer_runs": 9999999
+    },
+    "actual_artifact_sha256": {
+      "plonk_evm": "0d35d98f05feaef0e56d573375af82e4ae1e587778e10acc71ca6efa21dd0412",
+      "plonk_eravm": "484fea83804b352543b77cbde10891a1ee9f6e8ed58067aa6e2cc18a46bda84a",
+      "gateway_deployer_evm": "e5af7c8652fb17aba36416c00cebc04d339b139102c1c734659e51a2d2bc8aba",
+      "gateway_deployer_eravm": "bfecdf7cf293e5650131eb6332095d532a9cec15ca851d53cca0d798002d4da0"
+    },
+    "scope": "One-host clean stock baseline compilation of all four packages reproduced all 278 inventory rows. The genuine new key then changed only the PLONK source/key; stock incremental L1 EVM/EraVM compilation and full calculate-hashes:fix/check used actual artifacts for all four packages. Exactly the two permitted artifact rows changed; 276 rows, source paths, selectors, FFLONK and genesis stayed exact. No live deployment, fixture activation, independent-host reproduction or overall release acceptance."
   },
   "historical_pre_paused_guard_contract_generation_provenance": {
     "status": "completed_contract_generation_only",
@@ -90,19 +103,40 @@
     "scope": "One-host generation from the fresh canonical guest-bound key, native PLONK generator tests, full contract inventory recomputation/check, retained FFLONK reproduction and byte-identical genesis regeneration. No fresh real-proof, EVM proof acceptance, deployment, settlement, fixture activation or independent-host keygen qualification is asserted."
   },
   "proof_qualification": {
-    "status": "pending_fresh_canonical_proof_qualification",
-    "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
-    "program_commitment": "0x08e47e4531d0dc3409c5ae1db30b45bfec4b61893c8444f45f80e5c254d5bd94",
-    "plonk_source_sha256": "265ff76ec295d3aea569e937ff54d793179d2e44576f842c588969d38f813856",
-    "result_sha256": {},
-    "real_proof_verified": false,
-    "native_wrapper_stages_verified": 0,
-    "real_evm_verified": false,
-    "real_evm_controls_passed": 0,
+    "status": "completed_offline_minimal_input_native_and_normal_profile_evm_qualification",
+    "verification_key_hash": "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
+    "program_commitment": "0xff43db6564b43491d6c25a613270e7802a4fca2bc67ad621e5cb08dd57d22975",
+    "plonk_source_sha256": "5abc85e5e33751defd4228c2f8775dfba540e5820b430325a7cb410f83e89feb",
+    "result_sha256": {
+      "stock_gpu_stack": "a605a0f1fcddaa1b5c8d119a3fde4f6237fc3f9e0dd1ce41a2bf558ff7346adb",
+      "independent_cpu_risc_wrapper": "c9c49c6d54af6f280c9eab5a59ad58f16ee9b2e7e1e45bea541d526385a0df85",
+      "independent_cpu_compression": "5e14e94a4015d38ce73bd75d7346f78f77dab15d7d5d769f45295db4e97d1d0a",
+      "independent_cpu_snark": "ec5b22974beed3758dc9b2cbe73d0106da20a624a91910597ff4059a022abdb8",
+      "evm": "7716000dc165773feb665ddd673dc5c3ab7e588b48009ba750ded73a241a513d"
+    },
+    "native_snark_proof_sha256": "30d804b0782f686cb2eb26e107de071e740a5fa23ca0c7104f35c81ccb8d68f0",
+    "genuine_serialized_calldata_sha256": "820a27627df4b6307ce1591a60277519c57f52ed1bbc3c8b56fd38bc835ac958",
+    "retained_combined_input_sha256": "c9497e391cf45842c16e26ed799233f9b209edd304d1d7e070430a8b1843c5ce",
+    "input_batch_range": {
+      "from": 1,
+      "to": 2
+    },
+    "real_proof_verified": true,
+    "native_wrapper_stages_verified": 3,
+    "independent_cpu_verifications_passed": 3,
+    "cpu_gpu_setup_keys_byte_identical": true,
+    "real_evm_verified": true,
+    "real_evm_controls_passed": 2,
+    "estimated_verifier_gas": 406832,
+    "normal_evm_artifact_sha256": "0d35d98f05feaef0e56d573375af82e4ae1e587778e10acc71ca6efa21dd0412",
+    "local_evm_original_transaction": "0xa92d28d018863489bc19f016ea3246b7feed7cd01caee175975132cb22e50406",
+    "local_evm_original_publications": 1,
+    "immediate_null_receipt_failure_preserved": true,
+    "completion_used_read_only_views": true,
     "live_submission_used": false,
     "deployment_attested": false,
     "release_promoted": false,
-    "scope": "Pending fresh normal FRI20/FRI21, combination, CPU standard wrapper/SNARK, native verification, genuine serialization, production EVM controls and owning server verification for this exact canonical guest-bound key. Historical d5bc and c1ab proof records do not qualify this candidate; no live service, DA, settlement, deployment, restore or canonical fixture acceptance is asserted."
+    "scope": "Actual optimized Security100 GPU proof of the retained minimal native batch-1/batch-2 combined input, all three stock native stages and separate CPU verifications, and independently derived CPU/GPU-equal setup keys. The exact normal-profile PLONK EVM bytecode accepted the genuine serialized proof on an isolated local Anvil chain; changed public input and a valid-field scalar-opening mutation reverted with invalid quotient evaluation. The one local deployment original was observed after an immediate null receipt; no replacement or second publication occurred. No live server HTTP/service, DA/settlement, testnet deployment, canonical fixture, independent-host reproduction or overall release qualification is asserted."
   },
   "historical_d5bc_contract_generation_provenance": {
     "status": "completed_contract_generation_only",
@@ -189,10 +223,56 @@
     "reviewed_source_tree": "08bc65200c2813c818573aeae85d74d206e24b77",
     "candidate_tree": "3f5f6dc63d130a0382e6c0e11fbb025dea0cfac3",
     "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
-    "changed_inventory_rows": ["l1-contracts/AdminFacet"],
+    "changed_inventory_rows": [
+      "l1-contracts/AdminFacet"
+    ],
     "baseline_inventory_row_reproduced": true,
     "evm_and_zk_abi_unchanged": true,
     "full_contract_hash_recomputation_passed": false,
     "scope": "Pinned Foundry, EVM Solc and zk compiler before/after builds reproduce the prior AdminFacet row exactly and refresh its five changed fields for the paused-deposit guard. Only AdminFacet bytecodes change within the compiled 46-EVM/39-zk artifact closure; the other 277 inventory rows, verifier/key and genesis bytes are retained, not newly regenerated or requalified. No complete storage-layout, fresh proof/EVM proof acceptance, deployment, settlement, fixture or public rollout qualification is asserted."
+  },
+  "historical_pre_optimized_crypto_contract_generation_provenance": {
+    "status": "completed_priority_admission_inventory_refresh",
+    "result_sha256": "60e4344a40e31bef505e5de663062cd4b86f90371f65d61deb8bcfc28125b2e3",
+    "reviewed_source_tree": "5e62f430c3755fdc04982b8c36cbeebaee7b21cb",
+    "candidate_tree": "709b50d9a74ee417560436cab34e6342eee793c7",
+    "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
+    "changed_inventory_rows": [
+      "l1-contracts/AdminFacet",
+      "l1-contracts/DefaultUpgrade",
+      "l1-contracts/DiamondInit",
+      "l1-contracts/EraChainTypeManager",
+      "l1-contracts/EraSettlementLayerV31Upgrade",
+      "l1-contracts/GatewayCTMDeployerCTM",
+      "l1-contracts/GatewayCTMDeployerCTMZKsyncOS",
+      "l1-contracts/L1GenesisUpgrade",
+      "l1-contracts/L1V29Upgrade",
+      "l1-contracts/L1ZKsyncOSV30Upgrade",
+      "l1-contracts/MailboxFacet",
+      "l1-contracts/ZKsyncOSChainTypeManager",
+      "l1-contracts/ZKsyncOSSettlementLayerV31Upgrade"
+    ],
+    "baseline_inventory_rows_reproduced": 13,
+    "generated_baseline_inventory_rows_reproduced": 2,
+    "existing_state_migration_implemented": false,
+    "evm_and_zk_abi_unchanged": true,
+    "canonical_da_relay_identity_unchanged": true,
+    "full_contract_hash_recomputation_passed": false,
+    "scope": "Pinned before/after EVM and zk compilation of all 13 L1 inventory roots importing the isolated PriorityGasLimits.sol and the two generated-verifier roots. Baseline identities and canonical DA relay bytecode reproduced exactly; measured changed rows refreshed. Config.sol and relay identities, other package rows, genesis, verifier/key and historical proof evidence retained. No live deployment, proof acceptance, settlement, fixture or rollout qualification."
+  },
+  "historical_2ac3_pending_proof_qualification": {
+    "status": "pending_fresh_canonical_proof_qualification",
+    "verification_key_hash": "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
+    "program_commitment": "0x08e47e4531d0dc3409c5ae1db30b45bfec4b61893c8444f45f80e5c254d5bd94",
+    "plonk_source_sha256": "265ff76ec295d3aea569e937ff54d793179d2e44576f842c588969d38f813856",
+    "result_sha256": {},
+    "real_proof_verified": false,
+    "native_wrapper_stages_verified": 0,
+    "real_evm_verified": false,
+    "real_evm_controls_passed": 0,
+    "live_submission_used": false,
+    "deployment_attested": false,
+    "release_promoted": false,
+    "scope": "Pending fresh normal FRI20/FRI21, combination, CPU standard wrapper/SNARK, native verification, genuine serialization, production EVM controls and owning server verification for this exact canonical guest-bound key. Historical d5bc and c1ab proof records do not qualify this candidate; no live service, DA, settlement, deployment, restore or canonical fixture acceptance is asserted."
   }
 }

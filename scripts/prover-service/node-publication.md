@@ -18,11 +18,13 @@ coordinator address and runtime hash.
 
 The node compares `production_vk_hash` with its
 [compiled V8 identity](../../lib/types/src/protocol/proving_version.rs), currently
-`0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90`,
+`0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144`,
 and separately authenticates the deployed production verifier at startup. The
 [generated source release](../releases/era-v32/README.md) supplies this nonzero
 app-bound candidate identity for the security-patched recursion circuits;
-historical service proofs under the previous key do not qualify this identity.
+historical service proofs under previous keys do not qualify this identity.
+The current minimal-input native proof and normal-profile local EVM acceptance
+are recorded separately from live service qualification.
 A live service deployment, rental hardware qualification,
 and canonical local-chain fixture acceptance remain separate requirements.
 
