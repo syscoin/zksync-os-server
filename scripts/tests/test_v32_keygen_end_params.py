@@ -80,8 +80,8 @@ class EndParamsAssetTests(unittest.TestCase):
                         workflow.index('compute-aux-params'))
         preparer = (KEYGEN / "prepare-candidate-wrapper.py").read_text()
         for name, value in (
-            ("PROVER_TOOLING_COMMIT", "8acbde54ef2cbe2ba199e2464437fefc2efb4cad"),
-            ("PROVER_TOOLING_TREE", "1edd27c7354a3d1c5fcc19ae09cdceb997aa4a75"),
+            ("PROVER_TOOLING_COMMIT", "a58f10b76b824b76d49106ee9cef2df78db86fb5"),
+            ("PROVER_TOOLING_TREE", "fe5968f70ec7d7b0e12341c417d033cbe16e5b72"),
         ):
             self.assertIn(f"{name}: {value}", workflow)
             self.assertIn(f'{name} = "{value}"', preparer)
