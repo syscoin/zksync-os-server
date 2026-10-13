@@ -51,7 +51,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
-PUBLISHED_ERA_PATCHED_TREE = "5e62f430c3755fdc04982b8c36cbeebaee7b21cb"
+PUBLISHED_ERA_PATCHED_TREE = "0cb850a5c77436f17b49e747a1117dac5ee90888"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -7556,6 +7556,16 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
 
 
 class EraAttestationStaticTests(unittest.TestCase):
+    def test_priority_limit_setter_accepts_gateway_ctm_without_relaxing_cap(self) -> None:
+        patch = (REPO_ROOT / "scripts/patches/era-contracts-syscoin.patch").read_text()
+        admin = patch.split("diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol ", 1)[1].split("\ndiff --git ", 1)[0]
+        self.assertIn("+    function setPriorityTxMaxGasLimit(uint256 _newPriorityTxMaxGasLimit) external onlyChainTypeManager {", admin)
+        self.assertIn("+        if (_newPriorityTxMaxGasLimit > PRIORITY_TX_MAX_GAS_LIMIT) {", admin)
+        regression = patch.split("diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol ", 1)[1].split("\ndiff --git ", 1)[0]
+        for name in ("test_setterOnGatewayPreservesLimitAndEvent", "test_setterOnGatewayRejectsAboveCapWithoutSideEffects", "testFuzz_setterOnGatewayRejectsUnauthorizedCaller"):
+            self.assertIn(name, regression)
+        self.assertNotIn("test_setterRetainsL1OnlyCheck", regression)
+
     def test_priority_gas_constants_are_isolated_from_frozen_relay_metadata(self) -> None:
         patch = (REPO_ROOT / "scripts/patches/era-contracts-syscoin.patch").read_text()
         helper = (REPO_ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_text()
@@ -7649,8 +7659,8 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1496724"',
-            'EXPECTED_PATCH_SHA256="2b9d8bb1527f42a1a98096a10ac5e0932e22133b8f4b7baf0bd6f8f2a9a6724c"',
+            'EXPECTED_PATCH_SIZE="1497553"',
+            'EXPECTED_PATCH_SHA256="bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df"',
             'EXPECTED_PATCH_PATH_COUNT="87"',
             'EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
@@ -7838,7 +7848,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol",
-                "f74c9569989e12867e8d9375eeb899259acb784036bd083ca5998a6cba1cdf0b",
+                "46c34ea2f00b23a2c953ffbf50509bf2416d6550a321bb236d50175976780ce9",
             ),
         ):
             self.assertIn(path, helper)

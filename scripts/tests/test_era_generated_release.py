@@ -160,8 +160,8 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
-        self.assertEqual(module.SOURCE, "5e62f430c3755fdc04982b8c36cbeebaee7b21cb")
-        self.assertEqual(module.CANDIDATE, "7b57c826574ce2bb4d3fce6819f634ff180be5dc")
+        self.assertEqual(module.SOURCE, "0cb850a5c77436f17b49e747a1117dac5ee90888")
+        self.assertEqual(module.CANDIDATE, "d194956535ddeded60829706e9301e9adbe6cb5b")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
                          "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144")
@@ -178,7 +178,7 @@ class BundleAndLauncherTests(unittest.TestCase):
         module, manifest = M.load_bundle()
         paths = manifest["paths"]
         self.assertEqual(paths["AllContractsHashes.json"], {
-            "size": 160049, "sha256": "eb189b013eaade283b8891ede78aa6dc7fdbb64d1a26e8908361db52c6cf9fa7"})
+            "size": 160049, "sha256": "cd98a1aabe4188052f36f5b6ee5b031c47f3a8465036a8dbf04d1e305997642f"})
         for rel in ("l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",
                     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol"):
             self.assertEqual(paths[rel], {
@@ -186,23 +186,34 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(paths["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"], {
             "size": 8075, "sha256": "bb450c0875bdd35f00dea3c5cea54fe5c0d9182046fc934e2944df979126ed56"})
         evidence = manifest["contract_generation_provenance"]
-        self.assertEqual(evidence["status"], "completed_normal_profile_incremental_full_inventory_qualification")
+        self.assertEqual(evidence["status"], "completed_gateway_priority_setter_inventory_refresh")
         self.assertEqual(evidence["reviewed_source_tree"], module.SOURCE)
         self.assertEqual(evidence["candidate_tree"], module.CANDIDATE)
         self.assertEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
-        self.assertEqual(evidence["baseline_inventory_rows_reproduced"], 278)
-        self.assertEqual(evidence["unchanged_inventory_rows"], 276)
-        self.assertEqual(set(evidence["changed_inventory_rows"]), module.ROWS)
+        self.assertEqual(evidence["inventory_rows"], 278)
+        self.assertEqual(evidence["unchanged_inventory_rows"], 277)
+        self.assertEqual(evidence["changed_inventory_rows"], ["l1-contracts/AdminFacet"])
         for flag in ("full_contract_hash_recomputation_passed", "contract_hash_check_passed",
-                     "baseline_clean_full_package_build_passed",
-                     "new_key_incremental_l1_evm_and_eravm_build_passed",
-                     "source_index_preserved", "submodules_and_source_reverified",
-                     "retained_fflonk_reproduced", "genesis_retained_byte_identical"):
+                     "normal_l1_evm_and_eravm_build_passed", "admin_abi_unchanged",
+                     "generated_verifier_overlay_unchanged"):
             self.assertTrue(evidence[flag])
-        self.assertFalse(evidence["genesis_regenerated_in_this_run"])
-        self.assertEqual(evidence["compiler"]["evm_version"], "prague")
-        self.assertEqual(evidence["compiler"]["optimizer_runs"], 9999999)
-        self.assertEqual(evidence["result_sha256"],
+        self.assertFalse(evidence["new_proof_or_key_generation_performed"])
+        self.assertFalse(evidence["deployed"])
+        self.assertEqual(evidence["admin_evm_runtime_bytes"], 22482)
+        self.assertEqual(evidence["tests_passed"], 28)
+        self.assertEqual(evidence["tests_failed"], 0)
+        self.assertEqual(evidence["new_gateway_regressions"], 3)
+        self.assertEqual(evidence["log_sha256"],
+                         "a78608670bca544c0654dbb567131a10a9c3c4f64754eb2718b3f30610afc70d")
+        previous = manifest["historical_pre_gateway_priority_setter_contract_generation_provenance"]
+        self.assertEqual(previous["status"], "completed_normal_profile_incremental_full_inventory_qualification")
+        self.assertEqual(previous["baseline_inventory_rows_reproduced"], 278)
+        self.assertEqual(previous["unchanged_inventory_rows"], 276)
+        self.assertEqual(set(previous["changed_inventory_rows"]), module.ROWS)
+        self.assertEqual(previous["compiler"]["evm_version"], "prague")
+        self.assertEqual(previous["compiler"]["optimizer_runs"], 9999999)
+        self.assertEqual(previous["candidate_tree"], evidence["previous_candidate_tree"])
+        self.assertEqual(previous["result_sha256"],
                          "c283de5f73e332f43cc125cb27b92d2b5640cff64a9a1b215b687462c82e0af1")
         historical = manifest["historical_pre_optimized_crypto_contract_generation_provenance"]
         self.assertEqual(historical["status"], "completed_priority_admission_inventory_refresh")
@@ -366,8 +377,8 @@ class BundleAndLauncherTests(unittest.TestCase):
             ROOT / "scripts/apply-era-contracts-syscoin-patch.sh",
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
-        self.assertEqual(result["source_tree"], "5e62f430c3755fdc04982b8c36cbeebaee7b21cb")
-        self.assertEqual(result["candidate_tree"], "7b57c826574ce2bb4d3fce6819f634ff180be5dc")
+        self.assertEqual(result["source_tree"], "0cb850a5c77436f17b49e747a1117dac5ee90888")
+        self.assertEqual(result["candidate_tree"], "d194956535ddeded60829706e9301e9adbe6cb5b")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])

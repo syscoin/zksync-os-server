@@ -17,8 +17,8 @@ Estimated verifier gas was 406,832. This is offline qualification of that input,
 not live server HTTP, service/DA/settlement, testnet or canonical fixture acceptance.
 
 The base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`, reviewed source tree
-`5e62f430c3755fdc04982b8c36cbeebaee7b21cb`, and generated tree
-`7b57c826574ce2bb4d3fce6819f634ff180be5dc`. Four exact paths are overlaid.
+`0cb850a5c77436f17b49e747a1117dac5ee90888`, and generated tree
+`d194956535ddeded60829706e9301e9adbe6cb5b`. Four exact paths are overlaid.
 A clean normal build of all four contract packages reproduced all 278 baseline
 inventory rows. Actual new-key incremental L1 EVM/EraVM builds and full stock
 hash recomputation/check changed only PLONK and its embedding Gateway deployer;
@@ -29,6 +29,23 @@ were used; no mock verification, live deployment or fixture is certified.
 Earlier key receipts remain under their historical manifest fields; they are not
 relabelled as current qualification. Overall release, live deployment, independent
 host reproduction and canonical fixture activation remain separate gates.
+
+### Gateway priority-limit setter follow-up
+
+The setter now accepts the existing chain-local ChainTypeManager on both L1
+and Gateway. Its CTM authorization and 16,777,216 ceiling are unchanged; no
+other `onlyL1` restriction is removed. This fixes the Gateway `NotL1(57001)`
+rejection without granting direct owner/EOA access or changing an on-chain limit.
+Three Gateway regressions cover successful storage/event updates, above-cap
+rejection without side effects, and unauthorized callers. All 28 focused tests
+passed. The normal pinned L1 EVM/EraVM build and full 278-row hash check changed
+only AdminFacet; its ABI is unchanged and runtime is 22,482 bytes.
+
+The generated verifier overlay, key and prior proof evidence are byte-identical.
+The preceding optimized-key build receipt remains under
+`historical_pre_gateway_priority_setter_contract_generation_provenance`; the
+current receipt records this Admin-only refresh separately. No proof/key was
+regenerated, and no live deployment or storage migration is asserted here.
 
 The bundle is not a live fixture/deployment certificate.
 The helper's four-entry `PREIMAGES` binds the source inventory, stock PLONK/key
