@@ -80,8 +80,8 @@ class EndParamsAssetTests(unittest.TestCase):
                         workflow.index('compute-aux-params'))
         preparer = (KEYGEN / "prepare-candidate-wrapper.py").read_text()
         for name, value in (
-            ("PROVER_TOOLING_COMMIT", "4263a735fbac02c5b557c41a6d1f3425482b13dd"),
-            ("PROVER_TOOLING_TREE", "61e7c63b050d81c4d077957d8db773de68bc33fc"),
+            ("PROVER_TOOLING_COMMIT", "ce6d4bd51cbf69162bf5ef1a9c2e29f457726a5c"),
+            ("PROVER_TOOLING_TREE", "c448b144ce41277d746ac783c2276ef956eb5ad3"),
         ):
             self.assertIn(f"{name}: {value}", workflow)
             self.assertIn(f'{name} = "{value}"', preparer)
@@ -97,47 +97,111 @@ class EndParamsAssetTests(unittest.TestCase):
         self.assertNotIn("V8_VK_REGENERATION_REQUIRED", workflow)
         self.assertNotIn("V8_APP_IDENTITY_REGENERATION_REQUIRED", workflow)
 
-    def test_candidate_vk_replacement_updates_both_registered_literals(self):
+    def candidate_block(self):
         workflow = (REPO / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
         candidate = workflow.split("      - name: Produce fail-closed server candidate", 1)[1]
-        candidate = candidate.split("      - name:", 1)[0]
-        self.assertEqual(candidate.count('"${proving_version}")" == "2" ]]'), 3)
-        self.assertIn("'s/\\Q$ENV{OLD_HASH}\\E/$ENV{VK_HASH}/g'", candidate)
-        self.assertIn('checked_out_server_vk_remains_registered: true', candidate)
-        self.assertNotIn('checked_out_server_vk_remains_zero', candidate)
-        original = (REPO / "lib/types/src/protocol/proving_version.rs").read_text()
+        return workflow, candidate.split("      - name:", 1)[0]
+
+    def exercise_server_candidate(self, *, reproduce=False, count=2, dirty=None, generated=None):
+        """Execute workflow shell with fixture hashes only; no key generation or qualification."""
+        workflow, candidate = self.candidate_block()
         registered = re.search(
             r'^  REGISTERED_V8_VK_HASH: "(0x[0-9a-f]{64})"$', workflow, re.M)
         self.assertIsNotNone(registered)
-        old_hash = registered.group(1)
+        original = (REPO / "lib/types/src/protocol/proving_version.rs").read_text()
+        self.assertEqual(original.count(f'"{registered.group(1)}"'), 2)
+        old_hash = '0x' + '11' * 32
         new_hash = '0x' + 'ab' * 32
-        self.assertEqual(original.count(f'"{old_hash}"'), 2)
+        original = original.replace(registered.group(1), old_hash)
+        if count == 1:
+            original = original.replace(f'"{old_hash}"', f'"{new_hash}"', 1)
+        elif count == 3:
+            # Two occurrences on one line must not count as one literal.
+            original = original.replace(f'"{old_hash}"', f'"{old_hash}" "{old_hash}"', 1)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "lib/types/src/protocol/proving_version.rs"
             source.parent.mkdir(parents=True)
             source.write_text(original)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+            env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0",
+                       WORK_DIR=str(root / "work"), REGISTERED_V8_VK_HASH=old_hash)
+            subprocess.run(["git", "init", "-q"], cwd=root, env=env, check=True)
             subprocess.run(["git", "add", "lib/types/src/protocol/proving_version.rs"],
-                           cwd=root, check=True)
+                           cwd=root, env=env, check=True)
             subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                            "commit", "-qm", "fixture"], cwd=root, check=True)
+                            "commit", "-qm", "fixture"], cwd=root, env=env, check=True)
+            if dirty:
+                original += "\n// retained dirty fixture source\n"
+                source.write_text(original)
+                if dirty == "staged":
+                    subprocess.run(["git", "add", str(source)], cwd=root, env=env, check=True)
+            status_before = subprocess.check_output(
+                ["git", "status", "--porcelain", "--", str(source)], cwd=root, env=env, text=True)
             output = root / "work/final"
             output.mkdir(parents=True)
-            (output / "syscoin-v8-vk-hash.txt").write_text(new_hash + "\n")
+            (output / "syscoin-v8-vk-hash.txt").write_text(
+                (generated if generated is not None else old_hash if reproduce else new_hash) + "\n")
             script = candidate.split("        run: |\n", 1)[1]
             script = textwrap.dedent(script[:script.index("          plonk_key_sha=")])
+            script += '\nprintf "%s\\n" "${server_candidate_mode}" "${server_registered_source_sha256}"\n'
             result = subprocess.run(["bash", "-c", script], cwd=root,
-                                    capture_output=True, text=True,
-                                    env={**os.environ, "WORK_DIR": str(root / "work"),
-                                         "REGISTERED_V8_VK_HASH": old_hash})
-            self.assertEqual(result.returncode, 0, result.stderr)
+                                    capture_output=True, text=True, env=env)
             self.assertEqual(source.read_text(), original)
+            self.assertEqual(subprocess.check_output(
+                ["git", "status", "--porcelain", "--", str(source)], cwd=root, env=env, text=True),
+                status_before)
             patch = output / "zksync-os-server-v8-plonk-candidate.patch"
-            self.assertTrue(patch.is_file())
-            additions = [line for line in patch.read_text().splitlines()
-                         if line.startswith("+") and f'"{new_hash}"' in line]
-            self.assertEqual(len(additions), 2)
+            return result, patch.read_bytes() if patch.exists() else None, original, new_hash
+
+    def test_candidate_vk_replacement_updates_both_registered_literals(self):
+        _, candidate = self.candidate_block()
+        self.assertEqual(candidate.count('server_vk_literal_count "'), 3)
+        self.assertIn("'s/\\Q$ENV{OLD_HASH}\\E/$ENV{VK_HASH}/g'", candidate)
+        self.assertIn('checked_out_server_vk_remains_registered: true', candidate)
+        self.assertNotIn('checked_out_server_vk_remains_zero', candidate)
+        self.assertIn('server_candidate_mode: $server_candidate_mode', candidate)
+        self.assertIn('server_source_change_required: ($server_candidate_mode == "new-key-candidate")', candidate)
+        result, patch, original, new_hash = self.exercise_server_candidate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(patch)
+        additions = [line for line in patch.decode().splitlines()
+                     if line.startswith("+") and f'"{new_hash}"' in line]
+        self.assertEqual(len(additions), 2)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["new-key-candidate", hashlib.sha256(original.encode()).hexdigest()])
+
+    def test_registered_key_reproduction_keeps_source_exact_and_records_empty_patch(self):
+        result, patch, original, _ = self.exercise_server_candidate(reproduce=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(patch, b"")
+        self.assertEqual(hashlib.sha256(patch).hexdigest(),
+                         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        self.assertEqual(result.stdout.splitlines(),
+                         ["registered-key-reproduction", hashlib.sha256(original.encode()).hexdigest()])
+
+    def test_candidate_wrong_literal_count_fails_without_source_or_patch_changes(self):
+        for reproduce in (False, True):
+            for count in (1, 3):
+                with self.subTest(reproduce=reproduce, count=count):
+                    result, patch, _, _ = self.exercise_server_candidate(reproduce=reproduce, count=count)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIsNone(patch)
+
+    def test_candidate_dirty_source_and_index_fail_without_discarding_changes(self):
+        for reproduce in (False, True):
+            for dirty in ("unstaged", "staged"):
+                with self.subTest(reproduce=reproduce, dirty=dirty):
+                    result, patch, _, _ = self.exercise_server_candidate(reproduce=reproduce, dirty=dirty)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIsNone(patch)
+
+    def test_candidate_malformed_or_zero_output_hash_fails_before_source_changes(self):
+        for generated in ("invalid", "0x" + "00" * 32):
+            with self.subTest(generated=generated):
+                result, patch, _, _ = self.exercise_server_candidate(generated=generated)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIsNone(patch)
 
 
 class EndParamsBuildWrapperTests(unittest.TestCase):

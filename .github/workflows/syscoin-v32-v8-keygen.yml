@@ -64,8 +64,8 @@ env:
   WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git
   WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
   PROVER_TOOLING_REPOSITORY: https://github.com/syscoin/zksync-airbender-prover.git
-  PROVER_TOOLING_COMMIT: 4263a735fbac02c5b557c41a6d1f3425482b13dd
-  PROVER_TOOLING_TREE: 61e7c63b050d81c4d077957d8db773de68bc33fc
+  PROVER_TOOLING_COMMIT: ce6d4bd51cbf69162bf5ef1a9c2e29f457726a5c
+  PROVER_TOOLING_TREE: c448b144ce41277d746ac783c2276ef956eb5ad3
   PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
   PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
   REGISTERED_V8_VK_HASH: "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144"
@@ -1738,29 +1738,46 @@ jobs:
           syscoin_vk_hash="$(< "${output_dir}/syscoin-v8-vk-hash.txt")"
           proving_version="lib/types/src/protocol/proving_version.rs"
 
-          # SYSCOIN: Prepare a candidate against the currently registered key.
-          # Generated output cannot activate the new key without a reviewed source update.
+          # SYSCOIN: A reproduced registered key needs no source replacement.
+          # A genuinely new key still requires a separately reviewed source update.
           git diff --quiet -- "${proving_version}"
-          [[ "${syscoin_vk_hash}" != "${REGISTERED_V8_VK_HASH}" ]]
-          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "2" ]]
-          restore_server_gate() {
-            git restore --source=HEAD --worktree -- "${proving_version}"
+          git diff --cached --quiet -- "${proving_version}"
+          [[ "${syscoin_vk_hash}" =~ ^0x[0-9a-f]{64}$ ]] || exit 1
+          [[ ! "${syscoin_vk_hash}" =~ ^0x0{64}$ ]] || exit 1
+          server_vk_literal_count() {
+            grep -oF "\"${1}\"" "${proving_version}" | wc -l | tr -d '[:space:]'
           }
-          trap restore_server_gate EXIT
-          OLD_HASH="${REGISTERED_V8_VK_HASH}" VK_HASH="${syscoin_vk_hash}" perl -0pi -e \
-            's/\Q$ENV{OLD_HASH}\E/$ENV{VK_HASH}/g' \
-            "${proving_version}"
-          [[ "$(grep -Fc "\"${syscoin_vk_hash}\"" "${proving_version}")" == "2" ]]
-          ! grep -Fq "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}"
-          git diff --check -- "${proving_version}"
-          git diff --binary --no-ext-diff -- "${proving_version}" > \
-            "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
-          [[ -s "${output_dir}/zksync-os-server-v8-plonk-candidate.patch" ]]
-          restore_server_gate
-          trap - EXIT
+          [[ "$(server_vk_literal_count "${REGISTERED_V8_VK_HASH}")" == "2" ]] || exit 1
+          server_registered_source_sha256="$(sha256sum "${proving_version}" | awk '{print $1}')"
+          if [[ "${syscoin_vk_hash}" == "${REGISTERED_V8_VK_HASH}" ]]; then
+            server_candidate_mode="registered-key-reproduction"
+            git diff --binary --no-ext-diff -- "${proving_version}" > \
+              "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
+            [[ ! -s "${output_dir}/zksync-os-server-v8-plonk-candidate.patch" ]] || exit 1
+          else
+            server_candidate_mode="new-key-candidate"
+            restore_server_gate() {
+              git restore --source=HEAD --worktree -- "${proving_version}"
+            }
+            trap restore_server_gate EXIT
+            OLD_HASH="${REGISTERED_V8_VK_HASH}" VK_HASH="${syscoin_vk_hash}" perl -0pi -e \
+              's/\Q$ENV{OLD_HASH}\E/$ENV{VK_HASH}/g' \
+              "${proving_version}"
+            [[ "$(server_vk_literal_count "${syscoin_vk_hash}")" == "2" ]] || exit 1
+            ! grep -Fq "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}" || exit 1
+            git diff --check -- "${proving_version}"
+            git diff --binary --no-ext-diff -- "${proving_version}" > \
+              "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
+            [[ -s "${output_dir}/zksync-os-server-v8-plonk-candidate.patch" ]] || exit 1
+            restore_server_gate
+            trap - EXIT
+            git apply --check "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
+          fi
           git diff --quiet -- "${proving_version}"
-          [[ "$(grep -Fc "\"${REGISTERED_V8_VK_HASH}\"" "${proving_version}")" == "2" ]]
-          git apply --check "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
+          git diff --cached --quiet -- "${proving_version}"
+          [[ "$(server_vk_literal_count "${REGISTERED_V8_VK_HASH}")" == "2" ]] || exit 1
+          [[ "$(sha256sum "${proving_version}" | awk '{print $1}')" == \
+            "${server_registered_source_sha256}" ]] || exit 1
 
           plonk_key_sha="$(sha256sum "${output_dir}/era/ZKsyncOS_plonk_scheduler_key.json" | awk '{print $1}')"
           plonk_sol_sha="$(sha256sum "${output_dir}/era/ZKsyncOSVerifierPlonk.sol" | awk '{print $1}')"
@@ -1819,6 +1836,9 @@ jobs:
             --arg selectors_sha256 "${selectors_sha}" \
             --arg era_patch_sha256 "${era_patch_sha}" \
             --arg server_patch_sha256 "${server_patch_sha}" \
+            --arg server_candidate_mode "${server_candidate_mode}" \
+            --arg registered_server_vk_hash "${REGISTERED_V8_VK_HASH}" \
+            --arg server_registered_source_sha256 "${server_registered_source_sha256}" \
             '{
               schema: $schema,
               protocol: {major: 0, minor: 32, patch: 0, execution: 7, proving: 8, security_bits: 100},
@@ -1889,6 +1909,10 @@ jobs:
                 era_candidate_patch_sha256: $era_patch_sha256,
                 era_candidate_tree: $era_candidate_tree,
                 server_plonk_candidate_patch_sha256: $server_patch_sha256,
+                server_candidate_mode: $server_candidate_mode,
+                registered_server_vk_hash: $registered_server_vk_hash,
+                server_registered_source_sha256: $server_registered_source_sha256,
+                server_source_change_required: ($server_candidate_mode == "new-key-candidate"),
                 must_be_reviewed_and_applied_together: true
               },
               release_gate: {
@@ -1901,7 +1925,7 @@ jobs:
                 testnet_mock_candidate_generated: false,
                 checked_out_server_vk_remains_registered: true,
                 canonical_fixture_regeneration_sentinel_cleared: false,
-                note: "Fail closed: both atomic candidates require separate release review; this key-generation workflow only uploads attestations and never activates, deploys, tags, or pushes them."
+                note: "Fail closed: atomic candidate artifacts require separate release review. A registered-key reproduction records an empty server patch and unchanged registered source. This workflow only uploads attestations and never activates, deploys, tags, or pushes them."
               }
             }' > "${output_dir}/attestation.json"
           jq -e . "${output_dir}/attestation.json" >/dev/null
