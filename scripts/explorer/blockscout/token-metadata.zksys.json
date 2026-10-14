@@ -1,0 +1,18 @@
+{
+  "chain_id": 57057,
+  "blockscout_revision": "ed93c12dc1835ec0e7fb3e4be3504ceb7061610e",
+  "tokens": [
+    {
+      "address": "0xd501e86b1fc5823403b2ba995e2b8b78179236a6",
+      "symbol": "USDC",
+      "decimals": 6,
+      "icon_url": "https://bridge-zk.tanenbaum.io/usdc-logo.png"
+    },
+    {
+      "address": "0x6EBb170f69D886916D9ee9E585CE39E626CbC35d",
+      "symbol": "ZKSYS",
+      "decimals": 18,
+      "icon_url": "https://explorer-zk.tanenbaum.io/branding-assets/zksys-token-icon.svg"
+    }
+  ]
+}
