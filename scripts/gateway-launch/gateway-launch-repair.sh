@@ -367,7 +367,7 @@ perform_repair_step() {
     esac
     ;;
   gl.os_configs_final)
-    "${SCRIPT_DIR}/generate-os-server-configs.sh"
+    gl_prepare_final_os_configs
     ;;
   *)
     gl_die "unknown checkpoint: ${checkpoint_id}"

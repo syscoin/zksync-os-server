@@ -1401,6 +1401,26 @@ bypass the canonical lifecycle. Source/build ancestor permissions and ordinary
 Cargo binary/stamp provenance must also qualify before installing a staged
 publisher; a packet or syntax test alone is not deployment readiness.
 
+The canonical launcher builds the stamped Gateway binary before that first boot,
+then builds the stamped Edge binary during the final-config checkpoint after
+migration. Final-config preparation and repair reuse a valid Gateway build or
+rebuild a missing/stale one before building Edge; they do not start nodes or
+replay initialization/migration. Generated `start-node.sh` scripts for both roles
+execute those
+prebuilt binaries; a service restart does not compile or leave Cargo as its
+parent process. The final checkpoint rejects missing or stale build stamps.
+
+When generating configs directly (including additional edges) or qualifying a
+source upgrade, perform the explicit build step for each affected role before
+starting it:
+
+```bash
+"$GATEWAY_DIR/os-server-configs/gateway/build-node.sh"
+"$GATEWAY_DIR/os-server-configs/zksys/build-node.sh"
+```
+
+Then start the already prepared nodes:
+
 ```bash
 "$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"
 "$GATEWAY_DIR/os-server-configs/zksys/start-node.sh"

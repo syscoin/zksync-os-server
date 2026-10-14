@@ -475,7 +475,7 @@ fi
 # checkpointed. Never leave that temporary process behind.
 stop_gateway_for_migration
 
-run_checkpoint_with_validation "gl.os_configs_final" validate_os_configs_final "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
+run_checkpoint_with_validation "gl.os_configs_final" validate_os_configs_final gl_prepare_final_os_configs || exit $?
 
 echo "=== gateway-launch complete ==="
 trap - EXIT INT TERM

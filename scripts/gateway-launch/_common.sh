@@ -25,6 +25,9 @@ fi
 # patch helpers. Do not let callers redirect that security trust root later.
 ZKSYNC_OS_SERVER_PATH="${_gl_repo_root}"
 readonly ZKSYNC_OS_SERVER_PATH
+# SYSCOIN: Children must retain this validated trust root for release inventory;
+# a shell-only binding disappears when the runner executes the server binary.
+export ZKSYNC_OS_SERVER_PATH
 unset _gl_actual_dir _gl_supplied_dir _gl_repo_root _gl_supplied_repo_root
 
 # Discover fallback tooling without replacing versions explicitly selected by callers.
@@ -6027,6 +6030,23 @@ gl_assert_edge_chain_admin_owned_by_configured_governor() {
   gl_assert_chain_admin_owner "${chain_admin}" "${expected_edge_governor}" "edge"
 }
 
+# SYSCOIN: Keep the final config renderer compiler-free, while making the
+# deployment checkpoint prepare both required releases before completion.
+gl_prepare_final_os_configs() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  local edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  gl_validate_zkstack_chain_name "${gateway_chain_name}" GATEWAY_CHAIN_NAME
+  gl_validate_zkstack_chain_name "${edge_chain_name}" EDGE_CHAIN_NAME
+  "${GL_DIR}/generate-os-server-configs.sh" || return $?
+  # SYSCOIN: The earlier supervised boot normally prepared Gateway already;
+  # repair must recover a missing/stale build without re-running that lifecycle.
+  if ! bash "${GL_DIR}/run-os-server-with-patched-zksync-os.sh" "${gateway_chain_name}" -- check-prebuilt; then
+    bash "${GATEWAY_DIR}/os-server-configs/${gateway_chain_name}/build-node.sh" || return $?
+  fi
+  bash "${GATEWAY_DIR}/os-server-configs/${edge_chain_name}/build-node.sh"
+}
+
 gl_probe_os_configs_final_ready() {
   gl_require GATEWAY_DIR
   local gateway_chain_name edge_chain_name
@@ -6034,7 +6054,9 @@ gl_probe_os_configs_final_ready() {
   edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
   gl_probe_materialized_os_chain_ready "${gateway_chain_name}" &&
     gl_probe_materialized_os_chain_ready "${edge_chain_name}" &&
-    "${GL_DIR}/generate-os-server-configs.sh" --check-only >/dev/null
+    "${GL_DIR}/generate-os-server-configs.sh" --check-only >/dev/null &&
+    bash "${GL_DIR}/run-os-server-with-patched-zksync-os.sh" "${gateway_chain_name}" -- check-prebuilt &&
+    bash "${GL_DIR}/run-os-server-with-patched-zksync-os.sh" "${edge_chain_name}" -- check-prebuilt
 }
 
 gl_probe_chain_contracts_schema_ready() {

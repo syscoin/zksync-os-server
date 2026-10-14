@@ -8645,10 +8645,17 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             / "gateway-launch"
             / "generate-os-server-configs.sh"
         ).read_text(encoding="utf-8")
-        self.assertIn('if chain_name == os.environ["GATEWAY_CHAIN_NAME"]', generator)
-        self.assertIn('"exec-prebuilt --"', generator)
-        self.assertIn('else "run --locked --release --"', generator)
+        self.assertIn('runner_mode = "exec-prebuilt --"', generator)
+        self.assertNotIn('else "run --locked --release --"', generator)
+        self.assertIn('write_text(out_dir / "build-node.sh", build_script)', generator)
         self.assertIn('-- {runner_mode} {start_config_args}', generator)
+        final_config = launcher.index('run_checkpoint_with_validation "gl.os_configs_final"')
+        self.assertLess(edge_create, final_config)
+        self.assertLess(
+            launcher.rindex("\nstop_gateway_for_migration\n", edge_create, final_config),
+            final_config,
+        )
+        self.assertIn("validate_os_configs_final gl_prepare_final_os_configs", launcher)
         runtime_identity = common[
             common.index("gl_assert_gateway_runtime_identity()") : common.index(
                 "\ngl_zksys_gas_tank_from_edge_config()"

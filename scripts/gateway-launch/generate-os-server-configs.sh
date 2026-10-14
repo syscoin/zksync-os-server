@@ -1293,14 +1293,22 @@ source "{server_root / 'scripts/gateway-launch/_execute_operator_lock.sh'}"
 gateway_acquire_execute_operator_lock "{chain_name}" "{config_path}"
 """
 
-    # SYSCOIN: The launcher binds Gateway RPC identity to the exact process it
-    # starts. Only Gateway is prebuilt by that lifecycle; edge startup retains
-    # its existing Cargo path until its own deployment publishes a binary.
-    runner_mode = (
-        "exec-prebuilt --"
-        if chain_name == os.environ["GATEWAY_CHAIN_NAME"]
-        else "run --locked --release --"
-    )
+    # SYSCOIN: Compilation belongs to deployment, not a service restart. Both
+    # roles must execute the stamped binary as their directly owned process.
+    runner_mode = "exec-prebuilt --"
+    build_script = f"""#!/usr/bin/env bash
+set -euo pipefail
+cd "{server_root}"
+export ZKSYNC_OS_SERVER_PATH="{server_root}"
+export GATEWAY_DIR="{gateway_dir}"
+export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
+export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"
+export EDGE_CHAIN_ID="{os.environ["EDGE_CHAIN_ID"]}"
+export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"
+exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- build-prebuilt
+"""
+    write_text(out_dir / "build-node.sh", build_script)
+    ensure_mode(out_dir / "build-node.sh", 0o755)
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
 # SYSCOIN: do not source HOME-relative Cargo env files in generated node
@@ -1323,6 +1331,7 @@ if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_RECOMMENDED}}" ]; then
   echo "gateway-launch: warning: open-file limit is below recommended value: ${{current_nofile}} < ${{OS_SERVER_NOFILE_RECOMMENDED}}" >&2
 fi
 cd "{server_root}"
+export ZKSYNC_OS_SERVER_PATH="{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
 export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
 export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"
