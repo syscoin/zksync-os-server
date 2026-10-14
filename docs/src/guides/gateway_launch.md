@@ -1768,6 +1768,15 @@ admin IPs. The Gateway Blockscout env hides RPC docs/links and disables the
 Next.js proxy so the public explorer API remains available without turning the
 explorer into a public Gateway RPC passthrough.
 
+After the zkSYS explorer has indexed its reviewed token contracts, publish the
+ERC-20 icons through the supported authenticated Blockscout token-info API using
+`scripts/explorer/blockscout/TOKEN-METADATA.md`.
+Network branding and portal token lists do not populate Blockscout's `icon_url`.
+Keep the committed two-token manifest in sync with the reviewed chain deployment,
+and reapply it after a deliberate explorer database rebuild. The helper is
+read-only by default; importing uses the existing admin key and does not require
+a database write script, new credential, container rebuild or service restart.
+
 <!-- SYSCOIN: Verifier image updates are operational changes, not automatic safe upgrades. -->
 The verifier compatibility default is `v1.10.3`, not a floating `latest` image.
 Set `SMART_CONTRACT_VERIFIER_IMAGE` to a reviewed digest or an exact cached image
