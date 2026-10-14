@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tarfile
 import tempfile
 import unittest
 import yaml
@@ -20,6 +21,35 @@ def command(arguments):
 
 
 class RemoteArgumentTests(unittest.TestCase):
+    def test_deployer_transfers_metadata_helper_and_adjacent_manifest(self):
+        for instance in ("gateway", "zksys"):
+            with self.subTest(instance=instance), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                remote = root / "remote explorer"
+                binaries = root / "bin"
+                binaries.mkdir()
+                archive = root / "payload.tar"
+                ssh = binaries / "ssh"
+                # Run only the real archive extraction/copy stage locally.
+                # The second (Compose/service) SSH call is consumed, never run.
+                ssh.write_text('#!/usr/bin/env bash\nset -euo pipefail\nremote_command="${!#}"\nif [[ "$remote_command" == REMOTE_DIR_B64=* ]]; then\n  cat > "$TEST_ARCHIVE"\n  bash -c "$remote_command" < "$TEST_ARCHIVE"\nelse\n  cat >/dev/null\nfi\n')
+                ssh.chmod(0o700)
+                env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+                           REMOTE_HOST="synthetic-only", REMOTE_DIR=str(remote), SSH_KEY_PATH="",
+                           API_SENSITIVE_ENDPOINTS_KEY="", TEST_ARCHIVE=str(archive))
+                result = subprocess.run(["bash", str(ROOT / "scripts/explorer/blockscout/deploy-remote.sh"), instance],
+                                        cwd=root, text=True, capture_output=True, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with tarfile.open(archive) as payload:
+                    names = payload.getnames()
+                    for name in ("publish-token-metadata.py", "token-metadata.zksys.json"):
+                        self.assertIn(name, names)
+                        expected = (ROOT / "scripts/explorer/blockscout" / name).read_bytes()
+                        self.assertEqual(payload.extractfile(name).read(), expected)
+                        self.assertEqual((remote / name).read_bytes(), expected)
+                    self.assertIn(f"envs/{instance}.env", names)
+                    self.assertFalse(any("secrets.env" in name for name in names))
+
     def test_empty_fourth_survives_openssh_join_and_remote_shell(self):
         args = ["/tmp/a b's directory", "zksys", "blockscout-zksys", ""]
         result = subprocess.run(["bash", "-c", command(args)], input=b'printf "%s\\0" "$@"\n', capture_output=True)

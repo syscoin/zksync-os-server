@@ -18,24 +18,33 @@ changing the backend version or chain addresses:
    and review both token contract addresses. The helper checks the reported
    backend version, chain ID, token address, symbol and decimals; it does not
    replace operator verification of deployed bytecode/source provenance.
-2. Run the default read-only check:
+2. From the repository root, run the default read-only check:
 
    ```sh
    timeout 45s python3 scripts/explorer/blockscout/publish-token-metadata.py
    ```
 
-3. On the explorer host, pipe the **existing** `API_SENSITIVE_ENDPOINTS_KEY` from
-   an approved private secret reader into the same helper with
+3. `deploy-remote.sh` copies the helper and its adjacent manifest into
+   `REMOTE_DIR` (default `/home/ubuntu/gateway/ui/blockscout`); it does not run the
+   helper or publish metadata. On the zkSYS explorer host, change to that deployed
+   directory and pipe the **existing** `API_SENSITIVE_ENDPOINTS_KEY` from
+   an approved private secret reader into the helper with
    `--base-url http://127.0.0.1:5200 --apply`. The public HTTPS base is also allowed.
    Do not place the key in command-line arguments, shell history, logs or a new
    environment file. Do not enable shell tracing. An absent existing key requires
    a separately reviewed configuration change, not an automatic restart.
 
    ```text
-   <private secret reader> | timeout 45s python3 scripts/explorer/blockscout/publish-token-metadata.py --base-url http://127.0.0.1:5200 --apply
+   cd /home/ubuntu/gateway/ui/blockscout  # use the actual REMOTE_DIR if overridden
+   <private secret reader> | timeout 45s python3 ./publish-token-metadata.py --base-url http://127.0.0.1:5200 --apply
    ```
 
-4. Retain the helper's public-only result and rerun the default check. Both tokens
+   The helper resolves the manifest relative to its own file, not the working
+   directory. It remains specific to the zkSYS chain even though both deployment
+   instances receive the files.
+
+4. Retain the helper's public-only result and rerun the read-only check (omit
+   `--apply`, retaining the host-local `--base-url` if used). Both tokens
    must report `already-current`; then confirm the browser renders each icon.
    An API success alone is not visual acceptance. If a POST fails or times out,
    inspect the read-only result before authorizing another run. There is no

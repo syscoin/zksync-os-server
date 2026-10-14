@@ -25,7 +25,8 @@ if [[ -n "${SSH_KEY_PATH}" ]]; then
   ssh_opts+=(-i "${SSH_KEY_PATH}")
 fi
 
-tar -C "${SCRIPT_DIR}" -cf - docker-compose.yml proxy "envs/${INSTANCE}.env" | \
+tar -C "${SCRIPT_DIR}" -cf - docker-compose.yml proxy "envs/${INSTANCE}.env" \
+  publish-token-metadata.py token-metadata.zksys.json | \
   ssh "${ssh_opts[@]}" "${REMOTE_HOST}" \
     "REMOTE_DIR_B64=${REMOTE_DIR_B64} INSTANCE=${INSTANCE} bash -c '
 set -euo pipefail
@@ -42,6 +43,8 @@ tar -C \"\${tmp_dir}\" -xf -
 
 mkdir -p \"\${remote_dir}/envs\"
 cp \"\${tmp_dir}/docker-compose.yml\" \"\${remote_dir}/docker-compose.yml\"
+cp \"\${tmp_dir}/publish-token-metadata.py\" \"\${remote_dir}/publish-token-metadata.py\"
+cp \"\${tmp_dir}/token-metadata.zksys.json\" \"\${remote_dir}/token-metadata.zksys.json\"
 mkdir -p \"\${remote_dir}/proxy/assets\"
 cp \"\${tmp_dir}/proxy/explorer.conf.template\" \"\${remote_dir}/proxy/explorer.conf.template\"
 find \"\${remote_dir}/proxy/assets\" -maxdepth 1 -type f -delete
