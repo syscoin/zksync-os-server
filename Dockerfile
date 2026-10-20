@@ -7,10 +7,13 @@ WORKDIR /app
 
 FROM chef AS builder
 
+COPY scripts/check-trust-store.py /tmp/check-trust-store.py
+
 # ---- build-time system libs ----
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates git libclang-19-dev python3 && \
+    python3 /tmp/check-trust-store.py --refresh-system && \
     rm -rf /var/lib/apt/lists/*
 
 ENV LIBCLANG_PATH=/usr/lib/llvm-19/lib
@@ -26,10 +29,15 @@ RUN bash scripts/cargo-with-patched-zksync-os.sh \
 #################################
 FROM debian:stable-slim
 
+COPY scripts/check-trust-store.py /tmp/check-trust-store.py
+
 # ---- minimal runtime deps + tini ----
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        libssl3 ca-certificates tini && \
+        libssl3 ca-certificates tini python3 && \
+    python3 /tmp/check-trust-store.py --refresh-system && \
+    apt-get purge -y --auto-remove python3 && \
+    rm /tmp/check-trust-store.py && \
     rm -rf /var/lib/apt/lists/*
 
 ARG UID=10001
