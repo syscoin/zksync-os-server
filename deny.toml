@@ -21,6 +21,11 @@ ignore = [
     # lru (via aws-sdk-s3, pins ^0.16): needs a key
     # whose Drop panics during pop() — keys on this path have trivial Drop.
     "RUSTSEC-2026-0253",
+    # Checksummed 0.26.11 compatibility crates only re-export their patched v1
+    # parent. Both CI scanners first run scripts/check-root-compat.py, which
+    # rejects other vulnerable versions, altered forwarders, or parents <1.0.10.
+    "RUSTSEC-2026-0381",
+    "RUSTSEC-2026-0383",
 ]
 
 [bans]
