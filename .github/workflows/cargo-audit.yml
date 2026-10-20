@@ -7,6 +7,8 @@ on:
       - '**/Cargo.lock'
       - '.github/workflows/cargo-audit.yml'
       - 'deny.toml'
+      - 'scripts/check-root-compat.py'
+      - 'scripts/tests/test_root_compat.py'
   schedule:
     # Run every Monday-Friday at 8:30 AM UTC.
     - cron: "30 8 * * 1-5"
@@ -31,6 +33,8 @@ jobs:
         run: cargo install --locked cargo-audit@0.22.0
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate legacy root advisory exceptions
+        run: python3 scripts/check-root-compat.py
       - name: Run cargo audit
         uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # v2.0.0
         with:
@@ -42,12 +46,17 @@ jobs:
           # 'RUSTSEC-2026-0235': out-of-bounds read in `rkyv` < 0.8.17 when validating untrusted archives.
           # `rkyv` 0.7.46 is only in Cargo.lock as an unused optional dependency of `rust_decimal` (via
           # `byte-unit` <- `openraft`); no feature combination in this workspace enables it, so it is never compiled.
-          ignore: 'RUSTSEC-2025-0055,RUSTSEC-2023-0071,RUSTSEC-2026-0235'
+          # 'RUSTSEC-2026-0381/0383': checksummed 0.26.11 compatibility crates only re-export
+          # their v1 parent. The preceding guard rejects any unpatched root version or parent;
+          # Cargo.lock binds both parents to >=1.0.10, which removes the distrusted root.
+          ignore: 'RUSTSEC-2025-0055,RUSTSEC-2023-0071,RUSTSEC-2026-0235,RUSTSEC-2026-0381,RUSTSEC-2026-0383'
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate legacy root advisory exceptions
+        run: python3 scripts/check-root-compat.py
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.14
         with:
