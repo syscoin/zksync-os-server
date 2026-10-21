@@ -1254,13 +1254,10 @@ async fn simultaneous_dial_keeps_first_exact_replay_and_verifier_owners() {
     .unwrap()
     .unwrap();
     assert_eq!(admitted.message, request);
-    let replay = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        external.replay_rx.recv(),
-    )
-    .await
-    .expect("accepted simultaneous-dial owner did not deliver replay within 5s")
-    .expect("replay stream closed before simultaneous-dial delivery");
+    let replay = tokio::time::timeout(std::time::Duration::from_secs(5), external.replay_rx.recv())
+        .await
+        .expect("accepted simultaneous-dial owner did not deliver replay within 5s")
+        .expect("replay stream closed before simultaneous-dial delivery");
     assert_eq!(replay, record1);
 }
 
