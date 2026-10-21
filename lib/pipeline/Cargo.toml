@@ -22,4 +22,4 @@ vise.workspace = true
 zksync_os_observability.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "test-util"] }
