@@ -1135,11 +1135,19 @@ async fn simultaneous_dial_keeps_first_exact_replay_and_verifier_owners() {
     main_dial.await.unwrap();
     external_dial.await.unwrap();
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let mut authorized = false;
-        let mut replay_requested = false;
+    // Keep the existing deadline: diagnostics must not turn a convergence regression into a pass.
+    // Retain phase progress outside the timed future so cancellation does not discard the evidence.
+    let mut authorized = false;
+    let mut replay_requested = false;
+    let mut recent_events = std::collections::VecDeque::with_capacity(32);
+    let convergence = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while !(authorized && replay_requested) {
-            match main.protocol_rx.recv().await {
+            let event = main.protocol_rx.recv().await;
+            if recent_events.len() == 32 {
+                recent_events.pop_front();
+            }
+            recent_events.push_back(format!("{event:?}"));
+            match event {
                 Some(ProtocolEvent::VerifierAuthorized { peer_id, .. }) => {
                     assert_eq!(peer_id, external_peer_id);
                     authorized = true;
@@ -1156,8 +1164,39 @@ async fn simultaneous_dial_keeps_first_exact_replay_and_verifier_owners() {
             }
         }
     })
-    .await
-    .expect("simultaneous dials did not converge on one authenticated owner");
+    .await;
+    if convergence.is_err() {
+        let main_lane_registered = main
+            .zks_2fa_registry
+            .as_ref()
+            .unwrap()
+            .try_read()
+            .map(|lanes| lanes.contains_key(&external_peer_id))
+            .map_err(|error| error.to_string());
+        let external_lane_registered = external
+            .zks_2fa_registry
+            .as_ref()
+            .unwrap()
+            .try_read()
+            .map(|lanes| lanes.contains_key(&main_peer_id))
+            .map_err(|error| error.to_string());
+        // Only drain on failure, leaving the reverse lifecycle assertions below unchanged.
+        let mut pending_external_events = Vec::with_capacity(32);
+        for _ in 0..32 {
+            match external.protocol_rx.try_recv() {
+                Ok(event) => pending_external_events.push(format!("{event:?}")),
+                Err(_) => break,
+            }
+        }
+        panic!(
+            "simultaneous dials did not converge within 5s: \
+             authorized={authorized}, replay_requested={replay_requested}, \
+             main_lane_registered={main_lane_registered:?}, \
+             external_lane_registered={external_lane_registered:?}; \
+             last main events (up to 32)={recent_events:?}; \
+             pending external events (first 32)={pending_external_events:?}"
+        );
+    }
 
     let lane = main
         .zks_2fa_registry
@@ -1215,7 +1254,14 @@ async fn simultaneous_dial_keeps_first_exact_replay_and_verifier_owners() {
     .unwrap()
     .unwrap();
     assert_eq!(admitted.message, request);
-    assert_eq!(external.replay_rx.recv().await.unwrap(), record1);
+    let replay = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        external.replay_rx.recv(),
+    )
+    .await
+    .expect("accepted simultaneous-dial owner did not deliver replay within 5s")
+    .expect("replay stream closed before simultaneous-dial delivery");
+    assert_eq!(replay, record1);
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
