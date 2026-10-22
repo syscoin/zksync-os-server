@@ -3231,6 +3231,37 @@ mod tests {
         config.validate().await.unwrap();
     }
 
+    #[test]
+    fn bitcoin_da_missing_grace_yaml_is_optional_and_preserves_other_policy() {
+        let schema = ConfigSchema::new(&BatcherConfig::DESCRIPTION, "batcher");
+        for (yaml, expected) in [
+            ("batcher: {}", None),
+            (
+                "batcher:\n  bitcoin_da_missing_blob_recovery_timeout: \"5m\"",
+                Some(Duration::from_secs(300)),
+            ),
+        ] {
+            let mapping: serde_yaml::Mapping = serde_yaml::from_str(yaml).unwrap();
+            let config = ConfigRepository::new(&schema)
+                .with(smart_config::Yaml::new("recovery-test", mapping).unwrap())
+                .single::<BatcherConfig>()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(config.bitcoin_da_missing_blob_recovery_timeout, expected);
+            assert_eq!(
+                config.bitcoin_da_finality_timeout,
+                Duration::from_secs(5_400)
+            );
+            assert_eq!(
+                config.bitcoin_da_finality_mode,
+                BitcoinDaFinalityMode::Chainlock
+            );
+            assert_eq!(config.bitcoin_da_finality_confirmations, 5);
+            assert_eq!(config.bitcoin_da_max_republish_attempts, 3);
+        }
+    }
+
     #[tokio::test]
     async fn missing_blob_recovery_grace_is_optional_positive_and_does_not_change_finality() {
         let mut config = base_config(NodeRole::MainNode);
