@@ -513,6 +513,7 @@ impl<R: RpcClient + Sync> PublicationGuard<'_, R> {
             self.canonical_anchor(anchor).await?;
         }
         let mut retained = vec![];
+        let mut released_anchors = Vec::with_capacity(self.journal.pending.len());
         let mut anchor = self.journal.mined_anchor.clone();
         for entry in &self.journal.pending {
             let Some(txid) = &entry.txid else {
@@ -576,6 +577,7 @@ impl<R: RpcClient + Sync> PublicationGuard<'_, R> {
             };
             if let Some(mined) = mined {
                 self.canonical_anchor(&mined).await?;
+                released_anchors.push(mined.clone());
                 if anchor
                     .as_ref()
                     .is_none_or(|previous| mined.height > previous.height)
@@ -586,10 +588,11 @@ impl<R: RpcClient + Sync> PublicationGuard<'_, R> {
                 retained.push(entry.clone());
             }
         }
-        // A single highest canonical anchor binds every earlier released transaction to its
-        // ancestor chain, without an unbounded journal or per-publication history scan.
-        if let Some(anchor) = &anchor {
-            self.canonical_anchor(anchor).await?;
+        // Independently funded lower transactions can reorg between receipt reads while a
+        // higher transaction remains canonical. Recheck every candidate (at most the shared
+        // window), not only the highest anchor; these RPC reads are not an atomic snapshot.
+        for released_anchor in &released_anchors {
+            self.canonical_anchor(released_anchor).await?;
         }
         if let Some(previous_anchor) = &previous_anchor {
             self.canonical_anchor(previous_anchor).await?;

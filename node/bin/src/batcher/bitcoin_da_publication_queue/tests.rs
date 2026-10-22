@@ -77,10 +77,21 @@ enum WalletAction {
     },
 }
 
+#[derive(Clone)]
+struct ReceiptFork {
+    before_txid: String,
+    lower_height: u64,
+    lower_replacement: String,
+    higher_height: u64,
+    higher_hash: String,
+}
+
 struct FakeState {
     genesis: String,
     chain: Value,
     blocks: BTreeMap<u64, String>,
+    block_reads: Vec<(u64, String)>,
+    fork_before_receipt: Option<ReceiptFork>,
     receipts: BTreeMap<String, Value>,
     mempool_entries: BTreeMap<String, Value>,
     mempool: Value,
@@ -99,19 +110,21 @@ struct FakeRpc {
 #[async_trait]
 impl RpcClient for FakeRpc {
     async fn call(&self, method: &str, params: &[Value]) -> Result<Value, SyscoinError> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         match method {
             "getblockhash" => {
                 let height = params[0].as_u64().ok_or("invalid fake block height")?;
-                if height == 0 {
-                    Ok(json!(state.genesis))
+                let hash = if height == 0 {
+                    state.genesis.clone()
                 } else {
                     state
                         .blocks
                         .get(&height)
-                        .map(|hash| json!(hash))
-                        .ok_or_else(|| "unknown fake block".into())
-                }
+                        .cloned()
+                        .ok_or("unknown fake block")?
+                };
+                state.block_reads.push((height, hash.clone()));
+                Ok(json!(hash))
             }
             "getnevmblobdata" => Err("blob metadata has been pruned".into()),
             "getblockchaininfo" => Ok(state.chain.clone()),
@@ -133,6 +146,34 @@ impl RpcClient for FakeRpc {
             let txid = params[0].as_str().ok_or("invalid fake receipt txid")?;
             let mut state = self.state.lock().unwrap();
             state.receipt_reads += 1;
+            if let Some(fork) = state.fork_before_receipt.clone() {
+                if fork.before_txid == txid {
+                    state
+                        .blocks
+                        .insert(fork.lower_height, fork.lower_replacement);
+                    state
+                        .blocks
+                        .insert(fork.higher_height, fork.higher_hash.clone());
+                    for receipt in state.receipts.values_mut() {
+                        if receipt.get("blockheight").and_then(Value::as_u64)
+                            == Some(fork.lower_height)
+                        {
+                            receipt["confirmations"] = json!(0);
+                            let receipt = receipt.as_object_mut().unwrap();
+                            receipt.remove("blockheight");
+                            receipt.remove("blockhash");
+                        }
+                    }
+                    state.receipts.insert(
+                        txid.to_owned(),
+                        json!({
+                            "txid": txid, "confirmations": 1,
+                            "blockheight": fork.higher_height, "blockhash": fork.higher_hash,
+                        }),
+                    );
+                    state.fork_before_receipt = None;
+                }
+            }
             return Ok(state
                 .receipts
                 .get(txid)
@@ -206,6 +247,8 @@ fn fixture(window: usize) -> (tempfile::TempDir, BitcoinDaPublicationQueue<FakeR
             genesis: GENESIS.to_owned(),
             chain: json!({"initialblockdownload": false}),
             blocks: BTreeMap::from([(7, BLOCK_HASH.to_owned())]),
+            block_reads: vec![],
+            fork_before_receipt: None,
             receipts: BTreeMap::new(),
             mempool_entries: BTreeMap::new(),
             mempool: json!({"loaded": true, "size": 0, "bytes": 0}),
@@ -427,6 +470,99 @@ async fn two_unconfirmed_submissions_fill_shared_window() {
     assert!(reopened(&queue).try_acquire(None).await.unwrap().is_none());
     assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 2);
     assert_eq!(journal(&queue).pending.len(), 2);
+}
+
+#[tokio::test]
+async fn fork_between_mined_receipts_cannot_release_an_earlier_noncanonical_publication() {
+    let (_temporary, queue) = fixture(2);
+    submit(&queue, b"independent lower publication").await;
+    queue
+        .rpc
+        .state
+        .lock()
+        .unwrap()
+        .actions
+        .push_back(WalletAction::Reply(json!({
+            "versionhash": blob_hash(b"independent higher publication"), "txid": OLD_TXID,
+        })));
+    submit(&queue, b"independent higher publication").await;
+    let original_journal = std::fs::read(queue.directory.join("journal.json")).unwrap();
+    let higher_hash = "55".repeat(32);
+    {
+        let mut state = queue.rpc.state.lock().unwrap();
+        state.receipts.insert(
+            TXID.to_owned(),
+            json!({
+                "txid": TXID, "confirmations": 1, "blockheight": 7, "blockhash": BLOCK_HASH,
+            }),
+        );
+        state.receipts.insert(
+            OLD_TXID.to_owned(),
+            json!({
+                "txid": OLD_TXID, "confirmations": 0,
+            }),
+        );
+        assert!(
+            !state.blocks.contains_key(&8),
+            "before the fork the tip is seven and B is unconfirmed"
+        );
+        state.block_reads.clear();
+        // A is canonical when its receipt is checked. Before B's receipt is returned,
+        // switch to a fork where higher B is mined but independently funded lower A is not.
+        state.fork_before_receipt = Some(ReceiptFork {
+            before_txid: OLD_TXID.to_owned(),
+            lower_height: 7,
+            lower_replacement: OLD_TXID.to_owned(),
+            higher_height: 8,
+            higher_hash: higher_hash.clone(),
+        });
+    }
+    let fresh = reopened(&queue);
+    match fresh.try_acquire(None).await {
+        Err(error) => assert!(error.to_string().contains("reorganized")),
+        Ok(_) => {
+            let incorrectly_released = journal(&queue);
+            assert!(incorrectly_released.pending.is_empty());
+            assert_eq!(
+                incorrectly_released.mined_anchor,
+                Some(BlockAnchor {
+                    height: 8,
+                    hash: higher_hash.clone()
+                })
+            );
+            assert_eq!(
+                queue.rpc.state.lock().unwrap().receipts[TXID]["confirmations"],
+                0
+            );
+            panic!(
+                "reconciliation released both pending entries although the lower publication is now unconfirmed"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(queue.directory.join("journal.json")).unwrap(),
+        original_journal
+    );
+    let state = queue.rpc.state.lock().unwrap();
+    assert_eq!(
+        state.wallet_calls, 2,
+        "reconciliation must not issue another publication"
+    );
+    assert_eq!(
+        state
+            .block_reads
+            .iter()
+            .filter(|(height, _)| *height != 0)
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![
+            (7, BLOCK_HASH.to_owned()),
+            (8, higher_hash),
+            (7, OLD_TXID.to_owned()),
+        ]
+    );
+    assert_eq!(journal(&queue).pending.len(), 2);
+    assert!(journal(&queue).mined_anchor.is_none());
 }
 
 #[tokio::test]

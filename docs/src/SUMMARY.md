@@ -37,7 +37,7 @@
 
 - [Guides](guides/index.md)
   - [Gateway launch and fresh public testnet replacement](guides/gateway_launch.md)
-  - [Bounded Bitcoin DA recovery publication](guides/bitcoin_da_publication_queue.md)
     <!-- SYSCOIN: Link the dated mock-testnet staging appendix; it is not a completed launch or mainnet procedure. -->
     - [2026-10-06 Tanenbaum staged-service reference](guides/reference-assets/v32-public-tanenbaum-20261006/INSTALLATION-GATES.md)
+  - [Bounded Bitcoin DA recovery publication](guides/bitcoin_da_publication_queue.md)
   - [Updating local chains: genesis and L1 state](guides/local_setup_update.md)
