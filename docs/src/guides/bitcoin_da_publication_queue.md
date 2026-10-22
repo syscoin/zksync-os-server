@@ -1,0 +1,90 @@
+# Bounded Bitcoin DA recovery publication
+
+The default `batcher.bitcoin_da_publication_window: 1` retains the existing
+publication and sequential recovery behavior. The opt-in coordinator supports a
+window of two to four outstanding publications, not a burst of 32 wallet calls.
+Start with two on a reviewed testnet rollout.
+
+## Shared-wallet rollout requirements
+
+Upgrade **every** normal Edge publisher, normal Gateway publisher, and Gateway
+recovery publisher using the Core wallet before enabling this mode. They must run
+on the same host and use the same private physical directory on a local filesystem
+with working OS file locks. A shared wallet across hosts, network filesystems,
+unmodified publishers, manual wallet spends, or other uncoordinated writers is not
+supported by this coordinator.
+
+Quiesce all writers before first activation. Core must be out of initial block
+download, with its saved mempool fully loaded and empty, before the coordinator
+initializes. An empty mempool while Core is still loading is not sufficient.
+Wait for existing publications to mine; do not delete Core mempool or wallet state.
+
+All writers must use matching values for these settings:
+
+```yaml
+batcher:
+  bitcoin_da_publication_window: 2
+  bitcoin_da_publication_state_path: /absolute/private/shared-wallet-directory
+  bitcoin_da_publication_mempool_count_limit: 20
+  bitcoin_da_publication_mempool_vbytes_limit: 75000
+  bitcoin_da_publication_vbytes_reserve: 25000
+```
+
+The directory must be private (0700 on Unix); files are private (0600). Symlink
+aliases are rejected. The journal binds the chain genesis, sanitized RPC endpoint,
+wallet name, window, and advisory budgets. A mismatch stops publication. Existing
+RPC URL, credentials, wallet, and finality settings remain required; do not put
+credentials in this journal or in a support report.
+
+The count and vbyte values above are deliberately conservative **whole-mempool
+testnet budgets**, not universal production defaults or discovered Core policy.
+Unrelated transactions consume this headroom too. Operators must review them
+against the actual node policy and workload. Automatic wallet input selection can
+make a transaction larger than the configured vbyte estimate. These checks are
+advisory backpressure; Core remains the final admission authority. This feature
+does not raise ancestor/descendant limits, bypass policy, change confirmations, or
+guarantee that a particular candidate will be admitted.
+
+## What is durable
+
+The coordinator serializes the entire fund-and-broadcast RPC. It writes and fsyncs
+an outstanding entry before calling the wallet, then durably records the returned
+transaction ID. Normal publication has priority over recovery when waiting for a
+free slot. Duplicate hashes already pending are not resubmitted.
+
+A known transaction frees a funding slot only when Core's wallet receipt identifies
+that exact transaction ID in a canonical mined block. This works even after Core
+prunes the blob metadata. A prior transaction with the same blob hash cannot free
+it. Receipt reads are bounded and raw transaction bodies are not logged or retained.
+The journal retains the highest mined block anchor;
+a later canonical-chain mismatch stops all writers for investigation. Mining can
+free a funding slot before the DA finality policy is satisfied. The commit gate
+still waits for **all** own and forwarded references in the current command to
+satisfy the unchanged finality policy.
+
+The existing per-hash recovery clocks, cooldowns, and paid-attempt reservations are
+unchanged. Headroom is checked before claiming an attempt. Once a wallet RPC has
+been attempted, a failure still consumes that attempt and its cooldown. There is
+no same-attempt retry, clock reset, or attempt refund.
+
+## Unknown outcomes and recovery
+
+A timeout, cancellation, malformed response, or failed result persistence can
+leave Core processing or retaining the transaction even after the caller stops
+waiting. Its outstanding entry therefore remains a **global wallet-writer fence**
+across restarts. It does not expire, and a missing mempool entry or an older mined
+publication of the same blob hash does not clear it. All RPC errors are handled
+conservatively in this first version, including policy errors raced after the
+advisory preflight.
+
+Stop and investigate the exact wallet transaction and canonical-chain evidence
+when this happens. This version does not automatically reconcile an unknown
+transaction ID. Do not delete or edit the journal, clear attempt markers, reset
+clocks, disable coordination, downgrade a writer, or switch it to the legacy path
+to work around the fence. Such actions would discard the evidence that prevents
+duplicate fees or concurrent wallet execution. Any recovery or rollback requires
+all writers quiesced and a reviewed, positive reconciliation of outstanding work.
+
+The queue is only a throughput control for the current bounded commit command.
+It does not sweep arbitrary historical blobs, alter archive authentication, or
+change when a batch is safe to commit.

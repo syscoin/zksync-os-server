@@ -1948,6 +1948,42 @@ pub struct BatcherConfig {
     #[config(default_t = 3)]
     pub bitcoin_da_max_republish_attempts: u32,
 
+    /// Opt-in shared wallet publication window. One preserves the legacy publisher and recovery.
+    /// Every Edge/Gateway writer using the wallet must share the same coordinator before opt-in.
+    #[config(default_t = 1)]
+    #[config_validate(custom(
+        |_root: &Config, value: &usize| (1..=4).contains(value),
+        "must be between one and four"
+    ))]
+    pub bitcoin_da_publication_window: usize,
+
+    /// Private, absolute directory shared by all publishers of the same Core wallet.
+    #[config_validate(custom(
+        |root: &Config, value: &Option<PathBuf>| {
+            if root.batcher_config.bitcoin_da_publication_window == 1 {
+                value.is_none()
+            } else {
+                value.as_ref().is_some_and(|path| path.is_absolute())
+            }
+        },
+        "must be absent for legacy window one, or an absolute shared directory for window two to four"
+    ))]
+    pub bitcoin_da_publication_state_path: Option<PathBuf>,
+
+    /// Advisory whole-mempool transaction ceiling checked before reserving a paid attempt.
+    /// These operator budgets do not discover or override Core's ancestor/descendant policy.
+    #[config(default_t = 20)]
+    pub bitcoin_da_publication_mempool_count_limit: u64,
+
+    /// Advisory whole-mempool vbyte ceiling, including the estimated next transaction reserve.
+    #[config(default_t = 75_000)]
+    pub bitcoin_da_publication_mempool_vbytes_limit: u64,
+
+    /// Conservative estimated next-transaction vbytes; automatic wallet input selection may
+    /// exceed this estimate. Core remains the final admission authority in every case.
+    #[config(default_t = 25_000)]
+    pub bitcoin_da_publication_vbytes_reserve: u64,
+
     /// Whether Gateway may fetch and republish edge DA blobs that are retrievable but not final
     /// before committing Gateway batches to L1.
     #[config(default_t = true)]
