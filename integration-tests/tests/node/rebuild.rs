@@ -474,7 +474,10 @@ async fn block_rebuild_hash_guard_prevents_double_rebuild(
             let (transaction, latest_nonce, pending_nonce, tip, pipeline) = tokio::join!(
                 second_restart.l2_provider.get_transaction_by_hash(tx_hash),
                 second_restart.l2_provider.get_transaction_count(sender),
-                second_restart.l2_provider.get_transaction_count(sender).pending(),
+                second_restart
+                    .l2_provider
+                    .get_transaction_count(sender)
+                    .pending(),
                 second_restart.l2_provider.get_block_number(),
                 second_restart.pipeline_status(),
             );
