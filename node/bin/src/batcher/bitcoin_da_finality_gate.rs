@@ -746,6 +746,7 @@ mod tests {
         let wallet_entered = Arc::new(Notify::new());
         let wallet_release = Arc::new(Notify::new());
         let canonical_confirmation_seen = Arc::new(Notify::new());
+        let canonical_confirmation_polls = Arc::new(AtomicUsize::new(0));
         let handler = {
             let payloads = payloads.clone();
             let published = published.clone();
@@ -754,6 +755,7 @@ mod tests {
             let wallet_entered = wallet_entered.clone();
             let wallet_release = wallet_release.clone();
             let canonical_confirmation_seen = canonical_confirmation_seen.clone();
+            let canonical_confirmation_polls = canonical_confirmation_polls.clone();
             let hashes = hashes.clone();
             move |Json(request): Json<Value>| {
                 let payloads = payloads.clone();
@@ -763,6 +765,7 @@ mod tests {
                 let wallet_entered = wallet_entered.clone();
                 let wallet_release = wallet_release.clone();
                 let canonical_confirmation_seen = canonical_confirmation_seen.clone();
+                let canonical_confirmation_polls = canonical_confirmation_polls.clone();
                 let hashes = hashes.clone();
                 async move {
                     let mut body = match request["method"].as_str().unwrap() {
@@ -779,7 +782,13 @@ mod tests {
                                 json!({"result": {"height": 9, "chainlock": false}})
                             } else if hash == hashes[2] || published.lock().unwrap().contains(hash)
                             {
-                                if hash == hashes[0] {
+                                // A second metadata poll proves the gate processed the first
+                                // one-confirmation response and kept waiting for its policy.
+                                if hash == hashes[0]
+                                    && height.load(Ordering::SeqCst) == 10
+                                    && canonical_confirmation_polls.fetch_add(1, Ordering::SeqCst)
+                                        >= 1
+                                {
                                     canonical_confirmation_seen.notify_one();
                                 }
                                 json!({"result": {"height": 10, "chainlock": false}})
