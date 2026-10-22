@@ -168,6 +168,62 @@ impl BitcoinDaStatusStorage {
             .await
     }
 
+    pub async fn prime_legacy_recovery(&self, version_hash: &str) -> anyhow::Result<()> {
+        self.prime_legacy_recovery_with_clock(version_hash, recovery_now_unix_ms)
+            .await
+    }
+
+    async fn prime_legacy_recovery_with_clock(
+        &self,
+        version_hash: &str,
+        clock: impl FnOnce() -> anyhow::Result<u64> + Send + 'static,
+    ) -> anyhow::Result<()> {
+        // The private observer makes queued-lock drift tests deterministic without sleeps.
+        self.prime_legacy_recovery_with_observer(version_hash, clock, || {})
+            .await
+    }
+
+    async fn prime_legacy_recovery_with_observer(
+        &self,
+        version_hash: &str,
+        clock: impl FnOnce() -> anyhow::Result<u64> + Send + 'static,
+        after_positive_precheck: impl FnOnce() + Send + 'static,
+    ) -> anyhow::Result<()> {
+        let storage = self.clone();
+        let hash = normalized_republication_hash(version_hash)?;
+        tokio::task::spawn_blocking(move || {
+            // Sequential create_new reservations are never deleted, so slot one witnesses
+            // every legacy attempt without scanning retained receipts for normal final blobs.
+            if !storage.has_first_republication_marker(&hash)? {
+                return Ok(());
+            }
+            after_positive_precheck();
+            let _lock = storage.recovery_lock(&hash)?;
+            anyhow::ensure!(
+                storage.has_first_republication_marker(&hash)?,
+                "Bitcoin DA republication marker disappeared during legacy priming"
+            );
+            storage.load_or_create_recovery_clock(&hash, clock()?)?;
+            Ok(())
+        })
+        .await?
+    }
+
+    fn has_first_republication_marker(&self, hash: &str) -> anyhow::Result<bool> {
+        let path = self.base_dir.join(format!("republish_{hash}_1"));
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                anyhow::ensure!(
+                    metadata.is_file(),
+                    "invalid Bitcoin DA republication marker"
+                );
+                Ok(true)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err).context("inspect Bitcoin DA republication marker"),
+        }
+    }
+
     async fn observe_recovery_with_clock(
         &self,
         version_hash: &str,
@@ -275,7 +331,17 @@ impl BitcoinDaStatusStorage {
     }
 
     #[cfg(test)]
-    async fn recovery_due_at(
+    pub(super) async fn prime_legacy_recovery_at(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+    ) -> anyhow::Result<()> {
+        self.prime_legacy_recovery_with_clock(version_hash, move || Ok(now_unix_ms))
+            .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn recovery_due_at(
         &self,
         version_hash: &str,
         now_unix_ms: u64,
@@ -459,12 +525,12 @@ mod tests {
     const HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
 
     #[tokio::test]
-    async fn enqueued_observe_due_and_claim_read_clock_after_prior_wallet_claim_releases() {
+    async fn enqueued_observe_due_claim_and_legacy_prime_read_clock_after_wallet_claim_releases() {
         use std::sync::{
             Arc,
             atomic::{AtomicU64, AtomicUsize, Ordering},
         };
-        for operation in 0..3 {
+        for operation in 0..4 {
             let root = tempfile::tempdir().unwrap();
             let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
             storage.observe_recovery_at(HASH, 1_000).await.unwrap();
@@ -495,7 +561,7 @@ mod tests {
                         )
                         .await
                         .map(|_| ()),
-                    _ => storage
+                    2 => storage
                         .claim_republication_with_clock(
                             HASH,
                             clock,
@@ -505,6 +571,7 @@ mod tests {
                         )
                         .await
                         .map(|_| ()),
+                    _ => storage.prime_legacy_recovery_with_clock(HASH, clock).await,
                 }
             };
             tokio::pin!(waiting);
@@ -526,7 +593,7 @@ mod tests {
                     )
                     .await
                     .map(|_| ()),
-                _ => storage
+                2 => storage
                     .claim_republication_with_clock(
                         HASH,
                         rollback,
@@ -536,6 +603,11 @@ mod tests {
                     )
                     .await
                     .map(|_| ()),
+                _ => {
+                    storage
+                        .prime_legacy_recovery_with_clock(HASH, rollback)
+                        .await
+                }
             };
             assert!(result.unwrap_err().to_string().contains("backwards"));
             assert_eq!(storage.reserve_republication(HASH, 3).await.unwrap(), 2);
@@ -827,6 +899,205 @@ mod tests {
                 .to_string()
                 .contains("limit exhausted")
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_priming_ages_together_and_preserves_clocks_across_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        let second = "608c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+        let missing = Duration::from_secs(300);
+        let cooldown = Duration::from_secs(5_400);
+        let due_at = 5_401_000;
+        for hash in [HASH, second] {
+            assert_eq!(storage.reserve_republication(hash, 3).await.unwrap(), 1);
+            storage.prime_legacy_recovery_at(hash, 1_000).await.unwrap();
+        }
+        let reopened = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        for hash in [HASH, second] {
+            let path = root.path().join(format!("recovery_{hash}.json"));
+            let original = std::fs::read(&path).unwrap();
+            reopened
+                .prime_legacy_recovery_at(hash, 2_000)
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert!(
+                !reopened
+                    .recovery_due_at(hash, due_at - 1, missing, cooldown)
+                    .await
+                    .unwrap()
+            );
+            // A first missing observation after expiry must not start another 90 minutes.
+            reopened.observe_recovery_at(hash, due_at).await.unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert!(
+                reopened
+                    .recovery_due_at(hash, due_at, missing, cooldown)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                reopened
+                    .claim_republication_number(hash, due_at, missing, cooldown, 3)
+                    .await
+                    .unwrap(),
+                Some(2)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_priming_without_a_marker_creates_no_files_or_clock_read() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        storage
+            .prime_legacy_recovery_with_observer(
+                HASH,
+                || panic!("a normal final blob must not read a recovery clock"),
+                || panic!("a negative precheck must return immediately"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_priming_rechecks_marker_drift_after_queued_lock_before_reading_time() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        for replace_with_directory in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+            storage.reserve_republication(HASH, 3).await.unwrap();
+            let held = storage.recovery_lock(HASH).unwrap();
+            let (passed, observed) = tokio::sync::oneshot::channel();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let waiting = tokio::spawn({
+                let storage = storage.clone();
+                let reads = reads.clone();
+                async move {
+                    storage
+                        .prime_legacy_recovery_with_observer(
+                            HASH,
+                            move || {
+                                reads.fetch_add(1, Ordering::SeqCst);
+                                Ok(1_000)
+                            },
+                            move || {
+                                passed.send(()).unwrap();
+                            },
+                        )
+                        .await
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(5), observed)
+                .await
+                .unwrap()
+                .unwrap();
+            let marker = root.path().join(format!("republish_{HASH}_1"));
+            std::fs::remove_file(&marker).unwrap();
+            if replace_with_directory {
+                std::fs::create_dir(&marker).unwrap();
+            }
+            drop(held);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), waiting)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("marker")
+            );
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+            assert!(!root.path().join(format!("recovery_{HASH}.json")).exists());
+            assert!(!root.path().join(format!("republish_{HASH}_2")).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_priming_keeps_exhausted_attempts_exhausted() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        for attempt in 1..=3 {
+            assert_eq!(
+                storage.reserve_republication(HASH, 3).await.unwrap(),
+                attempt
+            );
+        }
+        storage.prime_legacy_recovery_at(HASH, 1_000).await.unwrap();
+        assert!(
+            storage
+                .claim_republication_number(
+                    HASH,
+                    5_401_000,
+                    Duration::from_secs(300),
+                    Duration::from_secs(5_400),
+                    3
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("limit exhausted")
+        );
+        for attempt in 1..=3 {
+            assert!(
+                root.path()
+                    .join(format!("republish_{HASH}_{attempt}"))
+                    .is_file()
+            );
+        }
+        assert!(!root.path().join(format!("republish_{HASH}_4")).exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_priming_fails_closed_for_corrupt_or_backwards_clocks() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        storage.reserve_republication(HASH, 3).await.unwrap();
+        storage.prime_legacy_recovery_at(HASH, 1_000).await.unwrap();
+        let path = root.path().join(format!("recovery_{HASH}.json"));
+        let original = std::fs::read(&path).unwrap();
+        assert!(storage.prime_legacy_recovery_at(HASH, 999).await.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        for bytes in [
+            b"corrupt".as_slice(),
+            br#"{"version":1,"first_observed_unix_ms":1000,"last_attempt_unix_ms":2000}"#,
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(storage.prime_legacy_recovery_at(HASH, 1_100).await.is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        assert!(!root.path().join(format!("republish_{HASH}_2")).exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_priming_refuses_nonregular_marker_before_creating_a_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        std::fs::create_dir(root.path().join(format!("republish_{HASH}_1"))).unwrap();
+        assert!(storage.prime_legacy_recovery_at(HASH, 1_000).await.is_err());
+        assert!(!root.path().join(format!("recovery_{HASH}.lock")).exists());
+        assert!(!root.path().join(format!("recovery_{HASH}.json")).exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_priming_refuses_symlink_marker_before_creating_a_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, root.path().join(format!("republish_{HASH}_1")))
+            .unwrap();
+        assert!(storage.prime_legacy_recovery_at(HASH, 1_000).await.is_err());
+        assert!(!root.path().join(format!("recovery_{HASH}.lock")).exists());
+        assert!(!root.path().join(format!("recovery_{HASH}.json")).exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"");
     }
 
     #[tokio::test]

@@ -574,6 +574,10 @@ impl BitcoinDaFinalityGate {
                 BlobFinalityState::Missing | BlobFinalityState::Unconfirmed
             ) {
                 self.storage.observe_recovery(&hash).await?;
+            } else {
+                // A previously republished ref can prune while earlier refs settle. Start
+                // its legacy cooldown now, not another full window when it becomes missing.
+                self.storage.prime_legacy_recovery(&hash).await?;
             }
         }
         Ok(())
@@ -617,6 +621,7 @@ mod tests {
     };
 
     const ABC_HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+    const METADATA_POLL_BUDGET_ERROR: &str = "test metadata poll budget exhausted";
     const HEX_LOOKING_HASH: &str =
         "d6ffd191d5851bd88ef4f0fffd051050a9e91c15346096a0e1f0a9afa50f34e5";
 
@@ -702,6 +707,221 @@ mod tests {
         message.extend(U256::from(bytes.len()).to_be_bytes::<32>());
         message.extend(bytes);
         message
+    }
+
+    #[tokio::test]
+    async fn current_confirmed_legacy_refs_age_before_pruning_without_expanding_recovery_scope() {
+        use std::sync::atomic::AtomicBool;
+
+        let hashes: Vec<String> = ["legacy-own", "legacy-edge", "normal-final", "future-legacy"]
+            .into_iter()
+            .map(|value| hex::encode(Blake2s256::digest(value.as_bytes())))
+            .collect();
+        let own = vec![hashes[0].clone(), hashes[2].clone()];
+        let command = recovery_test_command(&own, recovery_test_edge_message(10, 1, &hashes[1..3]));
+        let pruned = Arc::new(AtomicBool::new(false));
+        let matured = Arc::new(AtomicBool::new(false));
+        let wallet_calls = Arc::new(AtomicUsize::new(0));
+        let handler = {
+            let pruned = pruned.clone();
+            let matured = matured.clone();
+            let wallet_calls = wallet_calls.clone();
+            let current = hashes[..3].to_vec();
+            move |Json(request): Json<Value>| {
+                let mut body = match request["method"].as_str().unwrap() {
+                    "getblockcount" => json!({"result": 10}),
+                    "getnevmblobdata" => {
+                        let hash = request["params"][0]
+                            .as_str()
+                            .unwrap()
+                            .trim_start_matches("0x");
+                        assert!(current.iter().any(|value| value == hash));
+                        assert_eq!(
+                            request["params"],
+                            json!([hash]),
+                            "priming uses Core's metadata-only default"
+                        );
+                        if pruned.load(Ordering::SeqCst) && hash != current[2] {
+                            json!({"error": {"code": -32602, "message": "missing blob"}})
+                        } else {
+                            let height = if hash == current[0] && !matured.load(Ordering::SeqCst) {
+                                10
+                            } else {
+                                9
+                            };
+                            json!({"result": {"height": height, "chainlock": false}})
+                        }
+                    }
+                    "syscoincreatenevmblob" => {
+                        wallet_calls.fetch_add(1, Ordering::SeqCst);
+                        panic!("priming or a still-final ref must never publish")
+                    }
+                    method => panic!("unexpected method: {method}"),
+                };
+                body["id"] = request["id"].clone();
+                async move { Json(body) }
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().fallback(axum::routing::post(handler));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
+        let status = BitcoinDaBatchStatus {
+            expected_hashes: own.clone(),
+            published_hashes: own,
+            ..Default::default()
+        };
+        storage.save(7, &status).await.unwrap();
+        for index in [0, 1, 3] {
+            assert_eq!(
+                storage
+                    .reserve_republication(&hashes[index], 3)
+                    .await
+                    .unwrap(),
+                1
+            );
+        }
+        let cooldown = Duration::from_secs(5_400);
+        let missing = Duration::from_secs(300);
+        let config = BatcherConfig {
+            bitcoin_da_rpc_url: Some(url.clone()),
+            bitcoin_da_rpc_user: Some("user".into()),
+            bitcoin_da_rpc_password: Some("password".into()),
+            bitcoin_da_poda_url: url,
+            bitcoin_da_finality_mode: BitcoinDaFinalityMode::Confirmations,
+            bitcoin_da_finality_confirmations: 2,
+            bitcoin_da_finality_timeout: cooldown,
+            bitcoin_da_missing_blob_recovery_timeout: Some(missing),
+            ..Default::default()
+        };
+        let gate = BitcoinDaFinalityGate::new(config.clone(), storage.clone(), false);
+        let client = gate.client().unwrap();
+        assert!(matches!(
+            gate.blob_finality_state(&client, &hashes[0]).await.unwrap(),
+            BlobFinalityState::Confirmed { .. }
+        ));
+        assert!(
+            gate.blob_finality_state(&client, &hashes[1])
+                .await
+                .unwrap()
+                .is_final()
+        );
+        gate.prime_command_recovery_clocks(&command).await.unwrap();
+        let mut primed = Vec::new();
+        for hash in &hashes[..2] {
+            let path = dir.path().join(format!("recovery_{hash}.json"));
+            let bytes = std::fs::read(path).unwrap();
+            let clock: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                clock["first_observed_unix_ms"],
+                clock["last_attempt_unix_ms"]
+            );
+            let due_at = clock["last_attempt_unix_ms"].as_u64().unwrap() + 5_400_000;
+            assert!(
+                !storage
+                    .recovery_due_at(hash, due_at - 1, missing, cooldown)
+                    .await
+                    .unwrap()
+            );
+            primed.push((hash.clone(), bytes, due_at));
+        }
+        // Normal final refs and even a retained legacy reservation outside this command
+        // must not acquire a new recovery clock or lock.
+        for index in [2, 3] {
+            for extension in ["json", "lock"] {
+                assert!(
+                    !dir.path()
+                        .join(format!("recovery_{}.{extension}", hashes[index]))
+                        .exists()
+                );
+            }
+        }
+        pruned.store(true, Ordering::SeqCst);
+        for (hash, original, due_at) in primed {
+            assert!(matches!(
+                gate.blob_finality_state(&client, &hash).await.unwrap(),
+                BlobFinalityState::Missing
+            ));
+            storage.observe_recovery_at(&hash, due_at).await.unwrap();
+            assert!(
+                storage
+                    .recovery_due_at(&hash, due_at, missing, cooldown)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join(format!("recovery_{hash}.json"))).unwrap(),
+                original
+            );
+        }
+
+        // The same legacy clocks being overdue must not change finality acceptance or
+        // cause a wallet call when a fresh chain read still satisfies the policy.
+        pruned.store(false, Ordering::SeqCst);
+        matured.store(true, Ordering::SeqCst);
+        let due_dir = tempfile::tempdir().unwrap();
+        let due_storage = BitcoinDaStatusStorage::new(due_dir.path()).unwrap();
+        due_storage.save(7, &status).await.unwrap();
+        let now_ms = recovery_now_unix_ms().unwrap();
+        for hash in &hashes[..2] {
+            due_storage.reserve_republication(hash, 3).await.unwrap();
+            due_storage
+                .prime_legacy_recovery_at(hash, now_ms - 5_400_001)
+                .await
+                .unwrap();
+        }
+        let due_gate = BitcoinDaFinalityGate::new(config.clone(), due_storage.clone(), false);
+        due_gate
+            .verify_command_da_before_commit(&command)
+            .await
+            .unwrap();
+        assert!(due_storage.load(7).await.unwrap().unwrap().finalized);
+        assert_eq!(wallet_calls.load(Ordering::SeqCst), 0);
+        for hash in &hashes[..2] {
+            let clock: Value = serde_json::from_slice(
+                &std::fs::read(due_dir.path().join(format!("recovery_{hash}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(clock["last_attempt_unix_ms"], now_ms - 5_400_001);
+            assert!(!due_dir.path().join(format!("republish_{hash}_2")).exists());
+        }
+
+        let cached_dir = tempfile::tempdir().unwrap();
+        let cached_storage = BitcoinDaStatusStorage::new(cached_dir.path()).unwrap();
+        cached_storage
+            .reserve_republication(&hashes[0], 3)
+            .await
+            .unwrap();
+        cached_storage
+            .save(
+                7,
+                &BitcoinDaBatchStatus {
+                    finalized: true,
+                    finality_policy: Some(BitcoinDaFinalityPolicy {
+                        mode: BitcoinDaFinalityMode::Confirmations,
+                        confirmations: 2,
+                    }),
+                    ..status
+                },
+            )
+            .await
+            .unwrap();
+        let cached_gate = BitcoinDaFinalityGate::new(config, cached_storage, false);
+        cached_gate
+            .prime_command_recovery_clocks(&command)
+            .await
+            .unwrap();
+        for extension in ["json", "lock"] {
+            assert!(
+                !cached_dir
+                    .path()
+                    .join(format!("recovery_{}.{extension}", hashes[0]))
+                    .exists()
+            );
+        }
+        server.abort();
     }
 
     #[tokio::test]
@@ -987,11 +1207,29 @@ mod tests {
         finality: Option<Value>,
         wallet_error: bool,
     ) -> (SyscoinClient, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let (client, wallet_calls, _, server) =
+            recovery_rpc_with_metadata_budget(finality, wallet_error, None).await;
+        (client, wallet_calls, server)
+    }
+
+    async fn recovery_rpc_with_metadata_budget(
+        finality: Option<Value>,
+        wallet_error: bool,
+        metadata_budget: Option<usize>,
+    ) -> (
+        SyscoinClient,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let wallet_calls = Arc::new(AtomicUsize::new(0));
         let calls = wallet_calls.clone();
+        let metadata_reads = Arc::new(AtomicUsize::new(0));
+        let reads = metadata_reads.clone();
         let app = Router::new().fallback(
             get(|| async { b"abc".to_vec() }).post(move |Json(request): Json<Value>| {
                 let calls = calls.clone();
+                let reads = reads.clone();
                 let finality = finality.clone();
                 async move {
                     let body = match request["method"].as_str().unwrap() {
@@ -1007,10 +1245,17 @@ mod tests {
                             json!({"result": {"data": "616263"}})
                         }
                         "getblockcount" => json!({"result": 10}),
-                        "getnevmblobdata" => match finality {
-                            Some(state) => json!({"result": state}),
-                            None => json!({"error": {"code": -32602, "message": "missing blob"}}),
-                        },
+                        "getnevmblobdata" => {
+                            let read = reads.fetch_add(1, Ordering::SeqCst);
+                            if metadata_budget.is_some_and(|budget| read >= budget) {
+                                json!({"error": {"code": -32099, "message": METADATA_POLL_BUDGET_ERROR}})
+                            } else {
+                                match finality {
+                                    Some(state) => json!({"result": state}),
+                                    None => json!({"error": {"code": -32602, "message": "missing blob"}}),
+                                }
+                            }
+                        }
                         method => panic!("unexpected method: {method}"),
                     };
                     let mut body = body;
@@ -1031,7 +1276,7 @@ mod tests {
             "test",
         )
         .unwrap();
-        (client, wallet_calls, server)
+        (client, wallet_calls, metadata_reads, server)
     }
 
     #[tokio::test]
@@ -1071,7 +1316,8 @@ mod tests {
     async fn missing_override_recovers_without_shortening_unconfirmed_timeout() {
         for state in [None, Some(json!({"chainlock": false}))] {
             let missing = state.is_none();
-            let (client, calls, server) = recovery_rpc(state, true).await;
+            let (client, calls, metadata_reads, server) =
+                recovery_rpc_with_metadata_budget(state, true, missing.then_some(1)).await;
             let dir = tempfile::tempdir().unwrap();
             let config = BatcherConfig {
                 bitcoin_da_finality_timeout: Duration::from_secs(5_400),
@@ -1084,29 +1330,32 @@ mod tests {
                 BitcoinDaStatusStorage::new(dir.path()).unwrap(),
                 false,
             );
+            let first_observed = recovery_now_unix_ms().unwrap() - 1_000;
             gate.storage
-                .observe_recovery_at(ABC_HASH, recovery_now_unix_ms().unwrap() - 1_000)
+                .observe_recovery_at(ABC_HASH, first_observed)
                 .await
                 .unwrap();
-            let result = tokio::time::timeout(
-                Duration::from_millis(100),
-                gate.wait_for_blob_finality(
-                    &client,
-                    ABC_HASH,
-                    BlobFinalityWaitContext::GatewayEdgeRef,
-                ),
-            )
-            .await;
+            let wait = gate.wait_for_blob_finality(
+                &client,
+                ABC_HASH,
+                BlobFinalityWaitContext::GatewayEdgeRef,
+            );
             if missing {
-                assert!(
-                    result
-                        .unwrap()
-                        .unwrap_err()
-                        .to_string()
-                        .contains("failed to republish")
-                );
+                // A second metadata poll fails distinctly, so recovery must occur on the
+                // first eligible poll without imposing a filesystem/network timing SLA.
+                let error = wait.await.unwrap_err().to_string();
+                assert!(error.contains("failed to republish"), "{error}");
+                assert_eq!(metadata_reads.load(Ordering::SeqCst), 1);
                 assert_eq!(calls.load(Ordering::SeqCst), 1);
+                assert!(dir.path().join(format!("republish_{ABC_HASH}_1")).is_file());
+                assert!(!dir.path().join(format!("republish_{ABC_HASH}_2")).exists());
+                let clock: Value = serde_json::from_slice(
+                    &std::fs::read(dir.path().join(format!("recovery_{ABC_HASH}.json"))).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(clock["first_observed_unix_ms"], json!(first_observed));
             } else {
+                let result = tokio::time::timeout(Duration::from_millis(100), wait).await;
                 assert!(result.is_err());
                 assert_eq!(calls.load(Ordering::SeqCst), 0);
             }
@@ -1116,16 +1365,19 @@ mod tests {
 
     #[tokio::test]
     async fn restart_does_not_reset_an_aged_missing_blob_clock() {
-        let (client, calls, server) = recovery_rpc(None, true).await;
+        let (client, calls, metadata_reads, server) =
+            recovery_rpc_with_metadata_budget(None, true, Some(1)).await;
         let dir = tempfile::tempdir().unwrap();
         let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
+        let first_observed = recovery_now_unix_ms().unwrap() - 1_000;
         storage
-            .observe_recovery_at(ABC_HASH, recovery_now_unix_ms().unwrap() - 1_000)
+            .observe_recovery_at(ABC_HASH, first_observed)
             .await
             .unwrap();
         drop(storage);
         let config = BatcherConfig {
             bitcoin_da_missing_blob_recovery_timeout: Some(Duration::from_millis(1)),
+            bitcoin_da_finality_poll_interval: Duration::from_millis(1),
             ..Default::default()
         };
         let gate = BitcoinDaFinalityGate::new(
@@ -1133,19 +1385,66 @@ mod tests {
             BitcoinDaStatusStorage::new(dir.path()).unwrap(),
             false,
         );
-        let result = tokio::time::timeout(
-            Duration::from_millis(100),
-            gate.wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef),
-        )
-        .await;
-        assert!(
-            result
-                .unwrap()
-                .unwrap_err()
-                .to_string()
-                .contains("failed to republish")
-        );
+        let error = gate
+            .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to republish"), "{error}");
+        assert_eq!(metadata_reads.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dir.path().join(format!("republish_{ABC_HASH}_1")).is_file());
+        assert!(!dir.path().join(format!("republish_{ABC_HASH}_2")).exists());
+        let clock: Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(format!("recovery_{ABC_HASH}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(clock["first_observed_unix_ms"], json!(first_observed));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn finite_metadata_budget_rejects_a_second_poll_without_wallet() {
+        let (client, calls, metadata_reads, server) =
+            recovery_rpc_with_metadata_budget(None, true, Some(1)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let config = BatcherConfig {
+            bitcoin_da_finality_timeout: Duration::from_secs(5_400),
+            bitcoin_da_missing_blob_recovery_timeout: None,
+            bitcoin_da_finality_poll_interval: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let gate = BitcoinDaFinalityGate::new(
+            config,
+            BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+            false,
+        );
+        let first_observed = recovery_now_unix_ms().unwrap() - 1_000;
+        gate.storage
+            .observe_recovery_at(ABC_HASH, first_observed)
+            .await
+            .unwrap();
+        let error = gate
+            .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("failed to check Bitcoin DA finality"),
+            "{error}"
+        );
+        assert!(error.contains(METADATA_POLL_BUDGET_ERROR), "{error}");
+        assert!(!error.contains("failed to republish"), "{error}");
+        assert_eq!(metadata_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!dir.path().join(format!("republish_{ABC_HASH}_1")).exists());
+        assert!(!dir.path().join(format!("republish_{ABC_HASH}_2")).exists());
+        let clock: Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(format!("recovery_{ABC_HASH}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(clock["first_observed_unix_ms"], json!(first_observed));
+        assert!(clock["last_attempt_unix_ms"].is_null());
         server.abort();
     }
 
