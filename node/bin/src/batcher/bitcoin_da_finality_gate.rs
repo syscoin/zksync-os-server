@@ -564,7 +564,14 @@ impl BitcoinDaFinalityGate {
                 }
             }
             if !info.edge_da_refs_input.is_empty() {
-                for edge_ref in syscoin_edge_da_refs_from_input(&info.edge_da_refs_input)? {
+                let edge_refs = syscoin_edge_da_refs_from_input(&info.edge_da_refs_input)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse Gateway edge DA refs for batch {}",
+                            batch.batch_number()
+                        )
+                    })?;
+                for edge_ref in edge_refs {
                     for hash in edge_ref
                         .blob_version_hashes
                         .chunks_exact(32)
