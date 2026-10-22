@@ -187,14 +187,12 @@ fn private_directory(directory: &Path) -> anyhow::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    if !directory.exists() {
-        builder.create(directory)?;
-        File::open(
-            directory
-                .parent()
-                .context("publication directory has no parent")?,
-        )?
-        .sync_all()?;
+    match builder.create(directory) {
+        Ok(()) => {}
+        // Every writer attempts creation; a concurrent or prior creator is acceptable only
+        // after the same physical-type and private-permission checks below.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
     }
     let metadata = std::fs::symlink_metadata(directory)?;
     anyhow::ensure!(metadata.is_dir(), "invalid publication directory");
@@ -206,6 +204,14 @@ fn private_directory(directory: &Path) -> anyhow::Result<()> {
             "publication directory must be private (0700)"
         );
     }
+    // A writer observing an existing directory cannot assume its creator synced the parent.
+    // Establish namespace durability independently before any publication can use the journal.
+    File::open(
+        directory
+            .parent()
+            .context("publication directory has no parent")?,
+    )?
+    .sync_all()?;
     Ok(())
 }
 

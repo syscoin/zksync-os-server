@@ -36,6 +36,89 @@ fn default_legacy_path_is_off_and_invalid_or_bypassed_shared_config_is_refused()
     assert!(BitcoinDaPublicationQueue::from_config(&bypass).is_err());
 }
 
+#[test]
+fn directory_creation_accepts_existing_private_directory_and_retains_type_checks() {
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("shared-wallet");
+    private_directory(&directory).unwrap();
+    // The second full initializer must execute and accept mkdir's AlreadyExists path.
+    private_directory(&directory).unwrap();
+    let file = directory.parent().unwrap().join("not-a-directory");
+    std::fs::write(&file, b"corrupt path").unwrap();
+    assert!(private_directory(&file).is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let alias = directory.parent().unwrap().join("symlink-alias");
+        symlink(&directory, &alias).unwrap();
+        assert!(private_directory(&alias).is_err());
+        let dangling = directory.parent().unwrap().join("dangling-alias");
+        symlink(
+            directory.parent().unwrap().join("missing-target"),
+            &dangling,
+        )
+        .unwrap();
+        assert!(private_directory(&dangling).is_err());
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_directory(&directory).is_err());
+    }
+}
+
+#[test]
+fn simultaneous_first_publication_coordinators_accept_the_same_private_directory() {
+    for round in 0..8 {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("shared-wallet");
+        let config = BatcherConfig {
+            bitcoin_da_publication_window: 2,
+            bitcoin_da_publication_state_path: Some(directory.clone()),
+            bitcoin_da_rpc_url: Some("http://127.0.0.1:1".into()),
+            bitcoin_da_rpc_user: Some("test-user".into()),
+            bitcoin_da_rpc_password: Some("test-password".into()),
+            bitcoin_da_request_timeout: std::time::Duration::from_secs(2),
+            bitcoin_da_wallet_name: "shared-test-wallet".into(),
+            bitcoin_da_publication_mempool_count_limit: 20,
+            bitcoin_da_publication_mempool_vbytes_limit: 75_000,
+            bitcoin_da_publication_vbytes_reserve: 25_000,
+            ..Default::default()
+        };
+        let barrier = std::sync::Barrier::new(8);
+        let results = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        BitcoinDaPublicationQueue::from_config(&config)
+                            .map(|queue| assert!(queue.is_some()))
+                            .map_err(|error| error.to_string())
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            results.iter().all(Result::is_ok),
+            "concurrent initialization round {round}: {results:?}"
+        );
+        private_directory(&directory).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn wallet_receipt_transport_drops_sensitive_fields_and_bounds_the_response() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
