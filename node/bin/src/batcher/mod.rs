@@ -1,4 +1,5 @@
 use crate::batcher::batch_deadline_policy::deadline_from_block_timestamp;
+use crate::batcher::bitcoin_da_publication_queue::BitcoinDaPublicationQueue;
 use crate::batcher::bitcoin_da_status_storage::{
     BitcoinDaBatchStatus, BitcoinDaFinalityPolicy, BitcoinDaStatusStorage,
 };
@@ -31,6 +32,7 @@ use zksync_os_types::{ProvingVersion, PubdataMode};
 pub mod batch_builder;
 mod batch_deadline_policy;
 pub(crate) mod bitcoin_da_finality_gate;
+pub(crate) mod bitcoin_da_publication_queue;
 pub(crate) mod bitcoin_da_status_cleanup;
 pub(crate) mod bitcoin_da_status_storage;
 mod seal_criteria;
@@ -637,6 +639,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             .map_err(|err| {
                 anyhow::anyhow!("failed to initialize Bitcoin DA wallet/address: {err}")
             })?;
+        let publication_queue = BitcoinDaPublicationQueue::from_config(&self.batcher_config)?;
+        let normal_turn = match &publication_queue {
+            Some(queue) => Some(queue.normal_turn().await?),
+            None => None,
+        };
 
         let expected_hashes: Vec<String> = expected_version_hashes
             .chunks_exact(32)
@@ -719,6 +726,23 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             {
                 let start = Instant::now();
                 let version_hash = loop {
+                    if let Some(queue) = &publication_queue {
+                        if let Some(mut publication) =
+                            queue.try_acquire(normal_turn.as_ref()).await?
+                        {
+                            if publication.contains(expected_hash)? {
+                                break expected_hash.clone();
+                            }
+                            break publication.publish(blob, expected_hash, false).await?;
+                        }
+                        anyhow::ensure!(
+                            start.elapsed() < self.batcher_config.bitcoin_da_finality_timeout,
+                            "Bitcoin DA publication remained blocked by the shared wallet window or advisory headroom"
+                        );
+                        tokio::time::sleep(self.batcher_config.bitcoin_da_finality_poll_interval)
+                            .await;
+                        continue;
+                    }
                     match client.create_blob(blob).await {
                         Ok(version_hash) => break version_hash,
                         Err(err) => {
