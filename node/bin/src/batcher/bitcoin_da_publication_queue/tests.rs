@@ -132,8 +132,40 @@ async fn wallet_receipt_transport_drops_sensitive_fields_and_bounds_the_response
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            let mut request = Vec::new();
+            let mut body_start_and_length = None;
+            loop {
+                let mut chunk = [0; 1024];
+                let amount = socket.read(&mut chunk).await.unwrap();
+                assert!(amount > 0, "receipt request ended before its body");
+                request.extend_from_slice(&chunk[..amount]);
+                assert!(request.len() <= 4096, "receipt request exceeded test bound");
+                if body_start_and_length.is_none()
+                    && let Some(end) = request.windows(4).position(|value| value == b"\r\n\r\n")
+                {
+                    let headers = std::str::from_utf8(&request[..end]).unwrap();
+                    let length = headers
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .expect("receipt request has a content length")
+                        .1
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap();
+                    let start = end + 4;
+                    assert!(start + length <= 4096);
+                    body_start_and_length = Some((start, length));
+                }
+                if let Some((start, length)) = body_start_and_length
+                    && request.len() >= start + length
+                {
+                    let body: Value = serde_json::from_slice(&request[start..start + length]).unwrap();
+                    assert_eq!(body["method"], "gettransaction");
+                    assert_eq!(body["params"], json!([TXID, false, false]));
+                    break;
+                }
+            }
             let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}", claimed_length.unwrap_or(response_body.len()));
             let _ = socket.write_all(response.as_bytes()).await;
         });
@@ -229,33 +261,32 @@ impl RpcClient for FakeRpc {
             let txid = params[0].as_str().ok_or("invalid fake receipt txid")?;
             let mut state = self.state.lock().unwrap();
             state.receipt_reads += 1;
-            if let Some(fork) = state.fork_before_receipt.clone() {
-                if fork.before_txid == txid {
-                    state
-                        .blocks
-                        .insert(fork.lower_height, fork.lower_replacement);
-                    state
-                        .blocks
-                        .insert(fork.higher_height, fork.higher_hash.clone());
-                    for receipt in state.receipts.values_mut() {
-                        if receipt.get("blockheight").and_then(Value::as_u64)
-                            == Some(fork.lower_height)
-                        {
-                            receipt["confirmations"] = json!(0);
-                            let receipt = receipt.as_object_mut().unwrap();
-                            receipt.remove("blockheight");
-                            receipt.remove("blockhash");
-                        }
+            if let Some(fork) = state.fork_before_receipt.clone()
+                && fork.before_txid == txid
+            {
+                state
+                    .blocks
+                    .insert(fork.lower_height, fork.lower_replacement);
+                state
+                    .blocks
+                    .insert(fork.higher_height, fork.higher_hash.clone());
+                for receipt in state.receipts.values_mut() {
+                    if receipt.get("blockheight").and_then(Value::as_u64) == Some(fork.lower_height)
+                    {
+                        receipt["confirmations"] = json!(0);
+                        let receipt = receipt.as_object_mut().unwrap();
+                        receipt.remove("blockheight");
+                        receipt.remove("blockhash");
                     }
-                    state.receipts.insert(
-                        txid.to_owned(),
-                        json!({
-                            "txid": txid, "confirmations": 1,
-                            "blockheight": fork.higher_height, "blockhash": fork.higher_hash,
-                        }),
-                    );
-                    state.fork_before_receipt = None;
                 }
+                state.receipts.insert(
+                    txid.to_owned(),
+                    json!({
+                        "txid": txid, "confirmations": 1,
+                        "blockheight": fork.higher_height, "blockhash": fork.higher_hash,
+                    }),
+                );
+                state.fork_before_receipt = None;
             }
             return Ok(state
                 .receipts
