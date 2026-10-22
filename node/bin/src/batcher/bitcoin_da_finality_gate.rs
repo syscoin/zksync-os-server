@@ -738,25 +738,33 @@ mod tests {
     #[tokio::test]
     async fn zero_recovery_window_cannot_consume_wallet_budget() {
         let (client, calls, server) = recovery_rpc(None, false).await;
-        let dir = tempfile::tempdir().unwrap();
-        let config = BatcherConfig {
-            bitcoin_da_max_republish_attempts: 2,
-            bitcoin_da_finality_timeout: std::time::Duration::ZERO,
-            ..Default::default()
-        };
-        let gate = BitcoinDaFinalityGate::new(
-            config,
-            BitcoinDaStatusStorage::new(dir.path()).unwrap(),
-            false,
-        );
-        let error = gate
-            .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("must be positive"), "{error}");
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        for config in [
+            BatcherConfig {
+                bitcoin_da_max_republish_attempts: 2,
+                bitcoin_da_finality_timeout: Duration::ZERO,
+                ..Default::default()
+            },
+            BatcherConfig {
+                bitcoin_da_max_republish_attempts: 2,
+                bitcoin_da_missing_blob_recovery_timeout: Some(Duration::ZERO),
+                ..Default::default()
+            },
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            );
+            let error = gate
+                .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("must be positive"), "{error}");
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
         server.abort();
     }
 
