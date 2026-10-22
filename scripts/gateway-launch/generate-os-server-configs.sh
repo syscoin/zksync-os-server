@@ -90,6 +90,7 @@ fi
 : "${BITCOIN_DA_ADDRESS_LABEL:=zksync-os-batcher}"
 : "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
 : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
+: "${BITCOIN_DA_MISSING_BLOB_RECOVERY_TIMEOUT:=}"
 : "${BITCOIN_DA_COOKIE_FILE:=}"
 
 resolve_syscoin_cookie_file() {
@@ -241,6 +242,7 @@ export BITCOIN_DA_WALLET_NAME
 export BITCOIN_DA_ADDRESS_LABEL
 export BITCOIN_DA_FINALITY_MODE
 export BITCOIN_DA_FINALITY_CONFIRMATIONS
+export BITCOIN_DA_MISSING_BLOB_RECOVERY_TIMEOUT
 export PROVER_MODE
 export CONFIG_CHECK_ONLY
 export EDGE_ONLY_CONFIG
@@ -1190,6 +1192,11 @@ def materialize_chain(
                 f"  bitcoin_da_address_label: {os.environ['BITCOIN_DA_ADDRESS_LABEL']}",
                 f"  bitcoin_da_finality_mode: {os.environ['BITCOIN_DA_FINALITY_MODE']}",
                 f"  bitcoin_da_finality_confirmations: {os.environ['BITCOIN_DA_FINALITY_CONFIRMATIONS']}",
+                *(
+                    [f"  bitcoin_da_missing_blob_recovery_timeout: {yaml_scalar(os.environ['BITCOIN_DA_MISSING_BLOB_RECOVERY_TIMEOUT'])}"]
+                    if os.environ['BITCOIN_DA_MISSING_BLOB_RECOVERY_TIMEOUT']
+                    else []
+                ),
                 f"  bitcoin_da_max_republish_attempts: {os.environ.get('BITCOIN_DA_MAX_REPUBLISH_ATTEMPTS', '3')}",
                 f"  bitcoin_da_gateway_l1_republish_enabled: {os.environ.get('BITCOIN_DA_GATEWAY_L1_REPUBLISH_ENABLED', 'true')}",
             ]

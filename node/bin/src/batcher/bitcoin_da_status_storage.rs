@@ -2,7 +2,9 @@ use crate::config::BitcoinDaFinalityMode;
 use alloy::hex;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::fs;
 
 #[derive(Clone, Debug)]
@@ -23,6 +25,58 @@ pub struct BitcoinDaBatchStatus {
 pub struct BitcoinDaFinalityPolicy {
     pub mode: BitcoinDaFinalityMode,
     pub confirmations: u64,
+}
+
+#[derive(Debug)]
+pub struct BitcoinDaRepublicationClaim {
+    pub attempt: u32,
+    _lock: std::fs::File,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BitcoinDaRecoveryClock {
+    version: u32,
+    first_observed_unix_ms: u64,
+    last_attempt_unix_ms: Option<u64>,
+}
+
+impl BitcoinDaRecoveryClock {
+    fn validate(&self, now_unix_ms: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.version == 1,
+            "unsupported Bitcoin DA recovery clock version"
+        );
+        anyhow::ensure!(
+            self.first_observed_unix_ms > 0 && self.first_observed_unix_ms <= now_unix_ms,
+            "invalid or backwards Bitcoin DA recovery clock"
+        );
+        if let Some(last_attempt) = self.last_attempt_unix_ms {
+            anyhow::ensure!(
+                last_attempt >= self.first_observed_unix_ms && last_attempt <= now_unix_ms,
+                "invalid or backwards Bitcoin DA recovery attempt clock"
+            );
+        }
+        Ok(())
+    }
+
+    fn due(&self, now_unix_ms: u64, initial_delay: Duration, cooldown: Duration) -> bool {
+        let (start, delay) = match self.last_attempt_unix_ms {
+            Some(attempt) => (attempt, cooldown),
+            None => (self.first_observed_unix_ms, initial_delay),
+        };
+        u128::from(now_unix_ms - start) >= delay.as_millis()
+    }
+}
+
+fn normalized_republication_hash(version_hash: &str) -> anyhow::Result<String> {
+    let hash = hex::decode(version_hash.strip_prefix("0x").unwrap_or(version_hash))
+        .context("invalid Bitcoin DA republication hash")?;
+    anyhow::ensure!(
+        hash.len() == 32,
+        "invalid Bitcoin DA republication hash length"
+    );
+    Ok(hex::encode(hash))
 }
 
 impl BitcoinDaStatusStorage {
@@ -62,47 +116,218 @@ impl BitcoinDaStatusStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn reserve_republication(
         &self,
         version_hash: &str,
         max_attempts: u32,
     ) -> anyhow::Result<u32> {
-        let hash = hex::decode(version_hash.strip_prefix("0x").unwrap_or(version_hash))
-            .context("invalid Bitcoin DA republication hash")?;
-        anyhow::ensure!(
-            hash.len() == 32,
-            "invalid Bitcoin DA republication hash length"
-        );
-        let hash = hex::encode(hash);
+        let storage = self.clone();
+        let hash = normalized_republication_hash(version_hash)?;
+        tokio::task::spawn_blocking(move || storage.reserve_republication_sync(&hash, max_attempts))
+            .await?
+    }
+
+    fn reserve_republication_sync(&self, hash: &str, max_attempts: u32) -> anyhow::Result<u32> {
         for attempt in 1..=max_attempts {
             // Reservation names cannot match batch-receipt cleanup. A lost wallet response or
             // restart must not release a slot that may already have paid for publication.
             let path = self.base_dir.join(format!("republish_{hash}_{attempt}"));
-            let mut options = fs::OpenOptions::new();
+            let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
-            options.mode(0o600);
-            let file = match options.open(path).await {
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let file = match options.open(path) {
                 Ok(file) => file,
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(err) => return Err(err).context("reserve Bitcoin DA republication"),
             };
-            file.sync_all().await?;
-            fs::File::open(&self.base_dir).await?.sync_all().await?;
-            // The status directory itself can have been created during this startup.
-            let parent = self
-                .base_dir
-                .parent()
-                .filter(|path| !path.as_os_str().is_empty());
-            fs::File::open(parent.unwrap_or(Path::new(".")))
-                .await?
-                .sync_all()
-                .await?;
+            file.sync_all()?;
+            self.sync_recovery_directory()?;
             return Ok(attempt);
         }
         anyhow::bail!(
             "Bitcoin DA republication limit exhausted for {hash}: {max_attempts} attempts; operator intervention required"
         )
+    }
+
+    pub async fn observe_recovery(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+    ) -> anyhow::Result<()> {
+        let storage = self.clone();
+        let hash = normalized_republication_hash(version_hash)?;
+        tokio::task::spawn_blocking(move || {
+            let _lock = storage.recovery_lock(&hash)?;
+            storage.load_or_create_recovery_clock(&hash, now_unix_ms)?;
+            Ok(())
+        })
+        .await?
+    }
+
+    pub async fn recovery_due(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+        initial_delay: Duration,
+        cooldown: Duration,
+    ) -> anyhow::Result<bool> {
+        let storage = self.clone();
+        let hash = normalized_republication_hash(version_hash)?;
+        tokio::task::spawn_blocking(move || {
+            let _lock = storage.recovery_lock(&hash)?;
+            let clock = storage.load_or_create_recovery_clock(&hash, now_unix_ms)?;
+            Ok(clock.due(now_unix_ms, initial_delay, cooldown))
+        })
+        .await?
+    }
+
+    pub async fn claim_republication(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+        initial_delay: Duration,
+        cooldown: Duration,
+        max_attempts: u32,
+    ) -> anyhow::Result<Option<BitcoinDaRepublicationClaim>> {
+        anyhow::ensure!(
+            max_attempts == 0 || !cooldown.is_zero(),
+            "Bitcoin DA republication cooldown must be positive"
+        );
+        let storage = self.clone();
+        let hash = normalized_republication_hash(version_hash)?;
+        tokio::task::spawn_blocking(move || {
+            let lock = storage.recovery_lock(&hash)?;
+            let mut clock = storage.load_or_create_recovery_clock(&hash, now_unix_ms)?;
+            if !clock.due(now_unix_ms, initial_delay, cooldown) {
+                return Ok(None);
+            }
+            // A restart or lost wallet response cannot reset this cooldown. Save it before
+            // reserving the fee budget, and keep both operations under the same OS lock.
+            clock.last_attempt_unix_ms = Some(now_unix_ms);
+            storage.save_recovery_clock(&hash, &clock)?;
+            let attempt = storage.reserve_republication_sync(&hash, max_attempts)?;
+            Ok(Some(BitcoinDaRepublicationClaim {
+                attempt,
+                _lock: lock,
+            }))
+        })
+        .await?
+    }
+
+    #[cfg(test)]
+    async fn claim_republication_number(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+        initial_delay: Duration,
+        cooldown: Duration,
+        max_attempts: u32,
+    ) -> anyhow::Result<Option<u32>> {
+        Ok(self
+            .claim_republication(
+                version_hash,
+                now_unix_ms,
+                initial_delay,
+                cooldown,
+                max_attempts,
+            )
+            .await?
+            .map(|claim| claim.attempt))
+    }
+
+    fn recovery_lock(&self, hash: &str) -> anyhow::Result<std::fs::File> {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options.open(self.base_dir.join(format!("recovery_{hash}.lock")))?;
+        anyhow::ensure!(
+            file.metadata()?.is_file(),
+            "invalid Bitcoin DA recovery lock"
+        );
+        file.lock().context("lock Bitcoin DA recovery clock")?;
+        Ok(file)
+    }
+
+    fn load_or_create_recovery_clock(
+        &self,
+        hash: &str,
+        now_unix_ms: u64,
+    ) -> anyhow::Result<BitcoinDaRecoveryClock> {
+        let path = self.base_dir.join(format!("recovery_{hash}.json"));
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = match options.open(path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                // Older versions recorded durable fee reservations but no clock. Treat any
+                // such reservation as a recent ambiguous attempt, never as a free retry.
+                let prefix = format!("republish_{hash}_");
+                let mut has_previous_attempt = false;
+                for entry in std::fs::read_dir(&self.base_dir)? {
+                    if entry?.file_name().to_string_lossy().starts_with(&prefix) {
+                        has_previous_attempt = true;
+                        break;
+                    }
+                }
+                let clock = BitcoinDaRecoveryClock {
+                    version: 1,
+                    first_observed_unix_ms: now_unix_ms,
+                    last_attempt_unix_ms: has_previous_attempt.then_some(now_unix_ms),
+                };
+                clock.validate(now_unix_ms)?;
+                self.save_recovery_clock(hash, &clock)?;
+                return Ok(clock);
+            }
+            Err(err) => return Err(err).context("read Bitcoin DA recovery clock"),
+        };
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file() && metadata.len() <= 1024,
+            "invalid Bitcoin DA recovery clock file"
+        );
+        let mut bytes = Vec::new();
+        file.take(1025).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() <= 1024, "oversized Bitcoin DA recovery clock");
+        let clock: BitcoinDaRecoveryClock =
+            serde_json::from_slice(&bytes).context("corrupt Bitcoin DA recovery clock")?;
+        clock.validate(now_unix_ms)?;
+        Ok(clock)
+    }
+
+    fn save_recovery_clock(
+        &self,
+        hash: &str,
+        clock: &BitcoinDaRecoveryClock,
+    ) -> anyhow::Result<()> {
+        let mut tmp = tempfile::NamedTempFile::new_in(&self.base_dir)?;
+        tmp.write_all(&serde_json::to_vec(clock)?)?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(self.base_dir.join(format!("recovery_{hash}.json")))?;
+        self.sync_recovery_directory()
+    }
+
+    fn sync_recovery_directory(&self) -> anyhow::Result<()> {
+        std::fs::File::open(&self.base_dir)?.sync_all()?;
+        let parent = self
+            .base_dir
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty());
+        std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
+        Ok(())
     }
 
     pub async fn delete(&self, batch_number: u64) -> anyhow::Result<()> {
@@ -141,6 +366,309 @@ mod tests {
     use super::*;
 
     const HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+
+    #[tokio::test]
+    async fn recovery_clock_ages_across_restart_and_receipt_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        storage.observe_recovery(HASH, 1_050).await.unwrap();
+        storage
+            .save(1, &BitcoinDaBatchStatus::default())
+            .await
+            .unwrap();
+        storage.delete(1).await.unwrap();
+        storage
+            .save(2, &BitcoinDaBatchStatus::default())
+            .await
+            .unwrap();
+        storage.delete_through(2).await.unwrap();
+        let reopened = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        assert!(
+            !reopened
+                .recovery_due(
+                    HASH,
+                    1_099,
+                    Duration::from_millis(100),
+                    Duration::from_secs(90)
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            reopened
+                .recovery_due(
+                    HASH,
+                    1_100,
+                    Duration::from_millis(100),
+                    Duration::from_secs(90)
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            reopened
+                .claim_republication_number(
+                    HASH,
+                    1_100,
+                    Duration::from_millis(100),
+                    Duration::from_secs(90),
+                    3
+                )
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        let reopened = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        assert!(
+            !reopened
+                .recovery_due(
+                    HASH,
+                    91_099,
+                    Duration::from_millis(100),
+                    Duration::from_secs(90)
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            reopened
+                .claim_republication_number(
+                    HASH,
+                    91_100,
+                    Duration::from_millis(100),
+                    Duration::from_secs(90),
+                    3
+                )
+                .await
+                .unwrap(),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_delay_does_not_shorten_unconfirmed_or_post_attempt_cooldown() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        let missing = Duration::from_secs(300);
+        let normal = Duration::from_secs(5_400);
+        assert!(
+            storage
+                .recovery_due(HASH, 301_000, missing, normal)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !storage
+                .recovery_due(HASH, 301_000, normal, normal)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage
+                .claim_republication_number(HASH, 301_000, missing, normal, 3)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert!(
+            !storage
+                .recovery_due(HASH, 601_000, missing, normal)
+                .await
+                .unwrap()
+        );
+        assert!(
+            storage
+                .recovery_due(HASH, 5_701_000, missing, normal)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_aliases_only_claim_one_due_attempt() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        let alias = format!("0x{}", HASH.to_uppercase());
+        let (a, b, c) = tokio::join!(
+            storage.claim_republication_number(
+                HASH,
+                1_100,
+                Duration::from_millis(100),
+                Duration::from_secs(90),
+                3
+            ),
+            storage.claim_republication_number(
+                &alias,
+                1_100,
+                Duration::from_millis(100),
+                Duration::from_secs(90),
+                3
+            ),
+            storage.claim_republication_number(
+                HASH,
+                1_100,
+                Duration::from_millis(100),
+                Duration::from_secs(90),
+                3
+            ),
+        );
+        let claimed = [a.unwrap(), b.unwrap(), c.unwrap()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(claimed, vec![1]);
+        assert_eq!(storage.reserve_republication(HASH, 3).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn wallet_claim_holds_os_lock_even_after_a_short_cooldown() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        let first = storage
+            .claim_republication(
+                HASH,
+                1_100,
+                Duration::from_millis(100),
+                Duration::from_millis(1),
+                3,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.attempt, 1);
+        let alias = format!("0x{}", HASH.to_uppercase());
+        let second = storage.claim_republication(
+            &alias,
+            1_101,
+            Duration::from_millis(100),
+            Duration::from_millis(1),
+            3,
+        );
+        tokio::pin!(second);
+        assert!(futures::poll!(&mut second).is_pending());
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.path().join(format!("recovery_{HASH}.lock")))
+            .unwrap();
+        assert!(
+            file.try_lock().is_err(),
+            "wallet claim must retain its OS lock"
+        );
+        drop(first);
+        assert_eq!(second.await.unwrap().unwrap().attempt, 2);
+    }
+
+    #[tokio::test]
+    async fn legacy_attempts_get_conservative_cooldown_and_keep_the_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        assert_eq!(storage.reserve_republication(HASH, 2).await.unwrap(), 1);
+        assert_eq!(
+            storage
+                .claim_republication_number(
+                    HASH,
+                    1_000,
+                    Duration::from_millis(10),
+                    Duration::from_millis(100),
+                    2
+                )
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .claim_republication_number(
+                    HASH,
+                    1_100,
+                    Duration::from_millis(10),
+                    Duration::from_millis(100),
+                    2
+                )
+                .await
+                .unwrap(),
+            Some(2)
+        );
+        assert!(
+            storage
+                .claim_republication_number(
+                    HASH,
+                    1_200,
+                    Duration::from_millis(10),
+                    Duration::from_millis(100),
+                    2
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("limit exhausted")
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_corruption_backwards_clock_and_storage_failure_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        assert!(storage.observe_recovery(HASH, 0).await.is_err());
+        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        assert!(
+            storage
+                .claim_republication_number(HASH, 999, Duration::ZERO, Duration::from_secs(90), 3)
+                .await
+                .is_err()
+        );
+        let path = root.path().join(format!("recovery_{HASH}.json"));
+        for bytes in [
+            b"corrupt".as_slice(),
+            br#"{"version":2,"first_observed_unix_ms":1000,"last_attempt_unix_ms":null}"#,
+            br#"{"version":1,"first_observed_unix_ms":1000,"last_attempt_unix_ms":999}"#,
+            br#"{"version":1,"first_observed_unix_ms":1000,"last_attempt_unix_ms":2000}"#,
+            br#"{"version":1,"first_observed_unix_ms":1000,"last_attempt_unix_ms":null,"unexpected":true}"#,
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(storage.claim_republication_number(HASH, 1_100, Duration::ZERO, Duration::from_secs(90), 3).await.is_err());
+        }
+        assert!(!root.path().join(format!("republish_{HASH}_1")).exists());
+        let broken = root.path().join("not-a-directory");
+        std::fs::write(&broken, b"file").unwrap();
+        let storage = BitcoinDaStatusStorage { base_dir: broken };
+        assert!(
+            storage
+                .claim_republication_number(HASH, 1_100, Duration::ZERO, Duration::from_secs(90), 3)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn current_command_observations_age_together() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        let second = "608c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+        for hash in [HASH, second] {
+            storage.observe_recovery(hash, 1_000).await.unwrap();
+        }
+        let delay = Duration::from_millis(100);
+        assert_eq!(
+            storage
+                .claim_republication_number(HASH, 1_100, delay, delay, 3)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            storage
+                .claim_republication_number(second, 1_100, delay, delay, 3)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+    }
 
     #[tokio::test]
     async fn republication_budget_survives_aliases_restart_and_receipt_cleanup() {
