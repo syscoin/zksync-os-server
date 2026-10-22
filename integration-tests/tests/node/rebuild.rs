@@ -1,3 +1,4 @@
+use alloy::consensus::Transaction as _;
 use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::primitives::B256;
 use alloy::primitives::{Address, U256};
@@ -448,11 +449,54 @@ async fn block_rebuild_hash_guard_prevents_double_rebuild(
         wait_for_block_hash_change(&first_restart, block_to_rebuild, original_block_hash).await?;
 
     // Second restart: the target block's hash has changed → guard fires, rebuild skipped.
+    let pre_second_restart_tip = first_restart.l2_provider.get_block_number().await?;
     let stopped2 = first_restart.stop().await?;
     let second_restart = stopped2.start_with_config(restart_config).await?;
 
+    // RPC is reachable during WAL replay. Wait for the preserved tip before the fresh provider
+    // fills a nonce; otherwise replay can consume that nonce and evict the new transaction.
+    wait_for_rebuild_to_reach_tip(&second_restart, pre_second_restart_tip).await?;
+
     // Confirm the node started cleanly and is accepting new transactions.
-    send_throwaway_tx(&second_restart).await?;
+    let pending = second_restart
+        .l2_provider
+        .send_transaction(
+            TransactionRequest::default()
+                .with_to(Address::random())
+                .with_value(U256::from(1u64)),
+        )
+        .await?;
+    let tx_hash = *pending.tx_hash();
+    if let Err(error) = pending.expect_successful_receipt().await {
+        let sender = second_restart.l2_wallet.default_signer().address();
+        // Failure-only reads must not hide the original receipt failure or hang on a stopped node.
+        let diagnostics = tokio::time::timeout(Duration::from_secs(5), async {
+            let (transaction, latest_nonce, pending_nonce, tip, pipeline) = tokio::join!(
+                second_restart.l2_provider.get_transaction_by_hash(tx_hash),
+                second_restart.l2_provider.get_transaction_count(sender),
+                second_restart
+                    .l2_provider
+                    .get_transaction_count(sender)
+                    .pending(),
+                second_restart.l2_provider.get_block_number(),
+                second_restart.pipeline_status(),
+            );
+            (
+                transaction.map(|tx| tx.map(|tx| tx.inner.nonce())),
+                latest_nonce,
+                pending_nonce,
+                tip,
+                pipeline,
+            )
+        })
+        .await;
+        return Err(error.context(format!(
+            "post-restart transaction {tx_hash} failed; preserved tip: {pre_second_restart_tip}; \
+             crashed: {}; diagnostics (transaction nonce, latest nonce, pending nonce, tip, pipeline): \
+             {diagnostics:?}",
+            second_restart.has_crashed(),
+        )));
+    }
 
     // The target block must still carry the rebuilt hash — guard fired, no re-rebuild.
     let block_after = block_hash(&second_restart, block_to_rebuild).await?;
