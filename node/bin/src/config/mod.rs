@@ -1931,6 +1931,17 @@ pub struct BatcherConfig {
     ))]
     pub bitcoin_da_finality_timeout: Duration,
 
+    /// Initial recovery grace when Core has no blob metadata, distinct from an unconfirmed tx.
+    /// Omission preserves the finality timeout; paid retries always retain that longer cooldown.
+    #[config_validate(custom(
+        |root: &Config, value: &Option<Duration>| {
+            root.batcher_config.bitcoin_da_max_republish_attempts == 0
+                || value.is_none_or(|delay| !delay.is_zero())
+        },
+        "must be greater than zero when `batcher.bitcoin_da_max_republish_attempts` is positive"
+    ))]
+    pub bitcoin_da_missing_blob_recovery_timeout: Option<Duration>,
+
     /// Maximum forced republications per blob hash, shared by own blobs and Gateway edge refs.
     /// Reservations survive restart and receipt cleanup; failed or ambiguous RPC calls count.
     /// Zero disables forced republication. Exhaustion stops settlement for operator recovery.
@@ -3218,6 +3229,81 @@ mod tests {
         config.batcher_config.bitcoin_da_max_republish_attempts = 3;
         config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(1);
         config.validate().await.unwrap();
+    }
+
+    #[test]
+    fn bitcoin_da_missing_grace_yaml_is_optional_and_preserves_other_policy() {
+        let schema = ConfigSchema::new(&BatcherConfig::DESCRIPTION, "batcher");
+        for (yaml, expected) in [
+            ("batcher: {}", None),
+            (
+                "batcher:\n  bitcoin_da_missing_blob_recovery_timeout: \"5m\"",
+                Some(Duration::from_secs(300)),
+            ),
+        ] {
+            let mapping: serde_yaml::Mapping = serde_yaml::from_str(yaml).unwrap();
+            let config = ConfigRepository::new(&schema)
+                .with(smart_config::Yaml::new("recovery-test", mapping).unwrap())
+                .single::<BatcherConfig>()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(config.bitcoin_da_missing_blob_recovery_timeout, expected);
+            assert_eq!(
+                config.bitcoin_da_finality_timeout,
+                Duration::from_secs(5_400)
+            );
+            assert_eq!(
+                config.bitcoin_da_finality_mode,
+                BitcoinDaFinalityMode::Chainlock
+            );
+            assert_eq!(config.bitcoin_da_finality_confirmations, 5);
+            assert_eq!(config.bitcoin_da_max_republish_attempts, 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_blob_recovery_grace_is_optional_positive_and_does_not_change_finality() {
+        let mut config = base_config(NodeRole::MainNode);
+        assert_eq!(
+            config
+                .batcher_config
+                .bitcoin_da_missing_blob_recovery_timeout,
+            None
+        );
+        assert_eq!(
+            config.batcher_config.bitcoin_da_finality_timeout,
+            Duration::from_secs(90 * 60)
+        );
+        let original_mode = config.batcher_config.bitcoin_da_finality_mode;
+        let original_confirmations = config.batcher_config.bitcoin_da_finality_confirmations;
+        config
+            .batcher_config
+            .bitcoin_da_missing_blob_recovery_timeout = Some(Duration::ZERO);
+        let error = config.validate().await.unwrap_err().to_string();
+        assert!(
+            error.contains("bitcoin_da_missing_blob_recovery_timeout"),
+            "{error}"
+        );
+        config.batcher_config.bitcoin_da_max_republish_attempts = 0;
+        config.validate().await.unwrap();
+        config.batcher_config.bitcoin_da_max_republish_attempts = 3;
+        config
+            .batcher_config
+            .bitcoin_da_missing_blob_recovery_timeout = Some(Duration::from_secs(300));
+        config.validate().await.unwrap();
+        assert_eq!(
+            config.batcher_config.bitcoin_da_finality_timeout,
+            Duration::from_secs(90 * 60)
+        );
+        assert_eq!(
+            config.batcher_config.bitcoin_da_finality_mode,
+            original_mode
+        );
+        assert_eq!(
+            config.batcher_config.bitcoin_da_finality_confirmations,
+            original_confirmations
+        );
     }
 
     #[tokio::test]

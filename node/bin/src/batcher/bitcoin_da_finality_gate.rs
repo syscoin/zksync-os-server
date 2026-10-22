@@ -11,8 +11,9 @@ use bitcoin_da_client::{
 };
 use blake2::{Blake2s256, Digest};
 use secrecy::ExposeSecret;
+use std::collections::BTreeSet;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 use zksync_os_batch_types::{SYSCOIN_DA_MAX_BLOBS_PER_BATCH, syscoin_edge_da_refs_from_input};
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_l1_sender::commands::{L1SenderCommand, commit::CommitCommand};
@@ -29,6 +30,17 @@ pub struct BitcoinDaFinalityGate {
 enum BlobFinalityWaitContext {
     OwnBatch { batch_number: u64 },
     GatewayEdgeRef,
+}
+
+#[cfg(test)]
+fn recovery_now_unix_ms() -> anyhow::Result<u64> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("Bitcoin DA recovery clock is before UNIX epoch")?
+        .as_millis()
+        .try_into()
+        .context("Bitcoin DA recovery clock exceeds u64 milliseconds")
 }
 
 fn authenticate_recovered_blob(
@@ -272,7 +284,14 @@ impl BitcoinDaFinalityGate {
                 || !self.config.bitcoin_da_finality_timeout.is_zero(),
             "Bitcoin DA finality timeout must be positive when republication is enabled"
         );
-        let mut start = Instant::now();
+        anyhow::ensure!(
+            self.config.bitcoin_da_max_republish_attempts == 0
+                || self
+                    .config
+                    .bitcoin_da_missing_blob_recovery_timeout
+                    .is_none_or(|timeout| !timeout.is_zero()),
+            "Bitcoin DA missing blob recovery timeout must be positive when republication is enabled"
+        );
         loop {
             let finality_state = self.blob_finality_state(client, version_hash).await?;
             if finality_state.is_final() {
@@ -291,10 +310,24 @@ impl BitcoinDaFinalityGate {
                 continue;
             }
 
-            if start.elapsed() >= self.config.bitcoin_da_finality_timeout {
-                self.republish_blob_after_timeout(client, version_hash, context)
+            let initial_delay = if matches!(finality_state, BlobFinalityState::Missing) {
+                self.config
+                    .bitcoin_da_missing_blob_recovery_timeout
+                    .unwrap_or(self.config.bitcoin_da_finality_timeout)
+            } else {
+                self.config.bitcoin_da_finality_timeout
+            };
+            if self
+                .storage
+                .recovery_due(
+                    version_hash,
+                    initial_delay,
+                    self.config.bitcoin_da_finality_timeout,
+                )
+                .await?
+            {
+                self.republish_blob_after_timeout(client, version_hash, context, initial_delay)
                     .await?;
-                start = Instant::now();
             }
 
             tokio::time::sleep(self.config.bitcoin_da_finality_poll_interval).await;
@@ -306,6 +339,7 @@ impl BitcoinDaFinalityGate {
         client: &SyscoinClient,
         version_hash: &str,
         context: BlobFinalityWaitContext,
+        initial_delay: Duration,
     ) -> anyhow::Result<()> {
         match context {
             BlobFinalityWaitContext::OwnBatch { batch_number } => {
@@ -343,13 +377,19 @@ impl BitcoinDaFinalityGate {
         // bytes before the durable attempt reservation and wallet publication boundary.
         let (blob, recovered_hash) = authenticate_recovered_blob(blob, version_hash)?;
         let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
-        let attempt = self
+        let Some(claim) = self
             .storage
-            .reserve_republication(
+            .claim_republication(
                 &recovered_hash,
+                initial_delay,
+                self.config.bitcoin_da_finality_timeout,
                 self.config.bitcoin_da_max_republish_attempts,
             )
-            .await?;
+            .await?
+        else {
+            return Ok(());
+        };
+        let attempt = claim.attempt;
         tracing::warn!(
             version_hash,
             attempt,
@@ -380,6 +420,9 @@ impl BitcoinDaFinalityGate {
                 ),
             }
         );
+        // Keep the per-hash OS lock until the wallet call and response check finish, even
+        // when an operator deliberately configures a cooldown shorter than the RPC timeout.
+        drop(claim);
         Ok(())
     }
 
@@ -439,6 +482,7 @@ impl BitcoinDaFinalityGate {
     }
 
     async fn verify_command_da_before_commit(&self, command: &CommitCommand) -> anyhow::Result<()> {
+        self.prime_command_recovery_clocks(command).await?;
         for batch in command.as_ref() {
             if batch.batch.batch_info.commit_info.l2_da_commitment_scheme
                 == DACommitmentScheme::BlobsZKsyncOS
@@ -452,6 +496,85 @@ impl BitcoinDaFinalityGate {
         }
         if !self.settling_on_gateway {
             self.wait_for_gateway_edge_refs_finality(command).await?;
+        }
+        Ok(())
+    }
+
+    async fn prime_command_recovery_clocks(&self, command: &CommitCommand) -> anyhow::Result<()> {
+        if self.settling_on_gateway {
+            return Ok(());
+        }
+        let mut hashes = BTreeSet::new();
+        for batch in command.as_ref() {
+            let info = &batch.batch.batch_info.commit_info;
+            if info.l2_da_commitment_scheme == DACommitmentScheme::BlobsZKsyncOS {
+                anyhow::ensure!(
+                    info.operator_da_input.len().is_multiple_of(32)
+                        && info.operator_da_input.len() / 32 <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+                    "invalid Bitcoin DA operator hash array for batch {}",
+                    batch.batch_number()
+                );
+                let status = self
+                    .storage
+                    .load(batch.batch_number())
+                    .await?
+                    .with_context(|| {
+                        format!(
+                            "missing Bitcoin DA publication status for batch {}",
+                            batch.batch_number()
+                        )
+                    })?;
+                let expected: Vec<String> = info
+                    .operator_da_input
+                    .chunks_exact(32)
+                    .map(hex::encode)
+                    .collect();
+                anyhow::ensure!(
+                    status.expected_hashes == expected,
+                    "Bitcoin DA publication status mismatch for batch {}",
+                    batch.batch_number()
+                );
+                self.verify_published_batch_status(batch.batch_number(), &status)
+                    .await?;
+                if !(status.finalized
+                    && status.finality_policy.as_ref() == Some(&self.current_finality_policy()))
+                {
+                    hashes.extend(expected);
+                }
+            }
+            if !info.edge_da_refs_input.is_empty() {
+                let refs = syscoin_edge_da_refs_from_input(&info.edge_da_refs_input).with_context(
+                    || {
+                        format!(
+                            "failed to parse Gateway edge DA refs for batch {}",
+                            batch.batch_number()
+                        )
+                    },
+                )?;
+                for edge_ref in refs {
+                    hashes.extend(
+                        edge_ref
+                            .blob_version_hashes
+                            .chunks_exact(32)
+                            .map(hex::encode),
+                    );
+                }
+            }
+        }
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let client = self.client()?;
+        // Only this already-bounded command is primed, not the queued stream. Later refs
+        // age while earlier refs settle, instead of starting another full recovery delay.
+        for hash in hashes {
+            let state = self.blob_finality_state(&client, &hash).await?;
+            if matches!(
+                state,
+                BlobFinalityState::Missing | BlobFinalityState::Unconfirmed
+            ) {
+                self.storage.observe_recovery(&hash).await?;
+            }
         }
         Ok(())
     }
@@ -496,6 +619,307 @@ mod tests {
     const ABC_HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
     const HEX_LOOKING_HASH: &str =
         "d6ffd191d5851bd88ef4f0fffd051050a9e91c15346096a0e1f0a9afa50f34e5";
+
+    fn recovery_test_command(own_hashes: &[String], edge_input: Vec<u8>) -> CommitCommand {
+        use alloy::primitives::{Address, B256};
+        use zksync_os_batch_types::{
+            PendingBatchInfo,
+            batcher_model::{BatchForSigning, BatchMetadata, BatchSignatureData, FriProof},
+        };
+        use zksync_os_contract_interface::{
+            l1_discovery::BatchVerificationSL,
+            models::{CommitBatchInfo, StoredBatchInfo},
+        };
+        use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
+        let batch_number = 7;
+        let metadata = BatchMetadata {
+            previous_stored_batch_info: StoredBatchInfo {
+                batch_number: batch_number - 1,
+                state_commitment: B256::ZERO,
+                number_of_layer1_txs: 0,
+                priority_operations_hash: B256::ZERO,
+                dependency_roots_rolling_hash: B256::ZERO,
+                l2_to_l1_logs_root_hash: B256::ZERO,
+                commitment: B256::ZERO,
+                last_block_timestamp: Some(0),
+            },
+            batch_info: PendingBatchInfo {
+                commit_info: CommitBatchInfo {
+                    batch_number,
+                    new_state_commitment: B256::ZERO,
+                    number_of_layer1_txs: 0,
+                    number_of_layer2_txs: 0,
+                    priority_operations_hash: B256::ZERO,
+                    dependency_roots_rolling_hash: B256::ZERO,
+                    l2_to_l1_logs_root_hash: B256::ZERO,
+                    l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+                    da_commitment: B256::ZERO,
+                    first_block_timestamp: 0,
+                    first_block_number: Some(batch_number),
+                    last_block_timestamp: 0,
+                    last_block_number: Some(batch_number),
+                    chain_id: 1,
+                    operator_da_input: own_hashes
+                        .iter()
+                        .flat_map(|hash| hex::decode(hash).unwrap())
+                        .collect(),
+                    edge_da_refs_input: edge_input,
+                    edge_da_refs_root: B256::ZERO,
+                    sl_chain_id: 2,
+                },
+                protocol_version: ProtocolSemanticVersion::new(0, 32, 0),
+                upgrade_tx_hash: None,
+            },
+            chain_address: Address::ZERO,
+            first_block_number: batch_number,
+            last_block_number: batch_number,
+            last_block_hash: None,
+            pubdata_mode: PubdataMode::Blobs,
+            tx_count: 0,
+            computational_native_used: None,
+            logs: vec![],
+            messages: vec![],
+            multichain_root: B256::ZERO,
+            set_sl_chain_id_migration_number: None,
+        };
+        let batch = BatchForSigning::new(metadata, FriProof::Fake)
+            .with_signatures(BatchSignatureData::NotNeeded);
+        CommitCommand::try_new(&BatchVerificationSL::Disabled, batch).unwrap()
+    }
+
+    fn recovery_test_edge_message(chain: u64, batch: u64, hashes: &[String]) -> Vec<u8> {
+        use alloy::primitives::U256;
+        let bytes: Vec<u8> = hashes
+            .iter()
+            .flat_map(|hash| hex::decode(hash).unwrap())
+            .collect();
+        let mut message = vec![0; 31];
+        message.push(1);
+        message.extend(U256::from(chain).to_be_bytes::<32>());
+        message.extend(U256::from(batch).to_be_bytes::<32>());
+        message.extend([0; 32]);
+        message.extend(U256::from(160).to_be_bytes::<32>());
+        message.extend(U256::from(bytes.len()).to_be_bytes::<32>());
+        message.extend(bytes);
+        message
+    }
+
+    #[tokio::test]
+    async fn actual_command_primes_unique_own_and_parsed_edge_refs_before_sequential_waits() {
+        use std::collections::{HashMap, HashSet};
+        use std::sync::{Mutex, atomic::AtomicU64};
+        use tokio::sync::Notify;
+        let blobs: Vec<Vec<u8>> = [
+            b"own-a".as_slice(),
+            b"own-b",
+            b"already-confirmed",
+            b"already-finalized",
+            b"edge-a",
+            b"edge-b",
+        ]
+        .into_iter()
+        .map(<[u8]>::to_vec)
+        .collect();
+        let hashes: Vec<String> = blobs
+            .iter()
+            .map(|blob| hex::encode(Blake2s256::digest(blob)))
+            .collect();
+        let own_hashes = hashes[..4].to_vec();
+        let edge_input = [
+            recovery_test_edge_message(
+                10,
+                1,
+                &[hashes[4].clone(), hashes[0].clone(), hashes[2].clone()],
+            ),
+            recovery_test_edge_message(
+                11,
+                2,
+                &[hashes[5].clone(), hashes[3].clone(), hashes[4].clone()],
+            ),
+        ]
+        .concat();
+        let command = recovery_test_command(&own_hashes, edge_input);
+        let payloads = Arc::new(hashes.iter().cloned().zip(blobs).collect::<HashMap<_, _>>());
+        let published = Arc::new(Mutex::new(HashSet::<String>::new()));
+        let height = Arc::new(AtomicU64::new(10));
+        let wallet_calls = Arc::new(AtomicUsize::new(0));
+        let wallet_entered = Arc::new(Notify::new());
+        let wallet_release = Arc::new(Notify::new());
+        let canonical_confirmation_seen = Arc::new(Notify::new());
+        let canonical_confirmation_polls = Arc::new(AtomicUsize::new(0));
+        let handler = {
+            let payloads = payloads.clone();
+            let published = published.clone();
+            let height = height.clone();
+            let wallet_calls = wallet_calls.clone();
+            let wallet_entered = wallet_entered.clone();
+            let wallet_release = wallet_release.clone();
+            let canonical_confirmation_seen = canonical_confirmation_seen.clone();
+            let canonical_confirmation_polls = canonical_confirmation_polls.clone();
+            let hashes = hashes.clone();
+            move |Json(request): Json<Value>| {
+                let payloads = payloads.clone();
+                let published = published.clone();
+                let height = height.clone();
+                let wallet_calls = wallet_calls.clone();
+                let wallet_entered = wallet_entered.clone();
+                let wallet_release = wallet_release.clone();
+                let canonical_confirmation_seen = canonical_confirmation_seen.clone();
+                let canonical_confirmation_polls = canonical_confirmation_polls.clone();
+                let hashes = hashes.clone();
+                async move {
+                    let mut body = match request["method"].as_str().unwrap() {
+                        "getblockcount" => json!({"result": height.load(Ordering::SeqCst)}),
+                        "getnevmblobdata" => {
+                            let hash = request["params"][0]
+                                .as_str()
+                                .unwrap()
+                                .trim_start_matches("0x");
+                            assert!(payloads.contains_key(hash));
+                            if request["params"][1] == true {
+                                json!({"result": {"data": hex::encode(&payloads[hash])}})
+                            } else if hash == hashes[3] {
+                                json!({"result": {"height": 9, "chainlock": false}})
+                            } else if hash == hashes[2] || published.lock().unwrap().contains(hash)
+                            {
+                                // A second metadata poll proves the gate processed the first
+                                // one-confirmation response and kept waiting for its policy.
+                                if hash == hashes[0]
+                                    && height.load(Ordering::SeqCst) == 10
+                                    && canonical_confirmation_polls.fetch_add(1, Ordering::SeqCst)
+                                        >= 1
+                                {
+                                    canonical_confirmation_seen.notify_one();
+                                }
+                                json!({"result": {"height": 10, "chainlock": false}})
+                            } else {
+                                json!({"error": {"code": -32602, "message": "missing blob"}})
+                            }
+                        }
+                        "syscoincreatenevmblob" => {
+                            let bytes =
+                                hex::decode(request["params"][0].as_str().unwrap()).unwrap();
+                            let hash = hex::encode(Blake2s256::digest(&bytes));
+                            assert_eq!(payloads[&hash], bytes);
+                            wallet_calls.fetch_add(1, Ordering::SeqCst);
+                            if hash == hashes[0] {
+                                wallet_entered.notify_one();
+                                wallet_release.notified().await;
+                            }
+                            published.lock().unwrap().insert(hash.clone());
+                            json!({"result": {"versionhash": hash}})
+                        }
+                        method => panic!("unexpected method: {method}"),
+                    };
+                    body["id"] = request["id"].clone();
+                    Json(body)
+                }
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().fallback(axum::routing::post(handler));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
+        storage
+            .save(
+                7,
+                &BitcoinDaBatchStatus {
+                    expected_hashes: own_hashes.clone(),
+                    published_hashes: own_hashes,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let config = BatcherConfig {
+            bitcoin_da_rpc_url: Some(url.clone()),
+            bitcoin_da_rpc_user: Some("user".into()),
+            bitcoin_da_rpc_password: Some("password".into()),
+            bitcoin_da_poda_url: url,
+            bitcoin_da_finality_mode: BitcoinDaFinalityMode::Confirmations,
+            bitcoin_da_finality_confirmations: 2,
+            bitcoin_da_finality_timeout: Duration::from_secs(5_400),
+            bitcoin_da_missing_blob_recovery_timeout: Some(Duration::from_millis(1)),
+            bitcoin_da_finality_poll_interval: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let gate = BitcoinDaFinalityGate::new(config, storage.clone(), false);
+        let task =
+            tokio::spawn(async move { gate.verify_command_da_before_commit(&command).await });
+        tokio::time::timeout(Duration::from_secs(5), wallet_entered.notified())
+            .await
+            .unwrap();
+        let mut first_observations = HashMap::new();
+        for index in [0, 1, 4, 5] {
+            let clock: Value = serde_json::from_slice(
+                &std::fs::read(dir.path().join(format!("recovery_{}.json", hashes[index])))
+                    .unwrap(),
+            )
+            .unwrap();
+            first_observations.insert(
+                hashes[index].clone(),
+                clock["first_observed_unix_ms"].clone(),
+            );
+            if index != 0 {
+                assert!(clock["last_attempt_unix_ms"].is_null());
+            }
+        }
+        for index in [2, 3] {
+            assert!(
+                !dir.path()
+                    .join(format!("recovery_{}.json", hashes[index]))
+                    .exists()
+            );
+            assert!(
+                !dir.path()
+                    .join(format!("recovery_{}.lock", hashes[index]))
+                    .exists()
+            );
+        }
+        assert_eq!(wallet_calls.load(Ordering::SeqCst), 1);
+        wallet_release.notify_one();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            canonical_confirmation_seen.notified(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !task.is_finished(),
+            "one confirmation cannot release a two-confirmation policy"
+        );
+        height.store(11, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(wallet_calls.load(Ordering::SeqCst), 4);
+        for (hash, first) in first_observations {
+            let clock: Value = serde_json::from_slice(
+                &std::fs::read(dir.path().join(format!("recovery_{hash}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                clock["first_observed_unix_ms"], first,
+                "later waits must reuse primed clocks"
+            );
+            assert!(dir.path().join(format!("republish_{hash}_1")).exists());
+            assert!(!dir.path().join(format!("republish_{hash}_2")).exists());
+        }
+        let status = storage.load(7).await.unwrap().unwrap();
+        assert!(status.finalized);
+        assert_eq!(
+            status.finality_policy,
+            Some(BitcoinDaFinalityPolicy {
+                mode: BitcoinDaFinalityMode::Confirmations,
+                confirmations: 2
+            })
+        );
+        server.abort();
+    }
 
     #[test]
     fn recovery_authentication_preserves_raw_and_decodes_only_matching_hex() {
@@ -582,6 +1006,7 @@ mod tests {
                         "getnevmblobdata" if request["params"][1] == true => {
                             json!({"result": {"data": "616263"}})
                         }
+                        "getblockcount" => json!({"result": 10}),
                         "getnevmblobdata" => match finality {
                             Some(state) => json!({"result": state}),
                             None => json!({"error": {"code": -32602, "message": "missing blob"}}),
@@ -612,10 +1037,95 @@ mod tests {
     #[tokio::test]
     async fn zero_recovery_window_cannot_consume_wallet_budget() {
         let (client, calls, server) = recovery_rpc(None, false).await;
+        for config in [
+            BatcherConfig {
+                bitcoin_da_max_republish_attempts: 2,
+                bitcoin_da_finality_timeout: Duration::ZERO,
+                ..Default::default()
+            },
+            BatcherConfig {
+                bitcoin_da_max_republish_attempts: 2,
+                bitcoin_da_missing_blob_recovery_timeout: Some(Duration::ZERO),
+                ..Default::default()
+            },
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            );
+            let error = gate
+                .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("must be positive"), "{error}");
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn missing_override_recovers_without_shortening_unconfirmed_timeout() {
+        for state in [None, Some(json!({"chainlock": false}))] {
+            let missing = state.is_none();
+            let (client, calls, server) = recovery_rpc(state, true).await;
+            let dir = tempfile::tempdir().unwrap();
+            let config = BatcherConfig {
+                bitcoin_da_finality_timeout: Duration::from_secs(5_400),
+                bitcoin_da_missing_blob_recovery_timeout: Some(Duration::from_millis(1)),
+                bitcoin_da_finality_poll_interval: Duration::from_millis(1),
+                ..Default::default()
+            };
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            );
+            gate.storage
+                .observe_recovery_at(ABC_HASH, recovery_now_unix_ms().unwrap() - 1_000)
+                .await
+                .unwrap();
+            let result = tokio::time::timeout(
+                Duration::from_millis(100),
+                gate.wait_for_blob_finality(
+                    &client,
+                    ABC_HASH,
+                    BlobFinalityWaitContext::GatewayEdgeRef,
+                ),
+            )
+            .await;
+            if missing {
+                assert!(
+                    result
+                        .unwrap()
+                        .unwrap_err()
+                        .to_string()
+                        .contains("failed to republish")
+                );
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+            }
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_does_not_reset_an_aged_missing_blob_clock() {
+        let (client, calls, server) = recovery_rpc(None, true).await;
         let dir = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
+        storage
+            .observe_recovery_at(ABC_HASH, recovery_now_unix_ms().unwrap() - 1_000)
+            .await
+            .unwrap();
+        drop(storage);
         let config = BatcherConfig {
-            bitcoin_da_max_republish_attempts: 2,
-            bitcoin_da_finality_timeout: std::time::Duration::ZERO,
+            bitcoin_da_missing_blob_recovery_timeout: Some(Duration::from_millis(1)),
             ..Default::default()
         };
         let gate = BitcoinDaFinalityGate::new(
@@ -623,14 +1133,19 @@ mod tests {
             BitcoinDaStatusStorage::new(dir.path()).unwrap(),
             false,
         );
-        let error = gate
-            .wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("must be positive"), "{error}");
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            gate.wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef),
+        )
+        .await;
+        assert!(
+            result
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("failed to republish")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         server.abort();
     }
 
@@ -684,7 +1199,7 @@ mod tests {
                 format!("0x{}", ABC_HASH.to_uppercase())
             };
             let error = gate
-                .republish_blob_after_timeout(&client, &hash, context)
+                .republish_blob_after_timeout(&client, &hash, context, Duration::ZERO)
                 .await
                 .unwrap_err()
                 .to_string();
@@ -693,6 +1208,17 @@ mod tests {
             } else {
                 "limit exhausted"
             }));
+            gate.republish_blob_after_timeout(&client, &hash, context, Duration::ZERO)
+                .await
+                .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), (attempt + 1).min(2));
+            // Simulate the durable cooldown elapsing without making this real-RPC test
+            // depend on wall-clock sleeps or consuming the production 90-minute window.
+            std::fs::write(
+                dir.path().join(format!("recovery_{ABC_HASH}.json")),
+                br#"{"version":1,"first_observed_unix_ms":1,"last_attempt_unix_ms":1}"#,
+            )
+            .unwrap();
         }
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         server.abort();
@@ -730,8 +1256,93 @@ mod tests {
                 assert!(result.is_err());
             }
             assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn confirmation_policy_does_not_wait_for_chainlocks_or_republish_confirmed_blobs() {
+        for required in [1, 2] {
+            let (client, calls, server) =
+                recovery_rpc(Some(json!({"height": 10, "chainlock": false})), false).await;
+            let dir = tempfile::tempdir().unwrap();
+            let config = BatcherConfig {
+                bitcoin_da_finality_mode: BitcoinDaFinalityMode::Confirmations,
+                bitcoin_da_finality_confirmations: required,
+                bitcoin_da_missing_blob_recovery_timeout: Some(Duration::from_millis(1)),
+                bitcoin_da_finality_timeout: Duration::from_millis(1),
+                bitcoin_da_finality_poll_interval: Duration::from_millis(1),
+                ..Default::default()
+            };
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            );
+            let result = tokio::time::timeout(
+                Duration::from_millis(100),
+                gate.wait_for_blob_finality(
+                    &client,
+                    ABC_HASH,
+                    BlobFinalityWaitContext::GatewayEdgeRef,
+                ),
+            )
+            .await;
+            if required == 1 {
+                result.unwrap().unwrap();
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_finality_rpc_errors_never_start_missing_recovery() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let app = Router::new().fallback(axum::routing::post(move |Json(request): Json<Value>| {
+            let counted = counted.clone();
+            async move {
+                if request["method"] == "syscoincreatenevmblob" { counted.fetch_add(1, Ordering::SeqCst); }
+                Json(json!({"id": request["id"], "error": {"code": -32603, "message": "upstream unavailable"}}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SyscoinClient::new(
+            &url,
+            "user",
+            "password",
+            &url,
+            Some(Duration::from_secs(2)),
+            "test",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = BatcherConfig {
+            bitcoin_da_missing_blob_recovery_timeout: Some(Duration::from_millis(1)),
+            ..Default::default()
+        };
+        let gate = BitcoinDaFinalityGate::new(
+            config,
+            BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+            false,
+        );
+        assert!(
+            gate.wait_for_blob_finality(&client, ABC_HASH, BlobFinalityWaitContext::GatewayEdgeRef)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("failed to check")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        server.abort();
     }
 
     #[tokio::test]
@@ -756,7 +1367,8 @@ mod tests {
                 gate.republish_blob_after_timeout(
                     &client,
                     ABC_HASH,
-                    BlobFinalityWaitContext::GatewayEdgeRef
+                    BlobFinalityWaitContext::GatewayEdgeRef,
+                    Duration::ZERO,
                 )
                 .await
                 .is_err()
@@ -911,6 +1523,7 @@ mod tests {
                     &client,
                     &expected_hash,
                     BlobFinalityWaitContext::OwnBatch { batch_number: 1 },
+                    Duration::ZERO,
                 )
                 .await;
             server.abort();
@@ -920,10 +1533,23 @@ mod tests {
             }
             assert_eq!(wallet_calls.load(Ordering::SeqCst), expected_calls);
             assert_eq!(
-                std::fs::read_dir(storage_dir.path()).unwrap().count(),
+                std::fs::read_dir(storage_dir.path())
+                    .unwrap()
+                    .filter(|entry| {
+                        entry
+                            .as_ref()
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("republish_")
+                    })
+                    .count(),
                 expected_calls,
                 "invalid recovery must not consume a durable attempt"
             );
+            if expected_calls == 0 {
+                assert_eq!(std::fs::read_dir(storage_dir.path()).unwrap().count(), 0);
+            }
             if expected_calls != 0 {
                 let canonical_hash = expected_hash
                     .strip_prefix("0x")

@@ -1874,6 +1874,21 @@ work and bind recovery to one verifier mode. -->
 | `EDGE_GATEWAY_GOVERNOR_KEYSTORE` | Keystore file path when `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
 | `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional password file used for the short-lived generated-governor or external keystore (default: `FUNDER_PASSWORD_FILE`; when neither is set for the generated governor, the launcher creates a random process-local password) |
 | `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | DA connectivity for gateway blobs mode |
+| `BITCOIN_DA_MISSING_BLOB_RECOVERY_TIMEOUT` | Initial grace before recovering a blob that Core reports missing; Tanenbaum launch/repair defaults to `5m`. Omitted on mainnet, preserving the existing timeout. |
+
+Missing-blob recovery does not relax settlement checks: Tanenbaum still uses its
+configured confirmation count, and mainnet still uses its configured ChainLock
+policy. Unconfirmed publications and subsequent paid retries retain
+`batcher.bitcoin_da_finality_timeout` (90 minutes by default). A failed or ambiguous
+wallet call still consumes one of the durable per-hash attempt slots.
+
+Recovery clocks live beside those slots in `bitcoin_da_status`, separately from
+batch receipts. Keep that directory across restarts and deployments; deleting it
+would discard spending limits as well as timing. Unix timestamps let waiting age
+across downtime and therefore depend on the operator host's clock. A backwards or
+corrupt clock fails closed rather than authorizing another paid attempt. References
+already discovered in one commit command age together; undiscovered queued commands
+are not scanned ahead or published in parallel.
 
 ## Notes
 
