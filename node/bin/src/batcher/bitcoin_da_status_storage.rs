@@ -4,7 +4,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 
 #[derive(Clone, Debug)]
@@ -77,6 +77,15 @@ fn normalized_republication_hash(version_hash: &str) -> anyhow::Result<String> {
         "invalid Bitcoin DA republication hash length"
     );
     Ok(hex::encode(hash))
+}
+
+fn recovery_now_unix_ms() -> anyhow::Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("Bitcoin DA recovery clock is before UNIX epoch")?
+        .as_millis()
+        .try_into()
+        .context("Bitcoin DA recovery clock exceeds u64 milliseconds")
 }
 
 impl BitcoinDaStatusStorage {
@@ -154,16 +163,21 @@ impl BitcoinDaStatusStorage {
         )
     }
 
-    pub async fn observe_recovery(
+    pub async fn observe_recovery(&self, version_hash: &str) -> anyhow::Result<()> {
+        self.observe_recovery_with_clock(version_hash, recovery_now_unix_ms)
+            .await
+    }
+
+    async fn observe_recovery_with_clock(
         &self,
         version_hash: &str,
-        now_unix_ms: u64,
+        clock: impl FnOnce() -> anyhow::Result<u64> + Send + 'static,
     ) -> anyhow::Result<()> {
         let storage = self.clone();
         let hash = normalized_republication_hash(version_hash)?;
         tokio::task::spawn_blocking(move || {
             let _lock = storage.recovery_lock(&hash)?;
-            storage.load_or_create_recovery_clock(&hash, now_unix_ms)?;
+            storage.load_or_create_recovery_clock(&hash, clock()?)?;
             Ok(())
         })
         .await?
@@ -172,7 +186,17 @@ impl BitcoinDaStatusStorage {
     pub async fn recovery_due(
         &self,
         version_hash: &str,
-        now_unix_ms: u64,
+        initial_delay: Duration,
+        cooldown: Duration,
+    ) -> anyhow::Result<bool> {
+        self.recovery_due_with_clock(version_hash, recovery_now_unix_ms, initial_delay, cooldown)
+            .await
+    }
+
+    async fn recovery_due_with_clock(
+        &self,
+        version_hash: &str,
+        clock: impl FnOnce() -> anyhow::Result<u64> + Send + 'static,
         initial_delay: Duration,
         cooldown: Duration,
     ) -> anyhow::Result<bool> {
@@ -180,6 +204,7 @@ impl BitcoinDaStatusStorage {
         let hash = normalized_republication_hash(version_hash)?;
         tokio::task::spawn_blocking(move || {
             let _lock = storage.recovery_lock(&hash)?;
+            let now_unix_ms = clock()?;
             let clock = storage.load_or_create_recovery_clock(&hash, now_unix_ms)?;
             Ok(clock.due(now_unix_ms, initial_delay, cooldown))
         })
@@ -189,7 +214,24 @@ impl BitcoinDaStatusStorage {
     pub async fn claim_republication(
         &self,
         version_hash: &str,
-        now_unix_ms: u64,
+        initial_delay: Duration,
+        cooldown: Duration,
+        max_attempts: u32,
+    ) -> anyhow::Result<Option<BitcoinDaRepublicationClaim>> {
+        self.claim_republication_with_clock(
+            version_hash,
+            recovery_now_unix_ms,
+            initial_delay,
+            cooldown,
+            max_attempts,
+        )
+        .await
+    }
+
+    async fn claim_republication_with_clock(
+        &self,
+        version_hash: &str,
+        clock: impl FnOnce() -> anyhow::Result<u64> + Send + 'static,
         initial_delay: Duration,
         cooldown: Duration,
         max_attempts: u32,
@@ -202,6 +244,9 @@ impl BitcoinDaStatusStorage {
         let hash = normalized_republication_hash(version_hash)?;
         tokio::task::spawn_blocking(move || {
             let lock = storage.recovery_lock(&hash)?;
+            // Read after acquiring the lock: an enqueued waiter must not mistake the
+            // previous claimant's later timestamp for a backwards host clock.
+            let now_unix_ms = clock()?;
             let mut clock = storage.load_or_create_recovery_clock(&hash, now_unix_ms)?;
             if !clock.due(now_unix_ms, initial_delay, cooldown) {
                 return Ok(None);
@@ -220,6 +265,52 @@ impl BitcoinDaStatusStorage {
     }
 
     #[cfg(test)]
+    pub(super) async fn observe_recovery_at(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+    ) -> anyhow::Result<()> {
+        self.observe_recovery_with_clock(version_hash, move || Ok(now_unix_ms))
+            .await
+    }
+
+    #[cfg(test)]
+    async fn recovery_due_at(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+        initial_delay: Duration,
+        cooldown: Duration,
+    ) -> anyhow::Result<bool> {
+        self.recovery_due_with_clock(
+            version_hash,
+            move || Ok(now_unix_ms),
+            initial_delay,
+            cooldown,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    async fn claim_republication_at(
+        &self,
+        version_hash: &str,
+        now_unix_ms: u64,
+        initial_delay: Duration,
+        cooldown: Duration,
+        max_attempts: u32,
+    ) -> anyhow::Result<Option<BitcoinDaRepublicationClaim>> {
+        self.claim_republication_with_clock(
+            version_hash,
+            move || Ok(now_unix_ms),
+            initial_delay,
+            cooldown,
+            max_attempts,
+        )
+        .await
+    }
+
+    #[cfg(test)]
     async fn claim_republication_number(
         &self,
         version_hash: &str,
@@ -229,7 +320,7 @@ impl BitcoinDaStatusStorage {
         max_attempts: u32,
     ) -> anyhow::Result<Option<u32>> {
         Ok(self
-            .claim_republication(
+            .claim_republication_at(
                 version_hash,
                 now_unix_ms,
                 initial_delay,
@@ -368,11 +459,139 @@ mod tests {
     const HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
 
     #[tokio::test]
+    async fn enqueued_observe_due_and_claim_read_clock_after_prior_wallet_claim_releases() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        };
+        for operation in 0..3 {
+            let root = tempfile::tempdir().unwrap();
+            let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+            storage.observe_recovery_at(HASH, 1_000).await.unwrap();
+            let first = storage
+                .claim_republication_at(HASH, 1_001, Duration::ZERO, Duration::from_millis(10), 3)
+                .await
+                .unwrap()
+                .unwrap();
+            let now = Arc::new(AtomicU64::new(1_000));
+            let reads = Arc::new(AtomicUsize::new(0));
+            let clock = {
+                let now = now.clone();
+                let reads = reads.clone();
+                move || {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    Ok(now.load(Ordering::SeqCst))
+                }
+            };
+            let waiting = async {
+                match operation {
+                    0 => storage.observe_recovery_with_clock(HASH, clock).await,
+                    1 => storage
+                        .recovery_due_with_clock(
+                            HASH,
+                            clock,
+                            Duration::ZERO,
+                            Duration::from_millis(10),
+                        )
+                        .await
+                        .map(|_| ()),
+                    _ => storage
+                        .claim_republication_with_clock(
+                            HASH,
+                            clock,
+                            Duration::ZERO,
+                            Duration::from_millis(10),
+                            3,
+                        )
+                        .await
+                        .map(|_| ()),
+                }
+            };
+            tokio::pin!(waiting);
+            assert!(futures::poll!(&mut waiting).is_pending());
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+            now.store(1_002, Ordering::SeqCst);
+            drop(first);
+            waiting.await.unwrap();
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+            let rollback = || Ok(1_000);
+            let result = match operation {
+                0 => storage.observe_recovery_with_clock(HASH, rollback).await,
+                1 => storage
+                    .recovery_due_with_clock(
+                        HASH,
+                        rollback,
+                        Duration::ZERO,
+                        Duration::from_millis(10),
+                    )
+                    .await
+                    .map(|_| ()),
+                _ => storage
+                    .claim_republication_with_clock(
+                        HASH,
+                        rollback,
+                        Duration::ZERO,
+                        Duration::from_millis(10),
+                        3,
+                    )
+                    .await
+                    .map(|_| ()),
+            };
+            assert!(result.unwrap_err().to_string().contains("backwards"));
+            assert_eq!(storage.reserve_republication(HASH, 3).await.unwrap(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_claim_starts_full_cooldown_at_lock_acquisition_not_enqueue_time() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
+        storage.observe_recovery_at(HASH, 1_000).await.unwrap();
+        let first = storage
+            .claim_republication_at(HASH, 1_001, Duration::ZERO, Duration::from_millis(10), 3)
+            .await
+            .unwrap()
+            .unwrap();
+        let now = Arc::new(AtomicU64::new(1_002));
+        let later = now.clone();
+        let waiting = storage.claim_republication_with_clock(
+            HASH,
+            move || Ok(later.load(Ordering::SeqCst)),
+            Duration::ZERO,
+            Duration::from_millis(10),
+            3,
+        );
+        tokio::pin!(waiting);
+        assert!(futures::poll!(&mut waiting).is_pending());
+        now.store(1_100, Ordering::SeqCst);
+        drop(first);
+        let second = waiting.await.unwrap().unwrap();
+        assert_eq!(second.attempt, 2);
+        drop(second);
+        assert!(
+            !storage
+                .recovery_due_at(HASH, 1_109, Duration::ZERO, Duration::from_millis(10))
+                .await
+                .unwrap()
+        );
+        assert!(
+            storage
+                .recovery_due_at(HASH, 1_110, Duration::ZERO, Duration::from_millis(10))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn recovery_clock_ages_across_restart_and_receipt_cleanup() {
         let root = tempfile::tempdir().unwrap();
         let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
-        storage.observe_recovery(HASH, 1_000).await.unwrap();
-        storage.observe_recovery(HASH, 1_050).await.unwrap();
+        storage.observe_recovery_at(HASH, 1_000).await.unwrap();
+        storage.observe_recovery_at(HASH, 1_050).await.unwrap();
         storage
             .save(1, &BitcoinDaBatchStatus::default())
             .await
@@ -386,7 +605,7 @@ mod tests {
         let reopened = BitcoinDaStatusStorage::new(root.path()).unwrap();
         assert!(
             !reopened
-                .recovery_due(
+                .recovery_due_at(
                     HASH,
                     1_099,
                     Duration::from_millis(100),
@@ -397,7 +616,7 @@ mod tests {
         );
         assert!(
             reopened
-                .recovery_due(
+                .recovery_due_at(
                     HASH,
                     1_100,
                     Duration::from_millis(100),
@@ -422,7 +641,7 @@ mod tests {
         let reopened = BitcoinDaStatusStorage::new(root.path()).unwrap();
         assert!(
             !reopened
-                .recovery_due(
+                .recovery_due_at(
                     HASH,
                     91_099,
                     Duration::from_millis(100),
@@ -450,18 +669,18 @@ mod tests {
     async fn missing_delay_does_not_shorten_unconfirmed_or_post_attempt_cooldown() {
         let root = tempfile::tempdir().unwrap();
         let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
-        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        storage.observe_recovery_at(HASH, 1_000).await.unwrap();
         let missing = Duration::from_secs(300);
         let normal = Duration::from_secs(5_400);
         assert!(
             storage
-                .recovery_due(HASH, 301_000, missing, normal)
+                .recovery_due_at(HASH, 301_000, missing, normal)
                 .await
                 .unwrap()
         );
         assert!(
             !storage
-                .recovery_due(HASH, 301_000, normal, normal)
+                .recovery_due_at(HASH, 301_000, normal, normal)
                 .await
                 .unwrap()
         );
@@ -474,13 +693,13 @@ mod tests {
         );
         assert!(
             !storage
-                .recovery_due(HASH, 601_000, missing, normal)
+                .recovery_due_at(HASH, 601_000, missing, normal)
                 .await
                 .unwrap()
         );
         assert!(
             storage
-                .recovery_due(HASH, 5_701_000, missing, normal)
+                .recovery_due_at(HASH, 5_701_000, missing, normal)
                 .await
                 .unwrap()
         );
@@ -490,7 +709,7 @@ mod tests {
     async fn concurrent_aliases_only_claim_one_due_attempt() {
         let root = tempfile::tempdir().unwrap();
         let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
-        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        storage.observe_recovery_at(HASH, 1_000).await.unwrap();
         let alias = format!("0x{}", HASH.to_uppercase());
         let (a, b, c) = tokio::join!(
             storage.claim_republication_number(
@@ -527,9 +746,9 @@ mod tests {
     async fn wallet_claim_holds_os_lock_even_after_a_short_cooldown() {
         let root = tempfile::tempdir().unwrap();
         let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
-        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        storage.observe_recovery_at(HASH, 1_000).await.unwrap();
         let first = storage
-            .claim_republication(
+            .claim_republication_at(
                 HASH,
                 1_100,
                 Duration::from_millis(100),
@@ -541,7 +760,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.attempt, 1);
         let alias = format!("0x{}", HASH.to_uppercase());
-        let second = storage.claim_republication(
+        let second = storage.claim_republication_at(
             &alias,
             1_101,
             Duration::from_millis(100),
@@ -614,8 +833,8 @@ mod tests {
     async fn recovery_corruption_backwards_clock_and_storage_failure_fail_closed() {
         let root = tempfile::tempdir().unwrap();
         let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
-        assert!(storage.observe_recovery(HASH, 0).await.is_err());
-        storage.observe_recovery(HASH, 1_000).await.unwrap();
+        assert!(storage.observe_recovery_at(HASH, 0).await.is_err());
+        storage.observe_recovery_at(HASH, 1_000).await.unwrap();
         assert!(
             storage
                 .claim_republication_number(HASH, 999, Duration::ZERO, Duration::from_secs(90), 3)
@@ -651,7 +870,7 @@ mod tests {
         let storage = BitcoinDaStatusStorage::new(root.path()).unwrap();
         let second = "608c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
         for hash in [HASH, second] {
-            storage.observe_recovery(hash, 1_000).await.unwrap();
+            storage.observe_recovery_at(hash, 1_000).await.unwrap();
         }
         let delay = Duration::from_millis(100);
         assert_eq!(
