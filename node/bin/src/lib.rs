@@ -32,6 +32,7 @@ use crate::batch_work::{
     BatchWorkDispatcher, BatchWorkPersistenceGate, BatchWorkSource, BatchWorkStorage,
 };
 use crate::batcher::bitcoin_da_finality_gate::BitcoinDaFinalityGate;
+use crate::batcher::bitcoin_da_native_evidence::NativeDaEvidenceProvider;
 use crate::batcher::bitcoin_da_status_cleanup::BitcoinDaStatusCleanup;
 use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
@@ -1762,6 +1763,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         run_main_node_pipeline(
             &config,
             sl_provider.clone(),
+            l1_provider.clone(),
             node_startup_state,
             archiving_block_replay_storage,
             runtime,
@@ -2489,6 +2491,7 @@ async fn wait_for_node_startup(
 async fn run_main_node_pipeline(
     config: &Config,
     sl_provider: NodeProvider,
+    l1_provider: NodeProvider,
     node_state_on_startup: NodeStateOnStartup,
     block_replay_storage: impl WriteReplay + Clone,
     runtime: &Runtime,
@@ -2523,6 +2526,22 @@ async fn run_main_node_pipeline(
     // a startup rebuild. The applied-block frontier, not command enqueue, releases this barrier.
     startup_rebuild_target_gate: Option<oneshot::Sender<()>>,
 ) -> PipelineHandles {
+    let native_da = || {
+        if pubdata_mode != Some(PubdataMode::Blobs) {
+            return None;
+        }
+        NativeDaEvidenceProvider::for_config(
+            l1_provider.clone(),
+            node_state_on_startup.l1_state.l1_chain_id,
+            &config.batcher_config,
+        )
+        .expect("Bitcoin DA inclusion client configuration is invalid")
+        .map(Arc::new)
+    };
+    // Separate cursors and fee-suppression caches keep concurrent batch publication
+    // and settlement commands from clearing one another's recovery observations.
+    let publication_native_da = native_da();
+    let settlement_native_da = native_da();
     let priority_tree_db_path = config
         .general_config
         .rocks_db_path
@@ -2931,6 +2950,7 @@ async fn run_main_node_pipeline(
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
             bitcoin_da_status_storage: bitcoin_da_status_storage.clone(),
+            native_da: publication_native_da,
             merkle_tree: tree,
         })
         .pipe(BatchVerificationPipelineStep::new(
@@ -2951,11 +2971,14 @@ async fn run_main_node_pipeline(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
         // SYSCOIN: Block settlement until direct and forwarded Bitcoin DA refs are final.
-        .pipe(BitcoinDaFinalityGate::new(
-            config.batcher_config.clone(),
-            bitcoin_da_status_storage.clone(),
-            settles_on_gateway,
-        ))
+        .pipe(
+            BitcoinDaFinalityGate::new(
+                config.batcher_config.clone(),
+                bitcoin_da_status_storage.clone(),
+                settles_on_gateway,
+            )
+            .with_native_evidence(settlement_native_da),
+        )
         .pipe_opt(replay_archiver.map(|replay_archiver| {
             ReplayArchiveGateComponent::new(replay_archiver, block_replay_storage.clone())
         }))
