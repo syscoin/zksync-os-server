@@ -37,7 +37,6 @@ use zksync_os_types::{ProvingVersion, PubdataMode};
 pub mod batch_builder;
 mod batch_deadline_policy;
 pub(crate) mod bitcoin_da_finality_gate;
-pub(crate) mod bitcoin_da_inclusion;
 pub(crate) mod bitcoin_da_native_evidence;
 pub(crate) mod bitcoin_da_publication_queue;
 pub(crate) mod bitcoin_da_status_cleanup;
@@ -116,8 +115,7 @@ impl BitcoinDaChunkPublisher<'_> {
                 NativeDaEvidence::Absent
             };
             let reuse = match evidence {
-                NativeDaEvidence::PresentAwaitingCanonicalEvidence
-                | NativeDaEvidence::Confirmed => true,
+                NativeDaEvidence::PreviouslyRegistered | NativeDaEvidence::Registered => true,
                 NativeDaEvidence::Unavailable => {
                     tracing::warn!(
                         batch_number,
@@ -838,11 +836,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         // SYSCOIN: Publish missing 2 MiB DA chunks sequentially and persist progress so a restart
         // does not republish chunks that Bitcoin DA already accepted.
         if !status.finalized {
-            if let Some(native) = &self.native_da {
-                native
-                    .prepare_command(&expected_hashes.iter().cloned().collect())
-                    .await?;
-            }
             let mut publisher = BitcoinDaChunkPublisher {
                 config: &self.batcher_config,
                 client: &client,
@@ -986,7 +979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ordinary_publication_reuses_native_presence_without_wallet_calls() {
+    async fn ordinary_publication_reuses_registered_hash_without_wallet_or_locator_calls() {
         let (config, client, calls, publications, server) =
             ordinary_publication_fixture(false).await;
         let hash = alloy::hex::encode(Blake2s256::digest(b"abc"));
@@ -994,8 +987,9 @@ mod tests {
         let provider = mocked_provider(&asserter).await;
         asserter.push_success(&U64::from(TANENBAUM_CHAIN_ID));
         asserter.push_success(&Bytes::from(alloy::hex::decode(&hash).unwrap()));
-        let native =
-            NativeDaEvidenceProvider::new(provider, TANENBAUM_CHAIN_ID, Duration::from_secs(1));
+        let native = NativeDaEvidenceProvider::for_config(provider, TANENBAUM_CHAIN_ID, &config)
+            .unwrap()
+            .unwrap();
         let mut publisher = BitcoinDaChunkPublisher {
             config: &config,
             client: &client,
@@ -1008,6 +1002,7 @@ mod tests {
         assert!(!publisher.wallet_initialized);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(publications.load(Ordering::SeqCst), 0);
+        assert!(asserter.read_q().is_empty());
         server.abort();
     }
 
@@ -1116,41 +1111,6 @@ mod tests {
             assert_eq!(asserter.read_q().len(), 1, "ineligible native lookup ran");
             server.abort();
         }
-    }
-
-    #[tokio::test]
-    async fn ordinary_publication_reuses_canonical_original_without_wallet_calls() {
-        use super::bitcoin_da_native_evidence::test_support::{InclusionCase, inclusion_fixture};
-        let hash = alloy::primitives::B256::from_slice(&Blake2s256::digest(b"abc"));
-        let fixture = inclusion_fixture(hash, InclusionCase::Canonical).await;
-        let native = fixture.evidence();
-        fixture.queue_lookup(true);
-        let client = SyscoinClient::new(
-            fixture.config.bitcoin_da_rpc_url.as_deref().unwrap(),
-            "user",
-            "password",
-            &fixture.config.bitcoin_da_poda_url,
-            Some(Duration::from_secs(1)),
-            "test",
-        )
-        .unwrap();
-        let mut publisher = BitcoinDaChunkPublisher {
-            config: &fixture.config,
-            client: &client,
-            queue: None,
-            normal_turn: None,
-            native: Some(&native),
-            wallet_initialized: false,
-        };
-        let expected = alloy::hex::encode(hash);
-        assert_eq!(
-            publisher.publish(7, 0, b"abc", &expected).await.unwrap(),
-            expected
-        );
-        assert!(!publisher.wallet_initialized);
-        fixture.assert_only_read_effects();
-        assert!(fixture.asserter.read_q().is_empty());
-        fixture.server.abort();
     }
 
     #[tokio::test]

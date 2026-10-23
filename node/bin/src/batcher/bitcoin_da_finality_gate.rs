@@ -35,21 +35,25 @@ pub struct BitcoinDaFinalityGate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BlobFinalityObservation {
     Core(BlobFinalityState),
-    NativePresentAwaitingCanonicalEvidence,
-    NativeUnavailableAwaitingCanonicalEvidence,
+    NativeRegistered,
+    NativePreviouslyRegistered,
+    NativeUnavailable,
 }
 
 impl BlobFinalityObservation {
     fn is_final(self) -> bool {
-        matches!(self, Self::Core(BlobFinalityState::Finalized))
+        matches!(
+            self,
+            Self::Core(BlobFinalityState::Finalized) | Self::NativeRegistered
+        )
     }
 
     fn waits_without_republication(self) -> bool {
         matches!(
             self,
             Self::Core(BlobFinalityState::Confirmed { .. })
-                | Self::NativePresentAwaitingCanonicalEvidence
-                | Self::NativeUnavailableAwaitingCanonicalEvidence
+                | Self::NativePreviouslyRegistered
+                | Self::NativeUnavailable
         )
     }
 
@@ -515,6 +519,34 @@ impl BitcoinDaFinalityGate {
         client: &SyscoinClient,
         version_hash: &str,
     ) -> anyhow::Result<BlobFinalityObservation> {
+        if self.config.bitcoin_da_finality_mode == BitcoinDaFinalityMode::Confirmations
+            && self.config.bitcoin_da_finality_confirmations == 1
+            && let Some(provider) = &self.nevm_provider
+        {
+            match provider.resolve_missing(version_hash).await {
+                NativeDaEvidence::Registered => {
+                    // This settlement path requires the registered hash, not its original
+                    // Core block. Only a fresh exact native response can complete it.
+                    tracing::info!(version_hash, "Reusing Bitcoin DA hash registered in NEVM");
+                    return Ok(BlobFinalityObservation::NativeRegistered);
+                }
+                NativeDaEvidence::PreviouslyRegistered => {
+                    tracing::warn!(
+                        version_hash,
+                        "Bitcoin DA was registered in NEVM; awaiting a fresh registration response without republication"
+                    );
+                    return Ok(BlobFinalityObservation::NativePreviouslyRegistered);
+                }
+                NativeDaEvidence::Unavailable => {
+                    tracing::warn!(
+                        version_hash,
+                        "Bitcoin DA NEVM registration is unavailable; waiting without republication"
+                    );
+                    return Ok(BlobFinalityObservation::NativeUnavailable);
+                }
+                NativeDaEvidence::Absent => {}
+            }
+        }
         let state = client
             .blob_finality_state_with_mode(
                 version_hash,
@@ -528,40 +560,9 @@ impl BitcoinDaFinalityGate {
         if !matches!(
             state,
             BlobFinalityState::Missing | BlobFinalityState::Unconfirmed
-        ) {
-            if let Some(provider) = &self.nevm_provider {
-                provider.forget(version_hash);
-            }
-        } else if self.config.bitcoin_da_finality_mode == BitcoinDaFinalityMode::Confirmations
-            && self.config.bitcoin_da_finality_confirmations == 1
-            && let Some(provider) = &self.nevm_provider
+        ) && let Some(provider) = &self.nevm_provider
         {
-            match provider.resolve_missing(version_hash).await {
-                NativeDaEvidence::Confirmed => {
-                    tracing::info!(
-                        version_hash,
-                        "Reusing canonical Core publication with current NEVM membership"
-                    );
-                    return Ok(BlobFinalityObservation::Core(BlobFinalityState::Finalized));
-                }
-                NativeDaEvidence::PresentAwaitingCanonicalEvidence => {
-                    // The native positive cache can outlive a reorg. Presence prevents another paid
-                    // publication, but cannot satisfy even a one-confirmation finality policy.
-                    tracing::warn!(
-                        version_hash,
-                        "Bitcoin DA is present in NEVM but Core metadata is missing; awaiting canonical publication evidence without republication"
-                    );
-                    return Ok(BlobFinalityObservation::NativePresentAwaitingCanonicalEvidence);
-                }
-                NativeDaEvidence::Unavailable => {
-                    tracing::warn!(
-                        version_hash,
-                        "Bitcoin DA NEVM presence is unavailable; awaiting canonical publication evidence without republication"
-                    );
-                    return Ok(BlobFinalityObservation::NativeUnavailableAwaitingCanonicalEvidence);
-                }
-                NativeDaEvidence::Absent => {}
-            }
+            provider.forget(version_hash);
         }
         Ok(BlobFinalityObservation::Core(state))
     }
@@ -795,9 +796,6 @@ impl BitcoinDaFinalityGate {
         let client = self.client()?;
         // Only this already-bounded command is primed, not the queued stream. Later refs
         // age while earlier refs settle, instead of starting another full recovery delay.
-        if let Some(provider) = &self.nevm_provider {
-            provider.prepare_command(&hashes).await?;
-        }
         for hash in hashes {
             let state = self.blob_finality_state(&client, &hash).await?;
             if matches!(
@@ -865,6 +863,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecoveryEffects {
+        metadata_reads: AtomicUsize,
         full_blob_reads: AtomicUsize,
         archive_reads: AtomicUsize,
         publications: AtomicUsize,
@@ -909,6 +908,7 @@ mod tests {
                             }
                         }
                         "getnevmblobdata" => {
+                            effects.metadata_reads.fetch_add(1, Ordering::SeqCst);
                             json!({"error": {"code": -32602, "message": "missing blob"}})
                         }
                         "syscoincreatenevmblob" => {
@@ -971,7 +971,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_presence_keeps_direct_refs_nonfinal_without_recovery_side_effects() {
+    async fn fresh_registration_completes_direct_refs_without_core_calls() {
         for context in [
             BlobFinalityWaitContext::OwnBatch { batch_number: 7 },
             BlobFinalityWaitContext::GatewayEdgeRef,
@@ -984,85 +984,20 @@ mod tests {
                 false,
             )
             .with_nevm_provider(native_present_provider(ABC_HASH).await, TANENBAUM_CHAIN_ID);
-            let client = gate.client().unwrap();
-            assert_eq!(
-                gate.blob_finality_state(&client, ABC_HASH).await.unwrap(),
-                BlobFinalityObservation::NativePresentAwaitingCanonicalEvidence
-            );
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_millis(50),
-                    gate.wait_for_blob_finality(&client, ABC_HASH, context),
-                )
+            gate.wait_for_blob_finality(&gate.client().unwrap(), ABC_HASH, context)
                 .await
-                .is_err(),
-                "native presence alone must not release settlement"
-            );
+                .unwrap();
+            assert_eq!(effects.metadata_reads.load(Ordering::SeqCst), 0);
             assert_no_recovery_effects(&effects, dir.path());
             server.abort();
         }
     }
 
     #[tokio::test]
-    async fn native_presence_skips_clock_priming_and_bounded_recovery() {
-        let (mut config, effects, server) = missing_core_fixture().await;
-        let dir = tempfile::tempdir().unwrap();
-        config.bitcoin_da_publication_window = 2;
-        config.bitcoin_da_publication_state_path = Some(dir.path().join("publication"));
-        let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
-        let hashes = vec![ABC_HASH.to_owned()];
-        storage
-            .save(
-                7,
-                &BitcoinDaBatchStatus {
-                    expected_hashes: hashes.clone(),
-                    published_hashes: hashes.clone(),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        let command = recovery_test_command(&hashes, recovery_test_edge_message(10, 1, &hashes));
-        let gate = BitcoinDaFinalityGate::new(config, storage.clone(), false)
-            .with_nevm_provider(native_present_provider(ABC_HASH).await, TANENBAUM_CHAIN_ID);
-        gate.prime_command_recovery_clocks(&command).await.unwrap();
-        assert_no_recovery_effects(&effects, dir.path());
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(50),
-                gate.verify_command_da_before_commit(&command),
-            )
-            .await
-            .is_err(),
-            "the bounded gate must retain native-only refs without releasing the command"
-        );
-        assert!(!storage.load(7).await.unwrap().unwrap().finalized);
-        assert_no_recovery_effects(&effects, dir.path());
-        server.abort();
-    }
-
-    fn assert_no_canonical_recovery_markers(path: &std::path::Path) {
-        for entry in std::fs::read_dir(path).unwrap() {
-            let name = entry.unwrap().file_name();
-            let name = name.to_str().unwrap();
-            assert!(
-                !name.starts_with("recovery_") && !name.starts_with("republish_"),
-                "canonical inclusion must not create recovery clocks or paid attempts: {name}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn canonical_original_inclusion_completes_direct_and_bounded_commands_without_recovery() {
-        use crate::batcher::bitcoin_da_native_evidence::test_support::{
-            InclusionCase, inclusion_fixture,
-        };
-        use alloy::primitives::B256;
+    async fn fresh_registration_completes_direct_and_bounded_commands_without_core_calls() {
         for window in [1, 2] {
-            let hash = B256::from_slice(&hex::decode(ABC_HASH).unwrap());
-            let fixture = inclusion_fixture(hash, InclusionCase::Canonical).await;
+            let (mut config, effects, server) = missing_core_fixture().await;
             let dir = tempfile::tempdir().unwrap();
-            let mut config = fixture.config.clone();
             config.bitcoin_da_publication_window = window;
             if window > 1 {
                 config.bitcoin_da_publication_state_path = Some(dir.path().join("publication"));
@@ -1080,21 +1015,26 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            let asserter = Asserter::new();
+            let provider = mocked_provider(&asserter).await;
+            for _ in 0..if window == 1 { 3 } else { 4 } {
+                asserter.push_success(&U64::from(TANENBAUM_CHAIN_ID));
+                asserter.push_success(&Bytes::from(hex::decode(ABC_HASH).unwrap()));
+            }
+            let native =
+                NativeDaEvidenceProvider::for_config(provider, TANENBAUM_CHAIN_ID, &config)
+                    .unwrap()
+                    .unwrap();
+            let gate = BitcoinDaFinalityGate::new(config, storage.clone(), false)
+                .with_native_evidence(Some(Arc::new(native)));
             let command =
                 recovery_test_command(&hashes, recovery_test_edge_message(10, 1, &hashes));
-            let gate = BitcoinDaFinalityGate::new(config, storage.clone(), false)
-                .with_native_evidence(Some(fixture.evidence()));
-            // Prime, the optional bounded pass, own publication, and forwarded edge publication
-            // each obtain fresh canonical evidence from the original transaction.
-            for call in 0..if window == 1 { 3 } else { 4 } {
-                fixture.queue_lookup(call == 0);
-            }
             tokio::time::timeout(
                 Duration::from_secs(1),
                 gate.verify_command_da_before_commit(&command),
             )
             .await
-            .expect("canonical original publication must release the command")
+            .expect("registered hash must release the command")
             .unwrap();
             let receipt = storage.load(7).await.unwrap().unwrap();
             assert!(receipt.finalized);
@@ -1102,62 +1042,76 @@ mod tests {
                 receipt.finality_policy,
                 Some(gate.current_finality_policy())
             );
-            assert!(fixture.asserter.read_q().is_empty());
-            fixture.assert_only_read_effects();
-            assert_no_canonical_recovery_markers(dir.path());
-            fixture.server.abort();
+            assert!(
+                asserter.read_q().is_empty(),
+                "unexpected extra native or locator request"
+            );
+            assert_eq!(effects.metadata_reads.load(Ordering::SeqCst), 0);
+            assert_no_recovery_effects(&effects, dir.path());
+            server.abort();
         }
     }
 
     #[tokio::test]
-    async fn unconfirmed_metadata_can_reuse_original_canonical_inclusion_without_recovery() {
-        use crate::batcher::bitcoin_da_native_evidence::test_support::{
-            InclusionCase, inclusion_fixture_with_metadata,
-        };
-        use alloy::primitives::B256;
-        for window in [1, 2] {
-            let hash = B256::from_slice(&hex::decode(ABC_HASH).unwrap());
-            let fixture =
-                inclusion_fixture_with_metadata(hash, InclusionCase::Canonical, true).await;
-            let dir = tempfile::tempdir().unwrap();
-            let mut config = fixture.config.clone();
-            config.bitcoin_da_publication_window = window;
-            if window > 1 {
-                config.bitcoin_da_publication_state_path = Some(dir.path().join("publication"));
-            }
-            let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
-            let hashes = vec![ABC_HASH.to_owned()];
-            storage
-                .save(
-                    7,
-                    &BitcoinDaBatchStatus {
-                        expected_hashes: hashes.clone(),
-                        published_hashes: hashes.clone(),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
-            let command =
-                recovery_test_command(&hashes, recovery_test_edge_message(10, 1, &hashes));
-            let gate = BitcoinDaFinalityGate::new(config, storage.clone(), false)
-                .with_native_evidence(Some(fixture.evidence()));
-            for call in 0..if window == 1 { 3 } else { 4 } {
-                fixture.queue_lookup(call == 0);
-            }
+    async fn cached_registration_only_suppresses_fees_when_fresh_lookup_fails() {
+        let (config, effects, server) = missing_core_fixture().await;
+        let dir = tempfile::tempdir().unwrap();
+        let gate = BitcoinDaFinalityGate::new(
+            config,
+            BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+            false,
+        )
+        .with_nevm_provider(native_present_provider(ABC_HASH).await, TANENBAUM_CHAIN_ID);
+        let client = gate.client().unwrap();
+        assert_eq!(
+            gate.blob_finality_state(&client, ABC_HASH).await.unwrap(),
+            BlobFinalityObservation::NativeRegistered
+        );
+        assert_eq!(
+            gate.blob_finality_state(&client, ABC_HASH).await.unwrap(),
+            BlobFinalityObservation::NativePreviouslyRegistered
+        );
+        assert!(
             tokio::time::timeout(
-                Duration::from_secs(1),
-                gate.verify_command_da_before_commit(&command),
+                Duration::from_millis(30),
+                gate.wait_for_blob_finality(
+                    &client,
+                    ABC_HASH,
+                    BlobFinalityWaitContext::GatewayEdgeRef
+                ),
             )
             .await
-            .expect("original canonical inclusion must override unconfirmed metadata")
-            .unwrap();
-            assert!(storage.load(7).await.unwrap().unwrap().finalized);
-            assert!(fixture.asserter.read_q().is_empty());
-            fixture.assert_only_read_effects();
-            assert_no_canonical_recovery_markers(dir.path());
-            fixture.server.abort();
-        }
+            .is_err()
+        );
+        assert_eq!(effects.metadata_reads.load(Ordering::SeqCst), 0);
+        assert_no_recovery_effects(&effects, dir.path());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn definite_native_absence_retains_the_existing_core_path() {
+        let (config, effects, server) = missing_core_fixture().await;
+        let dir = tempfile::tempdir().unwrap();
+        let asserter = Asserter::new();
+        let provider = mocked_provider(&asserter).await;
+        asserter.push_success(&U64::from(TANENBAUM_CHAIN_ID));
+        asserter.push_success(&Bytes::new());
+        let gate = BitcoinDaFinalityGate::new(
+            config,
+            BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+            false,
+        )
+        .with_nevm_provider(provider, TANENBAUM_CHAIN_ID);
+        assert_eq!(
+            gate.blob_finality_state(&gate.client().unwrap(), ABC_HASH)
+                .await
+                .unwrap(),
+            BlobFinalityObservation::Core(BlobFinalityState::Missing)
+        );
+        assert!(asserter.read_q().is_empty());
+        assert_eq!(effects.metadata_reads.load(Ordering::SeqCst), 1);
+        assert_no_recovery_effects(&effects, dir.path());
+        server.abort();
     }
 
     #[tokio::test]
@@ -1231,65 +1185,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_original_locators_never_finalize_or_republish_direct_or_bounded_commands() {
-        use crate::batcher::bitcoin_da_native_evidence::test_support::{
-            InclusionCase, inclusion_fixture,
-        };
-        use alloy::primitives::B256;
-        for window in [1, 2] {
-            for case in [
-                InclusionCase::WrongCoreCanonicalHash,
-                InclusionCase::Unconfirmed,
-                InclusionCase::WrongNeVmNumberFirst,
-                InclusionCase::WrongNeVmNumberLast,
-            ] {
-                let hash = B256::from_slice(&hex::decode(ABC_HASH).unwrap());
-                let fixture = inclusion_fixture(hash, case).await;
-                let dir = tempfile::tempdir().unwrap();
-                let mut config = fixture.config.clone();
-                config.bitcoin_da_publication_window = window;
-                if window > 1 {
-                    config.bitcoin_da_publication_state_path = Some(dir.path().join("publication"));
-                }
-                let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
-                let hashes = vec![ABC_HASH.to_owned()];
-                storage
-                    .save(
-                        7,
-                        &BitcoinDaBatchStatus {
-                            expected_hashes: hashes.clone(),
-                            published_hashes: hashes.clone(),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
-                let command =
-                    recovery_test_command(&hashes, recovery_test_edge_message(10, 1, &hashes));
-                let gate = BitcoinDaFinalityGate::new(config, storage.clone(), false)
-                    .with_native_evidence(Some(fixture.evidence()));
-                fixture.queue_lookup(true);
-                gate.prime_command_recovery_clocks(&command).await.unwrap();
-                assert!(fixture.asserter.read_q().is_empty(), "case {case:?}");
-                // Exhausted subsequent mock reads exercise the existing remembered-presence fence.
-                assert!(
-                    tokio::time::timeout(
-                        Duration::from_millis(30),
-                        gate.verify_command_da_before_commit(&command)
-                    )
-                    .await
-                    .is_err(),
-                    "rejected locator must not release window {window}, case {case:?}"
-                );
-                assert!(!storage.load(7).await.unwrap().unwrap().finalized);
-                fixture.assert_only_read_effects();
-                assert_no_canonical_recovery_markers(dir.path());
-                fixture.server.abort();
-            }
-        }
-    }
-
-    #[tokio::test]
     async fn unavailable_native_probe_never_turns_core_missing_into_paid_recovery() {
         let (config, effects, server) = missing_core_fixture().await;
         let dir = tempfile::tempdir().unwrap();
@@ -1304,7 +1199,7 @@ mod tests {
         let client = gate.client().unwrap();
         assert_eq!(
             gate.blob_finality_state(&client, ABC_HASH).await.unwrap(),
-            BlobFinalityObservation::NativeUnavailableAwaitingCanonicalEvidence
+            BlobFinalityObservation::NativeUnavailable
         );
         assert!(
             tokio::time::timeout(
@@ -1318,6 +1213,7 @@ mod tests {
             .await
             .is_err()
         );
+        assert_eq!(effects.metadata_reads.load(Ordering::SeqCst), 0);
         assert_no_recovery_effects(&effects, dir.path());
         server.abort();
     }
