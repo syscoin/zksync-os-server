@@ -1006,13 +1006,13 @@ pub(crate) fn validate_core_inclusion(
                 first_unspendable = Some(script);
             }
         }
-        if version == NEVM_DATA_TX_VERSION {
-            if let Some(script) = first_unspendable {
-                // Other NEVM publications in the same block may carry different supported hashes.
-                // They are not evidence for this requested digest.
-                if data_hash_from_script(&script).is_ok_and(|hash| hash == expected_data_hash) {
-                    matching_txid.get_or_insert(txid);
-                }
+        if version == NEVM_DATA_TX_VERSION
+            && let Some(script) = first_unspendable
+        {
+            // Other NEVM publications in the same block may carry different supported hashes.
+            // They are not evidence for this requested digest.
+            if data_hash_from_script(&script).is_ok_and(|hash| hash == expected_data_hash) {
+                matching_txid.get_or_insert(txid);
             }
         }
     }
