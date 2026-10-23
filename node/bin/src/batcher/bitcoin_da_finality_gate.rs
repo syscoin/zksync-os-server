@@ -368,9 +368,6 @@ impl BitcoinDaFinalityGate {
             let Some(probe) = queue.try_acquire(None).await? else {
                 return Ok(());
             };
-            if probe.contains(version_hash)? {
-                return Ok(());
-            }
             // Do not hold the wallet lock across an archive download, and do not download
             // every missing ref again while the bounded window is already occupied.
             drop(probe);
@@ -398,9 +395,6 @@ impl BitcoinDaFinalityGate {
                 let Some(publication) = queue.try_acquire(None).await? else {
                     return Ok(());
                 };
-                if publication.contains(&recovered_hash)? {
-                    return Ok(());
-                }
                 Some(publication)
             }
             None => None,
@@ -1470,6 +1464,165 @@ mod tests {
                     .exists()
             );
         }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bounded_known_hash_recovery_preserves_original_capacity_cooldown_and_budget() {
+        use std::sync::atomic::AtomicBool;
+        let original_mined = Arc::new(AtomicBool::new(false));
+        let wallet_calls = Arc::new(AtomicUsize::new(0));
+        let handler = {
+            let original_mined = original_mined.clone();
+            let wallet_calls = wallet_calls.clone();
+            move |Json(request): Json<Value>| {
+                let mut body = match request["method"].as_str().unwrap() {
+                    "getblockhash" => json!({"result":if request["params"][0] == 0 {
+                        "00".repeat(32)
+                    } else { "11".repeat(32) }}),
+                    "getblockchaininfo" => json!({"result":{"initialblockdownload":false}}),
+                    "getmempoolinfo" => json!({"result":{"loaded":true,"size":0,"bytes":0}}),
+                    "getmempoolentry" => {
+                        json!({"error":{"code":-5,"message":"Transaction not in mempool"}})
+                    }
+                    "gettransaction" => {
+                        let txid = request["params"][0].as_str().unwrap();
+                        let mined =
+                            txid == format!("{:064x}", 1) && original_mined.load(Ordering::SeqCst);
+                        json!({"result":if mined {
+                            json!({"txid":txid,"confirmations":1,"blockheight":7,"blockhash":"11".repeat(32)})
+                        } else { json!({"txid":txid,"confirmations":0}) }})
+                    }
+                    "getnevmblobdata" => json!({"result":{"data":"616263"}}),
+                    "syscoincreatenevmblob" => {
+                        let index = wallet_calls.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(request["params"][0], "616263");
+                        assert_eq!(request["params"][1], index != 0);
+                        assert_eq!(request["params"][2], "blake2s");
+                        json!({"result":{"versionhash":ABC_HASH,"txid":format!("{:064x}",index+1)}})
+                    }
+                    method => panic!("unexpected method {method}"),
+                };
+                body["id"] = request["id"].clone();
+                async move { Json(body) }
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().fallback(axum::routing::post(handler)),
+            )
+            .await
+            .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let storage = BitcoinDaStatusStorage::new(directory.path().join("receipts")).unwrap();
+        let queue_path = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("shared-wallet");
+        let config = BatcherConfig {
+            bitcoin_da_rpc_url: Some(url.clone()),
+            bitcoin_da_rpc_user: Some("user".into()),
+            bitcoin_da_rpc_password: Some("password".into()),
+            bitcoin_da_poda_url: url,
+            bitcoin_da_finality_timeout: Duration::from_secs(60),
+            bitcoin_da_publication_window: 2,
+            bitcoin_da_publication_state_path: Some(queue_path.clone()),
+            bitcoin_da_max_republish_attempts: 1,
+            ..Default::default()
+        };
+        let queue = BitcoinDaPublicationQueue::from_config(&config)
+            .unwrap()
+            .unwrap();
+        let mut original = queue.try_acquire(None).await.unwrap().unwrap();
+        original.publish(b"abc", ABC_HASH, false).await.unwrap();
+        drop(original);
+        let first_observed = recovery_now_unix_ms().unwrap() - 120_000;
+        storage
+            .observe_recovery_at(ABC_HASH, first_observed)
+            .await
+            .unwrap();
+        let gate = BitcoinDaFinalityGate::new(config.clone(), storage.clone(), false);
+        let client = gate.client().unwrap();
+        gate.republish_blob_after_timeout(
+            &client,
+            ABC_HASH,
+            BlobFinalityWaitContext::GatewayEdgeRef,
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(wallet_calls.load(Ordering::SeqCst), 2);
+        let journal: Value =
+            serde_json::from_slice(&std::fs::read(queue_path.join("journal.json")).unwrap())
+                .unwrap();
+        assert_eq!(journal["pending"].as_array().unwrap().len(), 2);
+        assert_eq!(journal["pending"][0]["txid"], format!("{:064x}", 1));
+        assert_eq!(journal["pending"][1]["txid"], format!("{:064x}", 2));
+        let clock_path = directory
+            .path()
+            .join("receipts")
+            .join(format!("recovery_{ABC_HASH}.json"));
+        let after_attempt = std::fs::read(&clock_path).unwrap();
+        let restarted = BitcoinDaFinalityGate::new(config, storage, false);
+        // A full actual-transaction window must defer before consuming another attempt.
+        restarted
+            .republish_blob_after_timeout(
+                &client,
+                ABC_HASH,
+                BlobFinalityWaitContext::GatewayEdgeRef,
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&clock_path).unwrap(), after_attempt);
+        original_mined.store(true, Ordering::SeqCst);
+        // Freeing the original slot does not bypass the persisted recovery cooldown.
+        restarted
+            .republish_blob_after_timeout(
+                &client,
+                ABC_HASH,
+                BlobFinalityWaitContext::GatewayEdgeRef,
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&clock_path).unwrap(), after_attempt);
+        assert_eq!(wallet_calls.load(Ordering::SeqCst), 2);
+        // Advance only this isolated fixture to an expired cooldown; never refund its fee marker.
+        let mut expired: Value = serde_json::from_slice(&after_attempt).unwrap();
+        assert_eq!(expired["first_observed_unix_ms"], first_observed);
+        expired["last_attempt_unix_ms"] = json!(recovery_now_unix_ms().unwrap() - 60_001);
+        std::fs::write(&clock_path, serde_json::to_vec(&expired).unwrap()).unwrap();
+        let error = restarted
+            .republish_blob_after_timeout(
+                &client,
+                ABC_HASH,
+                BlobFinalityWaitContext::GatewayEdgeRef,
+                Duration::from_millis(1),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("limit exhausted"));
+        assert_eq!(wallet_calls.load(Ordering::SeqCst), 2);
+        assert!(
+            directory
+                .path()
+                .join("receipts")
+                .join(format!("republish_{ABC_HASH}_1"))
+                .exists()
+        );
+        assert!(
+            !directory
+                .path()
+                .join("receipts")
+                .join(format!("republish_{ABC_HASH}_2"))
+                .exists()
+        );
         server.abort();
     }
 

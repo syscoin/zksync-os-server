@@ -208,6 +208,7 @@ struct FakeState {
     block_reads: Vec<(u64, String)>,
     fork_before_receipt: Option<ReceiptFork>,
     receipts: BTreeMap<String, Value>,
+    blob_metadata: BTreeMap<String, Value>,
     mempool_entries: BTreeMap<String, Value>,
     mempool: Value,
     actions: VecDeque<WalletAction>,
@@ -241,7 +242,11 @@ impl RpcClient for FakeRpc {
                 state.block_reads.push((height, hash.clone()));
                 Ok(json!(hash))
             }
-            "getnevmblobdata" => Err("blob metadata has been pruned".into()),
+            "getnevmblobdata" => state
+                .blob_metadata
+                .get(params[0].as_str().ok_or("invalid fake blob hash")?)
+                .cloned()
+                .ok_or_else(|| "blob metadata has been pruned".into()),
             "getblockchaininfo" => Ok(state.chain.clone()),
             "getmempoolinfo" => Ok(state.mempool.clone()),
             "getmempoolentry" => state
@@ -364,6 +369,7 @@ fn fixture(window: usize) -> (tempfile::TempDir, BitcoinDaPublicationQueue<FakeR
             block_reads: vec![],
             fork_before_receipt: None,
             receipts: BTreeMap::new(),
+            blob_metadata: BTreeMap::new(),
             mempool_entries: BTreeMap::new(),
             mempool: json!({"loaded": true, "size": 0, "bytes": 0}),
             actions: VecDeque::new(),
@@ -587,6 +593,307 @@ async fn two_unconfirmed_submissions_fill_shared_window() {
 }
 
 #[tokio::test]
+async fn restart_recovers_known_hash_without_a_free_publication_slot() {
+    let (_temporary, queue) = fixture(2);
+    let blob = b"accepted before batch progress was saved";
+    let expected = blob_hash(blob);
+    submit(&queue, blob).await;
+    queue
+        .rpc
+        .state
+        .lock()
+        .unwrap()
+        .actions
+        .push_back(WalletAction::Reply(
+            json!({"versionhash":blob_hash(b"other writer"),"txid":OLD_TXID}),
+        ));
+    submit(&queue, b"other writer").await;
+    let original = std::fs::read(queue.directory.join("journal.json")).unwrap();
+    let restarted = reopened(&queue);
+    let alias = format!("0x{}", expected.to_uppercase());
+    let mut receipt = restarted
+        .try_acquire_for_hash(None, &alias)
+        .await
+        .unwrap()
+        .expect("known receipt adoption needs no additional publication slot");
+    assert!(receipt.contains(&expected).unwrap());
+    assert!(
+        receipt
+            .publish(b"new", &blob_hash(b"new"), true)
+            .await
+            .is_err()
+    );
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 2);
+    assert_eq!(
+        std::fs::read(queue.directory.join("journal.json")).unwrap(),
+        original
+    );
+    drop(receipt);
+    assert!(
+        restarted
+            .try_acquire_for_hash(None, &blob_hash(b"new"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(restarted.try_acquire(None).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn restart_recovers_known_hash_without_new_mempool_headroom() {
+    for blocked in [
+        json!({"loaded":true,"size":25,"bytes":0}),
+        json!({"loaded":true,"size":0,"bytes":100_000}),
+        json!({"loaded":false,"size":0,"bytes":0}),
+    ] {
+        let (_temporary, queue) = fixture(2);
+        let blob = b"known receipt";
+        let expected = blob_hash(blob);
+        submit(&queue, blob).await;
+        queue.rpc.state.lock().unwrap().mempool = blocked;
+        let restarted = reopened(&queue);
+        let mut receipt = restarted
+            .try_acquire_for_hash(None, &expected)
+            .await
+            .unwrap()
+            .expect("adopting known publication must not require fresh headroom");
+        assert!(receipt.contains(&expected).unwrap());
+        assert!(
+            receipt
+                .publish(b"new", &blob_hash(b"new"), true)
+                .await
+                .is_err()
+        );
+        assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 1);
+        assert_eq!(journal(&queue).pending.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn restart_recovers_just_mined_receipt_before_headroom_checks() {
+    let (_temporary, queue) = fixture(2);
+    let blob = b"mined before restart";
+    let expected = blob_hash(blob);
+    submit(&queue, blob).await;
+    {
+        let mut state = queue.rpc.state.lock().unwrap();
+        state.receipts.insert(
+            TXID.to_owned(),
+            json!({
+                "txid":TXID,"confirmations":1,"blockheight":7,"blockhash":BLOCK_HASH,
+            }),
+        );
+        state.mempool = json!({"loaded":true,"size":25,"bytes":0});
+    }
+    let restarted = reopened(&queue);
+    let receipt = restarted
+        .try_acquire_for_hash(None, &expected)
+        .await
+        .unwrap()
+        .expect("canonical reconciliation must not lose the receipt being adopted");
+    assert!(receipt.contains(&expected).unwrap());
+    assert!(journal(&queue).pending.is_empty());
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 1);
+}
+
+#[tokio::test]
+async fn restart_recovers_receipt_retired_by_another_writer_or_a_second_crash() {
+    let (_temporary, queue) = fixture(2);
+    let blob = b"mined and retired before publisher resumed";
+    let expected = blob_hash(blob);
+    submit(&queue, blob).await;
+    {
+        let mut state = queue.rpc.state.lock().unwrap();
+        state.receipts.insert(
+            TXID.to_owned(),
+            json!({"txid":TXID,"confirmations":1,"blockheight":7,"blockhash":BLOCK_HASH}),
+        );
+        state.blob_metadata.insert(
+            expected.clone(),
+            json!({"versionhash":expected,"txid":TXID,"height":7,"blockhash":BLOCK_HASH}),
+        );
+        state.mempool = json!({"loaded":true,"size":25,"bytes":0});
+    }
+    // A different writer releases the mined slot before the original publisher restarts.
+    assert!(reopened(&queue).try_acquire(None).await.unwrap().is_none());
+    assert!(journal(&queue).pending.is_empty());
+    // Receipt recognition must survive another crash before per-batch status is saved.
+    for _ in 0..2 {
+        let restarted = reopened(&queue);
+        let mut receipt = restarted
+            .try_acquire_for_hash(None, &expected)
+            .await
+            .unwrap()
+            .expect("Core's existing publication needs no new capacity");
+        assert!(receipt.contains(&expected).unwrap());
+        assert!(receipt.publish(blob, &expected, true).await.is_err());
+        assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 1);
+        assert!(journal(&queue).pending.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn core_receipt_lookup_requires_matching_hash_and_transaction_identity() {
+    for metadata in [
+        json!({}),
+        json!({"versionhash":blob_hash(b"wrong"),"txid":TXID}),
+        json!({"versionhash":blob_hash(b"retired"),"txid":"invalid"}),
+        json!({"versionhash":blob_hash(b"retired"),"txid":"00".repeat(32)}),
+        json!({"versionhash":blob_hash(b"retired")}),
+    ] {
+        let (_temporary, queue) = fixture(2);
+        submit(&queue, b"current").await;
+        let expected = blob_hash(b"retired");
+        {
+            let mut state = queue.rpc.state.lock().unwrap();
+            state.mempool = json!({"loaded":true,"size":25,"bytes":0});
+            state.blob_metadata.insert(expected.clone(), metadata);
+        }
+        assert!(queue.try_acquire_for_hash(None, &expected).await.is_err());
+        assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 1);
+        assert_eq!(journal(&queue).pending.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn core_receipt_adoption_with_a_full_window_does_not_authorize_broadcast() {
+    let (_temporary, queue) = fixture(2);
+    submit(&queue, b"first pending").await;
+    queue
+        .rpc
+        .state
+        .lock()
+        .unwrap()
+        .actions
+        .push_back(WalletAction::Reply(
+            json!({"versionhash":blob_hash(b"second pending"),"txid":OLD_TXID}),
+        ));
+    submit(&queue, b"second pending").await;
+    let expected = blob_hash(b"previously retired");
+    queue.rpc.state.lock().unwrap().blob_metadata.insert(
+        expected.clone(),
+        json!({"versionhash":format!("0x{}",expected.to_uppercase()),"txid":TXID}),
+    );
+    let original = std::fs::read(queue.directory.join("journal.json")).unwrap();
+    let mut receipt = queue
+        .try_acquire_for_hash(None, &expected)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(receipt.contains(&expected).unwrap());
+    assert!(
+        receipt
+            .publish(b"previously retired", &expected, true)
+            .await
+            .is_err()
+    );
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 2);
+    assert_eq!(
+        std::fs::read(queue.directory.join("journal.json")).unwrap(),
+        original
+    );
+}
+
+#[tokio::test]
+async fn known_receipt_guard_is_read_only_even_with_spare_capacity() {
+    let (_temporary, queue) = fixture(2);
+    let blob = b"already published";
+    let expected = blob_hash(blob);
+    submit(&queue, blob).await;
+    let mut receipt = queue
+        .try_acquire_for_hash(None, &expected)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(receipt.contains(&expected).unwrap());
+    assert!(receipt.publish(blob, &expected, true).await.is_err());
+    assert!(
+        receipt
+            .publish(b"different", &blob_hash(b"different"), false)
+            .await
+            .is_err()
+    );
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 1);
+    assert_eq!(journal(&queue).pending.len(), 1);
+}
+
+#[tokio::test]
+async fn forced_recovery_retains_original_txid_and_counts_each_transaction() {
+    let (_temporary, queue) = fixture(2);
+    let blob = b"unconfirmed or evicted known publication";
+    let expected = blob_hash(blob);
+    submit(&queue, blob).await;
+    queue
+        .rpc
+        .state
+        .lock()
+        .unwrap()
+        .actions
+        .push_back(WalletAction::Reply(
+            json!({"versionhash":expected,"txid":OLD_TXID}),
+        ));
+    let restarted = reopened(&queue);
+    let mut recovery = restarted.try_acquire(None).await.unwrap().unwrap();
+    assert!(recovery.contains(&expected).unwrap());
+    recovery.publish(blob, &expected, true).await.unwrap();
+    let saved = journal(&queue);
+    assert_eq!(saved.pending.len(), 2);
+    assert!(
+        saved
+            .pending
+            .iter()
+            .all(|entry| entry.version_hash == expected)
+    );
+    assert_eq!(saved.pending[0].txid.as_deref(), Some(TXID));
+    assert_eq!(saved.pending[1].txid.as_deref(), Some(OLD_TXID));
+    drop(recovery);
+    assert!(restarted.try_acquire(None).await.unwrap().is_none());
+    queue.rpc.state.lock().unwrap().receipts.insert(
+        TXID.to_owned(),
+        json!({
+            "txid":TXID,"confirmations":1,"blockheight":7,"blockhash":BLOCK_HASH,
+        }),
+    );
+    let _available = restarted.try_acquire(None).await.unwrap().unwrap();
+    let saved = journal(&queue);
+    assert_eq!(saved.pending.len(), 1);
+    assert_eq!(saved.pending[0].txid.as_deref(), Some(OLD_TXID));
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 2);
+}
+
+#[tokio::test]
+async fn ambiguous_same_hash_recovery_preserves_original_and_global_restart_fence() {
+    let (_temporary, queue) = fixture(2);
+    let blob = b"same hash unknown recovery";
+    let expected = blob_hash(blob);
+    submit(&queue, blob).await;
+    queue
+        .rpc
+        .state
+        .lock()
+        .unwrap()
+        .actions
+        .push_back(WalletAction::Error);
+    let mut recovery = queue.try_acquire(None).await.unwrap().unwrap();
+    assert!(recovery.publish(blob, &expected, true).await.is_err());
+    drop(recovery);
+    let saved = journal(&queue);
+    assert_eq!(saved.pending.len(), 2);
+    assert_eq!(saved.pending[0].txid.as_deref(), Some(TXID));
+    assert!(saved.pending[1].txid.is_none());
+    queue.rpc.state.lock().unwrap().blob_metadata.insert(
+        expected.clone(),
+        json!({"versionhash":expected,"txid":TXID}),
+    );
+    let restarted = reopened(&queue);
+    match restarted.try_acquire_for_hash(None, &expected).await {
+        Err(error) => assert!(error.to_string().contains("outcome is unknown")),
+        Ok(_) => panic!("receipt adoption must not bypass another unknown transaction"),
+    }
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 2);
+}
+
+#[tokio::test]
 async fn fork_between_mined_receipts_cannot_release_an_earlier_noncanonical_publication() {
     let (_temporary, queue) = fixture(2);
     submit(&queue, b"independent lower publication").await;
@@ -688,7 +995,7 @@ async fn duplicate_hash_and_alias_are_suppressed_without_wallet_call() {
     let mut guard = queue.try_acquire(None).await.unwrap().unwrap();
     let alias = format!("0x{}", expected.to_uppercase());
     assert!(guard.contains(&alias).unwrap());
-    assert!(guard.publish(blob, &alias, true).await.is_err());
+    assert!(guard.publish(blob, &alias, false).await.is_err());
     assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 1);
     assert_eq!(journal(&queue).pending.len(), 1);
 }

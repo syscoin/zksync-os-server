@@ -727,8 +727,9 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 let start = Instant::now();
                 let version_hash = loop {
                     if let Some(queue) = &publication_queue {
-                        if let Some(mut publication) =
-                            queue.try_acquire(normal_turn.as_ref()).await?
+                        if let Some(mut publication) = queue
+                            .try_acquire_for_hash(normal_turn.as_ref(), expected_hash)
+                            .await?
                         {
                             if publication.contains(expected_hash)? {
                                 break expected_hash.clone();
