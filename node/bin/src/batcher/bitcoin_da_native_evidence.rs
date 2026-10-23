@@ -308,6 +308,14 @@ pub(super) mod test_support {
     }
 
     pub(crate) async fn inclusion_fixture(hash: B256, case: InclusionCase) -> InclusionFixture {
+        inclusion_fixture_with_metadata(hash, case, false).await
+    }
+
+    pub(crate) async fn inclusion_fixture_with_metadata(
+        hash: B256,
+        case: InclusionCase,
+        unconfirmed_metadata: bool,
+    ) -> InclusionFixture {
         let methods = Arc::new(Mutex::new(Vec::new()));
         let archive_reads = Arc::new(AtomicUsize::new(0));
         let full_blob_reads = Arc::new(AtomicUsize::new(0));
@@ -328,6 +336,9 @@ pub(super) mod test_support {
                 let result = match method {
                     "getnevmblobdata" => {
                         if request["params"][1] == true { full_reads.fetch_add(1, Ordering::SeqCst); }
+                        if unconfirmed_metadata {
+                            return Json(json!({"id":request["id"],"result":{},"error":null}));
+                        }
                         return Json(json!({"id":request["id"],"error":{"code":-32602,"message":"missing metadata"}}));
                     }
                     "getblockchaininfo" => json!({"chain":"test"}),

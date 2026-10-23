@@ -392,6 +392,9 @@ impl BitcoinDaFinalityGate {
         context: BlobFinalityWaitContext,
         initial_delay: Duration,
     ) -> anyhow::Result<()> {
+        if self.native_blocks_republication(version_hash).await {
+            return Ok(());
+        }
         match context {
             BlobFinalityWaitContext::OwnBatch { batch_number } => {
                 tracing::warn!(
@@ -437,6 +440,11 @@ impl BitcoinDaFinalityGate {
         // SYSCOIN: Availability is not authentication; normalize only hash-bound recovery
         // bytes before the durable attempt reservation and wallet publication boundary.
         let (blob, recovered_hash) = authenticate_recovered_blob(blob, version_hash)?;
+        // The original publication can become visible while the payload is fetched.
+        // Recheck before reserving an attempt or entering the wallet boundary.
+        if self.native_blocks_republication(version_hash).await {
+            return Ok(());
+        }
         let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
         // Wallet lock precedes the existing per-hash claim lock everywhere. Capacity and
         // advisory headroom are checked before irreversibly consuming a paid attempt.
@@ -517,7 +525,10 @@ impl BitcoinDaFinalityGate {
             .map_err(|err| {
                 anyhow::anyhow!("failed to check Bitcoin DA finality for {version_hash}: {err}")
             })?;
-        if state != BlobFinalityState::Missing {
+        if !matches!(
+            state,
+            BlobFinalityState::Missing | BlobFinalityState::Unconfirmed
+        ) {
             if let Some(provider) = &self.nevm_provider {
                 provider.forget(version_hash);
             }
@@ -553,6 +564,16 @@ impl BitcoinDaFinalityGate {
             }
         }
         Ok(BlobFinalityObservation::Core(state))
+    }
+
+    async fn native_blocks_republication(&self, version_hash: &str) -> bool {
+        if self.config.bitcoin_da_finality_mode == BitcoinDaFinalityMode::Confirmations
+            && self.config.bitcoin_da_finality_confirmations == 1
+            && let Some(provider) = &self.nevm_provider
+        {
+            return provider.resolve_missing(version_hash).await != NativeDaEvidence::Absent;
+        }
+        false
     }
 
     async fn wait_for_gateway_edge_refs_finality(
@@ -854,6 +875,16 @@ mod tests {
         Arc<RecoveryEffects>,
         tokio::task::JoinHandle<()>,
     ) {
+        missing_core_fixture_with_full_blob(true).await
+    }
+
+    async fn missing_core_fixture_with_full_blob(
+        core_blob_present: bool,
+    ) -> (
+        BatcherConfig,
+        Arc<RecoveryEffects>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let effects = Arc::new(RecoveryEffects::default());
         let archive_effects = effects.clone();
         let rpc_effects = effects.clone();
@@ -871,7 +902,11 @@ mod tests {
                     let mut body = match request["method"].as_str().unwrap() {
                         "getnevmblobdata" if request["params"][1] == true => {
                             effects.full_blob_reads.fetch_add(1, Ordering::SeqCst);
-                            json!({"result": {"data": "616263"}})
+                            if core_blob_present {
+                                json!({"result": {"data": "616263"}})
+                            } else {
+                                json!({"error": {"code": -32602, "message": "missing blob"}})
+                            }
                         }
                         "getnevmblobdata" => {
                             json!({"error": {"code": -32602, "message": "missing blob"}})
@@ -1071,6 +1106,127 @@ mod tests {
             fixture.assert_only_read_effects();
             assert_no_canonical_recovery_markers(dir.path());
             fixture.server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_metadata_can_reuse_original_canonical_inclusion_without_recovery() {
+        use crate::batcher::bitcoin_da_native_evidence::test_support::{
+            InclusionCase, inclusion_fixture_with_metadata,
+        };
+        use alloy::primitives::B256;
+        for window in [1, 2] {
+            let hash = B256::from_slice(&hex::decode(ABC_HASH).unwrap());
+            let fixture =
+                inclusion_fixture_with_metadata(hash, InclusionCase::Canonical, true).await;
+            let dir = tempfile::tempdir().unwrap();
+            let mut config = fixture.config.clone();
+            config.bitcoin_da_publication_window = window;
+            if window > 1 {
+                config.bitcoin_da_publication_state_path = Some(dir.path().join("publication"));
+            }
+            let storage = BitcoinDaStatusStorage::new(dir.path()).unwrap();
+            let hashes = vec![ABC_HASH.to_owned()];
+            storage
+                .save(
+                    7,
+                    &BitcoinDaBatchStatus {
+                        expected_hashes: hashes.clone(),
+                        published_hashes: hashes.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let command =
+                recovery_test_command(&hashes, recovery_test_edge_message(10, 1, &hashes));
+            let gate = BitcoinDaFinalityGate::new(config, storage.clone(), false)
+                .with_native_evidence(Some(fixture.evidence()));
+            for call in 0..if window == 1 { 3 } else { 4 } {
+                fixture.queue_lookup(call == 0);
+            }
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                gate.verify_command_da_before_commit(&command),
+            )
+            .await
+            .expect("original canonical inclusion must override unconfirmed metadata")
+            .unwrap();
+            assert!(storage.load(7).await.unwrap().unwrap().finalized);
+            assert!(fixture.asserter.read_q().is_empty());
+            fixture.assert_only_read_effects();
+            assert_no_canonical_recovery_markers(dir.path());
+            fixture.server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_republication_helper_checks_native_presence_before_fetching() {
+        for context in [
+            BlobFinalityWaitContext::OwnBatch { batch_number: 7 },
+            BlobFinalityWaitContext::GatewayEdgeRef,
+        ] {
+            let (config, effects, server) = missing_core_fixture().await;
+            let dir = tempfile::tempdir().unwrap();
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            )
+            .with_nevm_provider(native_present_provider(ABC_HASH).await, TANENBAUM_CHAIN_ID);
+            gate.republish_blob_after_timeout(
+                &gate.client().unwrap(),
+                ABC_HASH,
+                context,
+                Duration::ZERO,
+            )
+            .await
+            .unwrap();
+            assert_no_recovery_effects(&effects, dir.path());
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn native_presence_appearing_during_core_or_archive_fetch_prevents_attempt_claim() {
+        for core_blob_present in [true, false] {
+            let (config, effects, server) =
+                missing_core_fixture_with_full_blob(core_blob_present).await;
+            let dir = tempfile::tempdir().unwrap();
+            let asserter = Asserter::new();
+            let provider = mocked_provider(&asserter).await;
+            asserter.push_success(&U64::from(TANENBAUM_CHAIN_ID));
+            asserter.push_success(&Bytes::new());
+            asserter.push_success(&U64::from(TANENBAUM_CHAIN_ID));
+            asserter.push_success(&Bytes::from(hex::decode(ABC_HASH).unwrap()));
+            let gate = BitcoinDaFinalityGate::new(
+                config,
+                BitcoinDaStatusStorage::new(dir.path()).unwrap(),
+                false,
+            )
+            .with_nevm_provider(provider, TANENBAUM_CHAIN_ID);
+            gate.republish_blob_after_timeout(
+                &gate.client().unwrap(),
+                ABC_HASH,
+                BlobFinalityWaitContext::OwnBatch { batch_number: 7 },
+                Duration::ZERO,
+            )
+            .await
+            .unwrap();
+            assert!(asserter.read_q().is_empty());
+            assert_eq!(effects.full_blob_reads.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                effects.archive_reads.load(Ordering::SeqCst),
+                if core_blob_present { 0 } else { 1 }
+            );
+            assert_eq!(effects.publications.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                std::fs::read_dir(dir.path()).unwrap().count(),
+                0,
+                "native presence after download must not create a clock, claim lock, or attempt marker"
+            );
+            server.abort();
         }
     }
 
