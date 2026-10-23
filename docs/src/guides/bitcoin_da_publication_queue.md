@@ -102,6 +102,28 @@ free a funding slot before the DA finality policy is satisfied. The commit gate
 still waits for **all** own and forwarded references in the current command to
 satisfy the unchanged finality policy.
 
+## Reusing a publication after metadata expiry
+
+Core's expiring blob metadata is not a record of every historical publication.
+On Tanenbaum (NEVM chain 5700), with the one-confirmation policy, both the normal
+publisher and recovery gate check NEVM before paying to publish a missing hash.
+A matching native hash prevents another publication. A failed or malformed
+lookup waits without spending; it is not treated as proof of absence.
+
+To complete the finality gate when Core metadata has expired, the paired Geth
+`eth_getDataHashInclusions` RPC locates the original publication. The server
+independently checks the original Core transaction's typed digest, its canonical
+block and confirmation, the corresponding canonical NEVM block, and current
+native hash membership. The locator and native hash alone do not establish
+finality. Missing or inconsistent evidence leaves settlement waiting and does
+not consume a paid recovery attempt.
+
+This fallback does not apply to mainnet, ChainLock policy, or confirmation
+thresholds above one. It does not change proof verification, recover missing
+payloads from an unauthenticated source, or clear an unknown wallet outcome.
+Upgrade the Tanenbaum Geth RPC with the read-only locator before starting server
+binaries that depend on it; no database migration or index rebuild is required.
+
 The existing per-hash recovery clocks, cooldowns, and paid-attempt reservations are
 unchanged. Headroom is checked before claiming an attempt. Once a wallet RPC has
 been attempted, a failure still consumes that attempt and its cooldown. There is

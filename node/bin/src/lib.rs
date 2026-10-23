@@ -32,6 +32,7 @@ use crate::batch_work::{
     BatchWorkDispatcher, BatchWorkPersistenceGate, BatchWorkSource, BatchWorkStorage,
 };
 use crate::batcher::bitcoin_da_finality_gate::BitcoinDaFinalityGate;
+use crate::batcher::bitcoin_da_native_evidence::NativeDaEvidenceProvider;
 use crate::batcher::bitcoin_da_status_cleanup::BitcoinDaStatusCleanup;
 use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
@@ -213,6 +214,18 @@ fn compact_edge_da_admission_required(pubdata_mode: Option<PubdataMode>) -> bool
         pubdata_mode,
         Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
     )
+}
+
+fn native_da_evidence_for_mode(
+    pubdata_mode: Option<PubdataMode>,
+    provider: NodeProvider,
+    chain_id: u64,
+    config: &crate::config::BatcherConfig,
+) -> anyhow::Result<Option<Arc<NativeDaEvidenceProvider>>> {
+    if !compact_edge_da_admission_required(pubdata_mode) {
+        return Ok(None);
+    }
+    Ok(NativeDaEvidenceProvider::for_config(provider, chain_id, config)?.map(Arc::new))
 }
 
 fn edge_da_admission_requested(config: &Config) -> bool {
@@ -1762,6 +1775,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         run_main_node_pipeline(
             &config,
             sl_provider.clone(),
+            l1_provider.clone(),
             node_startup_state,
             archiving_block_replay_storage,
             runtime,
@@ -2489,6 +2503,7 @@ async fn wait_for_node_startup(
 async fn run_main_node_pipeline(
     config: &Config,
     sl_provider: NodeProvider,
+    l1_provider: NodeProvider,
     node_state_on_startup: NodeStateOnStartup,
     block_replay_storage: impl WriteReplay + Clone,
     runtime: &Runtime,
@@ -2523,6 +2538,19 @@ async fn run_main_node_pipeline(
     // a startup rebuild. The applied-block frontier, not command enqueue, releases this barrier.
     startup_rebuild_target_gate: Option<oneshot::Sender<()>>,
 ) -> PipelineHandles {
+    let native_da = || {
+        native_da_evidence_for_mode(
+            pubdata_mode,
+            l1_provider.clone(),
+            node_state_on_startup.l1_state.l1_chain_id,
+            &config.batcher_config,
+        )
+        .expect("Bitcoin DA inclusion client configuration is invalid")
+    };
+    // Separate cursors and fee-suppression caches keep concurrent batch publication
+    // and settlement commands from clearing one another's recovery observations.
+    let publication_native_da = native_da();
+    let settlement_native_da = native_da();
     let priority_tree_db_path = config
         .general_config
         .rocks_db_path
@@ -2931,6 +2959,7 @@ async fn run_main_node_pipeline(
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
             bitcoin_da_status_storage: bitcoin_da_status_storage.clone(),
+            native_da: publication_native_da,
             merkle_tree: tree,
         })
         .pipe(BatchVerificationPipelineStep::new(
@@ -2951,11 +2980,14 @@ async fn run_main_node_pipeline(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
         // SYSCOIN: Block settlement until direct and forwarded Bitcoin DA refs are final.
-        .pipe(BitcoinDaFinalityGate::new(
-            config.batcher_config.clone(),
-            bitcoin_da_status_storage.clone(),
-            settles_on_gateway,
-        ))
+        .pipe(
+            BitcoinDaFinalityGate::new(
+                config.batcher_config.clone(),
+                bitcoin_da_status_storage.clone(),
+                settles_on_gateway,
+            )
+            .with_native_evidence(settlement_native_da),
+        )
         .pipe_opt(replay_archiver.map(|replay_archiver| {
             ReplayArchiveGateComponent::new(replay_archiver, block_replay_storage.clone())
         }))
@@ -4185,6 +4217,50 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn native_da_provider_is_wired_for_direct_and_gateway_edge_publication() {
+        use super::native_da_evidence_for_mode;
+        use crate::batcher::bitcoin_da_native_evidence::test_support::mocked_provider;
+        use alloy::transports::mock::Asserter;
+        use zksync_os_types::PubdataMode;
+
+        const TANENBAUM_CHAIN_ID: u64 = 5_700;
+
+        let asserter = Asserter::new();
+        let provider = mocked_provider(&asserter).await;
+        let config = crate::config::BatcherConfig {
+            bitcoin_da_rpc_url: Some("http://127.0.0.1:18370".into()),
+            bitcoin_da_rpc_user: Some("test-user".into()),
+            bitcoin_da_rpc_password: Some("test-password".into()),
+            bitcoin_da_finality_mode: crate::config::BitcoinDaFinalityMode::Confirmations,
+            bitcoin_da_finality_confirmations: 1,
+            ..Default::default()
+        };
+        for mode in [PubdataMode::Blobs, PubdataMode::RelayedL2Calldata] {
+            assert!(
+                native_da_evidence_for_mode(
+                    Some(mode),
+                    provider.clone(),
+                    TANENBAUM_CHAIN_ID,
+                    &config
+                )
+                .unwrap()
+                .is_some()
+            );
+            assert!(
+                native_da_evidence_for_mode(Some(mode), provider.clone(), 57, &config)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            native_da_evidence_for_mode(None, provider, TANENBAUM_CHAIN_ID, &config)
+                .unwrap()
+                .is_none()
+        );
+        assert!(asserter.read_q().is_empty());
+    }
+
     use super::{
         MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, PipelineStartupReadiness, canonical_pubdata_mode,
         check_batch_verification_mismatch, defer_syscoin_gateway_local_identity,
