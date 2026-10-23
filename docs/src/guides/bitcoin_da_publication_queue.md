@@ -106,23 +106,23 @@ satisfy the unchanged finality policy.
 
 Core's expiring blob metadata is not a record of every historical publication.
 On Tanenbaum (NEVM chain 5700), with the one-confirmation policy, both the normal
-publisher and recovery gate check NEVM before paying to publish a missing hash.
-A matching native hash prevents another publication. A failed or malformed
-lookup waits without spending; it is not treated as proof of absence.
+publisher and finality gate check current NEVM hash registration before querying
+Core blob metadata. A fresh, exact 32-byte hash response from the `0x63`
+precompile satisfies this settlement path's registered-hash requirement and
+prevents another publication. This path does not require the original Core block
+or a block-locator RPC.
 
-To complete the finality gate when Core metadata has expired, the paired Geth
-`eth_getDataHashInclusions` RPC locates the original publication. The server
-independently checks the original Core transaction's typed digest, its canonical
-block and confirmation, the corresponding canonical NEVM block, and current
-native hash membership. The locator and native hash alone do not establish
-finality. Missing or inconsistent evidence leaves settlement waiting and does
-not consume a paid recovery attempt.
+A previously observed registration only suppresses fees; it cannot complete the
+gate after the fresh lookup fails. Failed or malformed lookups wait without
+querying Core or spending, even if Core metadata might still be available.
+Only a successful empty native response follows the existing Core finality and
+bounded recovery path; an unavailable response is not proof of absence.
 
 This fallback does not apply to mainnet, ChainLock policy, or confirmation
 thresholds above one. It does not change proof verification, recover missing
 payloads from an unauthenticated source, or clear an unknown wallet outcome.
-Upgrade the Tanenbaum Geth RPC with the read-only locator before starting server
-binaries that depend on it; no database migration or index rebuild is required.
+The existing native hash precompile is sufficient; no new Geth RPC, database
+migration, or index rebuild is required.
 
 The existing per-hash recovery clocks, cooldowns, and paid-attempt reservations are
 unchanged. Headroom is checked before claiming an attempt. Once a wallet RPC has
