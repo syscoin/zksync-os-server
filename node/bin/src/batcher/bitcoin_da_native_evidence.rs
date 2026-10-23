@@ -181,7 +181,7 @@ fn parse_version_hash(version_hash: &str) -> anyhow::Result<B256> {
 }
 
 #[cfg(test)]
-pub(super) mod test_support {
+pub(crate) mod test_support {
     use alloy::network::EthereumWallet;
     use alloy::providers::ProviderBuilder;
     use alloy::rpc::json_rpc::ErrorPayload;
