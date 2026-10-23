@@ -221,8 +221,8 @@ fn private_directory(directory: &Path) -> anyhow::Result<()> {
 impl BitcoinDaPublicationQueue {
     pub(crate) fn from_config(config: &BatcherConfig) -> anyhow::Result<Option<Self>> {
         anyhow::ensure!(
-            (1..=4).contains(&config.bitcoin_da_publication_window),
-            "publication window must be between one and four"
+            (1..=8).contains(&config.bitcoin_da_publication_window),
+            "publication window must be between one and eight"
         );
         if config.bitcoin_da_publication_window == 1 {
             anyhow::ensure!(

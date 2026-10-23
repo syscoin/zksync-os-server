@@ -1952,8 +1952,8 @@ pub struct BatcherConfig {
     /// Every Edge/Gateway writer using the wallet must share the same coordinator before opt-in.
     #[config(default_t = 1)]
     #[config_validate(custom(
-        |_root: &Config, value: &usize| (1..=4).contains(value),
-        "must be between one and four"
+        |_root: &Config, value: &usize| (1..=8).contains(value),
+        "must be between one and eight"
     ))]
     pub bitcoin_da_publication_window: usize,
 
@@ -1966,7 +1966,7 @@ pub struct BatcherConfig {
                 value.as_ref().is_some_and(|path| path.is_absolute())
             }
         },
-        "must be absent for legacy window one, or an absolute shared directory for window two to four"
+        "must be absent for legacy window one, or an absolute shared directory for window two to eight"
     ))]
     pub bitcoin_da_publication_state_path: Option<PathBuf>,
 
@@ -3296,6 +3296,68 @@ mod tests {
             assert_eq!(config.bitcoin_da_finality_confirmations, 5);
             assert_eq!(config.bitcoin_da_max_republish_attempts, 3);
         }
+    }
+
+    #[tokio::test]
+    async fn bitcoin_da_publication_window_accepts_eight_but_not_nine() {
+        let mut config = base_config(NodeRole::MainNode);
+        assert_eq!(config.batcher_config.bitcoin_da_publication_window, 1);
+        assert!(
+            config
+                .batcher_config
+                .bitcoin_da_publication_state_path
+                .is_none()
+        );
+        let original_mode = config.batcher_config.bitcoin_da_finality_mode;
+        let original_confirmations = config.batcher_config.bitcoin_da_finality_confirmations;
+        let original_attempts = config.batcher_config.bitcoin_da_max_republish_attempts;
+        config.batcher_config.bitcoin_da_publication_state_path =
+            Some(PathBuf::from("/private/shared-publication-wallet"));
+        for window in [2, 4, 8] {
+            config.batcher_config.bitcoin_da_publication_window = window;
+            config.validate().await.unwrap();
+        }
+        for window in [0, 9, usize::MAX] {
+            config.batcher_config.bitcoin_da_publication_window = window;
+            let error = config.validate().await.unwrap_err().to_string();
+            assert!(error.contains("bitcoin_da_publication_window"), "{error}");
+        }
+        config.batcher_config.bitcoin_da_publication_window = 1;
+        let error = config.validate().await.unwrap_err().to_string();
+        assert!(
+            error.contains("bitcoin_da_publication_state_path"),
+            "{error}"
+        );
+        config.batcher_config.bitcoin_da_publication_state_path = None;
+        config.validate().await.unwrap();
+        assert_eq!(
+            config
+                .batcher_config
+                .bitcoin_da_publication_mempool_count_limit,
+            20
+        );
+        assert_eq!(
+            config
+                .batcher_config
+                .bitcoin_da_publication_mempool_vbytes_limit,
+            75_000
+        );
+        assert_eq!(
+            config.batcher_config.bitcoin_da_publication_vbytes_reserve,
+            25_000
+        );
+        assert_eq!(
+            config.batcher_config.bitcoin_da_finality_mode,
+            original_mode
+        );
+        assert_eq!(
+            config.batcher_config.bitcoin_da_finality_confirmations,
+            original_confirmations
+        );
+        assert_eq!(
+            config.batcher_config.bitcoin_da_max_republish_attempts,
+            original_attempts
+        );
     }
 
     #[tokio::test]

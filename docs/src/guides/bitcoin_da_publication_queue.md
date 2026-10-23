@@ -2,7 +2,7 @@
 
 The default `batcher.bitcoin_da_publication_window: 1` retains the existing
 publication and sequential recovery behavior. The opt-in coordinator supports a
-window of two to four outstanding publications, not a burst of 32 wallet calls.
+window of two to eight outstanding publications, not a burst of 32 wallet calls.
 Start with two on a reviewed testnet rollout.
 
 ## Shared-wallet rollout requirements
@@ -44,6 +44,31 @@ make a transaction larger than the configured vbyte estimate. These checks are
 advisory backpressure; Core remains the final admission authority. This feature
 does not raise ancestor/descendant limits, bypass policy, change confirmations, or
 guarantee that a particular candidate will be admitted.
+
+Increasing the window does not increase these budgets, the fee policy, finality
+requirements, or the paid-republication attempt limit. A window of eight is an
+upper bound on outstanding transactions shared by all cooperating writers, not a
+guarantee that eight transactions will fit the available mempool headroom. The
+fund-and-broadcast calls remain serialized.
+
+## Changing an existing shared policy
+
+Changing configuration alone does not migrate an existing coordinator. The
+journal's exact policy match remains mandatory; writers configured for different
+windows refuse to use the same journal. Older binaries that support only windows
+up to four cannot run with a window of eight.
+
+An existing-policy change requires a separately reviewed, coordinated operator
+procedure: positively stop every writer behind effective restart interlocks,
+hold the existing shared wallet lock, and authenticate the exact old and new
+policies and canonical chain identity. A widening may change only the window,
+preserving every pending row (including duplicate hashes or transaction IDs), the
+genesis, mined anchor, and all recovery clocks and paid-attempt reservations. Do
+not create a fresh coordinator or clear state. Unknown transaction outcomes must
+be investigated, not migrated around. Keep durable before/after evidence and
+once-only completion records; an interrupted or uncertain transition must remain
+fenced for operator review. This feature does not provide an automatic migration
+or rollback API.
 
 ## What is durable
 

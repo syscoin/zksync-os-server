@@ -21,7 +21,7 @@ fn default_legacy_path_is_off_and_invalid_or_bypassed_shared_config_is_refused()
             .unwrap()
             .is_none()
     );
-    for window in [0, 2, 5] {
+    for window in [0, 2, 9] {
         let config = BatcherConfig {
             bitcoin_da_publication_window: window,
             ..Default::default()
@@ -34,6 +34,40 @@ fn default_legacy_path_is_off_and_invalid_or_bypassed_shared_config_is_refused()
         ..Default::default()
     };
     assert!(BitcoinDaPublicationQueue::from_config(&bypass).is_err());
+}
+
+#[test]
+fn configured_eight_slot_window_preserves_budgets_and_rejects_nine() {
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("shared-wallet");
+    let mut config = BatcherConfig {
+        bitcoin_da_publication_window: 8,
+        bitcoin_da_publication_state_path: Some(directory),
+        bitcoin_da_rpc_url: Some("http://127.0.0.1:1".into()),
+        bitcoin_da_rpc_user: Some("test-user".into()),
+        bitcoin_da_rpc_password: Some("test-password".into()),
+        bitcoin_da_request_timeout: std::time::Duration::from_secs(2),
+        bitcoin_da_wallet_name: "shared-test-wallet".into(),
+        bitcoin_da_publication_mempool_count_limit: 20,
+        bitcoin_da_publication_mempool_vbytes_limit: 75_000,
+        bitcoin_da_publication_vbytes_reserve: 25_000,
+        ..Default::default()
+    };
+    let queue = BitcoinDaPublicationQueue::from_config(&config)
+        .unwrap()
+        .unwrap();
+    assert_eq!(queue.policy.window, 8);
+    assert_eq!(queue.policy.count_limit, 20);
+    assert_eq!(queue.policy.vbytes_limit, 75_000);
+    assert_eq!(queue.policy.vbytes_reserve, 25_000);
+    for window in [0, 9, usize::MAX] {
+        config.bitcoin_da_publication_window = window;
+        assert!(BitcoinDaPublicationQueue::from_config(&config).is_err());
+    }
 }
 
 #[test]
@@ -401,6 +435,14 @@ fn reopened(queue: &BitcoinDaPublicationQueue<FakeRpc>) -> BitcoinDaPublicationQ
     }
 }
 
+fn eight_slot_fixture() -> (tempfile::TempDir, BitcoinDaPublicationQueue<FakeRpc>) {
+    let (temporary, mut queue) = fixture(8);
+    queue.policy.count_limit = 20;
+    queue.policy.vbytes_limit = 75_000;
+    queue.policy.vbytes_reserve = 25_000;
+    (temporary, queue)
+}
+
 fn journal(queue: &BitcoinDaPublicationQueue<FakeRpc>) -> Journal {
     serde_json::from_slice(&std::fs::read(queue.directory.join("journal.json")).unwrap()).unwrap()
 }
@@ -590,6 +632,192 @@ async fn two_unconfirmed_submissions_fill_shared_window() {
     assert!(reopened(&queue).try_acquire(None).await.unwrap().is_none());
     assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 2);
     assert_eq!(journal(&queue).pending.len(), 2);
+}
+
+#[tokio::test]
+async fn eighth_publication_is_admitted_but_ninth_is_blocked_after_restart() {
+    let (_temporary, queue) = eight_slot_fixture();
+    for index in 1..=8 {
+        let blob = format!("eight-slot publication {index}");
+        let txid = format!("{index:064x}");
+        queue
+            .rpc
+            .state
+            .lock()
+            .unwrap()
+            .actions
+            .push_back(WalletAction::Reply(
+                json!({"versionhash": blob_hash(blob.as_bytes()), "txid": txid}),
+            ));
+        submit(&reopened(&queue), blob.as_bytes()).await;
+        let mut state = queue.rpc.state.lock().unwrap();
+        assert_eq!(state.wallet_calls, index);
+        state.mempool = json!({"loaded": true, "size": index, "bytes": index * 500});
+        drop(state);
+        assert_eq!(journal(&queue).pending.len(), index);
+    }
+    assert!(reopened(&queue).try_acquire(None).await.unwrap().is_none());
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 8);
+    assert_eq!(journal(&queue).pending.len(), 8);
+    for index in 1..=8 {
+        let txid = format!("{index:064x}");
+        queue.rpc.state.lock().unwrap().receipts.insert(
+            txid.clone(),
+            json!({"txid": txid, "confirmations": 1, "blockheight": 7, "blockhash": BLOCK_HASH}),
+        );
+    }
+    drop(reopened(&queue).try_acquire(None).await.unwrap().unwrap());
+    let saved = journal(&queue);
+    assert!(saved.pending.is_empty());
+    assert_eq!(
+        saved.mined_anchor,
+        Some(BlockAnchor {
+            height: 7,
+            hash: BLOCK_HASH.to_owned()
+        })
+    );
+    queue
+        .rpc
+        .state
+        .lock()
+        .unwrap()
+        .blocks
+        .insert(7, OLD_TXID.to_owned());
+    assert!(
+        acquire_error(&reopened(&queue))
+            .await
+            .contains("reorganized")
+    );
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 8);
+}
+
+#[tokio::test]
+async fn eight_duplicate_hash_and_txid_rows_survive_restart_and_consume_all_slots() {
+    let (_temporary, queue) = eight_slot_fixture();
+    let blob = b"same outstanding publication";
+    let expected = blob_hash(blob);
+    for _ in 0..8 {
+        submit(&reopened(&queue), blob).await;
+    }
+    let saved = journal(&queue);
+    assert_eq!(saved.pending.len(), 8);
+    assert!(
+        saved
+            .pending
+            .iter()
+            .all(|entry| { entry.version_hash == expected && entry.txid.as_deref() == Some(TXID) })
+    );
+    let restarted = reopened(&queue);
+    assert!(restarted.try_acquire(None).await.unwrap().is_none());
+    let mut receipt = restarted
+        .try_acquire_for_hash(None, &expected)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(receipt.contains(&expected).unwrap());
+    assert!(receipt.publish(blob, &expected, true).await.is_err());
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 8);
+    assert_eq!(journal(&queue).pending.len(), 8);
+}
+
+#[tokio::test]
+async fn unknown_eighth_publication_fences_every_writer_after_restart() {
+    let (_temporary, queue) = eight_slot_fixture();
+    let blob = b"known same-hash receipt cannot bypass unknown outcome";
+    let expected = blob_hash(blob);
+    for _ in 0..7 {
+        submit(&reopened(&queue), blob).await;
+    }
+    queue
+        .rpc
+        .state
+        .lock()
+        .unwrap()
+        .actions
+        .push_back(WalletAction::Error);
+    let mut eighth = queue.try_acquire(None).await.unwrap().unwrap();
+    assert!(eighth.publish(blob, &expected, true).await.is_err());
+    drop(eighth);
+    let saved = journal(&queue);
+    assert_eq!(saved.pending.len(), 8);
+    assert!(
+        saved.pending[..7]
+            .iter()
+            .all(|entry| entry.txid.as_deref() == Some(TXID))
+    );
+    assert!(saved.pending[7].txid.is_none());
+    let restarted = reopened(&queue);
+    assert!(
+        acquire_error(&restarted)
+            .await
+            .contains("outcome is unknown")
+    );
+    match restarted.try_acquire_for_hash(None, &expected).await {
+        Err(error) => assert!(error.to_string().contains("outcome is unknown")),
+        Ok(_) => panic!("known receipt must not bypass the unknown eighth publication"),
+    }
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 8);
+    assert!(journal(&queue).pending[7].txid.is_none());
+}
+
+#[tokio::test]
+async fn eight_slot_window_preserves_exact_whole_mempool_headroom() {
+    for (count, bytes, permitted) in [
+        (19, 50_000, true),
+        (20, 0, false),
+        (0, 50_001, false),
+        (u64::MAX, 0, false),
+        (0, u64::MAX, false),
+    ] {
+        let (_temporary, queue) = eight_slot_fixture();
+        drop(queue.try_acquire(None).await.unwrap().unwrap());
+        queue.rpc.state.lock().unwrap().mempool =
+            json!({"loaded": true, "size": count, "bytes": bytes});
+        let acquired = queue.try_acquire(None).await.unwrap();
+        assert_eq!(
+            acquired.is_some(),
+            permitted,
+            "count={count}, bytes={bytes}"
+        );
+        assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 0);
+        assert!(journal(&queue).pending.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn eight_slot_policy_never_automatically_migrates_existing_journals() {
+    for change in 0..6 {
+        let (_temporary, queue) = eight_slot_fixture();
+        drop(queue.try_acquire(None).await.unwrap().unwrap());
+        let original = std::fs::read(queue.directory.join("journal.json")).unwrap();
+        let mut fresh = reopened(&queue);
+        match change {
+            0 => fresh.policy.window = 2,
+            1 => fresh.policy.wallet_identity = "different-wallet".to_owned(),
+            2 => fresh.policy.count_limit += 1,
+            3 => fresh.policy.vbytes_limit += 1,
+            4 => fresh.policy.vbytes_reserve += 1,
+            _ => fresh.rpc.state.lock().unwrap().genesis = OLD_TXID.to_owned(),
+        }
+        assert!(acquire_error(&fresh).await.contains("mismatch"));
+        assert_eq!(
+            std::fs::read(queue.directory.join("journal.json")).unwrap(),
+            original
+        );
+        assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 0);
+    }
+    let (_temporary, mut queue) = eight_slot_fixture();
+    queue.policy.window = 2;
+    drop(queue.try_acquire(None).await.unwrap().unwrap());
+    let original = std::fs::read(queue.directory.join("journal.json")).unwrap();
+    let mut fresh = reopened(&queue);
+    fresh.policy.window = 8;
+    assert!(acquire_error(&fresh).await.contains("mismatch"));
+    assert_eq!(
+        std::fs::read(queue.directory.join("journal.json")).unwrap(),
+        original
+    );
+    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 0);
 }
 
 #[tokio::test]
@@ -895,8 +1123,30 @@ async fn ambiguous_same_hash_recovery_preserves_original_and_global_restart_fenc
 
 #[tokio::test]
 async fn fork_between_mined_receipts_cannot_release_an_earlier_noncanonical_publication() {
-    let (_temporary, queue) = fixture(2);
+    for window in [2, 8] {
+        assert_fork_between_mined_receipts_is_fenced(window).await;
+    }
+}
+
+async fn assert_fork_between_mined_receipts_is_fenced(window: usize) {
+    let (_temporary, mut queue) = eight_slot_fixture();
+    queue.policy.window = window;
     submit(&queue, b"independent lower publication").await;
+    for index in 1..window - 1 {
+        let blob = format!("independent unconfirmed filler {index}");
+        let reply = json!({
+            "versionhash": blob_hash(blob.as_bytes()),
+            "txid": format!("{:064x}", index + 100),
+        });
+        queue
+            .rpc
+            .state
+            .lock()
+            .unwrap()
+            .actions
+            .push_back(WalletAction::Reply(reply));
+        submit(&queue, blob.as_bytes()).await;
+    }
     queue
         .rpc
         .state
@@ -942,21 +1192,8 @@ async fn fork_between_mined_receipts_cannot_release_an_earlier_noncanonical_publ
     match fresh.try_acquire(None).await {
         Err(error) => assert!(error.to_string().contains("reorganized")),
         Ok(_) => {
-            let incorrectly_released = journal(&queue);
-            assert!(incorrectly_released.pending.is_empty());
-            assert_eq!(
-                incorrectly_released.mined_anchor,
-                Some(BlockAnchor {
-                    height: 8,
-                    hash: higher_hash.clone()
-                })
-            );
-            assert_eq!(
-                queue.rpc.state.lock().unwrap().receipts[TXID]["confirmations"],
-                0
-            );
             panic!(
-                "reconciliation released both pending entries although the lower publication is now unconfirmed"
+                "reconciliation released pending entries although the lower publication is now unconfirmed"
             );
         }
     }
@@ -966,7 +1203,7 @@ async fn fork_between_mined_receipts_cannot_release_an_earlier_noncanonical_publ
     );
     let state = queue.rpc.state.lock().unwrap();
     assert_eq!(
-        state.wallet_calls, 2,
+        state.wallet_calls, window,
         "reconciliation must not issue another publication"
     );
     assert_eq!(
@@ -982,7 +1219,7 @@ async fn fork_between_mined_receipts_cannot_release_an_earlier_noncanonical_publ
             (7, OLD_TXID.to_owned()),
         ]
     );
-    assert_eq!(journal(&queue).pending.len(), 2);
+    assert_eq!(journal(&queue).pending.len(), window);
     assert!(journal(&queue).mined_anchor.is_none());
 }
 
@@ -1203,14 +1440,17 @@ async fn malformed_headroom_and_changed_identity_or_configuration_fail_closed() 
 
 #[tokio::test]
 async fn waiting_normal_publisher_has_priority_over_recovery() {
-    let (_temporary, queue) = fixture(2);
-    let normal = queue.normal_turn().await.unwrap();
-    assert!(queue.try_acquire(None).await.unwrap().is_none());
-    drop(queue.try_acquire(Some(&normal)).await.unwrap().unwrap());
-    assert!(queue.try_acquire(None).await.unwrap().is_none());
-    drop(normal);
-    assert!(queue.try_acquire(None).await.unwrap().is_some());
-    assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 0);
+    for window in [2, 8] {
+        let (_temporary, mut queue) = eight_slot_fixture();
+        queue.policy.window = window;
+        let normal = queue.normal_turn().await.unwrap();
+        assert!(queue.try_acquire(None).await.unwrap().is_none());
+        drop(queue.try_acquire(Some(&normal)).await.unwrap().unwrap());
+        assert!(queue.try_acquire(None).await.unwrap().is_none());
+        drop(normal);
+        assert!(queue.try_acquire(None).await.unwrap().is_some());
+        assert_eq!(queue.rpc.state.lock().unwrap().wallet_calls, 0);
+    }
 }
 
 #[tokio::test]
