@@ -139,6 +139,9 @@ pub(crate) struct PublicationGuard<'a, R> {
     _recovery_turn: Option<File>,
     journal: Journal,
     poisoned: bool,
+    // Receipt-only acquisition must never authorize another wallet side effect.
+    new_publication_admitted: bool,
+    recovered_hash: Option<String>,
 }
 
 fn hash32(value: &str) -> anyhow::Result<String> {
@@ -308,6 +311,15 @@ impl BitcoinDaPublicationQueue {
 }
 
 impl<R: RpcClient + Sync> BitcoinDaPublicationQueue<R> {
+    pub(crate) async fn try_acquire_for_hash(
+        &self,
+        normal_turn: Option<&NormalPublicationTurn>,
+        expected_hash: &str,
+    ) -> anyhow::Result<Option<PublicationGuard<'_, R>>> {
+        self.try_acquire_inner(normal_turn, Some(hash32(expected_hash)?))
+            .await
+    }
+
     /// Normal publishers retain a shared priority lock while waiting for capacity. Recovery
     /// requires an exclusive try-lock, so it cannot repeatedly take the next available slot.
     pub(crate) async fn normal_turn(&self) -> anyhow::Result<NormalPublicationTurn> {
@@ -327,6 +339,14 @@ impl<R: RpcClient + Sync> BitcoinDaPublicationQueue<R> {
     pub(crate) async fn try_acquire(
         &self,
         normal_turn: Option<&NormalPublicationTurn>,
+    ) -> anyhow::Result<Option<PublicationGuard<'_, R>>> {
+        self.try_acquire_inner(normal_turn, None).await
+    }
+
+    async fn try_acquire_inner(
+        &self,
+        normal_turn: Option<&NormalPublicationTurn>,
+        expected_hash: Option<String>,
     ) -> anyhow::Result<Option<PublicationGuard<'_, R>>> {
         let recovery = normal_turn.is_none();
         if let Some(turn) = normal_turn {
@@ -405,7 +425,19 @@ impl<R: RpcClient + Sync> BitcoinDaPublicationQueue<R> {
             _recovery_turn: recovery_turn,
             journal,
             poisoned: false,
+            new_publication_admitted: false,
+            recovered_hash: None,
         };
+        // A crash can leave a known queue receipt before per-batch progress is saved.
+        // Remember it before reconciliation releases a just-mined transaction, but
+        // expose it only after all identity, canonical-chain and unknown-fence checks.
+        let known = expected_hash.as_ref().filter(|hash| {
+            guard
+                .journal
+                .pending
+                .iter()
+                .any(|entry| &entry.version_hash == *hash && entry.txid.is_some())
+        });
         guard.reconcile().await?;
         anyhow::ensure!(
             guard
@@ -415,9 +447,41 @@ impl<R: RpcClient + Sync> BitcoinDaPublicationQueue<R> {
                 .all(|entry| entry.txid.is_some()),
             "Bitcoin DA publication outcome is unknown; all wallet writers are fenced pending operator investigation"
         );
+        if let Some(hash) = known {
+            guard.recovered_hash = Some(hash.clone());
+            return Ok(Some(guard));
+        }
         if guard.journal.pending.len() >= self.policy.window || !guard.headroom().await? {
+            // Another writer may already have retired this publisher's mined receipt.
+            // Core metadata is the same positive publication evidence used by its
+            // non-overwrite idempotent branch; archive availability is not evidence.
+            // This recognizes publication only, never finality or another free slot.
+            if let Some(hash) = expected_hash
+                && let Ok(metadata) = self
+                    .rpc
+                    .call("getnevmblobdata", &[json!(&hash), json!(false)])
+                    .await
+            {
+                let returned_hash = hash32(
+                    metadata["versionhash"]
+                        .as_str()
+                        .context("Core publication receipt omitted version hash")?,
+                )?;
+                let txid = hash32(
+                    metadata["txid"]
+                        .as_str()
+                        .context("Core publication receipt omitted transaction ID")?,
+                )?;
+                anyhow::ensure!(
+                    returned_hash == hash && txid != "0".repeat(64),
+                    "Core publication receipt does not identify the expected publication"
+                );
+                guard.recovered_hash = Some(hash);
+                return Ok(Some(guard));
+            }
             return Ok(None);
         }
+        guard.new_publication_admitted = true;
         // Also creates the identity header before a claim can consume an attempt.
         guard.save()?;
         Ok(Some(guard))
@@ -638,11 +702,12 @@ impl<R: RpcClient + Sync> PublicationGuard<'_, R> {
 
     pub(crate) fn contains(&self, version_hash: &str) -> anyhow::Result<bool> {
         let hash = hash32(version_hash)?;
-        Ok(self
-            .journal
-            .pending
-            .iter()
-            .any(|entry| entry.version_hash == hash))
+        Ok(self.recovered_hash.as_deref() == Some(hash.as_str())
+            || self
+                .journal
+                .pending
+                .iter()
+                .any(|entry| entry.version_hash == hash))
     }
 
     pub(crate) async fn publish(
@@ -660,15 +725,19 @@ impl<R: RpcClient + Sync> PublicationGuard<'_, R> {
         );
         anyhow::ensure!(
             !self.poisoned
+                && self.new_publication_admitted
                 && self
                     .journal
                     .pending
                     .iter()
                     .all(|entry| entry.txid.is_some())
-                && !self.contains(&expected_hash)?
+                && (overwrite || !self.contains(&expected_hash)?)
                 && self.journal.pending.len() < self.queue.policy.window,
             "publication fenced, already pending, or window full"
         );
+        // Explicit, attempt-budgeted recovery may append the same hash, never replace
+        // its original txid. Every potentially outstanding transaction still uses a slot.
+        self.new_publication_admitted = false;
         // Must be durable before the first possible wallet side effect. On cancellation,
         // timeout, malformed result, or failed result save this entry remains a global fence.
         self.poisoned = true;

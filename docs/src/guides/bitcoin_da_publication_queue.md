@@ -50,7 +50,22 @@ guarantee that a particular candidate will be admitted.
 The coordinator serializes the entire fund-and-broadcast RPC. It writes and fsyncs
 an outstanding entry before calling the wallet, then durably records the returned
 transaction ID. Normal publication has priority over recovery when waiting for a
-free slot. Duplicate hashes already pending are not resubmitted.
+free slot. Normal publication adopts a known journal receipt before checking new
+capacity or headroom, including after a crash before per-batch progress was saved.
+That receipt-only guard cannot broadcast another transaction. Normal duplicate
+hashes are not resubmitted. If another writer has already retired the mined entry,
+normal publication can recognize matching hash/transaction metadata directly from
+Core without waiting for new capacity. A missing or failed Core lookup supplies no
+receipt; archive availability alone cannot establish publication. DA finality is
+still checked separately under the unchanged policy.
+
+Once the existing recovery deadline and paid-attempt claim allow it, forced
+recovery may submit another transaction for a still-unconfirmed or evicted hash.
+It requires a free slot and headroom before consuming an attempt, retains every
+original transaction ID, and counts each transaction against the same window.
+Overwrite is not RBF or cancellation: a full window still blocks new wallet calls,
+even for recovery, until exact canonical mining releases capacity. It does not
+block adoption of a receipt already recorded in the journal.
 
 A known transaction frees a funding slot only when Core's wallet receipt identifies
 that exact transaction ID in a canonical mined block. This works even after Core
