@@ -45,7 +45,7 @@ def validate(root):
 def fixture_ready(root):
     fixture = Path(root) / "local-chains/v32.0"
     marker = fixture / "CANONICAL_V8_REGENERATION_REQUIRED"
-    if marker.exists() or marker.is_symlink():
+    if fixture.is_symlink() or (fixture / "default").is_symlink() or marker.exists() or marker.is_symlink():
         return False
     required = (fixture / "l1-state.json.gz", fixture / "default/config.yaml",
                 fixture / "default/genesis.json")
