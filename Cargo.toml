@@ -138,7 +138,7 @@ verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "
 
 # Other dependencies.
 
-tokio = "1.45.1"
+tokio = "1.53.3"
 tokio-metrics = "0.5.0"
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7", features = ["codec"], default-features = false }
