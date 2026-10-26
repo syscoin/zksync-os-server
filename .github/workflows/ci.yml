@@ -88,6 +88,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Check reviewed release inputs in clean checkout
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-server-release-inputs.py
+
       - name: Setup runner
         uses: ./.github/actions/runner-setup
 
@@ -138,7 +141,6 @@ jobs:
 
       - name: Test hosted release and image policy
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-server-release-inputs.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test_server_image_workflow.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test_dependency_track_config.py
 

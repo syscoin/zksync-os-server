@@ -86,6 +86,15 @@ class ReleaseInputsTests(unittest.TestCase):
         self.assertIn("group: server-release-${{ github.ref }}", workflow)
         self.assertEqual(workflow.count("source_sha: ${{ needs.release-please.outputs.source_sha }}"), 2)
 
+    def test_ci_checks_review_scope_before_mutating_worktree(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        lint = workflow.split("  format-and-lint:", 1)[1].split("\n  test:", 1)[0]
+        checkout = lint.index("- name: Checkout code")
+        check = lint.index("python3 scripts/check-server-release-inputs.py")
+        setup = lint.index("- name: Setup runner")
+        self.assertLess(checkout, check)
+        self.assertLess(check, setup)
+
 
 if __name__ == "__main__":
     unittest.main()
