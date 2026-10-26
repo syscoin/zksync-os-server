@@ -29,9 +29,7 @@ must remain failures. A successful filtered audit means the recorded findings
 have an applicability disposition for this configuration, not that their upstream
 packages have been patched.
 
-Linux is the production target; macOS is the developer workstation environment.
-The lack of a macOS applicability review is not a blocker for this Linux release.
-This review does **not** extend to macOS, other Linux architectures, wasm,
+This review does **not** extend to other architectures, wasm,
 separate prover repositories, or a changed server configuration. Server-pinned
 prover-library dependencies in the recorded graph do not extend the review to an
 independently built prover.
