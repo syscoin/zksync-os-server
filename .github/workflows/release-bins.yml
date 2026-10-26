@@ -1,9 +1,7 @@
 name: Release binaries
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 on:
   workflow_dispatch:
@@ -12,14 +10,24 @@ on:
         description: "Tag to use for the release."
         type: string
         required: true
+      source_sha:
+        description: "Exact commit SHA peeled from tag."
+        type: string
+        required: true
   workflow_call:
     inputs:
       tag:
         description: "Tag to use for the release."
         type: string
         required: true
+      source_sha:
+        description: "Exact commit SHA peeled from tag."
+        type: string
+        required: true
 
 env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
   ZKSYNC_OS_SERVER_BIN: 'zksync-os-server'
   RELEASE_PROFILE: 'maxperf'
   SERVER_LOGFILE: zksync-os-server.log.txt
@@ -33,58 +41,99 @@ defaults:
     shell: 'bash -ex {0}'
 
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      fixture_ready: ${{ steps.fixture.outputs.ready }}
+    steps:
+      - name: Validate requested release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "${RELEASE_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+      - name: Checkout exact release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - name: Verify tag and fixture readiness
+        id: fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          marker=local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
+          if [[ -e "${marker}" || -L "${marker}" ]]; then
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+            echo "Canonical V32 fixture regeneration is pending; block-production smoke and fixture archive are omitted." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            python3 scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          fi
+
   # Build server binaries for all target platforms
   build-bins:
+    needs: preflight
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu-22.04 based high performance runner
-          - runner: matterlabs-ci-runner-high-performance
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          # Ubuntu-22.04 based ARM linux runner
-          - runner: matterlabs-ci-runner-arm
+          - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          # Latest x86 macos runner
-          - runner: macos-latest-large
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
-          # Latest ARM (M-series) macos runner
-          - runner: macos-latest-xlarge
+          - runner: macos-15
             target: aarch64-apple-darwin
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.tag || '' }}
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
 
-      - name: Install linux packages
-        if: ${{ runner.os == 'Linux' }}
+      - name: Verify checked-out release source
+        shell: bash
         run: |
-          sudo apt update && sudo apt --assume-yes install \
-            curl jq libssl-dev libclang-dev pkg-config build-essential
-          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            sudo dpkg --add-architecture arm64
-            sudo apt --assume-yes install libssl-dev:arm64
-          fi
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
 
-      - name: Install Rust toolchain
-        uses: moonrepo/setup-rust@abb2d32350334249b178c401e5ec5836e0cd88d3 # v1.3.0
-        env:
-          # To fix rate limiting issues with GitHub API
-          GITHUB_TOKEN: ${{ github.token }}
+      - name: Checkout bound release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          inherit-toolchain: true
-          cache: false
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-tooling
+          sparse-checkout: .github/actions/build-release-server
+          persist-credentials: false
 
-      - name: Build
+      - name: Verify release tooling
+        shell: bash
         env:
-          RUSTFLAGS: '--cfg tokio_unstable'
-          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
         run: |
-          bash scripts/cargo-with-patched-zksync-os.sh \
-            "release-${{ matrix.target }}" -- build --locked --profile "${RELEASE_PROFILE}" \
-            --target "${{ matrix.target }}" --bin "${ZKSYNC_OS_SERVER_BIN}" --features gcp
+          set -euo pipefail
+          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "$(git -C .release-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ -z "$(git -C .release-tooling status --porcelain --untracked-files=all)" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+
+      - name: Build release binary
+        uses: ./.release-tooling/.github/actions/build-release-server
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Recheck release source after build
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release source changed" >&2; exit 1; }
+          git diff --quiet
+          git diff --cached --quiet
 
       - name: Prepare tarballs
         run: |
@@ -98,17 +147,11 @@ jobs:
           name: ${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-${{ matrix.target }}.tar.gz
           path: ${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-${{ matrix.target }}.tar.gz
 
-      - name: Slack notification
-        if: ${{ failure() }}
-        uses: ./.github/actions/slack-notify
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_RELEASES }}
-          context: "Failed to build release binaries for ${{ inputs.tag }}"
 
   # Smoke test release binaries
   # on different macOS and Linux runners
   test-bins:
-    needs: build-bins
+    needs: [preflight, build-bins]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -122,33 +165,69 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - runner: macos-latest-large
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
-          - runner: macos-latest-xlarge
+          - runner: macos-15
             target: aarch64-apple-darwin
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.tag || '' }}
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+
+      - name: Verify checked-out release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
 
       - name: Download binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-${{ matrix.target }}.tar.gz
 
+      - name: Check executable and dynamic linkage
+        env:
+          TARGET: ${{ matrix.target }}
+          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
+        run: |
+          set -euo pipefail
+          tar xzf "${ZKSYNC_OS_SERVER_BIN}-${RELEASE_TAG}-${TARGET}.tar.gz"
+          "./${ZKSYNC_OS_SERVER_BIN}" --version
+          "./${ZKSYNC_OS_SERVER_BIN}" --help > /dev/null
+          smoke_dir="$(mktemp -d "${RUNNER_TEMP}/server-release-smoke.XXXXXX")"
+          trap 'rm -rf "${smoke_dir}"' EXIT
+          (
+            cd "${smoke_dir}"
+            env -i PATH="${PATH}" HOME="${HOME}" "${GITHUB_WORKSPACE}/${ZKSYNC_OS_SERVER_BIN}" config help > config-help.txt
+            test -s config-help.txt
+          )
+          if [[ "${RUNNER_OS}" == Linux ]]; then
+            dependencies="$(ldd "./${ZKSYNC_OS_SERVER_BIN}")"
+            printf '%s\n' "${dependencies}"
+            if [[ "${dependencies}" == *"not found"* ]]; then exit 1; fi
+          else
+            otool -L "./${ZKSYNC_OS_SERVER_BIN}"
+          fi
+          if [[ "${FIXTURE_READY}" != true ]]; then
+            echo "Canonical fixture pending: only executable/CLI/linkage smoke ran; block production was not tested." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Install Foundry
+        if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
         uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1.9.0
         with:
           version: '${{ env.FOUNDRY_VERSION }}'
 
-      - name: Check executable
+      - name: Check block production with certified canonical fixture
+        if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
         env:
           TIMEOUT: 60
           INTERVAL: 2
           PORT: 3050
         run: |
-          tar xzf ${ZKSYNC_OS_SERVER_BIN}-${{ inputs.tag }}-${{ matrix.target }}.tar.gz
           L1_STATE_JSON="${LOCAL_CHAINS_DIR}/${PROTOCOL_VERSION}/l1-state.json"
           gzip -dfk "${L1_STATE_JSON}.gz"
           anvil --load-state "${L1_STATE_JSON}" \
@@ -187,25 +266,31 @@ jobs:
             exit 1
           fi
 
-      - name: Slack notification
-        if: ${{ failure() }}
-        uses: ./.github/actions/slack-notify
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_RELEASES }}
-          context: "Failed to test release binaries for ${{ inputs.tag }}"
 
 
   # Attach binaries to the GitHub release
   release-bins:
-    needs: [build-bins, test-bins]
+    needs: [preflight, build-bins, test-bins]
     # Run on macOS to combine binaries into a single one for macOS
-    runs-on: macos-latest-xlarge
+    runs-on: macos-15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
 
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.tag || '' }}
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+
+      - name: Verify checked-out release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
 
       - name: Download binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -227,7 +312,8 @@ jobs:
           tar -czf dist/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz \
             ${{ env.ZKSYNC_OS_SERVER_BIN }}
 
-      - name: Archive local chains
+      - name: Archive certified local chains
+        if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
         run: tar -czf dist/local-chains.tar.gz "${LOCAL_CHAINS_DIR}"
 
       - name: Upload binaries
@@ -236,22 +322,104 @@ jobs:
           name: ${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz
           path: dist/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz
 
+      - name: Validate complete release inventory
+        env:
+          TARGET_TAG: ${{ inputs.tag }}
+          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_INVENTORY'
+          import os
+          from pathlib import Path
+          root = Path("dist")
+          tag = os.environ["TARGET_TAG"]
+          expected = {
+              f"zksync-os-server-{tag}-x86_64-unknown-linux-gnu.tar.gz",
+              f"zksync-os-server-{tag}-aarch64-unknown-linux-gnu.tar.gz",
+              f"zksync-os-server-{tag}-universal-apple-darwin.tar.gz",
+          }
+          if os.environ["FIXTURE_READY"] == "true":
+              expected.add("local-chains.tar.gz")
+          elif os.environ["FIXTURE_READY"] != "false":
+              raise SystemExit("unknown fixture readiness")
+          files = list(root.iterdir())
+          if {p.name for p in files} != expected or any(p.is_symlink() or not p.is_file() for p in files):
+              raise SystemExit("release inventory is incomplete or contains unexpected files")
+          PY_INVENTORY
+
+      - name: Generate build provenance predicate
+        id: build-provenance
+        uses: actions/attest-build-provenance/predicate@864457a58d4733d7f1574bd8821fa24e02cf7538 # predicate@2.0.0
+
+      - name: Bind exact release source
+        env:
+          BASE_PROVENANCE: ${{ steps.build-provenance.outputs.predicate }}
+          BASE_PROVENANCE_TYPE: ${{ steps.build-provenance.outputs.predicate-type }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+          TOOLING_REPOSITORY: ${{ job.workflow_repository }}
+          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
+        run: |
+          set -euo pipefail
+          [[ "${BASE_PROVENANCE_TYPE}" == https://slsa.dev/provenance/v1 ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          jq -e --arg uri "git+${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}@refs/tags/${RELEASE_TAG}" \
+            --arg sha "${RELEASE_SOURCE_SHA}" \
+            --arg tooling_uri "git+${GITHUB_SERVER_URL}/${TOOLING_REPOSITORY}@${TOOLING_SHA}" \
+            --arg tooling_sha "${TOOLING_SHA}" \
+            --arg fixture_ready "${FIXTURE_READY}" '
+              if .buildDefinition.buildType != "https://actions.github.io/buildtypes/workflow/v1"
+                or (.buildDefinition.resolvedDependencies | type) != "array"
+                or (.runDetails.builder.id | type) != "string"
+              then error("unexpected provenance shape") else . end
+              | .buildDefinition.resolvedDependencies |=
+                  if any(.[]; .uri == $uri and .digest.gitCommit != $sha) then
+                    error("conflicting release source")
+                  elif any(.[]; .uri == $uri and .digest.gitCommit == $sha) then .
+                  else . + [{uri: $uri, digest: {gitCommit: $sha}}] end
+              | .buildDefinition.resolvedDependencies += [{uri: $tooling_uri, digest: {gitCommit: $tooling_sha}}]
+              | .buildDefinition.internalParameters.syscoinCanonicalFixture = $fixture_ready
+            ' <<< "${BASE_PROVENANCE}" > "${RUNNER_TEMP}/server-release-provenance.json"
+
       - name: Binaries attestation
         id: attestation
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: 'dist/**'
+          predicate-type: 'https://slsa.dev/provenance/v1'
+          predicate-path: ${{ runner.temp }}/server-release-provenance.json
 
-      - name: Upload artifacts
+      - name: Checkout bound publication tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-publication-tooling
+          sparse-checkout: scripts/release
+          persist-credentials: false
+
+      - name: Upload immutable release artifacts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ inputs.tag }}" dist/* --clobber
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "$(git -C .release-publication-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ -z "$(git -C .release-publication-tooling status --porcelain --untracked-files=all)" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          python3 -B .release-publication-tooling/scripts/release/publish-release-assets.py "${RELEASE_TAG}" dist/*.tar.gz
 
       - name: Update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
         run: |
-          REALASE_BODY=$(gh release view "${{ inputs.tag }}" --json body -q '.body')
+          if [[ "${FIXTURE_READY}" == true ]]; then
+            FIXTURE_NOTICE="Canonical fixture smoke: passed; local chain archive included."
+          else
+            FIXTURE_NOTICE="Canonical V32 fixture regeneration is pending. Binary CLI and linkage checks passed; block-production smoke was not run and no canonical local-chain archive is included."
+          fi
+          REALASE_BODY=$(gh release view "${RELEASE_TAG}" --json body -q '.body')
           BINARIES_SECTION=$(cat <<- "ENDBODY"
           ## Binaries
           
@@ -260,15 +428,8 @@ jobs:
           | <img src="https://www.svgrepo.com/download/448236/linux.svg" width="50"/> | x86_64 | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-x86_64-unknown-linux-gnu.tar.gz) | [Attestation](${{ steps.attestation.outputs.attestation-url }}) |
           | <img src="https://www.svgrepo.com/download/448236/linux.svg" width="50"/> | aarch64 | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-aarch64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-aarch64-unknown-linux-gnu.tar.gz) | [Attestation](${{ steps.attestation.outputs.attestation-url }}) |
           | <img src="https://www.svgrepo.com/download/475429/apple.svg" width="50"/> | universal | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz) | [Attestation](${{ steps.attestation.outputs.attestation-url }}) |
-          | <img src="https://www.svgrepo.com/download/452192/docker.svg" width="50"/> | Docker | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}](https://github.com/matter-labs/zksync-os-server/pkgs/container/zksync-os-server/539872628?tag=${{ inputs.tag }}) | - |
+          | <img src="https://www.svgrepo.com/download/452192/docker.svg" width="50"/> | Docker | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}](https://github.com/${{ github.repository }}/pkgs/container/zksync-os-server?tag=${{ inputs.tag }}) | - |
           ENDBODY
           )
-          echo -e "${REALASE_BODY}\n\n${BINARIES_SECTION}" > updated_body.md
-          gh release edit "${{ inputs.tag }}" --notes-file updated_body.md
-
-      - name: Slack notification
-        if: ${{ failure() }}
-        uses: ./.github/actions/slack-notify
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_RELEASES }}
-          context: "Failed to update ${{ inputs.tag }} release with prebuilt binaries"
+          printf '%s\n\n%s\n\n%s\n' "${REALASE_BODY}" "${BINARIES_SECTION}" "${FIXTURE_NOTICE}" > updated_body.md
+          gh release edit "${RELEASE_TAG}" --notes-file updated_body.md

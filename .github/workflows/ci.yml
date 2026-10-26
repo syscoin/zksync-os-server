@@ -116,6 +116,8 @@ jobs:
             scripts.tests.test_blockscout_remote_arguments \
             scripts.tests.test_blockscout_token_metadata \
             scripts.tests.test_server_release_inventory \
+            scripts.tests.test_publish_release_assets \
+            scripts.tests.test_hosted_release_workflow \
             scripts.tests.test_server_airbender_security \
             scripts.tests.test_gateway_settlement_fee_payer \
             scripts.tests.test_private_launch_files \
