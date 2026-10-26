@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "reviewed_source_commit": "f8d141db2f8666d1ce1a53b6f48eb7a272e2b74f",
+  "review_document": "docs/audits/native-linux-dependency-exceptions-2026-10-26.md",
+  "target": "x86_64-unknown-linux-gnu",
+  "rustc_commit": "18d13b5332916ffca8eadb9106d54b5b434e9978",
+  "lock_sha256": "93e8e376105b1645c521b2ada2ad4812db19a6312448b09be53bc431f5208ce8",
+  "source_sha256": "666601fbad02c116749fdcacf4d23a13bffc19915f3ee24edbae6b29d7266422",
+  "graph_sha256": "afc18b14d29a05859d4c56074a53db7cd705048cfb3943f496452c9b9c74d1c8",
+  "packages": {
+    "crypto-bigint": {
+      "version": "0.5.5",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
+    },
+    "zstd": {
+      "version": "0.13.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+    },
+    "zstd-safe": {
+      "version": "7.2.4",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+    },
+    "zstd-sys": {
+      "version": "2.0.15+zstd.1.5.7",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "eb81183ddd97d0c74cedf1d50d85c8d08c1b8b68ee863bdee9e706eedba1a237"
+    }
+  },
+  "advisories": {
+    "RUSTSEC-2026-0387": {
+      "package": "crypto-bigint",
+      "sha256": "7c9f3f944105638e613e83e97690035198e453d701e56506ee911e1fbfcb46f3",
+      "rationale": "Pinned 0.5.5 uses older widened subtraction; reviewed curve arithmetic avoids the reported generic routines, and the remaining bigint remainder path operates on public recovery inputs."
+    },
+    "RUSTSEC-2026-0391": {
+      "package": "zstd",
+      "sha256": "80b6c3a9c20db6c6c9b62fa9215905859493d02b376e1cc390e23f2f30fc0481",
+      "rationale": "Reviewed streaming consumers create owned contexts; reusable Reth contexts are bulk-only and no caller uses with_context."
+    },
+    "RUSTSEC-2026-0395": {
+      "package": "zstd-safe",
+      "sha256": "c1edb31084861c3616c154fe4f929d6bcaf49dc279fecca337979ef7367f34eb",
+      "rationale": "Experimental is enabled, but no reviewed caller sets StableInBuffer; Tower only supplies WindowLog."
+    },
+    "RUSTSEC-2026-0396": {
+      "package": "zstd-safe",
+      "sha256": "e39b7c95bba3bcf5117a27405bec8f4e5ff49939d0838a1212ab6c24358d723a",
+      "rationale": "The reviewed feature graph does not enable seekable."
+    },
+    "RUSTSEC-2026-0397": {
+      "package": "zstd-safe",
+      "sha256": "7114de7fc31bf3335b9efdda1d962ba7d842c9556f815ad03514663a70374233",
+      "rationale": "No reviewed caller uses OutBuffer::around_pos; streaming outputs are initialized slices wrapped with around."
+    },
+    "RUSTSEC-2026-0398": {
+      "package": "zstd-safe",
+      "sha256": "04d6d98f826402766ae3bbdd7d395335f6503d071dbe158c9d271dd3c46c1d96",
+      "rationale": "The reviewed feature graph does not enable seekable."
+    },
+    "RUSTSEC-2026-0399": {
+      "package": "zstd-safe",
+      "sha256": "c0bafd7a60715bce6359c92813acef499822dfc27bf1db1954fe84af24f7b353",
+      "rationale": "No reviewed caller invokes init_using_cdict or init_using_ddict; higher-level prepared dictionaries bind the reference lifetime."
+    },
+    "RUSTSEC-2026-0400": {
+      "package": "zstd-safe",
+      "sha256": "0e6dde9156e9c750af45fbf1b5d1ebd0b4292e8464143462665aac03ff9adb78",
+      "rationale": "Reusable contexts remain bulk-only; independently owned streaming contexts are not mixed with one-shot operations."
+    },
+    "RUSTSEC-2026-0401": {
+      "package": "zstd-safe",
+      "sha256": "fd995c2bb57142e6e6ff0a5cf9b0644eebd7f1fb0fbaafa177b653d65995ab45",
+      "rationale": "No production training caller was found; test-only Reth training derives sample sizes from resident vectors, with release overflow checks enabled."
+    },
+    "RUSTSEC-2026-0402": {
+      "package": "zstd-safe",
+      "sha256": "22f3974648278672be3feca0e317795e97df1b48b8f346d5b7cb089fbc08ee35",
+      "rationale": "zstdmt is disabled and no reviewed caller enables workers or invokes CCtx::try_clone."
+    },
+    "RUSTSEC-2026-0403": {
+      "package": "zstd-safe",
+      "sha256": "05ac3b7223d7837dae022a5a857185b891f89801d94468d65b214c747b0bf432",
+      "rationale": "No write Decoder is used; reviewed raw streaming outputs are initialized slices, with errors propagated before output advancement."
+    },
+    "RUSTSEC-2026-0404": {
+      "package": "zstd-safe",
+      "sha256": "ec593926653683515e4a6a3738f4e4b1ae2d83187f4fc4fc39d69b2a2a92bac2",
+      "rationale": "No reviewed caller invokes DCtx::try_clone and the used wrappers do not clone the native context."
+    },
+    "RUSTSEC-2026-0405": {
+      "package": "zstd-safe",
+      "sha256": "1acf33f0b15ffd015d183623739a0b142919eb8b7e3cf21b9a751a914676dc4a",
+      "rationale": "The affected SeekableCStream API is unavailable because seekable is disabled; reviewed streaming input positions start at zero."
+    },
+    "RUSTSEC-2026-0406": {
+      "package": "zstd-safe",
+      "sha256": "26a7af678e3732bf8a85a8261ee2dcbcc86afb6ad75a49077ebb466d4d6ef7fb",
+      "rationale": "zstdmt is disabled and no reviewed caller enables NbWorkers."
+    },
+    "RUSTSEC-2026-0410": {
+      "package": "zstd-sys",
+      "sha256": "5b7e7181131b2b3f5236f650229f62cb3c45e79ed5de2764ca3d5a6d47b81356",
+      "rationale": "The affected allocator shim is wasm32-only; this policy is limited to x86_64-unknown-linux-gnu."
+    }
+  }
+}
