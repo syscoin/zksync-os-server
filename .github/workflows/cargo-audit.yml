@@ -1,25 +1,16 @@
-name: Security audit
+name: Security audit (Linux server)
 
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '.github/workflows/cargo-audit.yml'
-      - 'deny.toml'
-      - 'scripts/check-root-compat.py'
-      - 'scripts/tests/test_root_compat.py'
   schedule:
     # Run every Monday-Friday at 8:30 AM UTC.
     - cron: "30 8 * * 1-5"
 
-# Prevent multiple runs for the same pull request or branch
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Set permissions
 permissions:
   contents: read
 
@@ -27,47 +18,39 @@ jobs:
   cargo-audit:
     runs-on: ubuntu-latest
     steps:
-      # Pre-install cargo-audit to avoid using nightly toolchain after checking out code
-      - name: Install cargo-audit
+      - name: Install pinned cargo-audit
         run: cargo install --locked cargo-audit@0.22.0
-      - name: Checkout
+      - name: Checkout exact head
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Validate legacy root advisory exceptions
-        run: python3 scripts/check-root-compat.py
-      - name: Run cargo audit
-        # 'RUSTSEC-2025-0055' todo: waiting for ark-relations to release a patch https://github.com/arkworks-rs/snark/issues/413
-        # 'RUSTSEC-2023-0071': Marvin timing sidechannel in `rsa` private-key operations. Production code only
-        # performs public-key RSA-OAEP encryption (wrapping the age file key to the GCP KMS public key);
-        # private-key decryption happens inside GCP KMS, never locally. No patched version exists yet.
-        # 'RUSTSEC-2026-0235': out-of-bounds read in `rkyv` < 0.8.17 when validating untrusted archives.
-        # `rkyv` 0.7.46 is only in Cargo.lock as an unused optional dependency of `rust_decimal` (via
-        # `byte-unit` <- `openraft`); no feature combination in this workspace enables it, so it is never compiled.
-        # 'RUSTSEC-2026-0381/0383': checksummed 0.26.11 compatibility crates only re-export
-        # their v1 parent. The preceding guard rejects any unpatched root version or parent;
-        # Cargo.lock binds both parents to >=1.0.10, which removes the distrusted root.
-        # The scheduled audit must report findings even when repository Issues are disabled.
-        run: >-
-          cargo audit --file Cargo.lock
-          --ignore RUSTSEC-2025-0055
-          --ignore RUSTSEC-2023-0071
-          --ignore RUSTSEC-2026-0235
-          --ignore RUSTSEC-2026-0381
-          --ignore RUSTSEC-2026-0383
+      - name: Test applicability guards
+        run: python3 -m unittest scripts.tests.test_root_compat scripts.tests.test_native_audit -v
+      - name: Audit reviewed native Linux configuration
+        run: python3 scripts/check-native-audit.py audit
+      - name: Preserve raw audit and review results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-linux-cargo-audit
+          path: target/security-audit/
+
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Install pinned cargo-deny
+        run: cargo install --locked cargo-deny@0.20.2
+      - name: Checkout exact head
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Validate legacy root advisory exceptions
-        run: python3 scripts/check-root-compat.py
-      - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.14
+      - name: Test applicability guards
+        run: python3 -m unittest scripts.tests.test_root_compat scripts.tests.test_native_audit -v
+      - name: Audit reviewed native Linux configuration
+        run: python3 scripts/check-native-audit.py deny
+      - name: Preserve raw audit and review results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          manifest-path: "./Cargo.toml"
-          arguments: "--all-features --locked"
-          command: check
-          command-arguments: "--allow unmaintained --hide-inclusion-graph"
+          name: native-linux-cargo-deny
+          path: target/security-audit/
