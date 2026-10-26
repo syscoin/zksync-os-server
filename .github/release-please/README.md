@@ -16,6 +16,12 @@ fingerprints only after that review. The native Linux security-audit PR checks
 must pass for the exact release commit. The pre-release check refuses to create
 an additional release when the lock or source no longer matches the reviewed
 scope; it does not authorize refreshing that scope or replace the full audit.
+After that explicit review, obtain the new candidate fingerprints on the
+reviewed Linux toolchain with `python3 scripts/check-native-audit.py fingerprints`,
+compare them with the reviewed changes, and update the corresponding fields in
+`scripts/security/native-linux-review.json` as part of the release PR. Run the
+`audit` and `deny` modes of `scripts/check-native-audit.py` against the
+reviewed advisory database.
 
 The canonical v32 fixture remains blocked while
 `local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists. Any existing
