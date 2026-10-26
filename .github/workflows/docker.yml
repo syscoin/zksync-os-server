@@ -1,46 +1,119 @@
 name: Docker build and release
 
 on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: Existing release tag for the image source
+        type: string
+        required: true
+      source_sha:
+        description: Exact 40-character commit peeled from tag_name
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Tag of an image to build."
+        description: Existing release tag for the image source
+        type: string
+        required: true
+      source_sha:
+        description: Exact 40-character commit peeled from tag_name
         type: string
         required: true
   push:
-    branches:
-      - main
-    tags:
-      - v**
+    branches: [main]
+    tags: ['v**']
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-defaults:
-  run:
-    shell: 'bash -ex {0}'
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-
   build-images:
-    name: Build and Push Docker Images
-    runs-on: matterlabs-ci-runner-high-performance
+    name: Build, push and attest server image
+    runs-on: ubuntu-latest
     permissions:
-      packages: write
       contents: read
-    strategy:
-      matrix:
-        component:
-          - zksync-os-server
-
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      version: ${{ steps.source.outputs.version }}
+      image_name: ${{ steps.source.outputs.image_name }}
+      image_digest: ${{ steps.build.outputs.digest }}
     steps:
+      - name: Free space on the ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          docker image prune --all --force
+          df -h /
 
-      - name: Checkout
+      - name: Validate requested source
+        id: requested
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${TAG_NAME}" || -n "${SOURCE_SHA}" || "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            [[ "${TAG_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 1
+            [[ "${TAG_NAME}" != latest ]] || exit 1
+            [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            ref="refs/tags/${TAG_NAME}"
+          elif [[ "${GITHUB_REF_TYPE}" == tag ]]; then
+            ref="${GITHUB_REF}"
+          else
+            ref="${GITHUB_SHA}"
+          fi
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout requested source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.requested.outputs.ref }}
+          fetch-depth: 1
+          persist-credentials: false
 
-      - name: login to Docker registries
-        run: gcloud auth configure-docker us-docker.pkg.dev -q
+      - name: Bind source and image identity
+        id: source
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          [[ "${actual}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]] || exit 1
+          if [[ -n "${TAG_NAME}" || -n "${SOURCE_SHA}" || "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
+            [[ "$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")" == "${actual}" ]] || exit 1
+            [[ "${actual}" == "${SOURCE_SHA}" ]] || exit 1
+            version="${TAG_NAME}"
+          elif [[ "${GITHUB_REF_TYPE}" == tag ]]; then
+            [[ "$(git rev-parse "${GITHUB_REF}^{commit}")" == "${actual}" ]] || exit 1
+            tag_object="$(git rev-parse "${GITHUB_REF}")"
+            [[ "${GITHUB_SHA}" == "${actual}" || "${GITHUB_SHA}" == "${tag_object}" ]] || exit 1
+            version="${GITHUB_REF_NAME}"
+          else
+            [[ "${actual}" == "${GITHUB_SHA}" ]] || exit 1
+            version="${actual}"
+          fi
+          [[ "${version}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 1
+          [[ "${version}" != latest ]] || exit 1
+          owner="$(printf '%s' "${REPO_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          [[ "${owner}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 1
+          echo "source_sha=${actual}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "image_name=ghcr.io/${owner}/zksync-os-server" >> "${GITHUB_OUTPUT}"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
@@ -52,53 +125,69 @@ jobs:
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
-        env:
-          DOCKER_METADATA_SHORT_SHA_LENGTH: 7
         with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.component }}
-            us-docker.pkg.dev/matterlabs-infra/matterlabs-docker/${{ matrix.component }}
+          images: ${{ steps.source.outputs.image_name }}
           tags: |
-            type=raw,value=${{ inputs.tag_name }},enable=${{ inputs.tag_name != '' }}
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-            type=sha,format=short,prefix=,suffix=-{{date 'x'}},enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-            type=sha,format=long,prefix=,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-            type=ref,event=pr
-
-      - name: Define whether to save cache
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        id: set-cache-to
-        run: echo "cache-to=type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.component }}:buildcache,mode=max" >> "${GITHUB_OUTPUT}"
+            type=raw,value=${{ steps.source.outputs.version }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tag_name == '' }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
-      - name: Build docker image
+      - name: Build and publish image
+        id: build
         uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
-          load: true
           file: ./Dockerfile
-          build-args: |
-            SCCACHE_GCS_BUCKET=matterlabs-infra-sccache-storage
-            SCCACHE_GCS_SERVICE_ACCOUNT=gha-ci-runners@matterlabs-infra.iam.gserviceaccount.com
-            SCCACHE_GCS_RW_MODE=READ_WRITE
-            RUSTC_WRAPPER=sccache
+          platforms: linux/amd64
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          push: ${{ github.event_name != 'pull_request' }}
-          cache-from: 'type=registry,ref=ghcr.io/${{ github.repository_owner }}/${{ matrix.component }}:buildcache'
-          cache-to: ${{ steps.set-cache-to.outputs.cache-to }}
+
+      - name: Generate build provenance
+        id: predicate
+        uses: actions/attest-build-provenance/predicate@864457a58d4733d7f1574bd8821fa24e02cf7538 # predicate@2.0.0
+
+      - name: Bind checked source to provenance
+        env:
+          PREDICATE: ${{ steps.predicate.outputs.predicate }}
+          PREDICATE_TYPE: ${{ steps.predicate.outputs.predicate-type }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          SOURCE_REF: ${{ steps.requested.outputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "${PREDICATE_TYPE}" == https://slsa.dev/provenance/v1 ]] || exit 1
+          jq -e --arg source_uri "git+${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}@${SOURCE_REF}" --arg source_sha "${SOURCE_SHA}" '
+            if .buildDefinition.buildType != "https://actions.github.io/buildtypes/workflow/v1" or
+               (.buildDefinition.resolvedDependencies | type) != "array" or
+               (.runDetails.builder.id | type) != "string" then error("unexpected provenance shape") else . end
+            | .buildDefinition.resolvedDependencies |=
+              if any(.[]; .uri == $source_uri and .digest.gitCommit != $source_sha) then
+                error("source conflicts with provenance")
+              elif any(.[]; .uri == $source_uri and .digest.gitCommit == $source_sha) then .
+              else . + [{uri: $source_uri, digest: {gitCommit: $source_sha}}] end
+          ' <<< "${PREDICATE}" > "${RUNNER_TEMP}/server-image-provenance.json"
+
+      - name: Attest published image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.source.outputs.image_name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ runner.temp }}/server-image-provenance.json
+          push-to-registry: true
 
   sbom-generation:
     name: SBOM
-    needs: [ 'build-images' ]
-    if: github.event_name != 'pull_request'
+    needs: [build-images]
     permissions:
       contents: read
       packages: read
     uses: ./.github/workflows/sbom-analysis-reusable.yaml
     secrets: inherit
     with:
-      version: ${{ inputs.tag_name || (github.ref_type == 'tag' && github.ref_name) || github.sha }}
+      version: ${{ needs.build-images.outputs.version }}
+      source_sha: ${{ needs.build-images.outputs.source_sha }}
+      image_name: ${{ needs.build-images.outputs.image_name }}
+      image_digest: ${{ needs.build-images.outputs.image_digest }}
