@@ -78,7 +78,7 @@ class ServerImageWorkflowTests(unittest.TestCase):
         self.assertEqual(tag.returncode, 0, tag.stderr)
 
     def test_build_provenance_and_immutable_sbom(self):
-        self.assertIn('group: server-docker-${{ github.repository }}-${{ github.ref }}', WORKFLOW)
+        self.assertIn("group: server-docker-${{ github.repository }}-${{ inputs.tag_name || (github.ref_type == 'tag' && github.ref_name) || github.ref }}", WORKFLOW)
         self.assertNotIn('group: ${{ github.workflow }}-${{ github.ref }}', WORKFLOW)
         self.assertNotIn('matterlabs-ci-', WORKFLOW)
         self.assertNotIn('matterlabs-infra', WORKFLOW)

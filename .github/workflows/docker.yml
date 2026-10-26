@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: server-docker-${{ github.repository }}-${{ github.ref }}
+  group: server-docker-${{ github.repository }}-${{ inputs.tag_name || (github.ref_type == 'tag' && github.ref_name) || github.ref }}
   cancel-in-progress: false
 
 jobs:
