@@ -94,6 +94,9 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
             self.assertIn('cd "${smoke_dir}"', source)
             self.assertIn('config help > config-help.txt', source)
             self.assertIn('test -s config-help.txt', source)
+            self.assertIn('--version', source)
+            self.assertIn('ldd ', source)
+            self.assertIn('otool -L', source)
 
     def test_release_inventory_rejects_missing_or_extra_files(self):
         script = step_shell(self.workflow, "Validate complete release inventory")
@@ -131,8 +134,8 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
 
     def test_all_release_targets_use_standard_hosted_runners(self):
         block = self.workflow.split("  build-bins:\n", 1)[1].split("  test-bins:\n", 1)[0]
-        for runner, target in (("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
-                               ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu"),
+        for runner, target in (("ubuntu-22.04", "x86_64-unknown-linux-gnu"),
+                               ("ubuntu-22.04-arm", "aarch64-unknown-linux-gnu"),
                                ("macos-15-intel", "x86_64-apple-darwin"),
                                ("macos-15", "aarch64-apple-darwin")):
             self.assertIn(f"runner: {runner}\n            target: {target}", block)
