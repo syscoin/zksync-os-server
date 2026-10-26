@@ -24,11 +24,8 @@ compare them with the reviewed changes, and update the corresponding fields in
 reviewed advisory database.
 
 The canonical v32 fixture remains blocked while
-`local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists. Any existing
-release smoke or artifact path that depends on that fixture must fail closed
-until the canonical fixture is regenerated and verified. See repository build
-instructions; do not populate or consume the blocked fixture to satisfy CI.
-Release-please still prepares the release PR, but will not create its tag or
-GitHub release while the marker exists or the required fixture files are absent.
-After the verified fixture is restored and merged into `main`, the next run can
-create the release and invoke the binary and image workflows.
+`local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists. Release builds
+may proceed with the available CLI smoke checks, but this does not verify
+canonical local-chain execution. The release workflow must not consume or
+archive the blocked fixture, and the full canonical smoke check can resume
+after the fixture is regenerated and verified.

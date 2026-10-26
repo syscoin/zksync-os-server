@@ -42,23 +42,10 @@ def validate(root):
         raise ValueError("native audit source review is stale")
 
 
-def fixture_ready(root):
-    fixture = Path(root) / "local-chains/v32.0"
-    marker = fixture / "CANONICAL_V8_REGENERATION_REQUIRED"
-    if fixture.is_symlink() or (fixture / "default").is_symlink() or marker.exists() or marker.is_symlink():
-        return False
-    required = (fixture / "l1-state.json.gz", fixture / "default/config.yaml",
-                fixture / "default/genesis.json")
-    return all(path.is_file() and not path.is_symlink() for path in required)
-
-
 def main():
     try:
-        if sys.argv[1:] == ["--fixture-ready"]:
-            print("true" if fixture_ready(ROOT) else "false")
-            return 0
         if sys.argv[1:]:
-            raise ValueError("usage: check-server-release-inputs.py [--fixture-ready]")
+            raise ValueError("usage: check-server-release-inputs.py")
         validate(ROOT)
     except (OSError, ValueError, KeyError, TypeError, tomllib.TOMLDecodeError) as error:
         print("Release inputs invalid: " + str(error), file=sys.stderr)

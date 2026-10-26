@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: server-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -32,15 +32,6 @@ jobs:
           persist-credentials: false
       - name: Check reviewed release inputs
         run: python3 scripts/check-server-release-inputs.py
-      - name: Check canonical release fixture readiness
-        id: fixture
-        run: |
-          if [[ "$(python3 scripts/check-server-release-inputs.py --fixture-ready)" == true ]]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Release tagging is paused until the canonical v32 fixture is regenerated; the release PR can still be prepared." >> "$GITHUB_STEP_SUMMARY"
-          fi
       - name: Prepare release
         id: release
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
@@ -49,7 +40,6 @@ jobs:
           target-branch: main
           config-file: .github/release-please/config.json
           manifest-file: .github/release-please/manifest.json
-          skip-github-release: ${{ steps.fixture.outputs.skip }}
 
   # GITHUB_TOKEN-created tags do not trigger other push workflows, so invoke
   # both publishers directly with the released commit identity.

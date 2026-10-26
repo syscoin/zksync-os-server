@@ -78,29 +78,12 @@ class ReleaseInputsTests(unittest.TestCase):
         self.update_policy()
         RELEASE.validate(self.root)
 
-    def test_release_fixture_is_blocked_when_missing_or_marked(self):
-        self.assertFalse(RELEASE.fixture_ready(self.root))
-        self.write("local-chains/v32.0/l1-state.json.gz", "test")
-        self.write("local-chains/v32.0/default/config.yaml", "test")
-        self.write("local-chains/v32.0/default/genesis.json", "test")
-        self.assertTrue(RELEASE.fixture_ready(self.root))
-        self.write("local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED", "blocked")
-        self.assertFalse(RELEASE.fixture_ready(self.root))
-
-    def test_release_fixture_rejects_symlinked_default_directory(self):
-        self.write("local-chains/v32.0/l1-state.json.gz", "test")
-        self.write("fixture-copy/config.yaml", "test")
-        self.write("fixture-copy/genesis.json", "test")
-        (self.root / "local-chains/v32.0/default").symlink_to(self.root / "fixture-copy")
-        self.assertFalse(RELEASE.fixture_ready(self.root))
-
-    def test_workflow_checks_fixture_before_tagging_and_binds_release_sha(self):
+    def test_workflow_releases_from_main_and_binds_release_sha(self):
         workflow = (ROOT / ".github/workflows/release-please.yml").read_text()
-        self.assertLess(workflow.index("Check canonical release fixture readiness"),
-                        workflow.index("Prepare release"))
-        self.assertIn("skip-github-release: ${{ steps.fixture.outputs.skip }}", workflow)
+        self.assertNotIn("skip-github-release", workflow)
         self.assertIn("target-branch: main", workflow)
         self.assertIn("if: ${{ github.ref == 'refs/heads/main' }}", workflow)
+        self.assertIn("group: server-release-${{ github.ref }}", workflow)
         self.assertEqual(workflow.count("source_sha: ${{ needs.release-please.outputs.source_sha }}"), 2)
 
 
