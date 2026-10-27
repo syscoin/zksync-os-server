@@ -121,6 +121,7 @@ jobs:
             scripts.tests.test_server_release_inventory \
             scripts.tests.test_server_release_inputs \
             scripts.tests.test_publish_release_assets \
+            scripts.tests.test_resume_release_bins \
             scripts.tests.test_hosted_release_workflow \
             scripts.tests.test_server_airbender_security \
             scripts.tests.test_gateway_settlement_fee_payer \

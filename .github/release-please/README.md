@@ -7,6 +7,16 @@ state; a maintainer must approve them before merging. Release binaries and image
 are invoked in the same run using the exact release tag and peeled source SHA,
 because token-created tags do not trigger other push workflows.
 
+Binary release archives are staged together as an Actions artifact after the
+builds, smoke tests and attestation. If publication fails, rerun the failed
+`publish-bins` job in the original run. For recovery in a separate run, start
+the **Resume server binary release** workflow on `main` with the release tag,
+its peeled source SHA and the original run ID. It verifies and publishes the
+original archives, retaining their original attestations. The staged artifact
+must still be available under the repository's Actions artifact retention policy;
+if it has expired or an existing release asset differs, publication stops for
+investigation rather than replacing the asset.
+
 Release-please changes the workspace version in `Cargo.toml` and its manifest.
 Before merging the generated release PR, update the matching workspace package
 versions in `Cargo.lock` without refreshing unrelated dependencies. Review the

@@ -1,6 +1,7 @@
 """Check hosted server release boundaries without publishing or fixture restore."""
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -131,6 +132,72 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(run(), 0)
         (dist / "local-chains.tar.gz").write_bytes(b"archive")
         self.assertNotEqual(run(), 0)
+
+    def test_publication_uses_successfully_staged_attested_archives(self):
+        staging = self.workflow.split("  release-bins:\n", 1)[1].split("  publish-bins:\n", 1)[0]
+        publishing = self.workflow.split("  publish-bins:\n", 1)[1]
+        self.assertIn("needs: [preflight, build-bins, test-bins]", staging)
+        self.assertIn("needs: [preflight, release-bins]", publishing)
+        self.assertLess(staging.index("      - name: Validate complete release inventory"),
+                        staging.index("      - name: Binaries attestation"))
+        self.assertLess(staging.index("      - name: Binaries attestation"),
+                        staging.index("      - name: Stage complete release archives"))
+        self.assertLess(staging.index("      - name: Stage complete release archives"),
+                        staging.index("      - name: Upload staged release archives"))
+        self.assertNotIn("      - name: Upload immutable release artifacts", staging)
+        artifact = "name: server-release-${{ inputs.tag }}-${{ inputs.source_sha }}"
+        self.assertIn(artifact, staging)
+        self.assertIn(artifact, publishing)
+        self.assertLess(publishing.index("      - name: Download staged release archives"),
+                        publishing.index("      - name: Validate staged release identity"))
+        self.assertLess(publishing.index("      - name: Validate staged release identity"),
+                        publishing.index("      - name: Upload immutable release artifacts"))
+        self.assertIn("${{ needs.release-bins.outputs.attestation_url }}", publishing)
+
+    def test_publication_rejects_wrong_staged_identity_and_inventory(self):
+        script = step_shell(self.workflow, "Validate staged release identity")
+        tag = "v1"
+        sha = "a" * 40
+        url = "https://github.com/example/attestation/1"
+        env = {**os.environ, "RELEASE_TAG": tag, "RELEASE_SOURCE_SHA": sha,
+               "FIXTURE_READY": "false", "GITHUB_RUN_ID": "123", "ATTESTATION_URL": url}
+        names = (
+            "zksync-os-server-v1-x86_64-unknown-linux-gnu.tar.gz",
+            "zksync-os-server-v1-aarch64-unknown-linux-gnu.tar.gz",
+            "zksync-os-server-v1-universal-apple-darwin.tar.gz",
+        )
+
+        def run(metadata_change=None, remove=None, extra=None, url_value=url, symlink=False):
+            with tempfile.TemporaryDirectory(dir=self.repo_path) as directory:
+                root = Path(directory)
+                staged = root / "staged-release"
+                dist = staged / "dist"
+                dist.mkdir(parents=True)
+                for name in names:
+                    (dist / name).write_bytes(b"archive")
+                if remove:
+                    (dist / remove).unlink()
+                if extra:
+                    (dist / extra).write_bytes(b"unexpected")
+                if symlink:
+                    (dist / names[0]).unlink()
+                    (dist / names[0]).symlink_to(dist / names[1])
+                metadata = {"tag": tag, "source_sha": sha, "fixture_ready": "false", "run_id": "123"}
+                metadata.update(metadata_change or {})
+                (staged / "metadata.json").write_text(json.dumps(metadata))
+                (staged / "attestation-url.txt").write_text(url_value + "\n")
+                result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                                        text=True, capture_output=True)
+                return result.returncode
+
+        self.assertEqual(run(), 0)
+        for key, value in (("tag", "v2"), ("source_sha", "b" * 40),
+                           ("fixture_ready", "true"), ("run_id", "124")):
+            self.assertNotEqual(run(metadata_change={key: value}), 0, key)
+        self.assertNotEqual(run(url_value="https://example.invalid"), 0)
+        self.assertNotEqual(run(remove=names[0]), 0)
+        self.assertNotEqual(run(extra="unexpected.tar.gz"), 0)
+        self.assertNotEqual(run(symlink=True), 0)
 
     def test_all_release_targets_use_standard_hosted_runners(self):
         block = self.workflow.split("  build-bins:\n", 1)[1].split("  test-bins:\n", 1)[0]

@@ -268,15 +268,17 @@ jobs:
 
 
 
-  # Attach binaries to the GitHub release
+  # Package and attest the exact archives before publication.
   release-bins:
     needs: [preflight, build-bins, test-bins]
     # Run on macOS to combine binaries into a single one for macOS
     runs-on: macos-15
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
+    outputs:
+      attestation_url: ${{ steps.attestation.outputs.attestation-url }}
     steps:
 
       - name: Checkout code
@@ -315,12 +317,6 @@ jobs:
       - name: Archive certified local chains
         if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
         run: tar -czf dist/local-chains.tar.gz "${LOCAL_CHAINS_DIR}"
-
-      - name: Upload binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz
-          path: dist/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz
 
       - name: Validate complete release inventory
         env:
@@ -388,6 +384,81 @@ jobs:
           predicate-type: 'https://slsa.dev/provenance/v1'
           predicate-path: ${{ runner.temp }}/server-release-provenance.json
 
+      - name: Stage complete release archives
+        env:
+          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
+          ATTESTATION_URL: ${{ steps.attestation.outputs.attestation-url }}
+        run: |
+          set -euo pipefail
+          mkdir -p staged-release
+          cp -R dist staged-release/dist
+          jq -n --arg tag "${RELEASE_TAG}" --arg source_sha "${RELEASE_SOURCE_SHA}" \
+            --arg fixture_ready "${FIXTURE_READY}" --arg run_id "${GITHUB_RUN_ID}" \
+            '{tag:$tag, source_sha:$source_sha, fixture_ready:$fixture_ready, run_id:$run_id}' > staged-release/metadata.json
+          printf '%s\n' "${ATTESTATION_URL}" > staged-release/attestation-url.txt
+
+      - name: Upload staged release archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-release-${{ inputs.tag }}-${{ inputs.source_sha }}
+          path: staged-release/
+          if-no-files-found: error
+
+  publish-bins:
+    needs: [preflight, release-bins]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+
+      - name: Verify release source before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+
+      - name: Download staged release archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: server-release-${{ inputs.tag }}-${{ inputs.source_sha }}
+          path: staged-release
+
+      - name: Validate staged release identity
+        env:
+          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
+          ATTESTATION_URL: ${{ needs.release-bins.outputs.attestation_url }}
+        run: |
+          set -euo pipefail
+          jq -e --arg tag "${RELEASE_TAG}" --arg sha "${RELEASE_SOURCE_SHA}" \
+            --arg ready "${FIXTURE_READY}" --arg run "${GITHUB_RUN_ID}" \
+            '.tag == $tag and .source_sha == $sha and .fixture_ready == $ready and .run_id == $run' staged-release/metadata.json > /dev/null
+          [[ "$(cat staged-release/attestation-url.txt)" == "${ATTESTATION_URL}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
+          mv staged-release/dist dist
+          python3 - <<'PY_INVENTORY'
+          import os
+          from pathlib import Path
+          root = Path("dist")
+          tag = os.environ["RELEASE_TAG"]
+          expected = {
+              f"zksync-os-server-{tag}-x86_64-unknown-linux-gnu.tar.gz",
+              f"zksync-os-server-{tag}-aarch64-unknown-linux-gnu.tar.gz",
+              f"zksync-os-server-{tag}-universal-apple-darwin.tar.gz",
+          }
+          if os.environ["FIXTURE_READY"] == "true":
+              expected.add("local-chains.tar.gz")
+          elif os.environ["FIXTURE_READY"] != "false":
+              raise SystemExit("unknown fixture readiness")
+          files = list(root.iterdir())
+          if {p.name for p in files} != expected or any(p.is_symlink() or not p.is_file() for p in files):
+              raise SystemExit("staged release inventory is incomplete or contains unexpected files")
+          PY_INVENTORY
+
       - name: Checkout bound publication tooling
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -425,9 +496,9 @@ jobs:
           
           | System | Architecture | Binary | Attestation |
           |:---:|:---:|:---:|:---|
-          | <img src="https://www.svgrepo.com/download/448236/linux.svg" width="50"/> | x86_64 | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-x86_64-unknown-linux-gnu.tar.gz) | [Attestation](${{ steps.attestation.outputs.attestation-url }}) |
-          | <img src="https://www.svgrepo.com/download/448236/linux.svg" width="50"/> | aarch64 | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-aarch64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-aarch64-unknown-linux-gnu.tar.gz) | [Attestation](${{ steps.attestation.outputs.attestation-url }}) |
-          | <img src="https://www.svgrepo.com/download/475429/apple.svg" width="50"/> | universal | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz) | [Attestation](${{ steps.attestation.outputs.attestation-url }}) |
+          | <img src="https://www.svgrepo.com/download/448236/linux.svg" width="50"/> | x86_64 | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-x86_64-unknown-linux-gnu.tar.gz) | [Attestation](${{ needs.release-bins.outputs.attestation_url }}) |
+          | <img src="https://www.svgrepo.com/download/448236/linux.svg" width="50"/> | aarch64 | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-aarch64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-aarch64-unknown-linux-gnu.tar.gz) | [Attestation](${{ needs.release-bins.outputs.attestation_url }}) |
+          | <img src="https://www.svgrepo.com/download/475429/apple.svg" width="50"/> | universal | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz) | [Attestation](${{ needs.release-bins.outputs.attestation_url }}) |
           | <img src="https://www.svgrepo.com/download/452192/docker.svg" width="50"/> | Docker | [${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}](https://github.com/${{ github.repository }}/pkgs/container/zksync-os-server?tag=${{ inputs.tag }}) | - |
           ENDBODY
           )

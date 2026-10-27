@@ -1,8 +1,11 @@
 """Check safe release asset recovery without contacting GitHub."""
 
 import importlib.util
+import gzip
+import io
 import json
 from pathlib import Path
+import tarfile
 from unittest import TestCase, main
 from unittest.mock import patch
 import subprocess
@@ -83,6 +86,46 @@ class PublishReleaseAssetsTests(TestCase):
         self.uploaded.clear()
         self.publish()
         self.assertEqual(self.uploaded, [self.paths[1].name])
+
+    def test_retry_uses_staged_original_archives_after_rebuild(self):
+        def make_archive(path, mtime):
+            payload = b"same built binary"
+            with path.open("wb") as stream, gzip.GzipFile(fileobj=stream, mode="wb", mtime=0) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w") as archive:
+                    member = tarfile.TarInfo("server")
+                    member.size = len(payload)
+                    member.mtime = mtime
+                    archive.addfile(member, io.BytesIO(payload))
+
+        staged = self.root / "staged"
+        rebuilt = self.root / "rebuilt"
+        staged.mkdir()
+        rebuilt.mkdir()
+        original = [staged / path.name for path in self.paths]
+        replacement = [rebuilt / path.name for path in self.paths]
+        for path in original:
+            make_archive(path, 1700000000)
+        for path in replacement:
+            make_archive(path, 1700000100)
+        self.assertNotEqual(original[0].read_bytes(), replacement[0].read_bytes())
+
+        def interrupted(args, **kwargs):
+            if args[1:3] == ["release", "upload"] and Path(args[-1]) == original[1]:
+                raise subprocess.CalledProcessError(1, args)
+            return self.run_gh(args, **kwargs)
+
+        with patch.object(PUBLISH.subprocess, "run", side_effect=interrupted):
+            with self.assertRaises(subprocess.CalledProcessError):
+                PUBLISH.publish("v1", original)
+        self.assertEqual(self.remote, {original[0].name: original[0].read_bytes()})
+        self.uploaded.clear()
+        with patch.object(PUBLISH.subprocess, "run", side_effect=self.run_gh):
+            with self.assertRaisesRegex(ValueError, "existing release asset differs"):
+                PUBLISH.publish("v1", replacement)
+            self.assertEqual(self.uploaded, [])
+            PUBLISH.publish("v1", original)
+        self.assertEqual(self.uploaded, [original[1].name])
+        self.assertEqual(self.remote, {path.name: path.read_bytes() for path in original})
 
     def test_divergent_existing_asset_aborts_before_any_upload(self):
         self.remote[self.paths[1].name] = b"different"
