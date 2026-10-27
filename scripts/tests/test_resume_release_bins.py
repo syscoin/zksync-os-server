@@ -41,6 +41,8 @@ class RunValidationTests(unittest.TestCase):
     def test_accepts_completed_main_release_with_successful_packaging(self):
         with patch.object(RESUME, "gh", side_effect=self.gh):
             RESUME.validate_run(REPO, RUN_ID)
+            self.run["event"] = "workflow_dispatch"
+            RESUME.validate_run(REPO, RUN_ID)
             self.run["path"] = ".github/workflows/release-bins.yml"
             self.run["event"] = "workflow_dispatch"
             self.jobs[0]["jobs"][0]["name"] = "release-bins"

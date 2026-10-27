@@ -34,6 +34,7 @@ def validate_run(repo, run_id):
     allowed = {
         (".github/workflows/release-please.yml", "push"),
         (".github/workflows/release-please.yml", "workflow_dispatch"),
+        (".github/workflows/release-please.yml", "workflow_dispatch"),
         (".github/workflows/release-bins.yml", "workflow_dispatch"),
     }
     if (str(run.get("id")) != run_id or run.get("status") != "completed"
