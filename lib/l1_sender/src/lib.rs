@@ -1377,7 +1377,8 @@ where
                     blocks.len(),
                     expected_blocks,
                     commands.len(),
-                )? =>
+                )
+                .map_err(|error| defer_pending_prefix(error, original_in_flight_prefix_len))? =>
             {
                 blocks
             }
@@ -1432,7 +1433,9 @@ where
                 i,
                 commands.len(),
                 simulation_gas_limit,
-            )? {
+            )
+            .map_err(|error| defer_pending_prefix(error, original_in_flight_prefix_len))?
+            {
                 Some(gas_limit) => gas_limits.push(gas_limit),
                 None => {
                     return self
@@ -1936,18 +1939,38 @@ fn simulation_call_gas_limit(
 
 // SYSCOIN: Waves and commands behind an unmined prefix can depend on earlier pending state, so
 // only one command with an empty prefix may fall back to an independent `eth_estimateGas` call.
+#[derive(Debug)]
+pub(crate) struct PendingSimulationPrefix;
+
+impl std::fmt::Display for PendingSimulationPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "cannot independently estimate L1 commands behind an unconfirmed transaction prefix",
+        )
+    }
+}
+
+impl std::error::Error for PendingSimulationPrefix {}
+
+fn defer_pending_prefix(error: anyhow::Error, prefix_len: usize) -> anyhow::Error {
+    if prefix_len == 0 {
+        error
+    } else {
+        error.context(PendingSimulationPrefix)
+    }
+}
+
 fn validate_independent_gas_estimate(
     in_flight_prefix_len: usize,
     command_count: usize,
 ) -> anyhow::Result<()> {
+    if in_flight_prefix_len != 0 {
+        return Err(PendingSimulationPrefix.into());
+    }
     anyhow::ensure!(
         command_count == 1,
         "cannot independently estimate gas for {command_count} L1 commands; \
          a multi-command wave requires successful eth_simulateV1 results"
-    );
-    anyhow::ensure!(
-        in_flight_prefix_len == 0,
-        "cannot independently estimate one L1 command behind an unmined transaction prefix"
     );
     Ok(())
 }
@@ -1959,8 +1982,17 @@ fn validate_simulation_error_fallback(
     in_flight_prefix_len: usize,
     command_count: usize,
 ) -> anyhow::Result<()> {
-    validate_independent_gas_estimate(in_flight_prefix_len, command_count)
-        .map_err(|fallback_error| anyhow::Error::new(error).context(fallback_error))
+    match validate_independent_gas_estimate(in_flight_prefix_len, command_count) {
+        Ok(()) => Ok(()),
+        Err(fallback_error)
+            if fallback_error
+                .downcast_ref::<PendingSimulationPrefix>()
+                .is_some() =>
+        {
+            Err(anyhow::Error::new(error).context(PendingSimulationPrefix))
+        }
+        Err(fallback_error) => Err(anyhow::Error::new(error).context(fallback_error)),
+    }
 }
 
 // SYSCOIN: `eth_estimateGas` reports the current minimum. Pad it for state movement between
@@ -2170,6 +2202,27 @@ mod tests {
     }
 
     #[test]
+    fn simulation_failures_defer_only_while_a_prefix_remains() {
+        for count in [1, 2] {
+            let error = validate_independent_gas_estimate(1, count).unwrap_err();
+            assert!(error.downcast_ref::<PendingSimulationPrefix>().is_some());
+        }
+        let error = validate_independent_gas_estimate(0, 2).unwrap_err();
+        assert!(error.downcast_ref::<PendingSimulationPrefix>().is_none());
+
+        let simulation_error = anyhow::anyhow!("invalid multi-command simulation");
+        let error = defer_pending_prefix(simulation_error, 1);
+        assert!(error.downcast_ref::<PendingSimulationPrefix>().is_some());
+        assert_eq!(
+            error.root_cause().to_string(),
+            "invalid multi-command simulation"
+        );
+        let error = defer_pending_prefix(anyhow::anyhow!("invalid multi-command simulation"), 0);
+        assert!(error.downcast_ref::<PendingSimulationPrefix>().is_none());
+        assert_eq!(error.to_string(), "invalid multi-command simulation");
+    }
+
+    #[test]
     fn top_level_simulation_errors_require_an_independent_single_command() {
         use alloy::transports::TransportErrorKind;
 
@@ -2198,6 +2251,10 @@ mod tests {
                         .unwrap_err();
                 assert!(error.to_string().contains("cannot independently estimate"));
                 assert_eq!(error.root_cause().to_string(), failure().to_string());
+                assert_eq!(
+                    error.downcast_ref::<PendingSimulationPrefix>().is_some(),
+                    prefix_len > 0
+                );
             }
         }
     }

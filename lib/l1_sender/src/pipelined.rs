@@ -43,7 +43,10 @@
 use crate::commands::{L1SenderCommand, SendToL1};
 use crate::metrics::L1_SENDER_METRICS;
 use crate::pipeline_component::L1Sender;
-use crate::{ConfirmationResend, FeeParams, L1SenderState, METHOD_NOT_FOUND_CODE, SimPrefixEntry};
+use crate::{
+    ConfirmationResend, FeeParams, L1SenderState, METHOD_NOT_FOUND_CODE, PendingSimulationPrefix,
+    SimPrefixEntry,
+};
 use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::network::{Ethereum, Network, TransactionResponse};
 use alloy::primitives::{Address, B256};
@@ -87,6 +90,25 @@ struct InFlightTx<Input> {
 struct ResendRequest {
     nonce: u64,
     reply: tokio::sync::oneshot::Sender<(B256, FeeParams, Option<alloy::primitives::Bytes>)>,
+}
+
+enum PrefixProgress {
+    Confirmed,
+    Resend(ResendRequest),
+}
+
+async fn wait_for_prefix_progress(
+    confirmed_floor: &mut watch::Receiver<u64>,
+    resend_rx: &mut mpsc::Receiver<ResendRequest>,
+) -> anyhow::Result<PrefixProgress> {
+    tokio::select! {
+        biased;
+        Some(request) = resend_rx.recv() => Ok(PrefixProgress::Resend(request)),
+        changed = confirmed_floor.changed() => {
+            changed.context("confirmation forwarder terminated")?;
+            Ok(PrefixProgress::Confirmed)
+        }
+    }
 }
 
 /// A transaction observed mined, awaiting `required_confirmations` before its command is
@@ -135,8 +157,8 @@ struct PipelinedStart<Input> {
 /// Mutable submitter-side state threaded through send waves.
 struct SubmitterState {
     next_nonce: u64,
-    /// Submitted-but-not-observed-mined transactions mirrored into `eth_simulateV1` payloads
-    /// (see [`SimPrefixEntry`]). Pruned against the inclusion watcher's mined-nonce floor.
+    /// Submitted-but-unconfirmed transactions mirrored into `eth_simulateV1` payloads
+    /// (see [`SimPrefixEntry`]). Pruned once the confirmation forwarder advances.
     in_flight_prefix: VecDeque<SimPrefixEntry>,
     replacement: Option<ReplacementPlan>,
 }
@@ -146,6 +168,48 @@ pub(crate) fn prune_confirmed_prefix(prefix: &mut VecDeque<SimPrefixEntry>, floo
         prefix.pop_front();
     }
     256_usize.saturating_sub(prefix.len())
+}
+
+#[cfg(test)]
+mod prefix_progress_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn waiting_services_resends_and_wakes_on_confirmation() {
+        let (floor_tx, mut floor_rx) = watch::channel(7);
+        let (resend_tx, mut resend_rx) = mpsc::channel(1);
+        let (reply, _reply_rx) = tokio::sync::oneshot::channel();
+        {
+            let wait = wait_for_prefix_progress(&mut floor_rx, &mut resend_rx);
+            tokio::pin!(wait);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(20), &mut wait)
+                    .await
+                    .is_err()
+            );
+            resend_tx
+                .send(ResendRequest { nonce: 7, reply })
+                .await
+                .unwrap();
+            match wait.await.unwrap() {
+                PrefixProgress::Resend(request) => assert_eq!(request.nonce, 7),
+                PrefixProgress::Confirmed => panic!("confirmation did not advance"),
+            }
+        }
+        floor_tx.send_replace(8);
+        assert!(matches!(
+            wait_for_prefix_progress(&mut floor_rx, &mut resend_rx)
+                .await
+                .unwrap(),
+            PrefixProgress::Confirmed
+        ));
+        drop(floor_tx);
+        assert!(
+            wait_for_prefix_progress(&mut floor_rx, &mut resend_rx)
+                .await
+                .is_err()
+        );
+    }
 }
 
 impl<Input> L1Sender<Input>
@@ -311,7 +375,8 @@ where
                         permits,
                         operator_address,
                         &submitted_tx,
-                        &mined_floor_rx,
+                        &mut mined_floor_rx,
+                        &mut resend_rx,
                     )
                     .await?;
                     L1_SENDER_METRICS.txs_in_flight[&command_name]
@@ -482,35 +547,50 @@ where
         mut permits: Vec<OwnedSemaphorePermit>,
         operator_address: Address,
         submitted_tx: &mpsc::Sender<InFlightTx<Input>>,
-        mined_floor_rx: &watch::Receiver<u64>,
+        mined_floor_rx: &mut watch::Receiver<u64>,
+        resend_rx: &mut mpsc::Receiver<ResendRequest>,
     ) -> anyhow::Result<()> {
         let command_name = Input::COMPONENT_ID.as_str();
         let range = Input::display_range(&commands);
         tracing::info!(command_name, range, "sending L1 transactions");
         L1_SENDER_METRICS.parallel_transactions[&command_name].set(commands.len() as u64);
 
-        // Drop prefix entries for transactions the inclusion watcher has observed mined —
-        // their state is part of the provider's simulation base now.
-        let mined_floor = *mined_floor_rx.borrow();
-        prune_confirmed_prefix(&mut state.in_flight_prefix, mined_floor);
-
-        let fee_params = self
-            .resolve_fee_params(
-                self.config.fee_config,
-                self.config.force_transaction_resubmission,
-            )
-            .await?;
-        let fee_params = self.apply_replacement_floor(state, fee_params);
-
-        let gas_limits = self
-            .estimate_gas_limits(
-                state.in_flight_prefix.make_contiguous(),
-                &commands,
-                operator_address,
-                fee_params,
-                state.next_nonce,
-            )
-            .await?;
+        // Confirmed predecessors are part of the simulation base and no longer need replay.
+        let (fee_params, gas_limits) = loop {
+            let mined_floor = *mined_floor_rx.borrow_and_update();
+            prune_confirmed_prefix(&mut state.in_flight_prefix, mined_floor);
+            let fee_params = self
+                .resolve_fee_params(
+                    self.config.fee_config,
+                    self.config.force_transaction_resubmission,
+                )
+                .await?;
+            let fee_params = self.apply_replacement_floor(state, fee_params);
+            match self
+                .estimate_gas_limits(
+                    state.in_flight_prefix.make_contiguous(),
+                    &commands,
+                    operator_address,
+                    fee_params,
+                    state.next_nonce,
+                )
+                .await
+            {
+                Ok(gas_limits) => break (fee_params, gas_limits),
+                Err(error) if error.downcast_ref::<PendingSimulationPrefix>().is_some() => {
+                    // Re-simulation is safe after a predecessor confirms; independent
+                    // estimation before then could omit the state it supplies.
+                    match wait_for_prefix_progress(mined_floor_rx, resend_rx).await? {
+                        PrefixProgress::Confirmed => {}
+                        PrefixProgress::Resend(request) => {
+                            self.resend_evicted(state, request, operator_address)
+                                .await?;
+                        }
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        };
         tracing::info!(
             command_name,
             range,

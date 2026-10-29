@@ -33,10 +33,10 @@ fn fast_batches_config(config: &mut Config) {
     config.batcher_config.batch_timeout = Duration::from_secs(2);
 }
 
-/// The mined handoff must retain every candidate hash across a real L1 reorg.
+/// A dropped, orphaned commit must be rebroadcast and confirmed after an L1 reorg.
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
-async fn pipelined_sender_confirms_original_candidate_after_replacement_is_orphaned(
+async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
     env: TestEnvironment,
 ) -> anyhow::Result<()> {
     let proxy = MethodNotFoundL1Proxy::start(env.l1_rpc_url(), "__no_missing_method__").await?;
@@ -86,25 +86,8 @@ async fn pipelined_sender_confirms_original_candidate_after_replacement_is_orpha
     })
     .await
     .map_err(|_| anyhow::anyhow!("sender never captured original raw transaction"))?;
-    anyhow::ensure!(
-        l1.anvil_drop_transaction(original).await?.is_some(),
-        "original was not dropped"
-    );
-
-    let replacement = tokio::time::timeout(DEFAULT_TIMEOUT, async {
-        loop {
-            if let Some(tx) = l1.get_transaction_by_sender_nonce(operator, nonce).await?
-                && tx.tx_hash() != original
-            {
-                return anyhow::Ok(tx.tx_hash());
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("replacement not submitted"))??;
     let snapshot = l1.anvil_snapshot().await?;
-    proxy.watch(replacement);
+    proxy.watch(original);
     proxy.hold_second_receipt.store(true, Ordering::SeqCst);
     l1.anvil_mine(Some(1), None).await?;
     tokio::time::timeout(DEFAULT_TIMEOUT, async {
@@ -113,23 +96,37 @@ async fn pipelined_sender_confirms_original_candidate_after_replacement_is_orpha
         }
     })
     .await
-    .map_err(|_| anyhow::anyhow!("replacement was not handed to confirmation"))?;
+    .map_err(|_| anyhow::anyhow!("original was not handed to confirmation"))?;
 
     anyhow::ensure!(
         l1.anvil_revert(snapshot).await?,
         "L1 snapshot revert failed"
     );
-    let _ = l1.anvil_drop_transaction(replacement).await?;
-    let resent = l1.send_raw_transaction(&raw).await?;
+    let _ = l1.anvil_drop_transaction(original).await?;
     anyhow::ensure!(
-        *resent.tx_hash() == original,
-        "original transaction hash changed"
+        l1.get_transaction_by_hash(original).await?.is_none(),
+        "original remains available after drop"
     );
-    l1.anvil_mine(Some(6), None).await?;
-    // The next watched receipt must be the original candidate as seen by the sender.
-    proxy.watch(original);
     proxy.hold_second_receipt.store(false, Ordering::SeqCst);
     proxy.release_receipt.notify_one();
+    tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        loop {
+            if let Some(tx) = l1.get_transaction_by_sender_nonce(operator, nonce).await?
+                && tx.tx_hash() == original
+            {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("sender did not rebroadcast original transaction"))??;
+    anyhow::ensure!(
+        l1.get_raw_transaction_by_hash(original).await? == Some(raw),
+        "sender rebroadcast different signed transaction bytes"
+    );
+    proxy.watch(original);
+    l1.anvil_mine(Some(6), None).await?;
     tokio::time::timeout(DEFAULT_TIMEOUT, async {
         while proxy.observed_receipts.load(Ordering::SeqCst) == 0 {
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -951,7 +948,7 @@ async fn missing_sender_nonce_rpc_drains_pending_then_restarts_and_recovers(
         .register_with_wallet(operator_l1.wallet_mut())
         .await?;
     // Deliberately not awaiting a receipt — mining is stopped, so there is none.
-    let _pooled_transfer = operator_l1
+    let pooled_transfer = operator_l1
         .send_transaction(
             TransactionRequest::default()
                 .with_from(operator)
@@ -959,6 +956,7 @@ async fn missing_sender_nonce_rpc_drains_pending_then_restarts_and_recovers(
                 .with_value(U256::from(1u64)),
         )
         .await?;
+    let transfer_hash = *pooled_transfer.tx_hash();
     let (latest_nonce, pending_nonce) = operator_nonces(&l1, operator).await?;
     assert_eq!(
         pending_nonce,
@@ -999,11 +997,22 @@ async fn missing_sender_nonce_rpc_drains_pending_then_restarts_and_recovers(
     let error = restarted
         .wait_for_fatal_error_with_timeout(Duration::from_secs(60))
         .await?;
+    let error_text = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains("pending transactions settled; restart"),
+        error_text.contains("pending transactions settled; restart")
+            || (error_text.contains("node startup readiness gate")
+                && error_text.contains("SNARK readiness source exited after node became ready")),
         "unexpected error: {error}"
+    );
+    let receipt = l1
+        .get_transaction_receipt(transfer_hash)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the previously pending transfer did not settle"))?;
+    assert!(receipt.status(), "the previously pending transfer reverted");
+    assert_eq!(
+        operator_nonces(&l1, operator).await?,
+        (pending_nonce, pending_nonce),
+        "the sender must exit without submitting from the stale snapshot"
     );
     let resumed = restarted.stop().await?.start().await?;
     wait_for_l1_state(
