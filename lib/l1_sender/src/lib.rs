@@ -878,10 +878,11 @@ where
                         };
                         if canonical.header.hash != expected_hash { continue; }
                         receipt_block_number = Some(number);
-                        if next_probe.is_some() && !resend.raw_transactions.iter().any(|(hash, _)| hash == tx_hash) {
-                            if let Some(raw) = capture_raw_transaction(&provider, *tx_hash, &resend.request, fee_limits).await? {
-                                resend.raw_transactions.push((*tx_hash, raw));
-                            }
+                        if next_probe.is_some()
+                            && !resend.raw_transactions.iter().any(|(hash, _)| hash == tx_hash)
+                            && let Some(raw) = capture_raw_transaction(&provider, *tx_hash, &resend.request, fee_limits).await?
+                        {
+                            resend.raw_transactions.push((*tx_hash, raw));
                         }
                         if confirmation_policy.is_confirmed(number, latest_block) {
                             let latest_again = provider.get_block_number().await?;
@@ -914,10 +915,10 @@ where
                                     _ => anyhow::bail!("inconsistent transaction block metadata"),
                                 }
                                 if known {
-                                    if !resend.raw_transactions.iter().any(|(candidate, _)| candidate == hash) {
-                                        if let Some(raw) = capture_raw_transaction(&provider, *hash, &resend.request, fee_limits).await? {
-                                            resend.raw_transactions.push((*hash, raw));
-                                        }
+                                    if !resend.raw_transactions.iter().any(|(candidate, _)| candidate == hash)
+                                        && let Some(raw) = capture_raw_transaction(&provider, *hash, &resend.request, fee_limits).await?
+                                    {
+                                        resend.raw_transactions.push((*hash, raw));
                                     }
                                     break;
                                 }

@@ -654,13 +654,11 @@ where
                             .raw_transactions
                             .iter()
                             .any(|(hash, _)| *hash == tx_hash)
-                    {
-                        if let Some(raw) = self
+                        && let Some(raw) = self
                             .capture_raw_transaction(tx_hash, &entry.request)
                             .await?
-                        {
-                            entry.raw_transactions.push((tx_hash, raw));
-                        }
+                    {
+                        entry.raw_transactions.push((tx_hash, raw));
                     }
                     return Ok(tx_hash);
                 }
