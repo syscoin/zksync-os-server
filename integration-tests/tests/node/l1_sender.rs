@@ -126,8 +126,17 @@ async fn pipelined_sender_confirms_original_candidate_after_replacement_is_orpha
         "original transaction hash changed"
     );
     l1.anvil_mine(Some(6), None).await?;
+    // The next watched receipt must be the original candidate as seen by the sender.
+    proxy.watch(original);
     proxy.hold_second_receipt.store(false, Ordering::SeqCst);
     proxy.release_receipt.notify_one();
+    tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        while proxy.observed_receipts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("sender did not recheck the original candidate"))?;
     let receipt = l1
         .get_transaction_receipt(original)
         .await?
@@ -137,6 +146,14 @@ async fn pipelined_sender_confirms_original_candidate_after_replacement_is_orpha
     wait_for_l1_state(&tester, "pipelined commits after reorg", |state| {
         state.last_committed_batch >= baseline + 2
     })
+    .await?;
+    // Proving is downstream of the depth-confirmed commit handoff; L1 commits alone
+    // can advance before the confirmation task has processed the original receipt.
+    wait_for_l1_state(
+        &tester,
+        "proof after original candidate confirmation",
+        |state| state.last_proved_batch > baseline,
+    )
     .await?;
     anyhow::ensure!(
         !tester.has_crashed(),
