@@ -713,6 +713,15 @@ async fn l1_connection_blip_is_absorbed(env: TestEnvironment) -> anyhow::Result<
     Ok(())
 }
 
+type ReceiptObserver = (
+    Arc<Mutex<Option<B256>>>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<String>>>,
+    Arc<AtomicBool>,
+    Arc<tokio::sync::Notify>,
+);
+
 /// A JSON-RPC proxy in front of anvil that rejects a single method with the JSON-RPC
 /// "method not found" error (-32601) and transparently forwards everything else — emulating an
 /// L1 provider that does not implement the method (e.g. the geth family, which lacks
@@ -784,14 +793,7 @@ impl MethodNotFoundL1Proxy {
         client: reqwest::Client,
         target: String,
         missing_method: &str,
-        observer: (
-            Arc<Mutex<Option<B256>>>,
-            Arc<AtomicUsize>,
-            Arc<AtomicUsize>,
-            Arc<Mutex<Vec<String>>>,
-            Arc<AtomicBool>,
-            Arc<tokio::sync::Notify>,
-        ),
+        observer: ReceiptObserver,
     ) -> anyhow::Result<()> {
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = tokio::io::BufReader::new(read_half);
