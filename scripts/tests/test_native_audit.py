@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -149,6 +150,12 @@ class HostGuardTests(unittest.TestCase):
             ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "0"),
             ("ZSTD_SYS_USE_PKG_CONFIG", "1"),
             ("ZSTD_LIB_DIR", "/tmp/unreviewed-zstd"),
+            ("LIBZ_SYS_STATIC", "0"),
+            ("CC", "/tmp/unreviewed-cc"),
+            ("CC_x86_64_unknown_linux_gnu", "/tmp/unreviewed-cc"),
+            ("TARGET_CFLAGS", "-DUNREVIEWED"),
+            ("CC_ENABLE_DEBUG_OUTPUT", "1"),
+            ("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "/tmp/unreviewed-linker"),
         ]:
             with self.subTest(key=key):
                 with self.assertRaises(ValueError):
@@ -186,6 +193,117 @@ def metadata(root):
             {"id": unrelated_id, "features": [], "dependencies": [], "deps": []},
         ]},
     }
+
+
+class LibzScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.policy = {
+            "packages": {
+                "libz-sys": {"version": "1.1.22", "source": audit.REGISTRY,
+                             "checksum": "8b70e7a7df205e92a1a4cd9aaae7898dac0aa555503cc0a649494d0d60e7651d"},
+                "cc": {"version": "1.2.62", "source": audit.REGISTRY,
+                       "checksum": "a1dce859f0832a7d088c4f1119888ab94ef4b5d6795d1ce05afb7fe159d79f98"},
+            },
+            "advisories": {
+                audit.LIBZ_ADVISORY: {"package": "libz-sys", "sha256": "d" * 64,
+                                      "rationale": "Only the pinned static Linux build with reviewed cc."},
+            },
+        }
+        self.metadata = {
+            "packages": [
+                {"id": "libz", "name": "libz-sys", "version": "1.1.22", "source": audit.REGISTRY},
+                {"id": "cc", "name": "cc", "version": "1.2.62", "source": audit.REGISTRY},
+            ],
+            "resolve": {"nodes": [
+                {"id": "libz", "features": ["static"], "deps": [
+                    {"name": "cc", "pkg": "cc", "dep_kinds": [{"kind": "build", "target": None}]},
+                ]},
+                {"id": "cc", "features": [], "deps": []},
+            ]},
+        }
+
+    def test_pinned_static_graph_and_build_dependency_are_required(self):
+        audit.validate_libz_scope(self.metadata, self.policy)
+        changes = []
+        no_static = copy.deepcopy(self.metadata)
+        no_static["resolve"]["nodes"][0]["features"] = []
+        changes.append(no_static)
+        wrong_cc = copy.deepcopy(self.metadata)
+        wrong_cc["resolve"]["nodes"][0]["deps"][0]["pkg"] = "other"
+        changes.append(wrong_cc)
+        wrong_kind = copy.deepcopy(self.metadata)
+        wrong_kind["resolve"]["nodes"][0]["deps"][0]["dep_kinds"][0]["kind"] = "normal"
+        changes.append(wrong_kind)
+        changed_version = copy.deepcopy(self.metadata)
+        changed_version["packages"][1]["version"] = "1.6.0"
+        changes.append(changed_version)
+        changed_source = copy.deepcopy(self.metadata)
+        changed_source["packages"][1]["source"] = "git+https://example.invalid/cc"
+        changes.append(changed_source)
+        missing_node = copy.deepcopy(self.metadata)
+        missing_node["resolve"]["nodes"].pop()
+        changes.append(missing_node)
+        changes.extend([{}, {"packages": None}, {"packages": [], "resolve": {"nodes": None}}])
+        for changed in changes:
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                audit.validate_libz_scope(changed, self.policy)
+
+    def test_exact_libz_and_cc_lock_identities_are_required(self):
+        locked = {"package": [{"name": name, **value} for name, value in self.policy["packages"].items()]}
+        audit.validate_packages(locked, self.policy)
+        for name in ("cc", "libz-sys"):
+            changed = copy.deepcopy(locked)
+            next(p for p in changed["package"] if p["name"] == name)["checksum"] = "e" * 64
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                audit.validate_packages(changed, self.policy)
+
+    def test_actual_server_feature_tree_must_contain_only_static_libz(self):
+        audit.validate_libz_server_tree("other v1.0.0 []\nlibz-sys v1.1.22 [static]\n")
+        for tree in ("", "libz-sys v1.1.22 []", "libz-sys v1.1.22 [static,zlib-ng]",
+                     "libz-sys v1.1.31 [static]", "libz-sys v1.1.22 [static]\nlibz-sys v1.1.22 []"):
+            with self.subTest(tree=tree), self.assertRaises(ValueError):
+                audit.validate_libz_server_tree(tree)
+
+    def test_default_and_gcp_server_feature_trees_are_both_checked(self):
+        with patch.object(audit, "run", return_value="libz-sys v1.1.22 [static]\n") as call:
+            audit.validate_libz_server_builds(Path("/tmp/server"), self.policy)
+        self.assertEqual(call.call_count, 2)
+        self.assertNotIn("--features", call.call_args_list[0].args[0])
+        self.assertEqual(call.call_args_list[1].args[0][-2:], ["--features", "gcp"])
+        with patch.object(audit, "run", side_effect=["libz-sys v1.1.22 [static]", "libz-sys v1.1.22 []"]):
+            with self.assertRaises(ValueError):
+                audit.validate_libz_server_builds(Path("/tmp/server"), self.policy)
+
+    def test_only_exact_reported_libz_identity_is_accepted_by_both_scanners(self):
+        expected = self.policy["packages"]["libz-sys"]
+        for scanner in ("audit", "deny"):
+            item = {"advisory": {"id": audit.LIBZ_ADVISORY, "package": "libz-sys"},
+                    "package": {"name": "libz-sys", **expected}}
+            if scanner == "deny":
+                item["package"]["checksum"] = None
+            accepted, remaining = audit.filter_report(report(scanner, [item]), self.policy, scanner, set())
+            self.assertEqual((len(accepted), len(remaining)), (1, 0))
+            for field, bad in (("version", "1.1.23"), ("source", "git+https://example.invalid/repo")):
+                modified = copy.deepcopy(item)
+                modified["package"][field] = bad
+                with self.subTest(scanner=scanner, field=field), self.assertRaises(ValueError):
+                    audit.filter_report(report(scanner, [modified]), self.policy, scanner, set())
+            changed = copy.deepcopy(item)
+            changed["package"]["checksum"] = "e" * 64
+            with self.subTest(scanner=scanner, field="checksum"), self.assertRaises(ValueError):
+                audit.filter_report(report(scanner, [changed]), self.policy, scanner, set())
+
+    def test_libz_advisory_record_bytes_must_match_review(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "crates/libz-sys" / f"{audit.LIBZ_ADVISORY}.md"
+            path.parent.mkdir(parents=True)
+            path.write_text("Reviewed advisory record.\n")
+            self.policy["advisories"][audit.LIBZ_ADVISORY]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            audit.validate_advisories(root, self.policy)
+            path.write_text("Changed advisory record.\n")
+            with self.assertRaises(ValueError):
+                audit.validate_advisories(root, self.policy)
 
 
 class GraphGuardTests(unittest.TestCase):

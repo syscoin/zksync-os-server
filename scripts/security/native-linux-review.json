@@ -8,10 +8,20 @@
   "source_sha256": "13788ecefdf8acc33fe6ff989062d2940f791551607123c7a98934b861aa4e0c",
   "graph_sha256": "afc18b14d29a05859d4c56074a53db7cd705048cfb3943f496452c9b9c74d1c8",
   "packages": {
+    "cc": {
+      "version": "1.2.62",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "a1dce859f0832a7d088c4f1119888ab94ef4b5d6795d1ce05afb7fe159d79f98"
+    },
     "crypto-bigint": {
       "version": "0.5.5",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "checksum": "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
+    },
+    "libz-sys": {
+      "version": "1.1.22",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8b70e7a7df205e92a1a4cd9aaae7898dac0aa555503cc0a649494d0d60e7651d"
     },
     "zstd": {
       "version": "0.13.3",
@@ -30,6 +40,11 @@
     }
   },
   "advisories": {
+    "RUSTSEC-2026-0418": {
+      "package": "libz-sys",
+      "sha256": "d23c02e18334ca407aac3588a413ff5c8b28498341e7332213b167f9d6ccad6e",
+      "rationale": "Exact Linux server graph enables static libz and binds cc 1.2.62: static skips the logged probe and this cc predates full-environment command construction."
+    },
     "RUSTSEC-2026-0387": {
       "package": "crypto-bigint",
       "sha256": "7c9f3f944105638e613e83e97690035198e453d701e56506ee911e1fbfcb46f3",
