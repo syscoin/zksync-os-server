@@ -153,6 +153,30 @@ fn signed_resend_with_fee(fee: u128) -> (B256, Bytes, ConfirmationResend) {
     (hash, raw, original)
 }
 
+fn signed_transaction_at_nonce(nonce: u64, input: Bytes) -> pipelined::L1TxResponse {
+    let (_, raw, original) = signed_resend();
+    let mut bytes = raw.as_ref();
+    let TxEnvelope::Eip1559(signed) = TxEnvelope::decode_2718(&mut bytes).unwrap() else {
+        unreachable!()
+    };
+    let (mut tx, _, _) = signed.into_parts();
+    tx.nonce = nonce;
+    tx.input = input;
+    let signer = PrivateKeySigner::from_slice(&[1; 32]).unwrap();
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    pipelined::L1TxResponse {
+        inner: alloy::consensus::transaction::Recovered::new_unchecked(
+            TxEnvelope::Eip1559(tx.into_signed(signature)),
+            original.request.from.unwrap(),
+        ),
+        block_hash: None,
+        block_number: None,
+        transaction_index: None,
+        effective_gas_price: None,
+        block_timestamp: None,
+    }
+}
+
 #[tokio::test]
 async fn replacement_suffix_rejects_foreign_transactions_and_lookup_failures() {
     let (_, raw, request) = signed_resend();
@@ -461,6 +485,8 @@ async fn missing_previously_mined_transaction_resends_saved_signed_hash() {
         a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
         a.push_success(&U64::from(7));
         a.push_success(&U64::from(7));
+        a.push_success(&U64::from(7));
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
         a.push_success(&tx);
         a.push_success(&U64::from(12));
         a.push_success(&Some(receipt(tx, included, 10)));
@@ -494,11 +520,21 @@ async fn refuses_unknown_pending_nonce_and_missing_signed_bytes() {
             if occupied {
                 a.push_success(&U64::from(31337));
                 a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+                a.push_success(&Some(signed_transaction_at_nonce(
+                    7,
+                    Bytes::from_static(&[1]),
+                )));
+                a.push_success(&U64::from(31337));
             }
             let sender = sender(provider, pipelined, true);
+            let original = if occupied {
+                signed_resend().2
+            } else {
+                resend()
+            };
             let error = tokio::time::timeout(
                 Duration::from_secs(2),
-                sender.wait_for_confirmed_receipt(vec![B256::with_last_byte(1)], resend()),
+                sender.wait_for_confirmed_receipt(vec![B256::with_last_byte(1)], original),
             )
             .await
             .expect("wait timed out")
@@ -512,6 +548,317 @@ async fn refuses_unknown_pending_nonce_and_missing_signed_bytes() {
             assert!(a.read_q().is_empty());
         }
     }
+}
+
+fn push_exact_nonce_vacant_with_later_queued(a: &Asserter, use_txpool: bool) {
+    if use_txpool {
+        a.push_failure(ErrorPayload {
+            code: METHOD_NOT_FOUND_CODE,
+            message: "sender/nonce lookup unavailable".into(),
+            data: None,
+        });
+        let mut pool = BTreeMap::new();
+        pool.insert(
+            "pending",
+            BTreeMap::<String, pipelined::L1TxResponse>::new(),
+        );
+        pool.insert(
+            "queued",
+            BTreeMap::from([(
+                "8".to_string(),
+                signed_transaction_at_nonce(8, Bytes::new()),
+            )]),
+        );
+        a.push_success(&pool);
+    } else {
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
+    }
+}
+
+#[tokio::test]
+async fn gap_before_a_queued_later_nonce_rebroadcasts_the_original() {
+    for use_txpool in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (hash, _, original) = signed_resend();
+        let canonical = B256::with_last_byte(3);
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
+        a.push_success(&U64::from(7));
+        a.push_success(&U64::from(9));
+        a.push_success(&U64::from(31337));
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
+        push_exact_nonce_vacant_with_later_queued(&a, use_txpool);
+        a.push_success(&U64::from(7));
+        push_exact_nonce_vacant_with_later_queued(&a, use_txpool);
+        a.push_success(&hash);
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(hash, canonical, 10)));
+        a.push_success(&Some(block(canonical, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(canonical, 10)));
+        let sender = sender(provider, true, true);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![hash], original),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("vacant nonce should permit exact-byte recovery");
+        assert_eq!(confirmed.transaction_hash, hash);
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn nonce_occupancy_requires_a_supported_exact_lookup() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    for method in ["sender/nonce", "txpool"] {
+        a.push_failure(ErrorPayload {
+            code: METHOD_NOT_FOUND_CODE,
+            message: format!("{method} unavailable").into(),
+            data: None,
+        });
+    }
+    let (hash, _, original) = signed_resend();
+    let error = exact_nonce_blocks_rebroadcast(
+        &provider,
+        original.request.from.unwrap(),
+        7,
+        &original.request,
+        &[hash],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("enable txpool_contentFrom"));
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn txpool_exact_nonce_rejects_a_foreign_occupant() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    a.push_failure(ErrorPayload {
+        code: METHOD_NOT_FOUND_CODE,
+        message: "sender/nonce lookup unavailable".into(),
+        data: None,
+    });
+    let mut pool = BTreeMap::new();
+    pool.insert(
+        "pending",
+        BTreeMap::from([(
+            "7".to_string(),
+            signed_transaction_at_nonce(7, Bytes::from_static(&[1])),
+        )]),
+    );
+    pool.insert("queued", BTreeMap::<String, pipelined::L1TxResponse>::new());
+    a.push_success(&pool);
+    a.push_success(&U64::from(31337));
+    let (hash, _, original) = signed_resend();
+    let error = exact_nonce_blocks_rebroadcast(
+        &provider,
+        original.request.from.unwrap(),
+        7,
+        &original.request,
+        &[hash],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("unknown pending transaction"));
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn queued_unknown_nonce_is_rejected_even_when_pending_nonce_is_unchanged() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let (hash, _, original) = signed_resend();
+    a.push_success(&U64::from(11));
+    a.push_success(&Option::<TransactionReceipt>::None);
+    a.push_success(&Option::<pipelined::L1TxResponse>::None);
+    a.push_success(&U64::from(7));
+    a.push_success(&U64::from(7));
+    a.push_success(&U64::from(7));
+    a.push_failure(ErrorPayload {
+        code: METHOD_NOT_FOUND_CODE,
+        message: "sender/nonce lookup unavailable".into(),
+        data: None,
+    });
+    let mut pool = BTreeMap::new();
+    pool.insert(
+        "pending",
+        BTreeMap::<String, pipelined::L1TxResponse>::new(),
+    );
+    pool.insert(
+        "queued",
+        BTreeMap::from([(
+            "7".to_string(),
+            signed_transaction_at_nonce(7, Bytes::from_static(&[1])),
+        )]),
+    );
+    a.push_success(&pool);
+    a.push_success(&U64::from(31337));
+    let sender = sender(provider, true, true);
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        sender.wait_for_confirmed_receipt(vec![hash], original),
+    )
+    .await
+    .expect("wait timed out")
+    .expect_err("queued foreign transaction must block rebroadcast");
+    assert!(error.to_string().contains("unknown pending transaction"));
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn exact_nonce_lookup_errors_are_not_treated_as_vacancy() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    a.push_failure(ErrorPayload {
+        code: -32000,
+        message: "temporary lookup failure".into(),
+        data: None,
+    });
+    let (hash, _, original) = signed_resend();
+    let error = exact_nonce_blocks_rebroadcast(
+        &provider,
+        original.request.from.unwrap(),
+        7,
+        &original.request,
+        &[hash],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("cannot determine exact pending nonce")
+    );
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn malformed_txpool_nonce_keys_never_establish_vacancy() {
+    for (key, nonce) in [("07", 7), ("eight", 8), ("8", 7)] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        a.push_failure(ErrorPayload {
+            code: METHOD_NOT_FOUND_CODE,
+            message: "sender/nonce lookup unavailable".into(),
+            data: None,
+        });
+        let mut pool = BTreeMap::new();
+        pool.insert(
+            "pending",
+            BTreeMap::<String, pipelined::L1TxResponse>::new(),
+        );
+        pool.insert(
+            "queued",
+            BTreeMap::from([(
+                key.to_string(),
+                signed_transaction_at_nonce(nonce, Bytes::new()),
+            )]),
+        );
+        a.push_success(&pool);
+        let (hash, _, original) = signed_resend();
+        let error = exact_nonce_blocks_rebroadcast(
+            &provider,
+            original.request.from.unwrap(),
+            7,
+            &original.request,
+            &[hash],
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("nonce key"), "{error:#}");
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn orphaned_or_unavailable_exact_nonce_header_is_inconclusive() {
+    for header_available in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let mut transaction = signed_transaction_at_nonce(7, Bytes::new());
+        let hash = transaction.tx_hash();
+        transaction.block_hash = Some(B256::with_last_byte(2));
+        transaction.block_number = Some(10);
+        a.push_success(&Some(transaction));
+        if header_available {
+            a.push_success(&Some(block(B256::with_last_byte(3), 10)));
+        } else {
+            a.push_success(&Option::<Block>::None);
+        }
+        let (_, _, original) = signed_resend();
+        assert!(
+            exact_nonce_blocks_rebroadcast(
+                &provider,
+                original.request.from.unwrap(),
+                7,
+                &original.request,
+                &[hash],
+            )
+            .await
+            .expect("orphaned or unavailable header must remain inconclusive")
+        );
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn exact_nonce_lookup_recognizes_a_tracked_transaction() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let transaction = signed_transaction_at_nonce(7, Bytes::new());
+    let hash = transaction.tx_hash();
+    let (_, _, original) = signed_resend();
+    a.push_success(&Some(transaction));
+    a.push_success(&U64::from(31337));
+    assert!(
+        exact_nonce_blocks_rebroadcast(
+            &provider,
+            original.request.from.unwrap(),
+            7,
+            &original.request,
+            &[hash],
+        )
+        .await
+        .unwrap()
+    );
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn confirmation_nonce_is_rechecked_before_rebroadcast() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let (hash, _, original) = signed_resend();
+    let canonical = B256::with_last_byte(3);
+    a.push_success(&U64::from(11));
+    a.push_success(&Option::<TransactionReceipt>::None);
+    a.push_success(&Option::<pipelined::L1TxResponse>::None);
+    a.push_success(&U64::from(7));
+    a.push_success(&U64::from(7));
+    // Another block arrives after the initial probes but before sending.
+    a.push_success(&U64::from(8));
+    a.push_success(&U64::from(12));
+    a.push_success(&Some(receipt(hash, canonical, 10)));
+    a.push_success(&Some(block(canonical, 10)));
+    a.push_success(&U64::from(12));
+    a.push_success(&Some(block(canonical, 10)));
+    let sender = sender(provider, true, true);
+    let confirmed = tokio::time::timeout(
+        Duration::from_secs(2),
+        sender.wait_for_confirmed_receipt(vec![hash], original),
+    )
+    .await
+    .expect("wait timed out")
+    .expect("new canonical receipt should be observed before resending");
+    assert_eq!(confirmed.transaction_hash, hash);
+    assert!(a.read_q().is_empty());
 }
 
 #[tokio::test]

@@ -58,8 +58,21 @@ async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
     })
     .await?;
     l1.anvil_mine(Some(6), None).await?;
-    wait_for_operators_to_settle(&l1, tester.config()).await?;
-    let baseline = fetch_l1_state(&tester).await?.last_committed_batch;
+    // The confirmation forwarder is serial, so earlier unconfirmed commits would prevent
+    // it from observing the receipt under test even after that receipt is mined.
+    l1.anvil_set_interval_mining(1).await?;
+    let baseline = tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        loop {
+            let (latest, pending) = operator_nonces(&l1, operator).await?;
+            let state = fetch_l1_state(&tester).await?;
+            if latest == pending && state.last_proved_batch >= state.last_committed_batch {
+                return anyhow::Ok(state.last_committed_batch);
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("baseline did not reach confirmed proving"))??;
     stop_l1_mining(&l1).await?;
     send_l2_txs(&tester, 4).await?;
     wait_for_pooled_commits(&l1, operator, 1).await?;
@@ -90,13 +103,23 @@ async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
     proxy.watch(original);
     proxy.hold_second_receipt.store(true, Ordering::SeqCst);
     l1.anvil_mine(Some(1), None).await?;
+    anyhow::ensure!(
+        l1.get_transaction_receipt(original).await?.is_some(),
+        "original transaction {original} was not mined"
+    );
     tokio::time::timeout(DEFAULT_TIMEOUT, async {
         while proxy.observed_receipts.load(Ordering::SeqCst) < 2 {
             tokio::time::sleep(POLL_INTERVAL).await;
         }
     })
     .await
-    .map_err(|_| anyhow::anyhow!("original was not handed to confirmation"))?;
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "original {original} was not handed to confirmation (receipt observations: {}, node crashed: {})",
+            proxy.observed_receipts.load(Ordering::SeqCst),
+            tester.has_crashed()
+        )
+    })?;
 
     anyhow::ensure!(
         l1.anvil_revert(snapshot).await?,
@@ -107,10 +130,23 @@ async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
         l1.get_transaction_by_hash(original).await?.is_none(),
         "original remains available after drop"
     );
+    let after_drop = (
+        operator_nonces(&l1, operator).await?,
+        l1.get_transaction_by_sender_nonce(operator, nonce)
+            .await?
+            .map(|tx| tx.tx_hash()),
+        l1.get_transaction_by_sender_nonce(operator, nonce + 1)
+            .await?
+            .map(|tx| tx.tx_hash()),
+    );
     proxy.hold_second_receipt.store(false, Ordering::SeqCst);
     proxy.release_receipt.notify_one();
     tokio::time::timeout(DEFAULT_TIMEOUT, async {
         loop {
+            anyhow::ensure!(
+                !tester.has_crashed(),
+                "node crashed before rebroadcast of {original} at nonce {nonce}; after drop (latest/pending, target, successor): {after_drop:?}"
+            );
             if let Some(tx) = l1.get_transaction_by_sender_nonce(operator, nonce).await?
                 && tx.tx_hash() == original
             {
@@ -120,7 +156,11 @@ async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
         }
     })
     .await
-    .map_err(|_| anyhow::anyhow!("sender did not rebroadcast original transaction"))??;
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "sender did not rebroadcast {original} at nonce {nonce}; after drop (latest/pending, target, successor): {after_drop:?}"
+        )
+    })??;
     anyhow::ensure!(
         l1.get_raw_transaction_by_hash(original).await? == Some(raw),
         "sender rebroadcast different signed transaction bytes"
@@ -129,11 +169,16 @@ async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
     l1.anvil_mine(Some(6), None).await?;
     tokio::time::timeout(DEFAULT_TIMEOUT, async {
         while proxy.observed_receipts.load(Ordering::SeqCst) == 0 {
+            anyhow::ensure!(
+                !tester.has_crashed(),
+                "node crashed before rechecking rebroadcast {original} at nonce {nonce}"
+            );
             tokio::time::sleep(POLL_INTERVAL).await;
         }
+        anyhow::Ok(())
     })
     .await
-    .map_err(|_| anyhow::anyhow!("sender did not recheck the original candidate"))?;
+    .map_err(|_| anyhow::anyhow!("sender did not recheck the original candidate"))??;
     let receipt = l1
         .get_transaction_receipt(original)
         .await?

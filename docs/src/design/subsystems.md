@@ -20,6 +20,10 @@
       Startup recovery may replace stale transactions to its configured target, including
       transactions with different calldata; it cannot identify unrelated work sent to that
       same target. Forced resubmission also replaces pending transactions.
+      Before rebroadcasting an orphaned transaction, the sender checks the exact nonce for
+      competing transactions. Gateway provides `eth_getTransactionBySenderAndNonce`; a Syscoin
+      NEVM RPC without that method must expose `txpool_contentFrom` on its trusted operator
+      endpoint. If neither lookup is available, the sender fails closed instead of resending.
     * Runs Priority Tree Manager that applies new L1->L2 transactions to the dynamic Merkle tree and prepares `execute` commands.
       It's run both for main node and ENs. ENs don't send `execute` txs to L1, but they need to keep the tree up to date,
       so that if the node become main, it doesn't need to build the tree from scratch.

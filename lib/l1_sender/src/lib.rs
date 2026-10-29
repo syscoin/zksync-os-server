@@ -30,6 +30,7 @@ use alloy::transports::TransportError;
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
@@ -239,6 +240,85 @@ fn select_resend_candidate<'a>(
         "retained transactions exceed confirmation recovery fee limits"
     );
     anyhow::bail!("signed raw transaction unavailable for confirmation recovery")
+}
+
+/// Blocks rebroadcast when a tracked transaction is present or its canonical status is
+/// inconclusive. An unavailable occupancy API cannot establish an empty slot.
+async fn exact_nonce_blocks_rebroadcast(
+    provider: &NodeProvider,
+    operator: Address,
+    nonce: u64,
+    request: &TransactionRequest,
+    tx_hashes: &[B256],
+) -> anyhow::Result<bool> {
+    let candidates = match provider
+        .get_transaction_by_sender_nonce(operator, nonce)
+        .await
+    {
+        Ok(transaction) => transaction.into_iter().collect::<Vec<_>>(),
+        Err(TransportError::ErrorResp(ref error)) if error.code == METHOD_NOT_FOUND_CODE => {
+            let pool: BTreeMap<String, BTreeMap<String, pipelined::L1TxResponse>> = provider
+                .client()
+                .request("txpool_contentFrom", (operator,))
+                .await
+                .context("cannot determine exact pending nonce: enable txpool_contentFrom on a trusted operator RPC")?;
+            let key = nonce.to_string();
+            let pending = pool
+                .get("pending")
+                .context("txpool_contentFrom missing pending map")?;
+            let queued = pool
+                .get("queued")
+                .context("txpool_contentFrom missing queued map")?;
+            // Reject malformed or aliased nonce keys rather than mistaking an occupied
+            // target slot for an absent one.
+            for (key, tx) in pending.iter().chain(queued.iter()) {
+                let parsed: u64 = key.parse().context("invalid txpool nonce key")?;
+                anyhow::ensure!(
+                    key == &parsed.to_string()
+                        && ConsensusTransaction::nonce(tx) == parsed
+                        && tx.from() == operator,
+                    "inconsistent txpool transaction or nonce key"
+                );
+            }
+            pending
+                .get(&key)
+                .into_iter()
+                .chain(queued.get(&key))
+                .cloned()
+                .collect()
+        }
+        Err(error) => {
+            return Err(anyhow::Error::new(error).context("cannot determine exact pending nonce"));
+        }
+    };
+    if candidates.is_empty() {
+        return Ok(false);
+    }
+    for tx in candidates {
+        anyhow::ensure!(
+            tx.from() == operator && ConsensusTransaction::nonce(&tx) == nonce,
+            "inconsistent exact nonce transaction"
+        );
+        match (tx.block_hash(), tx.block_number()) {
+            (None, None) => {}
+            (Some(expected), Some(number)) => {
+                let block = provider.get_block_by_number(number.into()).await?;
+                if block.is_none_or(|block| block.header.hash != expected) {
+                    // The lookup can return an orphan from its historical index while
+                    // another transaction occupies the pool; never treat that as vacant.
+                    return Ok(true);
+                }
+            }
+            _ => anyhow::bail!("inconsistent exact nonce block metadata"),
+        }
+        let chain_id = provider.get_chain_id().await?;
+        anyhow::ensure!(
+            tx_hashes.contains(&tx.tx_hash())
+                && matches_submitted_transaction(request, &tx, chain_id),
+            "confirmation nonce occupied by an unknown pending transaction"
+        );
+    }
+    Ok(true)
 }
 
 fn build_l1_simulation_request(
@@ -989,12 +1069,22 @@ where
                                 }
                             }
                             if appeared { missing = 0; next_probe = Some(elapsed + liveness_interval); continue; }
-                            anyhow::bail!("confirmation nonce occupied by an unknown pending transaction");
+                            if exact_nonce_blocks_rebroadcast(&provider, operator, original_nonce, &resend.request, &tx_hashes).await? {
+                                missing = 0; next_probe = Some(elapsed + liveness_interval); continue;
+                            }
                         }
                         // With the sender's exclusive-account invariant, an identical signed
                         // transaction cannot introduce a new nonce or change value/calldata.
                         // Unlike sender/nonce lookup this standard RPC works on Syscoin geth.
                         let (hash, raw) = select_resend_candidate(&resend.raw_transactions, &tx_hashes, fee_limits)?;
+                        // State may change between receipt, pool and nonce queries. Never resend
+                        // after the canonical nonce moves; recheck an ambiguous pool slot.
+                        if provider.get_transaction_count(operator).await? != original_nonce {
+                            missing = 0; next_probe = Some(elapsed + liveness_interval); continue;
+                        }
+                        if exact_nonce_blocks_rebroadcast(&provider, operator, original_nonce, &resend.request, &tx_hashes).await? {
+                            missing = 0; next_probe = Some(elapsed + liveness_interval); continue;
+                        }
                         match provider.send_raw_transaction(raw).await {
                             Ok(pending) => anyhow::ensure!(*pending.tx_hash() == *hash, "raw resend hash changed"),
                             Err(error) if is_nonce_error(&error) || is_already_known_error(&error)
