@@ -175,48 +175,6 @@ pub(crate) fn prune_confirmed_prefix(prefix: &mut VecDeque<SimPrefixEntry>, floo
     256_usize.saturating_sub(prefix.len())
 }
 
-#[cfg(test)]
-mod prefix_progress_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn waiting_services_resends_and_wakes_on_confirmation() {
-        let (floor_tx, mut floor_rx) = watch::channel(7);
-        let (resend_tx, mut resend_rx) = mpsc::channel(1);
-        let (reply, _reply_rx) = tokio::sync::oneshot::channel();
-        {
-            let wait = wait_for_prefix_progress(&mut floor_rx, &mut resend_rx);
-            tokio::pin!(wait);
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(20), &mut wait)
-                    .await
-                    .is_err()
-            );
-            resend_tx
-                .send(ResendRequest { nonce: 7, reply })
-                .await
-                .unwrap();
-            match wait.await.unwrap() {
-                PrefixProgress::Resend(request) => assert_eq!(request.nonce, 7),
-                PrefixProgress::Confirmed => panic!("confirmation did not advance"),
-            }
-        }
-        floor_tx.send_replace(8);
-        assert!(matches!(
-            wait_for_prefix_progress(&mut floor_rx, &mut resend_rx)
-                .await
-                .unwrap(),
-            PrefixProgress::Confirmed
-        ));
-        drop(floor_tx);
-        assert!(
-            wait_for_prefix_progress(&mut floor_rx, &mut resend_rx)
-                .await
-                .is_err()
-        );
-    }
-}
-
 impl<Input> L1Sender<Input>
 where
     Input: SendToL1 + Send + 'static,
@@ -1259,5 +1217,47 @@ pub(crate) fn fee_params_of_tx(tx: &L1TxResponse) -> FeeParams {
         max_fee_per_gas: ConsensusTransaction::max_fee_per_gas(tx),
         max_priority_fee_per_gas: ConsensusTransaction::max_priority_fee_per_gas(tx)
             .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod prefix_progress_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn waiting_services_resends_and_wakes_on_confirmation() {
+        let (floor_tx, mut floor_rx) = watch::channel(7);
+        let (resend_tx, mut resend_rx) = mpsc::channel(1);
+        let (reply, _reply_rx) = tokio::sync::oneshot::channel();
+        {
+            let wait = wait_for_prefix_progress(&mut floor_rx, &mut resend_rx);
+            tokio::pin!(wait);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(20), &mut wait)
+                    .await
+                    .is_err()
+            );
+            resend_tx
+                .send(ResendRequest { nonce: 7, reply })
+                .await
+                .unwrap();
+            match wait.await.unwrap() {
+                PrefixProgress::Resend(request) => assert_eq!(request.nonce, 7),
+                PrefixProgress::Confirmed => panic!("confirmation did not advance"),
+            }
+        }
+        floor_tx.send_replace(8);
+        assert!(matches!(
+            wait_for_prefix_progress(&mut floor_rx, &mut resend_rx)
+                .await
+                .unwrap(),
+            PrefixProgress::Confirmed
+        ));
+        drop(floor_tx);
+        assert!(
+            wait_for_prefix_progress(&mut floor_rx, &mut resend_rx)
+                .await
+                .is_err()
+        );
     }
 }
