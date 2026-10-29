@@ -382,12 +382,29 @@ class ReadOnlyCliTests(unittest.TestCase):
                  patch.object(hooks_module, "Hooks", Hooks), \
                  patch.object(hooks_module, "validate_config", side_effect=lambda config: config), \
                  patch.dict(os.environ, {"ZKSYS_L1_RPC_URL": "http://127.0.0.1:1", "ZKSYS_L2_RPC_URL": "http://127.0.0.1:1"}), \
-                 patch.object(sys, "argv", args), contextlib.redirect_stdout(io.StringIO()) as output:
+                 patch.object(sys, "argv", args + ["--sync-only"]), contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(cli.main(), 0)
+                self.assertEqual(json.loads(output.getvalue())["result"], "sync_only_idle")
+                self.assertEqual(sent, [])
+                self.assertEqual(json.loads((root / "transactions.json").read_text())["transactions"], {})
+                output.seek(0)
+                output.truncate(0)
+                with patch.object(sys, "argv", args):
+                    self.assertEqual(cli.main(), 0)
             self.assertEqual(json.loads(output.getvalue())["result"], "activation_submitted")
             self.assertEqual(len(sent), 1)
             saved = json.loads((root / "transactions.json").read_text())
             self.assertEqual(saved["transactions"]["l2"]["state"], "submitted")
+
+    def test_sync_only_requires_send(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([
+                sys.executable, str(ROOT / "scripts" / "zksys-membership-keeper.py"),
+                "--state-dir", directory, "--bridge", A, "--membership", B,
+                "--l1-chain-id", "57", "--l2-chain-id", "58", "--sync-only",
+            ], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sync_only_requires_send", result.stderr)
 
     def test_exclusive_lock_rejects_a_second_keeper_before_rpc(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -447,6 +464,60 @@ class ReadOnlyCliTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_sync_only_relays_then_resumes_same_journal_for_activation(self):
+        journal = {'config_sha256': 'same-config', 'ever_seen': [], 'transactions': {}}
+        changes = [{'account': A}]
+        sends = []
+
+        class Hooks:
+            def verify_deployment(self, cfg): return True
+            def discover(self): return {'accounts': [A], 'changes': list(changes)}
+            def bridge_request(self, batch): return {}
+            def activation_ready(self, account): return True
+            def activation_target(self, account): return 100
+            def activation_request(self, account): return {}
+
+        class Driver:
+            def begin(self, name, rpc, kind, metadata, **kwargs):
+                sends.append((name, kind, metadata))
+                journal['transactions'][name] = {'state': 'submitted', 'metadata': metadata}
+
+        hooks, driver = Hooks(), Driver()
+        runner = runner_module.KeeperRunner(journal, lambda _: None, driver, driver, None, None,
+                                            hooks, {'max_batch_size': 512}, sync_only=True)
+        self.assertEqual(runner.run_once(), 'bridge_submitted')
+        self.assertEqual(sends, [('l1', 'bridge', {'accounts': [A]})])
+        with patch.object(runner, '_resume_bridge', return_value='bridge_l1_pending'):
+            self.assertEqual(runner.run_once(), 'bridge_l1_pending')
+        del journal['transactions']['l1']
+        changes.clear()
+        self.assertEqual(runner.run_once(), 'sync_only_idle')
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(journal['config_sha256'], 'same-config')
+
+        normal_runner = runner_module.KeeperRunner(journal, lambda _: None, driver, driver, None, None,
+                                                   hooks, {'max_batch_size': 512})
+        self.assertEqual(normal_runner.run_once(), 'activation_submitted')
+        self.assertEqual(sends[-1], ('l2', 'activation', {'account': A, 'target': 100}))
+        self.assertEqual(journal['config_sha256'], 'same-config')
+
+    def test_sync_only_rejects_journaled_activation_without_rpc_or_broadcast(self):
+        class NoHooks:
+            def verify_deployment(self, cfg): raise AssertionError('must stop before RPC')
+            def discover(self): raise AssertionError('must stop before discovery')
+
+        for state in ('signed', 'submitted', 'finalized', 'failed'):
+            with self.subTest(state=state):
+                journal = {'transactions': {'l2': {'kind': 'activation', 'state': state, 'raw': '0x1234'}}}
+                before = copy.deepcopy(journal)
+                runner = runner_module.KeeperRunner(journal, lambda _: self.fail('must not save'),
+                                                    None, None, None, None, NoHooks(), {}, sync_only=True)
+                with self.assertRaisesRegex(transactions.TransactionError, 'cannot cancel'):
+                    runner.run_once()
+                with self.assertRaisesRegex(transactions.TransactionError, 'cannot cancel'):
+                    runner._resume_activation()
+                self.assertEqual(journal, before)
+
     def test_batch_submits_up_to_512_addresses(self):
         accounts = [f'0x{value:040x}' for value in range(1, 514)]
         batches = []

@@ -80,8 +80,10 @@ def main():
     parser.add_argument('--watch', action='store_true', help='Poll continuously and print one JSON report per successful pass')
     parser.add_argument('--interval', type=int, default=60, help='Polling interval in seconds')
     parser.add_argument('--send', action='store_true', help='Enable real transactions using the explicitly attested configuration')
+    parser.add_argument('--sync-only', action='store_true', help='Relay membership without submitting or retrying weight activations; requires --send')
     parser.add_argument('--config', help='Private JSON file with pinned contract identities, signers, and gas bounds')
     args = parser.parse_args()
+    k.require(not args.sync_only or args.send, 'sync_only_requires_send')
     k.require(args.interval > 0 and args.l1_chain_id > 0 and args.l2_chain_id > 0 and args.l1_chain_id != args.l2_chain_id, 'invalid_configuration')
     bridge, membership = k.address(args.bridge), k.address(args.membership)
     root = Path(args.state_dir)
@@ -140,7 +142,7 @@ def main():
         driver1 = TransactionDriver(journal, save, sign1.sign, sign1.decode, sign1.hash_raw)
         driver2 = TransactionDriver(journal, save, sign2.sign, sign2.decode, sign2.hash_raw)
         hooks = Hooks(core, l1, l2, journal, config, save)
-        runner = KeeperRunner(journal, save, driver1, driver2, l1.call, l2.call, hooks, config)
+        runner = KeeperRunner(journal, save, driver1, driver2, l1.call, l2.call, hooks, config, sync_only=args.sync_only)
 
         def once_live():
             print(json.dumps({'mode': 'send', 'result': runner.run_once()}, sort_keys=True), flush=True)

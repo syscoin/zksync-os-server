@@ -9,7 +9,7 @@ from zksys_keeper_transactions import FinalizedRevert, TransactionError, bridge_
 
 
 class KeeperRunner:
-    def __init__(self, journal, save, l1_driver, l2_driver, l1_rpc, l2_rpc, hooks, config):
+    def __init__(self, journal, save, l1_driver, l2_driver, l1_rpc, l2_rpc, hooks, config, *, sync_only=False):
         self.journal = journal
         self.save = save
         self.l1_driver = l1_driver
@@ -18,12 +18,15 @@ class KeeperRunner:
         self.l2_rpc = l2_rpc
         self.hooks = hooks
         self.config = config
+        self.sync_only = sync_only
 
     def run_once(self):
         cfg = self.config
+        transactions = self.journal.setdefault("transactions", {})
+        if self.sync_only and 'l2' in transactions:
+            raise TransactionError("sync-only cannot resume a journaled activation; it cannot cancel an already broadcast transaction")
         if self.hooks.verify_deployment(cfg) is not True:
             raise TransactionError("deployment identity verification failed")
-        transactions = self.journal.setdefault("transactions", {})
         discovery = self.hooks.discover()
         accounts = [membership.address(a) for a in discovery['accounts']]
         if len(accounts) != len(set(accounts)):
@@ -48,6 +51,8 @@ class KeeperRunner:
             request = self.hooks.bridge_request(batch)
             self.l1_driver.begin('l1', self.l1_rpc, kind='bridge', metadata={'accounts': batch}, **request)
             return 'bridge_submitted'
+        if self.sync_only:
+            return 'sync_only_idle'
         for account in accounts:
             if self.hooks.activation_ready(account):
                 request = self.hooks.activation_request(account)
@@ -83,6 +88,8 @@ class KeeperRunner:
         return 'bridge_finalized'
 
     def _resume_activation(self):
+        if self.sync_only:
+            raise TransactionError("sync-only cannot resume a journaled activation; it cannot cancel an already broadcast transaction")
         try:
             receipt = self.l2_driver.receipt('l2', self.l2_rpc)
         except FinalizedRevert:

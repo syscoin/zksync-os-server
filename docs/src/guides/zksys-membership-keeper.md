@@ -103,7 +103,20 @@ python3 scripts/zksys-membership-keeper.py \
 
 Review the report first. Once identity, funding and end-to-end test gates are
 satisfied, run the same command with `--send --config /secure/keeper.json
---watch --interval 60` under a supervised service. Arrange service startup after
+--watch --interval 60` under a supervised service. During private launch
+bootstrap, add `--sync-only` to send and confirm membership updates without the
+keeper activating reward weights. Once the keeper reports `sync_only_idle`, the
+issuer administrator can configure service accounting while active reward weight
+is still zero. Remove `--sync-only` and reuse the same state directory to activate
+eligible weights and continue syncing changes.
+
+The sync-only switch controls this keeper, not other callers: anyone can activate
+an eligible pending weight. Keep bootstrap private, or configure accounting
+before publishing membership updates, to preserve the zero-weight requirement.
+If an activation transaction is already in the keeper's journal, sync-only stops
+instead of rebroadcasting it; switching modes cannot cancel a broadcast.
+
+Arrange service startup after
 Core, NEVM and zkSYS RPC readiness and their contract bootstrap; keep the private
 state directory persistent across restarts. Do not start multiple service
 instances sharing a signer, even if they use different state directories. The
