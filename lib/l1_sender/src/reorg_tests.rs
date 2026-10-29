@@ -1,13 +1,16 @@
 use super::*;
 use crate::commands::commit::CommitCommand;
 use crate::config::L1SenderConfig;
+use alloy::consensus::SignableTransaction;
 use alloy::consensus::{Receipt, ReceiptEnvelope, ReceiptWithBloom};
+use alloy::eips::eip2718::Encodable2718;
 use alloy::network::EthereumWallet;
 use alloy::primitives::U64;
 use alloy::providers::ProviderBuilder;
 use alloy::rpc::json_rpc::ErrorPayload;
 use alloy::rpc::types::{Block, Header};
 use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::{SignerSync, local::PrivateKeySigner};
 use alloy::transports::mock::Asserter;
 use zksync_os_operator_signer::SignerConfig;
 use zksync_os_provider::NodeProvider;
@@ -131,6 +134,23 @@ fn signed_resend() -> (B256, Bytes, ConfirmationResend) {
             raw_transactions: vec![(hash, raw)],
         },
     )
+}
+
+fn signed_resend_with_fee(fee: u128) -> (B256, Bytes, ConfirmationResend) {
+    let (_, raw, mut original) = signed_resend();
+    let mut input = raw.as_ref();
+    let TxEnvelope::Eip1559(signed) = TxEnvelope::decode_2718(&mut input).unwrap() else {
+        unreachable!()
+    };
+    let (mut tx, _, _) = signed.into_parts();
+    tx.max_fee_per_gas = fee;
+    tx.max_priority_fee_per_gas = fee;
+    let signer = PrivateKeySigner::from_slice(&[1; 32]).unwrap();
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let raw = Bytes::from(TxEnvelope::Eip1559(tx.into_signed(signature)).encoded_2718());
+    let hash = keccak256(&raw);
+    original.raw_transactions = vec![(hash, raw.clone())];
+    (hash, raw, original)
 }
 
 #[tokio::test]
@@ -546,4 +566,91 @@ async fn raw_capture_checks_real_signature_and_full_request_identity() {
         }
         assert!(a.read_q().is_empty());
     }
+}
+
+#[tokio::test]
+async fn over_cap_recovered_transaction_is_tracked_but_not_rebroadcast() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (hash, raw, original) = signed_resend_with_fee(40_000);
+        let mut sender = sender(provider, pipelined, true);
+        sender.config.fee_config.max_fee_per_gas_wei = 30_000;
+        sender.config.fee_config.max_priority_fee_per_gas_wei = 30_000;
+        a.push_success(&Some(raw.clone()));
+        a.push_success(&U64::from(31337));
+        let captured = sender
+            .capture_raw_transaction(hash, &original.request)
+            .await
+            .unwrap();
+        assert_eq!(captured, Some(raw));
+
+        let included = B256::with_last_byte(3);
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(hash, included, 10)));
+        a.push_success(&Some(block(included, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(included, 10)));
+        let confirmed = sender
+            .wait_for_confirmed_receipt(
+                vec![hash],
+                ConfirmationResend {
+                    request: original.request.clone(),
+                    raw_transactions: vec![(hash, captured.unwrap())],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(confirmed.transaction_hash, hash);
+
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+        a.push_success(&U64::from(7));
+        a.push_success(&U64::from(7));
+        let err = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![hash], original),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("exceed confirmation recovery fee limits"),
+            "{err:#}"
+        );
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn resend_selects_an_eligible_older_authenticated_candidate() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let (high_hash, high_raw, original) = signed_resend_with_fee(40_000);
+    let (low_hash, low_raw, _) = signed_resend();
+    let mut sender = sender(provider, true, true);
+    sender.config.fee_config.max_fee_per_gas_wei = 30_000;
+    sender.config.fee_config.max_priority_fee_per_gas_wei = 30_000;
+    for (hash, raw) in [(low_hash, &low_raw), (high_hash, &high_raw)] {
+        a.push_success(&Some(raw.clone()));
+        a.push_success(&U64::from(31337));
+        assert_eq!(
+            sender
+                .capture_raw_transaction(hash, &original.request)
+                .await
+                .unwrap(),
+            Some(raw.clone())
+        );
+    }
+    let candidates = [(low_hash, low_raw.clone()), (high_hash, high_raw)];
+    let (selected, bytes) = select_resend_candidate(
+        &candidates,
+        &[high_hash, low_hash],
+        sender.config.fee_config.fee_limits(false),
+    )
+    .unwrap();
+    assert_eq!((*selected, bytes), (low_hash, &low_raw));
+    assert!(a.read_q().is_empty());
 }

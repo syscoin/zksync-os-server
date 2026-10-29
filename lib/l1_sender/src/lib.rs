@@ -171,7 +171,6 @@ async fn capture_raw_transaction(
     provider: &NodeProvider,
     hash: B256,
     request: &TransactionRequest,
-    limits: FeeParams,
 ) -> anyhow::Result<Option<Bytes>> {
     let raw = match provider.get_raw_transaction_by_hash(hash).await {
         Ok(raw) => raw,
@@ -204,14 +203,42 @@ async fn capture_raw_transaction(
                 && request.to == Some(ConsensusTransaction::kind(&tx))
                 && request.value.unwrap_or_default() == ConsensusTransaction::value(&tx)
                 && request.input.input() == Some(ConsensusTransaction::input(&tx))
-                && ConsensusTransaction::max_fee_per_gas(&tx) <= limits.max_fee_per_gas
-                && ConsensusTransaction::max_priority_fee_per_gas(&tx).unwrap_or_default()
-                    <= limits.max_priority_fee_per_gas
                 && ConsensusTransaction::chain_id(&tx) == Some(chain_id),
             "raw transaction identity mismatch"
         );
     }
     Ok(raw)
+}
+
+fn select_resend_candidate<'a>(
+    candidates: &'a [(B256, Bytes)],
+    tx_hashes: &[B256],
+    limits: FeeParams,
+) -> anyhow::Result<(&'a B256, &'a Bytes)> {
+    let mut found = false;
+    for (hash, raw) in candidates.iter().rev() {
+        if !tx_hashes.contains(hash) {
+            continue;
+        }
+        found = true;
+        let mut input = raw.as_ref();
+        let tx = TxEnvelope::decode_2718(&mut input).context("invalid retained transaction")?;
+        anyhow::ensure!(
+            input.is_empty() && matches!(tx, TxEnvelope::Eip1559(_)),
+            "unexpected retained transaction type"
+        );
+        if ConsensusTransaction::max_fee_per_gas(&tx) <= limits.max_fee_per_gas
+            && ConsensusTransaction::max_priority_fee_per_gas(&tx).unwrap_or_default()
+                <= limits.max_priority_fee_per_gas
+        {
+            return Ok((hash, raw));
+        }
+    }
+    anyhow::ensure!(
+        !found,
+        "retained transactions exceed confirmation recovery fee limits"
+    );
+    anyhow::bail!("signed raw transaction unavailable for confirmation recovery")
 }
 
 fn build_l1_simulation_request(
@@ -880,7 +907,7 @@ where
                         receipt_block_number = Some(number);
                         if next_probe.is_some()
                             && !resend.raw_transactions.iter().any(|(hash, _)| hash == tx_hash)
-                            && let Some(raw) = capture_raw_transaction(&provider, *tx_hash, &resend.request, fee_limits).await?
+                            && let Some(raw) = capture_raw_transaction(&provider, *tx_hash, &resend.request).await?
                         {
                             resend.raw_transactions.push((*tx_hash, raw));
                         }
@@ -916,7 +943,7 @@ where
                                 }
                                 if known {
                                     if !resend.raw_transactions.iter().any(|(candidate, _)| candidate == hash)
-                                        && let Some(raw) = capture_raw_transaction(&provider, *hash, &resend.request, fee_limits).await?
+                                        && let Some(raw) = capture_raw_transaction(&provider, *hash, &resend.request).await?
                                     {
                                         resend.raw_transactions.push((*hash, raw));
                                     }
@@ -967,8 +994,7 @@ where
                         // With the sender's exclusive-account invariant, an identical signed
                         // transaction cannot introduce a new nonce or change value/calldata.
                         // Unlike sender/nonce lookup this standard RPC works on Syscoin geth.
-                        let (hash, raw) = resend.raw_transactions.iter().rev().find(|(hash, _)| tx_hashes.contains(hash))
-                            .context("signed raw transaction unavailable for confirmation recovery")?;
+                        let (hash, raw) = select_resend_candidate(&resend.raw_transactions, &tx_hashes, fee_limits)?;
                         match provider.send_raw_transaction(raw).await {
                             Ok(pending) => anyhow::ensure!(*pending.tx_hash() == *hash, "raw resend hash changed"),
                             Err(error) if is_nonce_error(&error) || is_already_known_error(&error)
@@ -1011,15 +1037,7 @@ where
         hash: B256,
         request: &TransactionRequest,
     ) -> anyhow::Result<Option<Bytes>> {
-        capture_raw_transaction(
-            &self.provider,
-            hash,
-            request,
-            self.config
-                .fee_config
-                .fee_limits(self.config.force_transaction_resubmission),
-        )
-        .await
+        capture_raw_transaction(&self.provider, hash, request).await
     }
 
     /// Detects in-flight L1 transactions from a previous session, pairs each one with the
