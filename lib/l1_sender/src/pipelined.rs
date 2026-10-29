@@ -7,7 +7,7 @@
 //! ```text
 //! submitter ──(submitted queue: entries hold an unmined-slot permit)──▶ inclusion watcher
 //! inclusion watcher ──(mined queue)──▶ confirmation forwarder ──▶ downstream
-//! inclusion watcher ──(watch: mined-nonce floor)──▶ submitter (sim-prefix pruning)
+//! confirmation forwarder ──(watch: confirmed-nonce floor)──▶ submitter (sim-prefix pruning)
 //! ```
 //!
 //! The two watermarks:
@@ -43,7 +43,7 @@
 use crate::commands::{L1SenderCommand, SendToL1};
 use crate::metrics::L1_SENDER_METRICS;
 use crate::pipeline_component::L1Sender;
-use crate::{FeeParams, L1SenderState, METHOD_NOT_FOUND_CODE, SimPrefixEntry};
+use crate::{ConfirmationResend, FeeParams, L1SenderState, METHOD_NOT_FOUND_CODE, SimPrefixEntry};
 use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::network::{Ethereum, Network, TransactionResponse};
 use alloy::primitives::{Address, B256};
@@ -75,6 +75,9 @@ struct InFlightTx<Input> {
     nonce: u64,
     command: Input,
     submitted_at: Instant,
+    request: alloy::rpc::types::TransactionRequest,
+    fee_params: FeeParams,
+    raw_transactions: Vec<(B256, alloy::primitives::Bytes)>,
     permit: OwnedSemaphorePermit,
 }
 
@@ -83,16 +86,17 @@ struct InFlightTx<Input> {
 /// simulation-prefix entry and replies with the new hash.
 struct ResendRequest {
     nonce: u64,
-    reply: tokio::sync::oneshot::Sender<B256>,
+    reply: tokio::sync::oneshot::Sender<(B256, FeeParams, Option<alloy::primitives::Bytes>)>,
 }
 
 /// A transaction observed mined, awaiting `required_confirmations` before its command is
 /// forwarded downstream.
 struct MinedTx<Input> {
-    tx_hash: B256,
+    tx_hashes: Vec<B256>,
     nonce: u64,
     command: Input,
     submitted_at: Instant,
+    resend: ConfirmationResend,
 }
 
 /// Fee floor applying while the submitter replaces a stale in-flight suffix left by a previous
@@ -184,8 +188,8 @@ where
         let (submitted_tx, mut submitted_rx) = mpsc::channel::<InFlightTx<Input>>(window);
         let (mined_tx, mut mined_rx) =
             mpsc::channel::<MinedTx<Input>>(MINED_QUEUE_CAPACITY_FACTOR * window + 64);
-        // "All nonces below this value have been observed mined."
-        let (mined_floor_tx, mined_floor_rx) = watch::channel(start.mined_floor);
+        // Prefixes remain necessary until the predecessor is canonically confirmed.
+        let (mined_floor_tx, mut mined_floor_rx) = watch::channel(start.mined_floor);
         // Inclusion watcher asks the submitter to resend pool-evicted transactions. The
         // watcher requests resends one at a time (head of line), so capacity 1 suffices.
         let (resend_tx, mut resend_rx) = mpsc::channel::<ResendRequest>(1);
@@ -212,6 +216,19 @@ where
 
                 let mut raw_buffer: Vec<L1SenderCommand<Input>> = Vec::with_capacity(window);
                 loop {
+                    loop {
+                        let floor = *mined_floor_rx.borrow_and_update();
+                        while state.in_flight_prefix.front().is_some_and(|entry| entry.nonce < floor) {
+                            state.in_flight_prefix.pop_front();
+                        }
+                        if state.in_flight_prefix.len() < 256 { break; }
+                        tokio::select! {
+                            biased;
+                            Some(request) = resend_rx.recv() => self.resend_evicted(&mut state, request, operator_address).await?,
+                            changed = mined_floor_rx.changed() => changed.context("confirmation forwarder terminated")?,
+                        }
+                    }
+                    let simulation_capacity = 256 - state.in_flight_prefix.len();
                     // Wait for window capacity first, then for commands: idle permits are
                     // never contended, and this order keeps commands in the channel (visible
                     // to backpressure) until they can actually be sent. Both waits service
@@ -230,7 +247,7 @@ where
                         }
                     };
                     let mut permits = vec![first_permit];
-                    while permits.len() < window {
+                    while permits.len() < window.min(simulation_capacity) {
                         match Arc::clone(&slots).try_acquire_owned() {
                             Ok(permit) => permits.push(permit),
                             Err(_) => break,
@@ -305,28 +322,29 @@ where
                     // Same-sender transactions mine in nonce order, so head-of-line sighting
                     // is exhaustive: this receipt appearing implies nothing behind it is
                     // mined-but-unobserved for long.
-                    let mined_hash = self
-                        .wait_for_inclusion(&mut entry, operator_address, &resend_tx)
-                        .await?;
+                    self.wait_for_inclusion(&mut entry, operator_address, &resend_tx).await?;
                     let InFlightTx {
                         nonce,
                         command,
                         submitted_at,
                         permit,
-                        ..
+                        tx_hashes,
+                        request,
+                        fee_params: _,
+                        raw_transactions,
                     } = entry;
                     // First sighting frees an unmined-window slot; confirmation depth is the
                     // forwarder's concern only.
                     drop(permit);
-                    mined_floor_tx.send_replace(nonce + 1);
                     L1_SENDER_METRICS.txs_in_flight[&command_name]
                         .set((window - slots.available_permits()) as u64);
                     if mined_tx
                         .send(MinedTx {
-                            tx_hash: mined_hash,
+                            tx_hashes,
                             nonce,
                             command,
                             submitted_at,
+                            resend: ConfirmationResend { request, raw_transactions },
                         })
                         .await
                         .is_err()
@@ -342,19 +360,21 @@ where
 
         let confirmation_forwarder = async move {
             while let Some(mined) = mined_rx.recv().await {
-                let receipt = self.wait_for_confirmed_receipt(mined.tx_hash).await;
+                let receipt = self.wait_for_confirmed_receipt(mined.tx_hashes, mined.resend).await;
                 // Observe latency before propagating errors so timeout cases are recorded.
                 L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
                     .observe(mined.submitted_at.elapsed().as_secs_f64());
                 let receipt = receipt?;
                 self.validate_tx_receipt(&mined.command, receipt).await?;
+                // A merely mined predecessor can disappear in a reorg; retain its simulation
+                // prefix until this confirmation gate has checked the canonical block.
+                mined_floor_tx.send_replace(mined.nonce + 1);
                 // SYSCOIN: Retire durable wrapper ownership only after the same validated,
                 // depth-confirmed receipt gate used for downstream pipeline progress.
                 mined.command.notify_confirmed();
                 tracing::info!(
                     command_name,
                     nonce = mined.nonce,
-                    tx_hash = ?mined.tx_hash,
                     "L1 transaction confirmed, sending downstream",
                 );
                 for mut envelope in mined.command.into() {
@@ -389,6 +409,14 @@ where
         operator_address: Address,
     ) -> anyhow::Result<()> {
         for seed in seeds {
+            let request = self.build_tx_request(
+                seed.command.solidity_call(self.gateway, &operator_address),
+                operator_address, seed.nonce, seed.gas_limit, seed.fee_params,
+            );
+            let raw_transactions = if self.confirmation_liveness_enabled() {
+                self.capture_raw_transaction(seed.tx_hash, &request).await?.into_iter()
+                    .map(|raw| (seed.tx_hash, raw)).collect()
+            } else { vec![] };
             state.in_flight_prefix.push_back(SimPrefixEntry {
                 nonce: seed.nonce,
                 calldata: seed.command.solidity_call(self.gateway, &operator_address),
@@ -409,6 +437,9 @@ where
                     nonce: seed.nonce,
                     command: seed.command,
                     submitted_at: Instant::now(),
+                    request,
+                    fee_params: seed.fee_params,
+                    raw_transactions,
                     permit,
                 })
                 .await
@@ -482,8 +513,12 @@ where
             // this batch number is being submitted by this session.
             self.note_submitted_batches(&command);
 
-            let pending_tx = self.send_tx_with_retries(tx_request, &range).await?;
+            let pending_tx = self.send_tx_with_retries(tx_request.clone(), &range).await?;
             let tx_hash = *pending_tx.tx_hash();
+            let raw_transactions = if self.confirmation_liveness_enabled() {
+                self.capture_raw_transaction(tx_hash, &tx_request).await?.into_iter()
+                    .map(|raw| (tx_hash, raw)).collect()
+            } else { vec![] };
             state.next_nonce += 1;
             tracing::info!(
                 "{command_name}: L1 transaction submitted for {range}. Hash: {tx_hash:?} (nonce {nonce})",
@@ -509,6 +544,9 @@ where
                     nonce,
                     command,
                     submitted_at: Instant::now(),
+                    request: tx_request,
+                    fee_params,
+                    raw_transactions,
                     permit,
                 })
                 .await
@@ -690,12 +728,16 @@ where
             })
             .await
             .map_err(|_| anyhow::anyhow!("submitter terminated during an eviction resend"))?;
-        let new_hash = reply_rx
+        let (new_hash, fees, raw) = reply_rx
             .await
             .context("submitter dropped an eviction resend request")?;
         if !entry.tx_hashes.contains(&new_hash) {
             entry.tx_hashes.push(new_hash);
         }
+        entry.fee_params = fees;
+        entry.request.max_fee_per_gas = Some(fees.max_fee_per_gas);
+        entry.request.max_priority_fee_per_gas = Some(fees.max_priority_fee_per_gas);
+        if let Some(raw) = raw { entry.raw_transactions.push((new_hash, raw)); }
         entry.submitted_at = Instant::now();
         Ok(())
     }
@@ -742,11 +784,14 @@ where
             fee_params,
         );
         let pending_tx = self
-            .send_tx_with_retries(tx_request, &format!("resend of nonce {}", request.nonce))
+            .send_tx_with_retries(tx_request.clone(), &format!("resend of nonce {}", request.nonce))
             .await?;
         entry.fee_params = fee_params;
 
         let new_hash = *pending_tx.tx_hash();
+        let raw = if self.confirmation_liveness_enabled() {
+            self.capture_raw_transaction(new_hash, &tx_request).await?
+        } else { None };
         tracing::info!(
             command_name = Input::COMPONENT_ID.as_str(),
             nonce = request.nonce,
@@ -754,7 +799,7 @@ where
             "resent evicted L1 transaction",
         );
         // The watcher owns the entry lifecycle; if it is gone the try_join surfaces its error.
-        let _ = request.reply.send(new_hash);
+        let _ = request.reply.send((new_hash, fee_params, raw));
         Ok(())
     }
 
@@ -814,6 +859,8 @@ where
             }));
         }
 
+        let chain_id = self.provider.get_chain_id().await.context("get settlement chain id during recovery")?;
+
         let in_flight_count = (pending_nonce - latest_nonce) as usize;
         tracing::info!(
             command_name,
@@ -842,15 +889,8 @@ where
                      restart with `force_transaction_resubmission.enabled = true` to replace \
                      them.",
                 );
-                let settled_nonce = self
-                    .wait_for_in_flight_txs_to_settle(operator_address)
-                    .await?;
-                return Ok(Some(PipelinedStart {
-                    seeds: vec![],
-                    next_nonce: settled_nonce,
-                    mined_floor: settled_nonce,
-                    replacement: None,
-                }));
+                self.wait_for_in_flight_txs_to_settle(operator_address).await?;
+                anyhow::bail!("pending transactions settled; restart to rebuild commands from the canonical frontier");
             }
             anyhow::bail!("Error while probing eth_getTransactionBySenderAndNonce support: {e}");
         }
@@ -880,6 +920,10 @@ where
                     break;
                 }
             };
+
+            anyhow::ensure!(tx.from() == operator_address && ConsensusTransaction::nonce(&tx) == nonce
+                && ConsensusTransaction::to(&tx) == Some(self.to_address) && ConsensusTransaction::value(&tx).is_zero()
+                && ConsensusTransaction::chain_id(&tx) == Some(chain_id), "foreign in-flight transaction at sender nonce");
 
             // Peek at the next command without consuming it so that a mismatch leaves
             // `inbound` intact for the normal send path.
@@ -996,7 +1040,7 @@ where
     /// Polls until the operator account has no pending transactions (pending nonce == latest
     /// nonce). Used when in-flight transactions exist but cannot be paired with queued
     /// commands because the provider lacks `eth_getTransactionBySenderAndNonce`.
-    async fn wait_for_in_flight_txs_to_settle(
+    pub(crate) async fn wait_for_in_flight_txs_to_settle(
         &self,
         operator_address: Address,
     ) -> anyhow::Result<u64> {
@@ -1049,7 +1093,7 @@ where
 }
 
 /// Extracts the EIP-1559 fee parameters a transaction was actually sent with.
-fn fee_params_of_tx(tx: &L1TxResponse) -> FeeParams {
+pub(crate) fn fee_params_of_tx(tx: &L1TxResponse) -> FeeParams {
     FeeParams {
         max_fee_per_gas: ConsensusTransaction::max_fee_per_gas(tx),
         max_priority_fee_per_gas: ConsensusTransaction::max_priority_fee_per_gas(tx)

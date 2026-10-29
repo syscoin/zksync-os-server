@@ -3,17 +3,20 @@ pub mod config;
 mod metrics;
 pub mod pipeline_component;
 mod pipelined;
+#[cfg(test)]
+mod reorg_tests;
 pub mod upgrade_gatekeeper;
 
 use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::{L1SenderFeeConfig, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI};
 use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
 use crate::pipeline_component::L1Sender;
-use alloy::consensus::Transaction as ConsensusTransaction;
+use alloy::consensus::{Transaction as ConsensusTransaction, TxEnvelope, transaction::SignerRecoverable};
+use alloy::eips::eip2718::Decodable2718;
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{TransactionBuilder, TransactionResponse};
 use alloy::primitives::utils::{format_ether, format_units};
-use alloy::primitives::{Address, B256, Bytes, U256};
+use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::providers::Provider;
 use alloy::providers::ext::DebugApi;
 use alloy::providers::utils::Eip1559Estimation;
@@ -62,8 +65,8 @@ impl StateLabel for L1SenderState {
 /// A code for "method not found" error response as declared in JSON-RPC 2.0 spec.
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
 /// Future that resolves into a (fallible) transaction receipt.
-type TransactionReceiptFuture = BoxFuture<'static, anyhow::Result<TransactionReceipt>>;
-type PendingTx<Input> = (TransactionReceiptFuture, Input, Instant);
+type TransactionReceiptFuture<'a> = BoxFuture<'a, anyhow::Result<TransactionReceipt>>;
+type PendingTx<'a, Input> = (TransactionReceiptFuture<'a>, Input, Instant);
 
 const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Per-call cap for `eth_simulateV1`. The simulation reports the actual `gas_used`.
@@ -141,6 +144,25 @@ pub(crate) struct SimPrefixEntry {
     /// Gas limit the transaction was sent with; reused when the transaction is evicted from
     /// the pool and must be resent at the same nonce.
     pub(crate) gas_limit: u64,
+}
+
+/// Retains the original transaction identity while its receipt is unconfirmed.
+pub(crate) struct ConfirmationResend {
+    pub(crate) request: TransactionRequest,
+    pub(crate) raw_transactions: Vec<(B256, Bytes)>,
+}
+
+fn matches_submitted_transaction<T: ConsensusTransaction + TransactionResponse>(
+    request: &TransactionRequest,
+    tx: &T,
+    chain_id: u64,
+) -> bool {
+    request.from == Some(tx.from())
+        && request.nonce == Some(ConsensusTransaction::nonce(tx))
+        && request.to == Some(ConsensusTransaction::kind(tx))
+        && request.value.unwrap_or_default() == ConsensusTransaction::value(tx)
+        && request.input.input() == Some(ConsensusTransaction::input(tx))
+        && ConsensusTransaction::chain_id(tx) == Some(chain_id)
 }
 
 fn build_l1_simulation_request(
@@ -265,19 +287,10 @@ where
         let recovered = if force_transaction_resubmission {
             vec![]
         } else {
-            let recovery_result = match confirmed_nonce
-                .expect("stop-and-wait recovery must capture the nonce baseline")
-            {
-                Ok(confirmed_nonce) => {
-                    self.recover_in_flight_txs(&mut inbound, &state_reporter, confirmed_nonce)
-                        .await
-                }
-                Err(err) => Err(err),
-            };
-            match recovery_result {
-                Ok(paired) => paired,
+            match confirmed_nonce.expect("stop-and-wait recovery must capture the nonce baseline") {
+                Ok(nonce) => self.recover_in_flight_txs(&mut inbound, &state_reporter, nonce).await?,
                 Err(err) => {
-                    tracing::warn!("Error during in-flight transaction recovery: {err}");
+                    tracing::warn!(%err, "initial nonce snapshot unavailable before recovery consumed any commands");
                     vec![]
                 }
             }
@@ -287,10 +300,10 @@ where
         // new commands. Their nonces precede anything we are about to send, so they
         // must be confirmed first.
         if !recovered.is_empty() {
-            let pending_txs: Vec<PendingTx<Input>> = recovered
+            let pending_txs: Vec<PendingTx<'_, Input>> = recovered
                 .into_iter()
-                .map(|(tx_hash, cmd)| {
-                    let fut = self.wait_for_confirmed_receipt(tx_hash);
+                .map(|(tx_hash, cmd, resend)| {
+                    let fut = self.wait_for_confirmed_receipt(vec![tx_hash], resend);
                     (fut, cmd, Instant::now())
                 })
                 .collect();
@@ -378,7 +391,7 @@ where
             // so that we send them downstream also in order.
             // This holds true because l1 transactions are included in the order of sender nonce.
             // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
-            let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(
+            let pending_txs: Vec<PendingTx<'_, Input>> = futures::stream::iter(
                 commands.into_iter().zip(gas_limits).enumerate(),
             )
             .then(|(nonce_offset, (mut cmd, gas_limit))| {
@@ -396,10 +409,14 @@ where
                     // this batch number is being submitted by this session.
                     self.note_submitted_batches(&cmd);
 
-                    let pending_tx = self.send_tx_with_retries(tx_request, &range).await?;
+                    let pending_tx = self.send_tx_with_retries(tx_request.clone(), &range).await?;
                     let submitted_at = Instant::now();
                     let tx_hash = *pending_tx.tx_hash();
-                    let receipt_fut = self.wait_for_confirmed_receipt(tx_hash);
+                    let raw_transactions = if self.confirmation_liveness_enabled() {
+                        self.capture_raw_transaction(tx_hash, &tx_request).await?.into_iter().map(|raw| (tx_hash, raw)).collect()
+                    } else { vec![] };
+                    let resend = ConfirmationResend { request: tx_request.clone(), raw_transactions };
+                    let receipt_fut = self.wait_for_confirmed_receipt(vec![tx_hash], resend);
                     tracing::info!(
                         "{command_name}: L1 transaction submitted for {range}. Hash: {tx_hash:?} Waiting for inclusion...",
                     );
@@ -685,12 +702,13 @@ where
     ) -> Option<alloy::providers::PendingTransactionBuilder<alloy::network::Ethereum>> {
         let from = tx_request.from?;
         let nonce = tx_request.nonce?;
+        let chain_id = self.provider.get_chain_id().await.ok()?;
         match self
             .provider
             .get_transaction_by_sender_nonce(from, nonce)
             .await
         {
-            Ok(Some(tx)) if Some(ConsensusTransaction::input(&tx)) == tx_request.input.input() => {
+            Ok(Some(tx)) if matches_submitted_transaction(tx_request, &tx, chain_id) => {
                 Some(alloy::providers::PendingTransactionBuilder::new(
                     self.provider.root().clone(),
                     tx.tx_hash(),
@@ -711,7 +729,7 @@ where
     /// metrics, and forwards the completed commands downstream.
     async fn wait_for_txs_and_forward(
         &self,
-        pending_txs: Vec<PendingTx<Input>>,
+        pending_txs: Vec<PendingTx<'_, Input>>,
         state_reporter: &ComponentStateReporter,
         outbound: &mpsc::Sender<SignedBatchEnvelope<FriProof>>,
     ) -> anyhow::Result<()> {
@@ -764,7 +782,11 @@ where
         Ok(())
     }
 
-    pub(crate) fn wait_for_confirmed_receipt(&self, tx_hash: B256) -> TransactionReceiptFuture {
+    pub(crate) fn wait_for_confirmed_receipt(
+        &self,
+        mut tx_hashes: Vec<B256>,
+        mut resend: ConfirmationResend,
+    ) -> TransactionReceiptFuture<'_> {
         let provider = self.provider.clone();
         // SYSCOIN: Startup journal recovery uses this exact inclusive depth policy too; keep the
         // arithmetic centralized so zero/one-confirmation deployments cannot drift.
@@ -773,8 +795,13 @@ where
         let required_confirmations = confirmation_policy.required_confirmations();
         let timeout = self.config.transaction_timeout;
         let poll_interval = self.config.poll_interval;
+        let liveness_interval = self.config.tx_liveness_poll_interval;
+        let missing_polls = self.config.tx_liveness_max_missing_polls;
         async move {
             let started_at = Instant::now();
+            let mut next_probe = (!liveness_interval.is_zero() && missing_polls > 0)
+                .then_some(liveness_interval);
+            let mut missing = 0_u32;
             let mut next_warning_at = if timeout.is_zero() {
                 None
             } else {
@@ -784,40 +811,110 @@ where
             loop {
                 let latest_block = provider.get_block_number().await.map_err(|err| {
                 tracing::warn!(
-                    "Failed to fetch latest L1 block while waiting for transaction confirmation \
-                 for tx {tx_hash}: {err}",
+                    "Failed to fetch latest L1 block while waiting for transaction confirmation: {err}",
                 );
                 anyhow::Error::from(err)
             })?;
-                let receipt = match provider.get_transaction_receipt(tx_hash).await {
-                    Ok(receipt) => receipt,
-                    Err(err) => {
-                        tracing::warn!(
-                            "Failed to fetch transaction receipt while waiting for confirmation \
-                     for tx {tx_hash}: {err}",
-                        );
-                        return Err(err.into());
-                    }
-                };
-                if let Some(receipt) = receipt.as_ref() {
-                    let receipt_block_number = receipt
-                        .block_number
-                        .context("transaction receipt missing block number")?;
-                    if confirmation_policy.is_confirmed(receipt_block_number, latest_block) {
-                        return Ok(receipt.clone());
+                let mut receipt_block_number = None;
+                for tx_hash in &tx_hashes {
+                    if let Some(receipt) = provider.get_transaction_receipt(*tx_hash).await? {
+                        anyhow::ensure!(receipt.transaction_hash == *tx_hash, "confirmation receipt transaction hash changed");
+                        let number = receipt.block_number.context("transaction receipt missing block number")?;
+                        let expected_hash = receipt.block_hash.context("transaction receipt missing block hash")?;
+                        let canonical = provider.get_block_by_number(number.into()).await?
+                            .context("confirmation receipt block unavailable")?;
+                        if canonical.header.hash != expected_hash { continue; }
+                        receipt_block_number = Some(number);
+                        if next_probe.is_some() && !resend.raw_transactions.iter().any(|(hash, _)| hash == tx_hash) {
+                            if let Some(raw) = self.capture_raw_transaction(*tx_hash, &resend.request).await? {
+                                resend.raw_transactions.push((*tx_hash, raw));
+                            }
+                        }
+                        if confirmation_policy.is_confirmed(number, latest_block) {
+                            let latest_again = provider.get_block_number().await?;
+                            let canonical_again = provider.get_block_by_number(number.into()).await?
+                                .context("confirmation receipt block unavailable on recheck")?;
+                            if canonical_again.header.hash != expected_hash { receipt_block_number = None; continue; }
+                            if confirmation_policy.is_confirmed(number, latest_again) { return Ok(receipt); }
+                        }
                     }
                 }
 
                 let elapsed = started_at.elapsed();
+                if next_probe.is_some_and(|at| elapsed >= at) {
+                    let mut known = receipt_block_number.is_some();
+                    if !known {
+                        for hash in &tx_hashes {
+                            if let Some(tx) = provider.get_transaction_by_hash(*hash).await? {
+                                let chain_id = provider.get_chain_id().await?;
+                                anyhow::ensure!(tx.tx_hash() == *hash && matches_submitted_transaction(&resend.request, &tx, chain_id),
+                                    "confirmation candidate transaction identity changed");
+                                match (tx.block_hash(), tx.block_number()) {
+                                    (None, None) => known = true,
+                                    (Some(hash), Some(number)) => {
+                                        let block = provider.get_block_by_number(number.into()).await?
+                                            .context("transaction block unavailable during confirmation recovery")?;
+                                        known = block.header.hash == hash;
+                                    }
+                                    _ => anyhow::bail!("inconsistent transaction block metadata"),
+                                }
+                                if known {
+                                    if !resend.raw_transactions.iter().any(|(candidate, _)| candidate == hash) {
+                                        if let Some(raw) = self.capture_raw_transaction(*hash, &resend.request).await? {
+                                            resend.raw_transactions.push((*hash, raw));
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    missing = if known { 0 } else { missing.saturating_add(1) };
+                    if missing >= missing_polls {
+                        let operator = resend.request.from.context("confirmation resend missing sender")?;
+                        let original_nonce = resend.request.nonce.context("confirmation resend missing nonce")?;
+                        let nonce = provider.get_transaction_count(operator).await?;
+                        if nonce > original_nonce {
+                            let mut appeared = false;
+                            for hash in &tx_hashes {
+                                if let Some(receipt) = provider.get_transaction_receipt(*hash).await? {
+                                    anyhow::ensure!(receipt.transaction_hash == *hash, "confirmation receipt transaction hash changed");
+                                    let number = receipt.block_number.context("transaction receipt missing block number")?;
+                                    let hash = receipt.block_hash.context("transaction receipt missing block hash")?;
+                                    let block = provider.get_block_by_number(number.into()).await?
+                                        .context("confirmation receipt block unavailable")?;
+                                    if block.header.hash == hash { appeared = true; break; }
+                                }
+                            }
+                            if appeared { missing = 0; next_probe = Some(elapsed + liveness_interval); continue; }
+                            anyhow::bail!("confirmation nonce consumed by an unknown transaction");
+                        }
+                        let pending_nonce = provider.get_transaction_count(operator).pending().await?;
+                        anyhow::ensure!(pending_nonce <= original_nonce,
+                            "confirmation nonce occupied by an unknown pending transaction");
+                        // With the sender's exclusive-account invariant, an identical signed
+                        // transaction cannot introduce a new nonce or change value/calldata.
+                        // Unlike sender/nonce lookup this standard RPC works on Syscoin geth.
+                        let (hash, raw) = resend.raw_transactions.iter().rev().find(|(hash, _)| tx_hashes.contains(hash))
+                            .context("signed raw transaction unavailable for confirmation recovery")?;
+                        match provider.send_raw_transaction(raw).await {
+                            Ok(pending) => anyhow::ensure!(*pending.tx_hash() == *hash, "raw resend hash changed"),
+                            Err(error) if is_nonce_error(&error) || is_already_known_error(&error)
+                                || is_replacement_underpriced_error(&error) || is_fee_too_low_error(&error)
+                                || is_pool_capacity_error(&error) => tracing::warn!(%error, "raw confirmation resend rejected; retaining candidates"),
+                            Err(error) => return Err(error.into()),
+                        }
+                        missing = 0;
+                    }
+                    next_probe = Some(elapsed + liveness_interval);
+                }
                 if let Some(warning_at) = next_warning_at
                     && elapsed >= warning_at
                 {
-                    let receipt_block_number =
-                        receipt.as_ref().and_then(|receipt| receipt.block_number);
                     let confirmed_at =
                         receipt_block_number.map(|block| confirmation_policy.confirmed_at(block));
                     tracing::warn!(
-                        "Still waiting for L1 transaction confirmation for tx {tx_hash}. \
+                        "Still waiting for L1 transaction confirmation for txs {tx_hashes:?}. \
                  required_confirmations={required_confirmations}, \
                  waited_secs={}, latest_l1_block={latest_block}, \
                  receipt_block_number={receipt_block_number:?}, confirmed_at={confirmed_at:?}",
@@ -831,6 +928,40 @@ where
         }
         .boxed()
     }
+
+    pub(crate) fn confirmation_liveness_enabled(&self) -> bool {
+        self.config.tx_liveness_max_missing_polls > 0 && !self.config.tx_liveness_poll_interval.is_zero()
+    }
+
+    pub(crate) async fn capture_raw_transaction(&self, hash: B256, request: &TransactionRequest) -> anyhow::Result<Option<Bytes>> {
+        let raw = match self.provider.get_raw_transaction_by_hash(hash).await {
+            Ok(raw) => raw,
+            Err(TransportError::ErrorResp(ref error)) if error.code == METHOD_NOT_FOUND_CODE => return Ok(None),
+            Err(error) => { tracing::warn!(%error, ?hash, "raw transaction temporarily unavailable"); return Ok(None); },
+        };
+        if let Some(ref bytes) = raw {
+            anyhow::ensure!(keccak256(bytes) == hash, "raw transaction hash mismatch");
+            let mut input = bytes.as_ref();
+            let tx = TxEnvelope::decode_2718(&mut input).context("invalid raw transaction envelope")?;
+            anyhow::ensure!(input.is_empty() && matches!(tx, TxEnvelope::Eip1559(_)), "unexpected raw transaction type");
+            let chain_id = match self.provider.get_chain_id().await {
+                Ok(chain_id) => chain_id,
+                Err(error) => { tracing::warn!(%error, ?hash, "cannot authenticate raw transaction without chain id"); return Ok(None); }
+            };
+            let limits = self.config.fee_config.fee_limits(self.config.force_transaction_resubmission);
+            anyhow::ensure!(Some(tx.recover_signer()?) == request.from
+                && request.nonce == Some(ConsensusTransaction::nonce(&tx))
+                && request.to == Some(ConsensusTransaction::kind(&tx))
+                && request.value.unwrap_or_default() == ConsensusTransaction::value(&tx)
+                && request.input.input() == Some(ConsensusTransaction::input(&tx))
+                && request.gas == Some(ConsensusTransaction::gas_limit(&tx))
+                && ConsensusTransaction::max_fee_per_gas(&tx) <= limits.max_fee_per_gas
+                && ConsensusTransaction::max_priority_fee_per_gas(&tx).unwrap_or_default() <= limits.max_priority_fee_per_gas
+                && ConsensusTransaction::chain_id(&tx) == Some(chain_id), "raw transaction identity mismatch");
+        }
+        Ok(raw)
+    }
+
 
     /// Detects in-flight L1 transactions from a previous session, pairs each one with the
     /// corresponding queued command, and returns them ready to hand to the main loop.
@@ -850,7 +981,7 @@ where
         inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
         state_reporter: &ComponentStateReporter,
         latest_nonce: u64,
-    ) -> anyhow::Result<Vec<(alloy::primitives::B256, Input)>> {
+    ) -> anyhow::Result<Vec<(alloy::primitives::B256, Input, ConfirmationResend)>> {
         let command_name = Input::COMPONENT_ID.as_str();
         let operator_address = self.operator_address().await?;
         let pending_nonce = self
@@ -863,6 +994,8 @@ where
         if pending_nonce <= latest_nonce {
             return Ok(vec![]);
         }
+
+        let chain_id = self.provider.get_chain_id().await.context("get settlement chain id during recovery")?;
 
         let in_flight_count = (pending_nonce - latest_nonce) as usize;
         tracing::info!(
@@ -884,9 +1017,10 @@ where
             if e.code == METHOD_NOT_FOUND_CODE {
                 tracing::warn!(
                     command_name,
-                    "eth_getTransactionBySenderAndNonce is not supported by current provider.",
+                    "sender-nonce lookup unavailable; waiting for pending transactions before restart",
                 );
-                return Ok(vec![]);
+                self.wait_for_in_flight_txs_to_settle(operator_address).await?;
+                anyhow::bail!("pending transactions settled; restart to rebuild commands from the canonical frontier");
             }
             anyhow::bail!("Error while probing eth_getTransactionBySenderAndNonce support: {e}");
         }
@@ -916,6 +1050,10 @@ where
                 }
             };
 
+            anyhow::ensure!(tx.from() == operator_address && ConsensusTransaction::nonce(&tx) == nonce
+                && ConsensusTransaction::to(&tx) == Some(self.to_address) && ConsensusTransaction::value(&tx).is_zero()
+                && ConsensusTransaction::chain_id(&tx) == Some(chain_id), "foreign in-flight transaction at sender nonce");
+
             // Peek at the next command without consuming it so that a mismatch leaves
             // `inbound` intact for the normal send path.
             let matches = inbound
@@ -944,7 +1082,15 @@ where
                     else {
                         unreachable!("peek succeeded, recv must return the same item");
                     };
-                    paired.push((tx.tx_hash(), cmd));
+                    let fees = pipelined::fee_params_of_tx(&tx);
+                    let request = self.build_tx_request(
+                        tx.input().clone(), operator_address, nonce, ConsensusTransaction::gas_limit(&tx), fees,
+                    );
+                    let raw_transactions = if self.confirmation_liveness_enabled() {
+                        self.capture_raw_transaction(tx.tx_hash(), &request).await?
+                            .into_iter().map(|raw| (tx.tx_hash(), raw)).collect()
+                    } else { vec![] };
+                    paired.push((tx.tx_hash(), cmd, ConfirmationResend { request, raw_transactions }));
                 }
             }
         }
