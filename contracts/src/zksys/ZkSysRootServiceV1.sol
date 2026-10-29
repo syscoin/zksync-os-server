@@ -2,7 +2,6 @@
 pragma solidity ^0.8.26;
 
 import {IL1BridgehubMinimal} from "./ZkSysRegistryBridge.sol";
-import {IZkSysChildMailboxV1, ZkSysL2MessageV1, ServiceMessageProofV1} from "./ZkSysServiceMessageReceiversV1.sol";
 import {
     AcceptedPackageV1,
     DutySuccessV1,
@@ -15,13 +14,17 @@ interface IZkSysRootAcceptedReceiverV1 {
     function receiveRootAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
         external;
     function receiveRootActivation(bytes32 vkHash, bytes32 qualifiedRosterRoot) external;
-    function receiveChildAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
-        external;
-    function receiveChildActivation(bytes32 vkHash, bytes32 qualifiedRosterRoot) external;
+    function receiveGatewayBatchRoot(uint256 batchNumber, bytes32 root) external;
+    function receiveGatewayBatchRootWithMessage(uint256 batchNumber, bytes32 root, bytes32 messageHash) external;
 }
 
 interface IZkSysBridgehubRegistryV1 {
     function getZKChain(uint256 chainId) external view returns (address);
+    function messageRoot() external view returns (address);
+}
+
+interface IZkSysMessageRootV1 {
+    function chainBatchRoots(uint256 chainId, uint256 batchNumber) external view returns (bytes32);
 }
 
 /// @notice NEVM outbox for messages emitted atomically by the Gateway's native proof gate.
@@ -58,6 +61,10 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
 
     event MessagePublished(bytes32 indexed messageHash);
     event MessageRelayed(bytes32 indexed messageHash, bytes32 indexed canonicalTxHash);
+    event GatewayBatchRootRelayed(uint256 indexed batchNumber, bytes32 indexed root, bytes32 indexed canonicalTxHash);
+    event GatewayBatchRootMessageRelayed(
+        uint256 indexed batchNumber, bytes32 indexed messageHash, bytes32 indexed canonicalTxHash
+    );
 
     constructor(Configuration memory config) {
         if (
@@ -65,8 +72,7 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
                 || address(config.bridgehub).code.length == 0 || config.gatewayChainId == 0
                 || config.gatewayChainAddress == address(0) || config.registryChainId == 0
                 || config.registryChainId == config.gatewayChainId || config.registryReceiver == address(0)
-                || config.policyHash == bytes32(0)
-                || config.gatewayChainAddress.code.length == 0
+                || config.policyHash == bytes32(0) || config.gatewayChainAddress.code.length == 0
                 || IZkSysBridgehubRegistryV1(address(config.bridgehub)).getZKChain(config.gatewayChainId)
                     != config.gatewayChainAddress
         ) revert InvalidConfiguration();
@@ -131,60 +137,54 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
         );
     }
 
-    /// @notice Relay a zkSYS-lane proof report after Gateway settles it on NEVM.
-    function relayChildAccepted(
-        AcceptedPackageV1 calldata accepted,
-        DutySuccessV1[] calldata duties,
-        bool bootstrap,
-        ServiceMessageProofV1 calldata inclusion,
+    /// @notice Forward the executed Gateway root authenticated by the canonical NEVM MessageRoot.
+    function relayGatewayBatchRoot(
+        uint256 batchNumber,
         uint256 gasLimit,
         uint256 gasPerPubdataByteLimit,
         address refundRecipient
     ) external payable returns (bytes32) {
-        if (
-            accepted.chainId != registryChainId || accepted.policyHash != policyHash
-                || ZkSysServiceTypesV1.hashReport(duties) != accepted.reportHash
-        ) revert MessageNotPublished();
-        bytes memory data = abi.encode(ACCEPTED_DOMAIN, ZkSysServiceTypesV1.hashPackage(accepted), bootstrap);
-        _authenticateGateway(data, inclusion);
-        return _send(
-            keccak256(data),
-            abi.encodeCall(IZkSysRootAcceptedReceiverV1.receiveChildAccepted, (accepted, duties, bootstrap)),
-            gasLimit,
-            gasPerPubdataByteLimit,
-            refundRecipient
-        );
+        return _relayGatewayBatchRoot(batchNumber, bytes32(0), gasLimit, gasPerPubdataByteLimit, refundRecipient);
     }
 
-    function relayChildActivation(
-        bytes32 vkHash,
-        bytes32 root,
-        ServiceMessageProofV1 calldata inclusion,
+    function relayGatewayBatchRootWithMessage(
+        uint256 batchNumber,
+        bytes32 messageHash,
         uint256 gasLimit,
         uint256 gasPerPubdataByteLimit,
         address refundRecipient
     ) external payable returns (bytes32) {
-        bytes memory data = abi.encode(ACTIVATION_DOMAIN, vkHash, root);
-        _authenticateGateway(data, inclusion);
-        return _send(
-            keccak256(data),
-            abi.encodeCall(IZkSysRootAcceptedReceiverV1.receiveChildActivation, (vkHash, root)),
+        if (messageHash == bytes32(0) || !messages[messageHash]) revert MessageNotPublished();
+        return _relayGatewayBatchRoot(batchNumber, messageHash, gasLimit, gasPerPubdataByteLimit, refundRecipient);
+    }
+
+    function _relayGatewayBatchRoot(
+        uint256 batchNumber,
+        bytes32 messageHash,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) private returns (bytes32 canonicalTxHash) {
+        IZkSysBridgehubRegistryV1 hub = IZkSysBridgehubRegistryV1(address(bridgehub));
+        if (hub.getZKChain(gatewayChainId) != gatewayChainAddress) revert MessageNotPublished();
+        address messageRoot = hub.messageRoot();
+        if (messageRoot.code.length == 0) revert MessageNotPublished();
+        bytes32 root = IZkSysMessageRootV1(messageRoot).chainBatchRoots(gatewayChainId, batchNumber);
+        if (root == bytes32(0)) revert MessageNotPublished();
+        bytes memory payload = messageHash == bytes32(0)
+            ? abi.encodeCall(IZkSysRootAcceptedReceiverV1.receiveGatewayBatchRoot, (batchNumber, root))
+            : abi.encodeCall(
+                IZkSysRootAcceptedReceiverV1.receiveGatewayBatchRootWithMessage, (batchNumber, root, messageHash)
+            );
+        canonicalTxHash = _send(
+            keccak256(abi.encode(gatewayChainId, batchNumber, root, messageHash)),
+            payload,
             gasLimit,
             gasPerPubdataByteLimit,
             refundRecipient
         );
-    }
-
-    function _authenticateGateway(bytes memory data, ServiceMessageProofV1 calldata inclusion) private view {
-        if (IZkSysBridgehubRegistryV1(address(bridgehub)).getZKChain(gatewayChainId) != gatewayChainAddress) {
-            revert MessageNotPublished();
-        }
-        ZkSysL2MessageV1 memory message =
-            ZkSysL2MessageV1({txNumberInBatch: inclusion.txNumberInBatch, sender: gatewayGate, data: data});
-        if (!IZkSysChildMailboxV1(gatewayChainAddress)
-                .proveL2MessageInclusion(
-                    inclusion.blockOrBatchNumber, inclusion.messageIndex, message, inclusion.merkleProof
-                )) revert MessageNotPublished();
+        emit GatewayBatchRootRelayed(batchNumber, root, canonicalTxHash);
+        if (messageHash != bytes32(0)) emit GatewayBatchRootMessageRelayed(batchNumber, messageHash, canonicalTxHash);
     }
 
     function _relay(

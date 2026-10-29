@@ -237,3 +237,5 @@ The membership-expiry change removes an immutable field and time-based eligibili
 ## Prover-service setup source re-review
 
 The subsequent setup changes affect Solidity contracts, launch and prover-service scripts, their tests, documentation, and CI. They do not change Rust source, Cargo manifests, the lockfile, native dependency features, or the advisory dispositions reviewed here. The refreshed source fingerprint binds those inputs; this limited dependency-scope review does not certify the service contracts or deployment. Both guarded scanners remain required on the final Linux CI head.
+
+The follow-up root relay changes affect the prover-service Solidity contracts, Python workers and tests, and documentation. They do not change Rust source, Cargo manifests, the lockfile, native dependency features, or the reviewed advisory dispositions. The source fingerprint is refreshed for these changes; the guarded scanners remain required on the final head.

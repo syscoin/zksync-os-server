@@ -42,7 +42,6 @@ jobs:
             scripts.tests.test_zksys_service_component_deploy \
             scripts.tests.test_zksys_service_gate_deploy \
             scripts.tests.test_zksys_service_prepare_deployments \
-            scripts.tests.test_zksys_service_prepare_message_relay \
             scripts.tests.test_zksys_membership_keeper \
             scripts.tests.test_zksys_keeper_transactions \
             scripts.tests.test_zksys_keeper_core_rpc \

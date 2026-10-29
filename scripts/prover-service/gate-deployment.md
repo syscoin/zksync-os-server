@@ -240,60 +240,11 @@ command does not deploy contracts, check chain state, relay messages, or start a
 prover service. Keep using the same config and state directory when resuming a
 submitted stage.
 
-## Diagnose the direct Gateway-message receiver
+## Service receipt delivery
 
-`prepare_message_relay.py` is a diagnostic for the existing direct verifier; it
-does not prepare the NEVM sink route. A Gateway-origin direct-L1 batch proof is
-not supported by the zkSYS shared-root verifier. The dual-lane service instead
-uses the pinned NEVM sink's `relayChildAccepted` and `relayChildActivation`
-with a Gateway batch proof and then tracks the resulting Bridgehub transaction
-through finalized zkSYS execution. The proof extraction, fee-funded relay,
-durable retry and destination confirmation remain manual operations and require
-real Gateway-to-NEVM-to-zkSYS integration testing. Child-only configuration has
-no NEVM sink and is not supported by this repair.
-
-For the diagnostic only, supply a private config with these fields:
-
-```json
-{
-  "gateway_chain_id": 57001,
-  "child_chain_id": 57057,
-  "gateway_genesis_hash": "0x<32-byte Gateway genesis hash>",
-  "child_genesis_hash": "0x<32-byte zkSYS genesis hash>",
-  "gateway_gate": "0x<Gateway proof-gate address>",
-  "receiver": "0x<zkSYS accepted-message receiver>",
-  "receiver_code_hash": "0x<reviewed receiver runtime hash>",
-  "sender": "0x<address that would submit the receiver call>",
-  "transaction_hash": "0x<Gateway gate transaction hash>",
-  "transaction_log_index": 0,
-  "proof_target": "l1BatchRoot"
-}
-```
-
-The chain IDs and index here are examples. `transaction_log_index` is the
-transaction-local L2-to-L1 log index, not the batch-wide proof index. Choose
-`l1BatchRoot` or `messageRoot` according to the actual source topology; the
-Gateway RPC rejects `messageRoot` for a chain settled directly on L1. An
-activation request JSON is `{"kind":"activation","vk_hash":"0x<32-byte VK
-hash>","roster_root":"0x<32-byte roster root>"}`. An acceptance request is
-`{"kind":"accepted","accepted_package":{...},"duties":[...],"bootstrap":true}`;
-use the exact package and duty objects produced for the submitted gate transaction.
-
-Set `ZKSYS_SERVICE_GATEWAY_RPC_URL` and `ZKSYS_SERVICE_REGISTRY_RPC_URL`, with
-optional corresponding `ZKSYS_SERVICE_GATEWAY_RPC_AUTHORIZATION` and
-`ZKSYS_SERVICE_REGISTRY_RPC_AUTHORIZATION`, then run:
-
-```sh
-python3 scripts/prover-service/prepare_message_relay.py \
-  --config /private/message-config.json --request /private/message-request.json \
-  --output /private/message-preview.json
-```
-
-The preview checks the messenger log and source block, asks the Gateway RPC for
-the proof, calls the existing zkSYS `0x10009` verifier, and simulates the
-receiver against a pinned latest zkSYS block. It writes unsigned calldata only
-if those checks succeed. This is a preview at that block, not a finality check;
-state or canonicality can change before submission. This command does not
-broadcast or establish that the service is ready. It has not been exercised
-against a live Gateway or zkSYS, so the deployed RPC and real proof path still
-need qualification.
+The zkSYS claim worker and Gateway root publisher use the authenticated
+Gateway batch root route. Gateway-native messages also have a separate native
+relay for activation and reports that are not bundled with a root. Follow
+[service-receipt-workers.md](service-receipt-workers.md) for configuration and
+startup. The existing shared-root verifier does not authenticate a
+Gateway-origin direct-L1 message and is not a fallback for this route.

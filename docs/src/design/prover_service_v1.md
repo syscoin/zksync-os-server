@@ -53,13 +53,14 @@ flowchart LR
     Roster --> ChildCoordinator[Child wrapper coordinator on Gateway]
     ChildCoordinator --> ChildGate[Child proof gate on Gateway]
     ChildGate --> ChildNative[Child native timelock and Executor]
-    ChildGate -->|authenticated interop receipt| Child
+    ChildGate -->|acceptance in settled Gateway batch| GatewayRoot[Gateway batch root on NEVM]
+    GatewayRoot --> Sink
     Roster -->|proved forwarded roster| RootRoster[NEVM roster receiver]
     RootRoster --> RootCoordinator[Gateway wrapper coordinator on NEVM]
     RootCoordinator --> RootGate[Gateway proof gate on NEVM]
     RootGate --> RootNative[Gateway native timelock and Executor]
     RootGate --> Sink[NEVM message sink]
-    Sink -->|canonical Bridgehub receipt| Child
+    Sink -->|canonical Bridgehub root or receipt| Child
     Child --> Issuer[One child issuer and bonus ledger]
 ```
 
@@ -93,15 +94,29 @@ Gateway deployment must enable both lanes. The child-only configuration has no
 NEVM sink and does not support the Gateway-origin receipt route described below.
 
 Only the local immutable acceptance adapter can install accepted reports. For
-child proofs, the NEVM root sink verifies the fixed Gateway gate's exact message
-against Gateway's executed batch root via its native mailbox, then forwards the
-accepted package or activation to zkSYS through Bridgehub. For Gateway proofs,
-the same sink records the NEVM gate's message atomically with proof acceptance.
-The child receiver requires the root sink's canonical alias and exact lane,
-policy and report bindings. Duplicate delivery does not add credit. The existing
-shared-root verifier remains available for separately supported proof routes; it
-must not be treated as proof of a Gateway-origin message on this topology. Both
-NEVM proof and forwarded child execution require real-chain qualification.
+child proofs, the NEVM sink reads Gateway's executed batch root from the native
+MessageRoot and forwards that root to zkSYS through Bridgehub. The local claim
+then proves the fixed Gateway gate's message against the imported root and
+supplies the accepted package and duties. For Gateway proofs, the NEVM gate
+publishes its message atomically with proof acceptance; its hash may accompany a
+root for a local claim, or the native message can be forwarded separately.
+The receiver authenticates the sink alias and checks lane, policy and report
+bindings. Duplicate delivery does not add credit. The existing shared-root
+verifier remains available for separately supported proof routes; it must not be
+treated as proof of a Gateway-origin message on this topology. Both NEVM proof
+and forwarded child execution require real-chain qualification.
+
+The gate publishes acceptance when the native proof is verified. On an unchanged
+zkSYS chain history, a finalized accounting claim in a later zkSYS batch follows
+execution of the earlier batches in order. The root uses the normal priority
+message route and needs no additional operator-submitted Gateway transaction.
+
+An authorized settlement-layer revert of a verified but unexecuted batch can
+leave the gate and coordinator cursors ahead of the native chain; recovery for
+this exceptional case has not been qualified. Whether a replacement batch could
+lead to finalized stale credit under the intended sole-prover configuration has
+not been established. Qualify both this recovery and real cross-chain delivery
+before running the service unattended.
 
 Each settlement chain runs its own full `ZkSysProofGateV1`, priority guard and
 wrapper coordinator. The NEVM gate has the same joint sequencer/wrapper
@@ -164,6 +179,13 @@ its Bridgehub message must actually reach the child before the deadline.
 At least one authenticated child bootstrap receipt must establish the child's VK
 before activation; its report may be empty if all qualifying duties came from
 Gateway. Gateway qualification cannot establish or overwrite that child pin.
+
+During the supervised launch, confirm that all bootstrap reports from both gates
+have reached the registry before relaying both activation messages. The automatic
+claim worker waits for its discovered bootstrap reports, but activation relay is
+permissionless: another caller can deliver both activations first. Once the
+registry activates, it rejects remaining bootstrap reports, so the worker's
+ordering alone cannot enforce this launch requirement.
 
 The first roster is transported by native bootstrap proofs before coordinator
 installation. After a gate activates, its ready first roster may jointly authorize
