@@ -4,6 +4,7 @@
 //! `eth_getTransactionBySenderAndNonce`.
 
 use alloy::consensus::Transaction as ConsensusTransaction;
+use alloy::eips::BlockId;
 use alloy::network::{TransactionBuilder, TransactionResponse};
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
@@ -39,9 +40,13 @@ fn fast_batches_config(config: &mut Config) {
 async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
     env: TestEnvironment,
 ) -> anyhow::Result<()> {
+    const WATCHER_CONFIRMATIONS: u64 = 5;
     let proxy = MethodNotFoundL1Proxy::start(env.l1_rpc_url(), "__no_missing_method__").await?;
     let mut config = env.default_config().await?;
     fast_batches_config(&mut config);
+    // The component fixture defaults to zero watcher lag; this reorg must happen before
+    // a watcher consumes the orphaned block.
+    config.l1_watcher_config.confirmations = WATCHER_CONFIRMATIONS;
     config.l1_sender_config.pipelining_enabled = true;
     config.l1_sender_config.command_limit = 1;
     config.l1_sender_config.required_confirmations = 5;
@@ -103,10 +108,13 @@ async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
     proxy.watch(original);
     proxy.hold_second_receipt.store(true, Ordering::SeqCst);
     l1.anvil_mine(Some(1), None).await?;
-    anyhow::ensure!(
-        l1.get_transaction_receipt(original).await?.is_some(),
-        "original transaction {original} was not mined"
-    );
+    let original_receipt = l1
+        .get_transaction_receipt(original)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("original transaction {original} was not mined"))?;
+    let original_block = original_receipt
+        .block_number
+        .ok_or_else(|| anyhow::anyhow!("original receipt has no block number"))?;
     tokio::time::timeout(DEFAULT_TIMEOUT, async {
         while proxy.observed_receipts.load(Ordering::SeqCst) < 2 {
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -120,6 +128,21 @@ async fn pipelined_sender_rebroadcasts_original_after_mined_receipt_is_orphaned(
             tester.has_crashed()
         )
     })?;
+
+    let latest = l1.get_block_number().await?;
+    anyhow::ensure!(
+        original_block > latest.saturating_sub(WATCHER_CONFIRMATIONS),
+        "original block {original_block} crossed the watcher boundary at head {latest}"
+    );
+    let finalized = l1
+        .get_block(BlockId::finalized())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Anvil finalized header is unavailable"))?;
+    anyhow::ensure!(
+        original_block > finalized.header.number,
+        "original block {original_block} is finalized at {}",
+        finalized.header.number
+    );
 
     anyhow::ensure!(
         l1.anvil_revert(snapshot).await?,
