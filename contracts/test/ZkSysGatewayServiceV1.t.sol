@@ -183,7 +183,6 @@ contract ZkSysGatewayServiceV1Test is Test {
                 policyHash: POLICY,
                 firstServicePeriod: 0,
                 receiptGraceSeconds: 100,
-                membershipMaxAgeSeconds: 100_000,
                 rosterPublicationLeadSeconds: 100,
                 dutiesPerRound: 2,
                 gatewayChainId: GATEWAY,
@@ -570,7 +569,9 @@ contract ZkSysGatewayServiceV1Test is Test {
                 subscriptionHash: subscriptionHash,
                 batchNumber: from + i,
                 statementHash: keccak256(
-                    abi.encodePacked(priorHash, batches[i].batchHash, child.gate.chainConfigHash(), batches[i].commitment)
+                    abi.encodePacked(
+                        priorHash, batches[i].batchHash, child.gate.chainConfigHash(), batches[i].commitment
+                    )
                 ),
                 friProofHash: keccak256(abi.encode("fri", CHILD, from + i)),
                 transactionCount: 1,

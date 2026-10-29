@@ -229,3 +229,7 @@ The guard regressions exercise changed sources, graph edges/features, package
 identities, compiler/target overrides, changed advisory records, malformed
 reports and unknown findings. These are tests of the exception boundary; they
 are not timing or exploitation tests.
+
+## Membership-expiry source re-review
+
+The membership-expiry change removes an immutable field and time-based eligibility check from the prover-service Solidity contract, and updates its Solidity tests. It does not change Rust callers, Cargo manifests, the lockfile, native dependency features, or the reviewed advisory conditions. The source fingerprint is updated to bind the changed files; the guarded CI scanners still run on the final head.

@@ -194,8 +194,8 @@ identity at one canonical child-chain block through a **trusted RPC**. Include
 reviewed deployment and the clock authenticated by the Gateway roster receiver.
 Include the source block number, hash and timestamp. The offline helper does
 not authenticate a caller-created snapshot or claim that an account is already
-verified. The keeper must check `verifiedForSequencer`, registration, membership,
-freshness and the canonical block before using it.
+verified. The keeper must check `verifiedForSequencer`, registration, and
+membership at a current canonical block before using it.
 
 ```sh
 python3 scripts/prover-service/service.py --config /trusted/config.json \
@@ -428,15 +428,15 @@ that a malicious sequencer has withheld neither. This is a trusted dispatcher,
 not a decentralized availability protocol.
 
 Initialization authenticates accepted account consent through every exact stored
-subscription and operator binding, fresh senior membership, policy, chain address, quota, and period clock
-against the same finalized child-chain RPC block using EIP-1898 `blockHash` with
+subscription and operator binding, senior membership, policy, chain address,
+quota, and period clock against the same finalized child-chain RPC block using EIP-1898 `blockHash` with
 `requireCanonical`. The RPC must support these methods; there is no latest-block
 fallback. ERC-1271 membership accounts with EOA operators use this same canonical
 enrollment path. Fresh operator work signatures still require canonical EOA signatures.
 The supplied account list must exactly match the on-chain FRI subscriber
-enumeration at that block after explicit fresh-membership eligibility checks.
-Removed or stale entries need no supplied subscription. Every enrolled operator
-must subscribe to both services (`services: 3`); there is no separate wrapper-only
+enumeration at that block after explicit membership eligibility checks.
+Removed or otherwise ineligible entries need no supplied subscription. Every
+enrolled operator must subscribe to both services (`services: 3`); there is no separate wrapper-only
 pool. The 256-account bound applies
 to enumerated registrations, including ineligible ones.
 

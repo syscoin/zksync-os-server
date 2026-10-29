@@ -114,9 +114,10 @@ the period so the roster can be proved to Gateway and its root entropy prepared.
 This cutoff and the receipt grace must cover measured cross-chain proof latency.
 
 An account that previously completed a full quota for this sequencer can renew
-its shared-service wrapper eligibility during an idle period, provided its senior membership
-is still fresh. Renewal adds no bonus admission, success credit, or denominator
-weight. This keeps capable verified wrappers available when sparse demand has not
+its shared-service wrapper eligibility during an idle period, provided it remains
+an eligible senior Sentry in the membership registry. Renewal adds no bonus
+admission, success credit, or denominator weight. This keeps capable verified
+wrappers available when sparse demand has not
 produced another FRI quota. A newcomer or a partial qualifier cannot use renewal.
 Roster messages bind the issuer clock and first service period as well as the
 chain, registry, policy, root, and count.
@@ -283,12 +284,12 @@ strings or Basic Auth into on-chain Sentry identity. The current v1 API remains 
 compute lease API.
 
 The opt-in `dispatcher.py` adapter now uses that API on the trusted sequencer
-host. It verifies account-signed subscriptions, operator bindings, fresh senior
+host. It verifies account-signed subscriptions, operator bindings, senior
 membership and deployment parameters at one finalized child-chain block. It
 checks its supplied accounts against the complete on-chain FRI enrollment
-enumeration at that block, with explicit eligibility exclusions for stale or
-removed members, then authenticates per-job operator readiness with EIP-712. A protected, exclusively
-locked journal assigns nonempty native batches in sorted per-account round-robin
+enumeration at that block, with explicit eligibility exclusions for removed or
+otherwise ineligible members, then authenticates per-job operator readiness with
+EIP-712. A protected, exclusively locked journal assigns nonempty native batches in sorted per-account round-robin
 order, retaining cursor, slots, exact leases, signed offers and retry history.
 Both execution queues share that account cursor and quota bitmap. Enrollment and
 readiness use the child registry domain; native batch statements and proof

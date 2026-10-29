@@ -309,7 +309,6 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             policyHash: POLICY,
             firstServicePeriod: 0,
             receiptGraceSeconds: 100,
-            membershipMaxAgeSeconds: 100_000,
             rosterPublicationLeadSeconds: 100,
             dutiesPerRound: 2,
             gatewayChainId: 0,
@@ -640,7 +639,7 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         assertEq(service.seniorBonus(vm.addr(BOB_KEY)), 100_000 ether);
     }
 
-    function testWrongAgeWeightAndStaleObservationCannotEnroll() public {
+    function testWrongSeniorWeightCannotEnroll() public {
         ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
         bytes memory signature = _sign(ALICE_KEY, service.subscriptionDigest(sub));
         bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, service.subscriptionDigest(sub));
@@ -649,14 +648,38 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, vm.addr(ALICE_KEY))
         );
         service.subscribe(sub, signature, operatorSignature);
-        _senior(ALICE_KEY, false);
-        vm.warp(block.timestamp + 100_001);
-        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSubscription.selector);
-        service.subscribe(sub, signature, operatorSignature);
-        vm.expectRevert(
-            abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, vm.addr(ALICE_KEY))
-        );
-        service.seniorBonus(vm.addr(ALICE_KEY));
+    }
+
+    function testUnchangedMembershipRemainsEligibleAndCanEnrollAfterLongDelay() public {
+        vm.warp(block.timestamp + 1_000_000);
+        ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        sub.firstPeriod = service.nextAdmissionPeriod();
+        sub.lastPeriod = sub.firstPeriod + 1;
+        bytes32 digest = service.subscriptionDigest(sub);
+        service.subscribe(sub, _sign(ALICE_KEY, digest), _sign(ALICE_OPERATOR_KEY, digest));
+        assertEq(service.seniorBonus(sub.account), 35_000 ether);
+        assertTrue(service.isEligibleFriSubscriber(sub.account, sub.sequencer, sub.firstPeriod));
+
+        membership.set(sub.account, 0, 0, 211_241, uint64(block.timestamp));
+        assertFalse(service.isEligibleFriSubscriber(sub.account, sub.sequencer, sub.firstPeriod));
+        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, sub.account));
+        service.seniorBonus(sub.account);
+    }
+
+    function testUnchangedVerifiedMemberCanRenewAfterLongDelay() public {
+        _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        _activate(false);
+        vm.warp(block.timestamp + 1_000_000);
+
+        ProverSubscriptionV1 memory sub = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        sub.nonce = 1;
+        sub.firstPeriod = service.nextAdmissionPeriod();
+        sub.lastPeriod = sub.firstPeriod;
+        bytes32 digest = service.subscriptionDigest(sub);
+        bytes32 subHash = service.subscribe(sub, _sign(ALICE_KEY, digest), _sign(ALICE_OPERATOR_KEY, digest));
+        service.renewWrapper(subHash, sub.firstPeriod);
+        assertEq(service.qualifiedWrapperCount(sub.firstPeriod), 1);
+        assertEq(service.totalAdmittedBonusWeight(sub.firstPeriod), 0);
     }
 
     function testSubscriptionSignatureBindsPayeeAndNonceAndOperatorCannotBeShared() public {
