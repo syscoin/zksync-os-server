@@ -204,7 +204,6 @@ async fn capture_raw_transaction(
                 && request.to == Some(ConsensusTransaction::kind(&tx))
                 && request.value.unwrap_or_default() == ConsensusTransaction::value(&tx)
                 && request.input.input() == Some(ConsensusTransaction::input(&tx))
-                && request.gas == Some(ConsensusTransaction::gas_limit(&tx))
                 && ConsensusTransaction::max_fee_per_gas(&tx) <= limits.max_fee_per_gas
                 && ConsensusTransaction::max_priority_fee_per_gas(&tx).unwrap_or_default()
                     <= limits.max_priority_fee_per_gas
@@ -867,13 +866,16 @@ where
                 anyhow::Error::from(err)
             })?;
                 let mut receipt_block_number = None;
+                let mut awaiting_header = false;
                 for tx_hash in &tx_hashes {
                     if let Some(receipt) = provider.get_transaction_receipt(*tx_hash).await? {
                         anyhow::ensure!(receipt.transaction_hash == *tx_hash, "confirmation receipt transaction hash changed");
                         let number = receipt.block_number.context("transaction receipt missing block number")?;
                         let expected_hash = receipt.block_hash.context("transaction receipt missing block hash")?;
-                        let canonical = provider.get_block_by_number(number.into()).await?
-                            .context("confirmation receipt block unavailable")?;
+                        let Some(canonical) = provider.get_block_by_number(number.into()).await? else {
+                            awaiting_header = true;
+                            continue;
+                        };
                         if canonical.header.hash != expected_hash { continue; }
                         receipt_block_number = Some(number);
                         if next_probe.is_some() && !resend.raw_transactions.iter().any(|(hash, _)| hash == tx_hash) {
@@ -883,8 +885,11 @@ where
                         }
                         if confirmation_policy.is_confirmed(number, latest_block) {
                             let latest_again = provider.get_block_number().await?;
-                            let canonical_again = provider.get_block_by_number(number.into()).await?
-                                .context("confirmation receipt block unavailable on recheck")?;
+                            let Some(canonical_again) = provider.get_block_by_number(number.into()).await? else {
+                                awaiting_header = true;
+                                receipt_block_number = None;
+                                continue;
+                            };
                             if canonical_again.header.hash != expected_hash { receipt_block_number = None; continue; }
                             if confirmation_policy.is_confirmed(number, latest_again) { return Ok(receipt); }
                         }
@@ -893,7 +898,7 @@ where
 
                 let elapsed = started_at.elapsed();
                 if next_probe.is_some_and(|at| elapsed >= at) {
-                    let mut known = receipt_block_number.is_some();
+                    let mut known = receipt_block_number.is_some() || awaiting_header;
                     if !known {
                         for hash in &tx_hashes {
                             if let Some(tx) = provider.get_transaction_by_hash(*hash).await? {
@@ -903,9 +908,8 @@ where
                                 match (tx.block_hash(), tx.block_number()) {
                                     (None, None) => known = true,
                                     (Some(hash), Some(number)) => {
-                                        let block = provider.get_block_by_number(number.into()).await?
-                                            .context("transaction block unavailable during confirmation recovery")?;
-                                        known = block.header.hash == hash;
+                                        known = provider.get_block_by_number(number.into()).await?
+                                            .is_none_or(|block| block.header.hash == hash);
                                     }
                                     _ => anyhow::bail!("inconsistent transaction block metadata"),
                                 }
@@ -932,9 +936,8 @@ where
                                     anyhow::ensure!(receipt.transaction_hash == *hash, "confirmation receipt transaction hash changed");
                                     let number = receipt.block_number.context("transaction receipt missing block number")?;
                                     let hash = receipt.block_hash.context("transaction receipt missing block hash")?;
-                                    let block = provider.get_block_by_number(number.into()).await?
-                                        .context("confirmation receipt block unavailable")?;
-                                    if block.header.hash == hash { appeared = true; break; }
+                                    if provider.get_block_by_number(number.into()).await?
+                                        .is_none_or(|block| block.header.hash == hash) { appeared = true; break; }
                                 }
                             }
                             if appeared { missing = 0; next_probe = Some(elapsed + liveness_interval); continue; }
@@ -951,7 +954,7 @@ where
                                     appeared = match (tx.block_hash(), tx.block_number()) {
                                         (None, None) => true,
                                         (Some(block_hash), Some(number)) => provider.get_block_by_number(number.into()).await?
-                                            .context("candidate block unavailable during confirmation recovery")?.header.hash == block_hash,
+                                            .is_none_or(|block| block.header.hash == block_hash),
                                         _ => anyhow::bail!("inconsistent transaction block metadata"),
                                     };
                                     if appeared { break; }

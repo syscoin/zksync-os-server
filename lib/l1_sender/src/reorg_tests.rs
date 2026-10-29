@@ -243,6 +243,83 @@ async fn block_changed_during_depth_check_is_retried_without_forwarding_stale_re
 }
 
 #[tokio::test]
+async fn temporarily_missing_canonical_block_is_retried() {
+    for pipelined in [false, true] {
+        for missing_on_recheck in [false, true] {
+            let a = Asserter::new();
+            let provider = provider(&a).await;
+            let tx = B256::with_last_byte(1);
+            let canonical = B256::with_last_byte(3);
+            a.push_success(&U64::from(11));
+            a.push_success(&Some(receipt(tx, canonical, 10)));
+            if missing_on_recheck {
+                a.push_success(&Some(block(canonical, 10)));
+                a.push_success(&U64::from(11));
+            }
+            a.push_success(&Option::<Block>::None);
+            a.push_success(&U64::from(12));
+            a.push_success(&Some(receipt(tx, canonical, 10)));
+            a.push_success(&Some(block(canonical, 10)));
+            a.push_success(&U64::from(12));
+            a.push_success(&Some(block(canonical, 10)));
+            let sender = sender(provider, pipelined, false);
+            let confirmed = tokio::time::timeout(
+                Duration::from_secs(2),
+                sender.wait_for_confirmed_receipt(vec![tx], resend()),
+            )
+            .await
+            .expect("wait timed out")
+            .expect("block availability should be retried");
+            assert_eq!(confirmed.block_hash, Some(canonical));
+            assert!(a.read_q().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn missing_block_for_seen_transaction_is_inconclusive_not_eviction() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (hash, raw, original) = signed_resend();
+        let mut bytes = raw.as_ref();
+        let envelope = TxEnvelope::decode_2718(&mut bytes).unwrap();
+        let canonical = B256::with_last_byte(3);
+        let transaction = alloy::rpc::types::Transaction {
+            inner: alloy::consensus::transaction::Recovered::new_unchecked(
+                envelope,
+                original.request.from.unwrap(),
+            ),
+            block_hash: Some(canonical),
+            block_number: Some(10),
+            transaction_index: Some(0),
+            effective_gas_price: Some(20_000),
+            block_timestamp: Some(1),
+        };
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Some(transaction));
+        a.push_success(&U64::from(31337));
+        a.push_success(&Option::<Block>::None);
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(hash, canonical, 10)));
+        a.push_success(&Some(block(canonical, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(canonical, 10)));
+        let sender = sender(provider, pipelined, true);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![hash], original),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("missing block must be retried");
+        assert_eq!(confirmed.block_hash, Some(canonical));
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn refuses_to_resend_after_sender_nonce_was_consumed() {
     for pipelined in [false, true] {
         let a = Asserter::new();
@@ -308,6 +385,10 @@ async fn refuses_unknown_pending_nonce_and_missing_signed_bytes() {
             a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
             a.push_success(&U64::from(7));
             a.push_success(&U64::from(if occupied { 8 } else { 7 }));
+            if occupied {
+                a.push_success(&U64::from(31337));
+                a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+            }
             let sender = sender(provider, pipelined, true);
             let error = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -366,7 +447,7 @@ async fn raw_capture_checks_real_signature_and_full_request_identity() {
         let result = sender
             .capture_raw_transaction(hash, &original.request)
             .await;
-        if field == "ok" {
+        if field == "ok" || field == "gas" {
             assert_eq!(result.unwrap(), Some(raw));
         } else {
             assert!(

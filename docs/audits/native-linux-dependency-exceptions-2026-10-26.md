@@ -185,3 +185,13 @@ The guard regressions exercise changed sources, graph edges/features, package
 identities, compiler/target overrides, changed advisory records, malformed
 reports and unknown findings. These are tests of the exception boundary; they
 are not timing or exploitation tests.
+
+## L1 sender recovery source re-review
+
+The sender change checks canonical receipts and can retain and rebroadcast an
+already-signed EIP-1559 transaction. Its new signer recovery operates on the
+public transaction, signature and hash; it does not handle a private signing
+value or add a signing implementation. The change does not modify Cargo
+manifests, the lockfile, native dependency features, or the reviewed advisory
+dispositions. The refreshed source fingerprint binds the changed inputs; the
+guarded scanners remain required on the final Linux CI head.
