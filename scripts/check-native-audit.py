@@ -30,6 +30,7 @@ LEGACY_AUDIT_IGNORES = {
 }
 DATABASE_URL = "https://github.com/RustSec/advisory-db"
 TOOL_VERSIONS = {"audit": "0.22.0", "deny": "0.20.2"}
+LIBZ_ADVISORY = "RUSTSEC-2026-0418"
 
 
 def digest(data):
@@ -109,8 +110,10 @@ def validate_host(environ, system, machine):
                      "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTFLAGS",
                      "ROCKSDB_LIB_DIR", "ROCKSDB_STATIC"}
                 or name.startswith("ZSTD")
+                or name.startswith("LIBZ_SYS_")
+                or re.fullmatch(r"(?:HOST_|TARGET_)?(?:CC|CXX|CFLAGS|CXXFLAGS|AR|ARFLAGS)(?:_.*)?", name)
                 or name.startswith("CARGO_PROFILE_")
-                or re.fullmatch(r"CARGO_TARGET_.*_RUSTFLAGS", name)):
+                or re.fullmatch(r"CARGO_TARGET_.*_(?:RUSTFLAGS|LINKER)", name)):
             raise ValueError(f"unreviewed compiler/native-library override: {name}")
 
 
@@ -127,6 +130,7 @@ def validate_context(root, policy, metadata):
         raise ValueError("unsupported review scope")
     lock = tomllib.loads((root / "Cargo.lock").read_text())
     validate_packages(lock, policy)
+    validate_libz_scope(metadata, policy)
     actual = {
         "lock_sha256": digest((root / "Cargo.lock").read_bytes()),
         "source_sha256": source_fingerprint(root),
@@ -135,6 +139,60 @@ def validate_context(root, policy, metadata):
     for key, value in actual.items():
         if value != policy[key]:
             raise ValueError(f"{key}: review is stale (actual {value}); re-review before updating it")
+
+
+def validate_libz_scope(metadata, policy):
+    try:
+        _validate_libz_scope(metadata, policy)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError(f"{LIBZ_ADVISORY}: malformed dependency metadata") from error
+
+
+def _validate_libz_scope(metadata, policy):
+    if LIBZ_ADVISORY not in policy["advisories"]:
+        return
+    expected = {
+        "libz-sys": ("1.1.22", "8b70e7a7df205e92a1a4cd9aaae7898dac0aa555503cc0a649494d0d60e7651d"),
+        "cc": ("1.2.62", "a1dce859f0832a7d088c4f1119888ab94ef4b5d6795d1ce05afb7fe159d79f98"),
+    }
+    ids = {}
+    for name, (version, checksum) in expected.items():
+        if policy["packages"].get(name) != {"version": version, "source": REGISTRY, "checksum": checksum}:
+            raise ValueError(f"{LIBZ_ADVISORY}: unreviewed {name} policy identity")
+        packages = [p for p in metadata["packages"] if p["name"] == name]
+        if len(packages) != 1 or packages[0]["version"] != version or packages[0]["source"] != REGISTRY:
+            raise ValueError(f"{LIBZ_ADVISORY}: unreviewed {name} graph identity")
+        ids[name] = packages[0]["id"]
+    nodes = metadata["resolve"]["nodes"]
+    libz_nodes = [n for n in nodes if n["id"] == ids["libz-sys"]]
+    if len(libz_nodes) != 1 or sum(n["id"] == ids["cc"] for n in nodes) != 1:
+        raise ValueError(f"{LIBZ_ADVISORY}: incomplete dependency graph")
+    libz = libz_nodes[0]
+    if "static" not in libz["features"]:
+        raise ValueError(f"{LIBZ_ADVISORY}: static feature missing")
+    cc_edges = [d for d in libz["deps"] if d["name"] == "cc"]
+    if (len(cc_edges) != 1 or cc_edges[0]["pkg"] != ids["cc"]
+            or cc_edges[0]["dep_kinds"] != [{"kind": "build", "target": None}]):
+        raise ValueError(f"{LIBZ_ADVISORY}: unreviewed cc build dependency")
+
+
+def validate_libz_server_tree(tree):
+    lines = [line for line in tree.splitlines() if line.startswith("libz-sys ")]
+    if not lines:
+        raise ValueError(f"{LIBZ_ADVISORY}: server feature tree lacks libz-sys")
+    for line in lines:
+        match = re.fullmatch(r"libz-sys v1\.1\.22 \[([^]]*)\](?: \(\*\))?", line)
+        if not match or set(filter(None, match.group(1).split(","))) != {"static"}:
+            raise ValueError(f"{LIBZ_ADVISORY}: unreviewed server libz-sys features")
+
+
+def validate_libz_server_builds(root, policy):
+    if LIBZ_ADVISORY not in policy["advisories"]:
+        return
+    command = ["cargo", "tree", "--locked", "--target", TARGET, "--package", "zksync_os_server",
+               "-e", "normal,build", "--prefix", "none", "--format", "{p} [{f}]"]
+    for flags in ([], ["--features", "gcp"]):
+        validate_libz_server_tree(run(command + flags, root))
 
 
 def validate_advisories(database, policy):
@@ -237,6 +295,7 @@ def main():
         return
     validate_host(os.environ, platform.system(), platform.machine())
     validate_context(ROOT, policy, metadata)
+    validate_libz_server_builds(ROOT, policy)
     compiler = run(["rustc", "--version", "--verbose"])
     if f"commit-hash: {policy['rustc_commit']}\n" not in compiler:
         raise ValueError("compiler differs from the reviewed toolchain")
