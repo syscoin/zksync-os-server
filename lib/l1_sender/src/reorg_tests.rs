@@ -143,14 +143,18 @@ async fn replacement_suffix_rejects_foreign_transactions_and_lookup_failures() {
             envelope,
             request.request.from.unwrap(),
         ),
-        ..Default::default()
+        block_hash: None,
+        block_number: None,
+        transaction_index: None,
+        effective_gas_price: None,
+        block_timestamp: None,
     };
     let operator = request.request.from.unwrap();
     let TxEnvelope::Eip1559(signed) = transaction.inner.inner().clone() else {
         unreachable!();
     };
     let (mut nonzero_tx, signature, _) = signed.into_parts();
-    nonzero_tx.value = 1_u64.into();
+    nonzero_tx.value = alloy::primitives::U256::from_limbs([1, 0, 0, 0]);
     let nonzero = pipelined::L1TxResponse {
         inner: alloy::consensus::transaction::Recovered::new_unchecked(
             TxEnvelope::Eip1559(alloy::consensus::Signed::new_unhashed(
@@ -158,7 +162,11 @@ async fn replacement_suffix_rejects_foreign_transactions_and_lookup_failures() {
             )),
             operator,
         ),
-        ..Default::default()
+        block_hash: None,
+        block_number: None,
+        transaction_index: None,
+        effective_gas_price: None,
+        block_timestamp: None,
     };
     for (expected_sender, expected_chain, expected_nonce, expected_target, should_pass) in [
         (operator, 31337, 7, Address::ZERO, true),
@@ -185,26 +193,26 @@ async fn replacement_suffix_rejects_foreign_transactions_and_lookup_failures() {
     }
 
     let a = Asserter::new();
-    let provider = provider(&a).await;
-    let sender = sender(provider, true, true);
+    let client = provider(&a).await;
+    let fixture = sender(client, true, true);
     a.push_success(&Some(nonzero));
     assert!(
-        sender
+        fixture
             .build_replacement_plan(operator, 31337, 7, 8, None)
             .await
             .is_err()
     );
 
     let a = Asserter::new();
-    let provider = provider(&a).await;
-    let sender = sender(provider, true, true);
+    let client = provider(&a).await;
+    let fixture = sender(client, true, true);
     a.push_failure(ErrorPayload {
         code: -32000,
         message: "lookup failed".into(),
         data: None,
     });
     assert!(
-        sender
+        fixture
             .build_replacement_plan(operator, 31337, 7, 8, None)
             .await
             .is_err()
