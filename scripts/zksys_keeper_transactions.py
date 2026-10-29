@@ -7,6 +7,7 @@ owner-only, durable, and bound to the deployment and signer identities.
 """
 
 import re
+import time
 
 _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}\Z")
 _HASH = re.compile(r"0x[0-9a-fA-F]{64}\Z")
@@ -15,6 +16,12 @@ _RAW = re.compile(r"0x(?:[0-9a-fA-F]{2})+\Z")
 
 class TransactionError(RuntimeError):
     pass
+
+
+class FinalizedRevert(TransactionError):
+    def __init__(self, receipt):
+        super().__init__("transaction reverted")
+        self.receipt = receipt
 
 
 def _quantity(value):
@@ -65,12 +72,13 @@ class TransactionDriver:
     with fsync by ``save(journal)``; it must survive process restarts.
     """
 
-    def __init__(self, journal, save, sign, decode, hash_raw):
+    def __init__(self, journal, save, sign, decode, hash_raw, clock=time.time):
         self.journal = journal
         self.save = save
         self.sign = sign
         self.decode = decode
         self.hash_raw = hash_raw
+        self.clock = clock
         self.journal.setdefault("transactions", {})
         self.poisoned = False
 
@@ -135,7 +143,23 @@ class TransactionDriver:
             raise TransactionError("journal transaction hash mismatch")
         # A timeout leaves the journal in its existing state. Only the exact
         # persisted bytes may be retried; a replacement needs explicit handling.
-        result = _hash(rpc("eth_sendRawTransaction", [entry["raw"]]))
+        try:
+            response = rpc("eth_sendRawTransaction", [entry["raw"]])
+        except Exception:
+            # RPCs may report "already known" after a timeout or concurrent
+            # inclusion. Trust only a lookup of this exact transaction hash.
+            receipt = rpc("eth_getTransactionReceipt", [entry["txHash"]])
+            if receipt is not None:
+                if not isinstance(receipt, dict) or _hash(receipt.get("transactionHash")) != entry["txHash"]:
+                    raise TransactionError("receipt transaction hash mismatch")
+            else:
+                known = rpc("eth_getTransactionByHash", [entry["txHash"]])
+                if known is None:
+                    raise
+                if not isinstance(known, dict) or _hash(known.get("hash")) != entry["txHash"]:
+                    raise TransactionError("transaction lookup hash mismatch")
+            response = entry["txHash"]
+        result = _hash(response)
         if result != entry["txHash"]:
             raise TransactionError("RPC returned a different transaction hash")
         entry["state"] = "submitted"
@@ -149,18 +173,22 @@ class TransactionDriver:
             raise TransactionError("unexpected chain id")
         receipt = finalized_receipt(rpc, entry["txHash"])
         if receipt is None:
-            if entry["state"] == "finalized":
+            if entry["state"] in ("finalized", "failed"):
                 raise TransactionError("finalized transaction receipt disappeared or lost finality")
             return None
-        if entry["state"] == "finalized" and (
+        if entry["state"] in ("finalized", "failed") and "receiptBlockHash" in entry and (
             _hash(receipt["blockHash"]) != entry["receiptBlockHash"]
             or _quantity(receipt["blockNumber"]) != entry["receiptBlockNumber"]
         ):
             raise TransactionError("finalized transaction receipt changed")
         if _quantity(receipt.get("status")) != 1:
             entry["state"] = "failed"
+            entry["receiptBlockHash"] = _hash(receipt["blockHash"])
+            entry["receiptBlockNumber"] = _quantity(receipt["blockNumber"])
             self._save()
-            raise TransactionError("transaction reverted")
+            raise FinalizedRevert(receipt)
+        if entry["state"] == "failed":
+            raise TransactionError("finalized transaction status changed")
         entry["state"] = "finalized"
         entry["receiptBlockHash"] = _hash(receipt["blockHash"])
         entry["receiptBlockNumber"] = _quantity(receipt["blockNumber"])
@@ -184,6 +212,10 @@ class TransactionDriver:
             if not isinstance(known, dict) or _hash(known.get("hash")) != entry["txHash"]:
                 raise TransactionError("transaction lookup hash mismatch")
             return False
+        now = _quantity(int(self.clock()))
+        next_retry = _quantity(entry.get("nextRetryAt", 0))
+        if now < next_retry:
+            return False
         latest = _quantity(rpc("eth_getTransactionCount", [entry["sender"], "latest"]))
         pending = _quantity(rpc("eth_getTransactionCount", [entry["sender"], "pending"]))
         if latest > entry["nonce"] or pending > entry["nonce"]:
@@ -192,6 +224,14 @@ class TransactionDriver:
             raise TransactionError("signer nonce is behind the journal")
         if rpc("eth_getTransactionReceipt", [entry["txHash"]]) is not None:
             return False
+        backoff = _quantity(entry.get("retryBackoff", 0))
+        if backoff > 4:
+            raise TransactionError("invalid retry backoff")
+        entry["nextRetryAt"] = now + min(600, 60 * (2 ** backoff))
+        entry["retryBackoff"] = min(backoff + 1, 4)
+        # Persist the retry deadline before broadcast so restarts and uncertain
+        # RPC responses cannot bypass the rate limit.
+        self._save()
         self.broadcast(name, rpc)
         return True
 
@@ -202,6 +242,38 @@ class TransactionDriver:
             raise TransactionError("transaction is not finalized")
         if entry["kind"] == "bridge" and not entry.get("l2Finalized"):
             raise TransactionError("bridge operation is not finalized on L2")
+        del self.journal["transactions"][name]
+        self._save()
+
+    def supersede_activation(self, name, rpc, verify):
+        """Archive a finalized failed activation only after its goal is satisfied."""
+        self._check()
+        entry = self.journal["transactions"][name]
+        if entry["kind"] != "activation" or entry["state"] != "failed":
+            raise TransactionError("transaction is not a failed activation")
+        if _quantity(rpc("eth_chainId", [])) != entry["chainId"]:
+            raise TransactionError("unexpected chain id")
+        receipt = finalized_receipt(rpc, entry["txHash"])
+        if (receipt is None or _quantity(receipt.get("status")) != 0
+                or _hash(receipt["blockHash"]) != entry["receiptBlockHash"]
+                or _quantity(receipt["blockNumber"]) != entry["receiptBlockNumber"]):
+            raise TransactionError("finalized failed activation receipt changed")
+        if verify(receipt, entry) is not True:
+            raise TransactionError("failed activation not independently satisfied")
+        again = finalized_receipt(rpc, entry["txHash"])
+        if (again is None or _quantity(again.get("status")) != 0
+                or _hash(again["blockHash"]) != entry["receiptBlockHash"]
+                or _quantity(again["blockNumber"]) != entry["receiptBlockNumber"]):
+            raise TransactionError("finalized failed activation receipt changed")
+        history = self.journal.setdefault("superseded_activations", {})
+        if type(history) is not dict or entry["txHash"] in history:
+            raise TransactionError("invalid superseded activation history")
+        history[entry["txHash"]] = {
+            "account": _address(entry["metadata"]["account"]),
+            "target": _quantity(entry["metadata"]["target"]),
+            "receiptBlockHash": entry["receiptBlockHash"],
+            "receiptBlockNumber": entry["receiptBlockNumber"],
+        }
         del self.journal["transactions"][name]
         self._save()
 

@@ -209,3 +209,35 @@ class Hooks:
         if not isinstance(result, str) or len(result) != 130:
             return False
         return int(result[66:], 16) == entry['metadata']['target']
+
+    def verify_activation_superseded(self, receipt, entry):
+        account = k.address(entry['metadata']['account'])
+        target = entry['metadata']['target']
+        if type(target) is not int or target <= 0:
+            return False
+        snapshot = k.block(self.l2, 'finalized')
+        if snapshot['number'] < k.hexint(receipt['blockNumber']):
+            return False
+        anchor = snapshot['hash']
+        height, member_weight = k.member_at(self.l2, self.config['membership'], account, anchor)
+        if height == 0 or member_weight != target:
+            return False
+        block = {'blockHash': anchor, 'requireCanonical': True}
+        result = self.l2.call('eth_call', [{'to': self.config['weights'], 'data': '0x' +
+            (k.selector('weightComponents(address)') + k.aword(account)).hex()}, block])
+        if not isinstance(result, str) or not re.fullmatch(r'0x[0-9a-fA-F]{128}', result):
+            raise TransactionError('invalid weight response')
+        if int(result[66:], 16) != target:
+            return False
+        pending = self.l2.call('eth_call', [{'to': self.config['weights'], 'data': '0x' +
+            (k.selector('pendingWeightComponents(address)') + k.aword(account)).hex()}, block])
+        if not isinstance(pending, str) or not re.fullmatch(r'0x[0-9a-fA-F]{256}', pending):
+            raise TransactionError('invalid pending weight response')
+        if int(pending[130:194], 16) != 0 or int(pending[194:258], 16) != 0:
+            return False
+        canonical = k.block(self.l2, hex(snapshot['number']))
+        finalized = k.block(self.l2, 'finalized')
+        if (canonical['hash'] != snapshot['hash'] or finalized['number'] < snapshot['number']
+                or (finalized['number'] == snapshot['number'] and finalized['hash'] != snapshot['hash'])):
+            raise TransactionError('finalized activation snapshot changed')
+        return True

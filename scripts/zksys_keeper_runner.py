@@ -5,7 +5,7 @@ journal, authenticate deployment identities on every pass, and provide verified
 fee quotes and receipt-state checks. One call performs at most one new send.
 """
 import zksys_membership_keeper as membership
-from zksys_keeper_transactions import TransactionError, bridge_priority_hash, priority_payload
+from zksys_keeper_transactions import FinalizedRevert, TransactionError, bridge_priority_hash, priority_payload
 
 
 class KeeperRunner:
@@ -83,7 +83,11 @@ class KeeperRunner:
         return 'bridge_finalized'
 
     def _resume_activation(self):
-        receipt = self.l2_driver.receipt('l2', self.l2_rpc)
+        try:
+            receipt = self.l2_driver.receipt('l2', self.l2_rpc)
+        except FinalizedRevert:
+            self.l2_driver.supersede_activation('l2', self.l2_rpc, self.hooks.verify_activation_superseded)
+            return 'activation_superseded'
         if receipt is None:
             self.l2_driver.rebroadcast_if_missing('l2', self.l2_rpc)
             return 'activation_pending'

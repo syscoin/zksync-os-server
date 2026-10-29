@@ -13,9 +13,14 @@ sensitive data. In particular, `transactions.json` holds signed spend
 authorizations; back up and protect it, and do not erase it after a timeout.
 The keeper records signed bytes before broadcast. If an acknowledged transaction
 disappears, it retries those same bytes only when no receipt or transaction is
-found and the signer nonce is still unused. A consumed or conflicting nonce stops
-the keeper for reconciliation. It does not automatically replace a nonce or
-recover a reverted transaction.
+found and the signer nonce is still unused. Retries use persisted exponential
+backoff from one to ten minutes, including across restarts. A consumed or
+conflicting nonce stops the keeper for reconciliation. It does not automatically
+replace a nonce or recover an unrelated reverted transaction.
+
+A finalized activation revert is archived as superseded only when a finalized
+snapshot at or after the revert confirms the intended membership weight is active
+and has no pending Sentry increase. Other failures remain queued for investigation.
 
 ## Configuration
 
@@ -149,4 +154,4 @@ reconciliation is required. Before launch, test initial sync, removals, address
 changes, delayed delivery, failed L2 execution, restart after ambiguous
 broadcast, finality outage, signer/funding failures and serial-outbox backlog on
 the intended Gateway topology. The focused mock tests do not establish this
-acceptance. See [keeper release gates](../../audits/syscoin-v32-production-readiness-2026-09-21/membership-keeper.md).
+acceptance. See [keeper release gates](https://github.com/syscoin/zksync-os-server/blob/main/docs/audits/syscoin-v32-production-readiness-2026-09-21/membership-keeper.md).

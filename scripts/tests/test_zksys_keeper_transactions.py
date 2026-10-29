@@ -53,9 +53,11 @@ class DriverTest(unittest.TestCase):
         self.saved = []
         self.tx = None
         self.rpc = Rpc()
+        self.now = 1_000
         def save(journal): self.saved.append(copy.deepcopy(journal))
         def sign(tx): self.tx = tx; return RAW
-        self.driver = keeper.TransactionDriver(self.journal, save, sign, lambda _: self.tx, lambda _: H)
+        self.driver = keeper.TransactionDriver(self.journal, save, sign, lambda _: self.tx, lambda _: H,
+                                               clock=lambda: self.now)
 
     def begin(self, **kwargs):
         return self.driver.begin("l1", self.rpc, 57, A, B, "0x1234", 3, 50000, 7,
@@ -110,8 +112,46 @@ class DriverTest(unittest.TestCase):
         self.rpc.fail_send = True
         with self.assertRaises(OSError):
             self.driver.rebroadcast_if_missing('l1', self.rpc)
-        self.assertEqual(self.journal, before)
+        entry = self.journal['transactions']['l1']
+        self.assertEqual(entry['raw'], before['transactions']['l1']['raw'])
+        self.assertEqual(entry['txHash'], before['transactions']['l1']['txHash'])
+        self.assertEqual(entry['nextRetryAt'], 1_060)
+        self.assertEqual(self.saved[-1]['transactions']['l1']['nextRetryAt'], 1_060)
         self.assertEqual(self.rpc.sent, [RAW, RAW])
+
+    def test_retry_backoff_is_bounded_and_survives_restart(self):
+        self.begin()
+        self.assertTrue(self.driver.rebroadcast_if_missing('l1', self.rpc))
+        journal = copy.deepcopy(self.saved[-1])
+        recovered = keeper.TransactionDriver(journal, lambda _: None, lambda _: RAW,
+                                             lambda _: self.tx, lambda _: H, clock=lambda: self.now)
+        self.assertFalse(recovered.rebroadcast_if_missing('l1', self.rpc))
+        self.now = 1_060
+        self.assertTrue(recovered.rebroadcast_if_missing('l1', self.rpc))
+        self.assertEqual(journal['transactions']['l1']['nextRetryAt'], 1_180)
+        self.assertFalse(recovered.rebroadcast_if_missing('l1', self.rpc))
+        self.assertEqual(self.rpc.sent, [RAW, RAW, RAW])
+
+    def test_already_known_is_accepted_only_after_matching_lookup(self):
+        self.begin()
+        self.rpc.fail_send = True
+        self.rpc.known_transactions[H] = {'hash': H}
+        self.assertEqual(self.driver.broadcast('l1', self.rpc), H)
+        self.rpc.known_transactions[H] = {'hash': PRIORITY}
+        with self.assertRaisesRegex(keeper.TransactionError, 'lookup hash mismatch'):
+            self.driver.broadcast('l1', self.rpc)
+        self.rpc.known_transactions.clear()
+        self.rpc.transactions[H] = receipt(H)
+        self.assertEqual(self.driver.broadcast('l1', self.rpc), H)
+
+    def test_retry_deadline_must_be_saved_before_rebroadcast(self):
+        self.begin()
+        self.driver.save = lambda _: (_ for _ in ()).throw(OSError('disk error'))
+        with self.assertRaises(OSError):
+            self.driver.rebroadcast_if_missing('l1', self.rpc)
+        self.assertEqual(self.rpc.sent, [RAW])
+        with self.assertRaises(keeper.TransactionError):
+            self.driver.rebroadcast_if_missing('l1', self.rpc)
 
     def test_restart_rebroadcasts_persisted_transaction_without_signing_again(self):
         self.begin()

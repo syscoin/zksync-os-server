@@ -247,6 +247,7 @@ class TransactionSafetyTests(unittest.TestCase):
     def rpc(self, method, params):
         if method == "eth_chainId": return "0x39"
         if method == "eth_getTransactionCount": return "0x0"
+        if method in ("eth_getTransactionReceipt", "eth_getTransactionByHash"): return None
         if method == "eth_sendRawTransaction":
             self.sent.append(params[0])
             raise TimeoutError("submission uncertain")
