@@ -97,6 +97,11 @@ enum PrefixProgress {
     Resend(ResendRequest),
 }
 
+struct PrefixProgressReceivers<'a> {
+    confirmed_floor: &'a mut watch::Receiver<u64>,
+    resend: &'a mut mpsc::Receiver<ResendRequest>,
+}
+
 async fn wait_for_prefix_progress(
     confirmed_floor: &mut watch::Receiver<u64>,
     resend_rx: &mut mpsc::Receiver<ResendRequest>,
@@ -375,8 +380,10 @@ where
                         permits,
                         operator_address,
                         &submitted_tx,
-                        &mut mined_floor_rx,
-                        &mut resend_rx,
+                        PrefixProgressReceivers {
+                            confirmed_floor: &mut mined_floor_rx,
+                            resend: &mut resend_rx,
+                        },
                     )
                     .await?;
                     L1_SENDER_METRICS.txs_in_flight[&command_name]
@@ -547,8 +554,7 @@ where
         mut permits: Vec<OwnedSemaphorePermit>,
         operator_address: Address,
         submitted_tx: &mpsc::Sender<InFlightTx<Input>>,
-        mined_floor_rx: &mut watch::Receiver<u64>,
-        resend_rx: &mut mpsc::Receiver<ResendRequest>,
+        progress: PrefixProgressReceivers<'_>,
     ) -> anyhow::Result<()> {
         let command_name = Input::COMPONENT_ID.as_str();
         let range = Input::display_range(&commands);
@@ -557,7 +563,7 @@ where
 
         // Confirmed predecessors are part of the simulation base and no longer need replay.
         let (fee_params, gas_limits) = loop {
-            let mined_floor = *mined_floor_rx.borrow_and_update();
+            let mined_floor = *progress.confirmed_floor.borrow_and_update();
             prune_confirmed_prefix(&mut state.in_flight_prefix, mined_floor);
             let fee_params = self
                 .resolve_fee_params(
@@ -580,7 +586,9 @@ where
                 Err(error) if error.downcast_ref::<PendingSimulationPrefix>().is_some() => {
                     // Re-simulation is safe after a predecessor confirms; independent
                     // estimation before then could omit the state it supplies.
-                    match wait_for_prefix_progress(mined_floor_rx, resend_rx).await? {
+                    match wait_for_prefix_progress(progress.confirmed_floor, progress.resend)
+                        .await?
+                    {
                         PrefixProgress::Confirmed => {}
                         PrefixProgress::Resend(request) => {
                             self.resend_evicted(state, request, operator_address)
