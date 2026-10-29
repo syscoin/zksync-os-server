@@ -153,6 +153,5 @@ in the same block supersedes a delivered update or activation; operator
 reconciliation is required. Before launch, test initial sync, removals, address
 changes, delayed delivery, failed L2 execution, restart after ambiguous
 broadcast, finality outage, signer/funding failures and serial-outbox backlog on
-the intended Gateway topology. Before enabling seniority bonuses, validate the
-NEVM-to-Core height mapping and deployed bridge settings on that network. The
-focused mock tests do not establish this acceptance.
+the intended Gateway topology. The focused mock tests do not establish this
+acceptance.
