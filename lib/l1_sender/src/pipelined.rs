@@ -58,7 +58,7 @@ use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::ComponentStateReporter;
 use zksync_os_pipeline::{PeekableReceiver, SendAndRecordExt};
 
-type L1TxResponse = <Ethereum as Network>::TransactionResponse;
+pub(crate) type L1TxResponse = <Ethereum as Network>::TransactionResponse;
 
 /// Sizing factor for the mined-but-unconfirmed queue. The physical population is bounded by
 /// (inclusion rate × confirmation window); the bound only exists to cap memory if the

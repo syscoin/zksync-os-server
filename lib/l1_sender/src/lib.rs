@@ -337,16 +337,10 @@ where
         let recovered = if force_transaction_resubmission {
             vec![]
         } else {
-            match confirmed_nonce.expect("stop-and-wait recovery must capture the nonce baseline") {
-                Ok(nonce) => {
-                    self.recover_in_flight_txs(&mut inbound, &state_reporter, nonce)
-                        .await?
-                }
-                Err(err) => {
-                    tracing::warn!(%err, "initial nonce snapshot unavailable before recovery consumed any commands");
-                    vec![]
-                }
-            }
+            let nonce =
+                confirmed_nonce.expect("stop-and-wait recovery must capture the nonce baseline")?;
+            self.recover_in_flight_txs(&mut inbound, &state_reporter, nonce)
+                .await?
         };
 
         // Wait for any recovered in-flight transactions to be mined before accepting
@@ -837,7 +831,7 @@ where
 
     pub(crate) fn wait_for_confirmed_receipt(
         &self,
-        mut tx_hashes: Vec<B256>,
+        tx_hashes: Vec<B256>,
         mut resend: ConfirmationResend,
     ) -> TransactionReceiptFuture<'_> {
         let provider = self.provider.clone();
@@ -2097,7 +2091,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_and_wait_nonce_failure_stays_inside_recovery_boundary() {
+    async fn stop_and_wait_nonce_failure_stops_before_recovery_or_sending() {
         let asserter = Asserter::new();
         let provider = mocked_node_provider(&asserter).await;
         let sender = mocked_l1_sender(provider, false);
@@ -2106,7 +2100,7 @@ mod tests {
         let (output_tx, _output_rx) = mpsc::channel(1);
         let (state_reporter, _state_rx) = ComponentStateReporter::new("nonce_fallback_test");
 
-        sender
+        let error = sender
             .run_stop_and_wait(
                 PeekableReceiver::new(input_rx),
                 output_tx,
@@ -2116,7 +2110,12 @@ mod tests {
                 ))),
             )
             .await
-            .expect("stop-and-wait must preserve its best-effort recovery fallback");
+            .expect_err("unknown nonce snapshot must not allow new sends");
+        assert!(
+            error
+                .to_string()
+                .contains("historical state temporarily unavailable")
+        );
     }
 
     #[test]
