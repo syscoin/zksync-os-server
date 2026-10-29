@@ -22,6 +22,7 @@ class Rpc:
         self.sent = []
         self.final = 0
         self.transactions = {}
+        self.known_transactions = {}
         self.latest = 0
         self.pending = 0
         self.fail_send = False
@@ -35,6 +36,7 @@ class Rpc:
             if self.fail_send: raise OSError("timeout")
             return H
         if method == "eth_getTransactionReceipt": return self.transactions.get(args[0])
+        if method == "eth_getTransactionByHash": return self.known_transactions.get(args[0])
         if method == "eth_getBlockByNumber":
             if args[0] == "finalized": return {"number": hex(self.final), "hash": BLOCK}
             return {"hash": self.block}
@@ -74,6 +76,76 @@ class DriverTest(unittest.TestCase):
         self.rpc.pending = 1
         with self.assertRaises(keeper.TransactionError): self.begin()
         self.assertEqual(self.rpc.sent, [])
+
+    def test_acknowledged_then_missing_transaction_rebroadcasts_original_bytes(self):
+        self.begin()
+        self.assertEqual(self.journal['transactions']['l1']['state'], 'submitted')
+        self.assertTrue(self.driver.rebroadcast_if_missing('l1', self.rpc))
+        self.assertEqual(self.rpc.sent, [RAW, RAW])
+        self.assertEqual(self.journal['transactions']['l1']['txHash'], H)
+        self.assertEqual(self.journal['transactions']['l1']['nonce'], 0)
+
+    def test_known_pending_or_included_transaction_is_not_rebroadcast(self):
+        self.begin()
+        self.rpc.known_transactions[H] = {'hash': H}
+        self.assertFalse(self.driver.rebroadcast_if_missing('l1', self.rpc))
+        self.rpc.known_transactions.clear()
+        self.rpc.transactions[H] = receipt(H)
+        self.assertIsNone(self.driver.receipt('l1', self.rpc))
+        self.assertFalse(self.driver.rebroadcast_if_missing('l1', self.rpc))
+        self.assertEqual(self.rpc.sent, [RAW])
+
+    def test_missing_transaction_with_consumed_or_other_pending_nonce_stops(self):
+        self.begin()
+        for latest, pending in ((1, 1), (0, 1)):
+            with self.subTest(latest=latest, pending=pending):
+                self.rpc.latest, self.rpc.pending = latest, pending
+                with self.assertRaisesRegex(keeper.TransactionError, 'nonce already consumed or pending'):
+                    self.driver.rebroadcast_if_missing('l1', self.rpc)
+        self.assertEqual(self.rpc.sent, [RAW])
+
+    def test_missing_transaction_retry_timeout_keeps_original_journal(self):
+        self.begin()
+        before = copy.deepcopy(self.journal)
+        self.rpc.fail_send = True
+        with self.assertRaises(OSError):
+            self.driver.rebroadcast_if_missing('l1', self.rpc)
+        self.assertEqual(self.journal, before)
+        self.assertEqual(self.rpc.sent, [RAW, RAW])
+
+    def test_restart_rebroadcasts_persisted_transaction_without_signing_again(self):
+        self.begin()
+        journal = copy.deepcopy(self.saved[-1])
+        def no_sign(_):
+            raise AssertionError('must not sign a new transaction')
+        recovered = keeper.TransactionDriver(journal, lambda _: None, no_sign, lambda _: None, lambda _: H)
+        self.assertTrue(recovered.rebroadcast_if_missing('l1', self.rpc))
+        self.assertEqual(self.rpc.sent, [RAW, RAW])
+
+    def test_lookup_failure_does_not_trigger_rebroadcast(self):
+        self.begin()
+        def failing_lookup(method, args):
+            if method == 'eth_getTransactionByHash':
+                raise OSError('RPC unavailable')
+            return self.rpc(method, args)
+        with self.assertRaises(OSError):
+            self.driver.rebroadcast_if_missing('l1', failing_lookup)
+        self.assertEqual(self.rpc.sent, [RAW])
+
+    def test_finalized_receipt_cannot_disappear_or_move(self):
+        self.begin(kind='activation')
+        self.rpc.transactions[H] = receipt(H)
+        self.rpc.final = 6
+        self.driver.receipt('l1', self.rpc)
+        del self.rpc.transactions[H]
+        with self.assertRaisesRegex(keeper.TransactionError, 'disappeared or lost finality'):
+            self.driver.receipt('l1', self.rpc)
+        moved = receipt(H)
+        moved['blockNumber'] = '0x6'
+        self.rpc.transactions[H] = moved
+        with self.assertRaisesRegex(keeper.TransactionError, 'receipt changed'):
+            self.driver.receipt('l1', self.rpc)
+        self.assertEqual(self.rpc.sent, [RAW])
 
     def test_persistence_failure_poison_stops_all_further_writes(self):
         self.driver.save = lambda _: (_ for _ in ()).throw(OSError("disk error"))

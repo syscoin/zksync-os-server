@@ -11,9 +11,11 @@ The command defaults to reporting only. `--send` enables signed transactions;
 directory. The state directory, config, keystore and password files contain
 sensitive data. In particular, `transactions.json` holds signed spend
 authorizations; back up and protect it, and do not erase it after a timeout.
-The keeper records signed bytes before broadcast and resumes the same bytes on
-restart. It does not automatically replace a nonce or recover a reverted or
-conflicting transaction.
+The keeper records signed bytes before broadcast. If an acknowledged transaction
+disappears, it retries those same bytes only when no receipt or transaction is
+found and the signer nonce is still unused. A consumed or conflicting nonce stops
+the keeper for reconciliation. It does not automatically replace a nonce or
+recover a reverted transaction.
 
 ## Configuration
 

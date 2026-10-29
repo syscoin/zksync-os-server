@@ -487,11 +487,12 @@ class RunnerTests(unittest.TestCase):
             def hash_bytes(self, value): return "0x" + "33" * 32
 
         class Driver:
-            def __init__(self): self.final = False; self.delivered = False; self.sends = []
+            def __init__(self): self.final = False; self.delivered = False; self.sends = []; self.retries = []
             def begin(self, name, rpc, kind, metadata, **kwargs):
                 self.sends.append((name, metadata))
                 journal["transactions"][name] = {"state": "submitted", "metadata": metadata}
             def receipt(self, name, rpc): return bridge_receipt if self.final else None
+            def rebroadcast_if_missing(self, name, rpc): self.retries.append(name); return False
             def confirm_bridge_delivery(self, name, rpc, chain, digest, verify):
                 if not self.delivered: return None
                 self.assertion = verify({}, journal["transactions"][name])
@@ -508,6 +509,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(runner.run_once(), "bridge_submitted")
         self.assertEqual(saved[0]["ever_seen"], [A])
         self.assertEqual(runner.run_once(), "bridge_l1_pending")
+        self.assertEqual(l1.retries, ['l1'])
         self.assertEqual(l2.sends, [])
         l1.final = True
         with patch.object(runner_module, "bridge_priority_hash", return_value="0x" + "33" * 32), \
@@ -520,6 +522,8 @@ class RunnerTests(unittest.TestCase):
         changes.clear()
         self.assertEqual(runner.run_once(), "activation_submitted")
         self.assertEqual(l2.sends, [("l2", {"account": A, "target": 100})])
+        self.assertEqual(runner.run_once(), "activation_pending")
+        self.assertEqual(l2.retries, ['l2'])
         l2.final = True
         self.assertEqual(runner.run_once(), "activation_finalized")
 

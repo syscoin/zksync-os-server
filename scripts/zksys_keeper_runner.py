@@ -62,8 +62,7 @@ class KeeperRunner:
         entry = self.journal['transactions']['l1']
         receipt = self.l1_driver.receipt('l1', self.l1_rpc)
         if receipt is None:
-            if entry['state'] == 'signed':
-                self.l1_driver.broadcast('l1', self.l1_rpc)
+            self.l1_driver.rebroadcast_if_missing('l1', self.l1_rpc)
             return 'bridge_l1_pending'
         cfg = self.config
         digest = bridge_priority_hash(receipt, cfg['bridge'], cfg['bridge_event_topic'])
@@ -86,8 +85,7 @@ class KeeperRunner:
     def _resume_activation(self):
         receipt = self.l2_driver.receipt('l2', self.l2_rpc)
         if receipt is None:
-            if self.journal['transactions']['l2']['state'] == 'signed':
-                self.l2_driver.broadcast('l2', self.l2_rpc)
+            self.l2_driver.rebroadcast_if_missing('l2', self.l2_rpc)
             return 'activation_pending'
         entry = self.journal['transactions']['l2']
         if self.hooks.verify_activation(receipt, entry) is not True:

@@ -149,7 +149,14 @@ class TransactionDriver:
             raise TransactionError("unexpected chain id")
         receipt = finalized_receipt(rpc, entry["txHash"])
         if receipt is None:
+            if entry["state"] == "finalized":
+                raise TransactionError("finalized transaction receipt disappeared or lost finality")
             return None
+        if entry["state"] == "finalized" and (
+            _hash(receipt["blockHash"]) != entry["receiptBlockHash"]
+            or _quantity(receipt["blockNumber"]) != entry["receiptBlockNumber"]
+        ):
+            raise TransactionError("finalized transaction receipt changed")
         if _quantity(receipt.get("status")) != 1:
             entry["state"] = "failed"
             self._save()
@@ -159,6 +166,34 @@ class TransactionDriver:
         entry["receiptBlockNumber"] = _quantity(receipt["blockNumber"])
         self._save()
         return receipt
+
+    def rebroadcast_if_missing(self, name, rpc):
+        """Retry only the original signed bytes when the transaction is absent."""
+        self._check()
+        entry = self.journal["transactions"][name]
+        if entry["state"] not in ("signed", "submitted"):
+            raise TransactionError("transaction is not eligible for rebroadcast")
+        if _quantity(rpc("eth_chainId", [])) != entry["chainId"]:
+            raise TransactionError("unexpected chain id")
+        # receipt() also returns None for an included transaction awaiting
+        # finality; never resubmit merely because finality has not advanced.
+        if rpc("eth_getTransactionReceipt", [entry["txHash"]]) is not None:
+            return False
+        known = rpc("eth_getTransactionByHash", [entry["txHash"]])
+        if known is not None:
+            if not isinstance(known, dict) or _hash(known.get("hash")) != entry["txHash"]:
+                raise TransactionError("transaction lookup hash mismatch")
+            return False
+        latest = _quantity(rpc("eth_getTransactionCount", [entry["sender"], "latest"]))
+        pending = _quantity(rpc("eth_getTransactionCount", [entry["sender"], "pending"]))
+        if latest > entry["nonce"] or pending > entry["nonce"]:
+            raise TransactionError("missing transaction nonce already consumed or pending")
+        if latest != entry["nonce"] or pending != entry["nonce"]:
+            raise TransactionError("signer nonce is behind the journal")
+        if rpc("eth_getTransactionReceipt", [entry["txHash"]]) is not None:
+            return False
+        self.broadcast(name, rpc)
+        return True
 
     def complete(self, name):
         self._check()
