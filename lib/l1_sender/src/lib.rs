@@ -11,7 +11,9 @@ use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::{L1SenderFeeConfig, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI};
 use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
 use crate::pipeline_component::L1Sender;
-use alloy::consensus::{Transaction as ConsensusTransaction, TxEnvelope, transaction::SignerRecoverable};
+use alloy::consensus::{
+    Transaction as ConsensusTransaction, TxEnvelope, transaction::SignerRecoverable,
+};
 use alloy::eips::eip2718::Decodable2718;
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{TransactionBuilder, TransactionResponse};
@@ -33,7 +35,7 @@ use tokio::sync::mpsc;
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
 use zksync_os_pipeline::{ComponentId, PeekableReceiver, SendAndRecordExt};
-use zksync_os_provider::EthWalletProvider;
+use zksync_os_provider::{EthWalletProvider, NodeProvider};
 
 /// Component-specific state for the L1 sender.
 pub enum L1SenderState {
@@ -165,6 +167,54 @@ fn matches_submitted_transaction<T: ConsensusTransaction + TransactionResponse>(
         && ConsensusTransaction::chain_id(tx) == Some(chain_id)
 }
 
+async fn capture_raw_transaction(
+    provider: &NodeProvider,
+    hash: B256,
+    request: &TransactionRequest,
+    limits: FeeParams,
+) -> anyhow::Result<Option<Bytes>> {
+    let raw = match provider.get_raw_transaction_by_hash(hash).await {
+        Ok(raw) => raw,
+        Err(TransportError::ErrorResp(ref error)) if error.code == METHOD_NOT_FOUND_CODE => {
+            return Ok(None);
+        }
+        Err(error) => {
+            tracing::warn!(%error, ?hash, "raw transaction temporarily unavailable");
+            return Ok(None);
+        }
+    };
+    if let Some(ref bytes) = raw {
+        anyhow::ensure!(keccak256(bytes) == hash, "raw transaction hash mismatch");
+        let mut input = bytes.as_ref();
+        let tx = TxEnvelope::decode_2718(&mut input).context("invalid raw transaction envelope")?;
+        anyhow::ensure!(
+            input.is_empty() && matches!(tx, TxEnvelope::Eip1559(_)),
+            "unexpected raw transaction type"
+        );
+        let chain_id = match provider.get_chain_id().await {
+            Ok(chain_id) => chain_id,
+            Err(error) => {
+                tracing::warn!(%error, ?hash, "cannot authenticate raw transaction without chain id");
+                return Ok(None);
+            }
+        };
+        anyhow::ensure!(
+            Some(tx.recover_signer()?) == request.from
+                && request.nonce == Some(ConsensusTransaction::nonce(&tx))
+                && request.to == Some(ConsensusTransaction::kind(&tx))
+                && request.value.unwrap_or_default() == ConsensusTransaction::value(&tx)
+                && request.input.input() == Some(ConsensusTransaction::input(&tx))
+                && request.gas == Some(ConsensusTransaction::gas_limit(&tx))
+                && ConsensusTransaction::max_fee_per_gas(&tx) <= limits.max_fee_per_gas
+                && ConsensusTransaction::max_priority_fee_per_gas(&tx).unwrap_or_default()
+                    <= limits.max_priority_fee_per_gas
+                && ConsensusTransaction::chain_id(&tx) == Some(chain_id),
+            "raw transaction identity mismatch"
+        );
+    }
+    Ok(raw)
+}
+
 fn build_l1_simulation_request(
     operator_address: Address,
     to_address: Address,
@@ -288,7 +338,10 @@ where
             vec![]
         } else {
             match confirmed_nonce.expect("stop-and-wait recovery must capture the nonce baseline") {
-                Ok(nonce) => self.recover_in_flight_txs(&mut inbound, &state_reporter, nonce).await?,
+                Ok(nonce) => {
+                    self.recover_in_flight_txs(&mut inbound, &state_reporter, nonce)
+                        .await?
+                }
                 Err(err) => {
                     tracing::warn!(%err, "initial nonce snapshot unavailable before recovery consumed any commands");
                     vec![]
@@ -797,6 +850,10 @@ where
         let poll_interval = self.config.poll_interval;
         let liveness_interval = self.config.tx_liveness_poll_interval;
         let missing_polls = self.config.tx_liveness_max_missing_polls;
+        let fee_limits = self
+            .config
+            .fee_config
+            .fee_limits(self.config.force_transaction_resubmission);
         async move {
             let started_at = Instant::now();
             let mut next_probe = (!liveness_interval.is_zero() && missing_polls > 0)
@@ -826,7 +883,7 @@ where
                         if canonical.header.hash != expected_hash { continue; }
                         receipt_block_number = Some(number);
                         if next_probe.is_some() && !resend.raw_transactions.iter().any(|(hash, _)| hash == tx_hash) {
-                            if let Some(raw) = self.capture_raw_transaction(*tx_hash, &resend.request).await? {
+                            if let Some(raw) = capture_raw_transaction(&provider, *tx_hash, &resend.request, fee_limits).await? {
                                 resend.raw_transactions.push((*tx_hash, raw));
                             }
                         }
@@ -860,7 +917,7 @@ where
                                 }
                                 if known {
                                     if !resend.raw_transactions.iter().any(|(candidate, _)| candidate == hash) {
-                                        if let Some(raw) = self.capture_raw_transaction(*hash, &resend.request).await? {
+                                        if let Some(raw) = capture_raw_transaction(&provider, *hash, &resend.request, fee_limits).await? {
                                             resend.raw_transactions.push((*hash, raw));
                                         }
                                     }
@@ -890,8 +947,25 @@ where
                             anyhow::bail!("confirmation nonce consumed by an unknown transaction");
                         }
                         let pending_nonce = provider.get_transaction_count(operator).pending().await?;
-                        anyhow::ensure!(pending_nonce <= original_nonce,
-                            "confirmation nonce occupied by an unknown pending transaction");
+                        if pending_nonce > original_nonce {
+                            let chain_id = provider.get_chain_id().await?;
+                            let mut appeared = false;
+                            for hash in &tx_hashes {
+                                if let Some(tx) = provider.get_transaction_by_hash(*hash).await? {
+                                    anyhow::ensure!(tx.tx_hash() == *hash && matches_submitted_transaction(&resend.request, &tx, chain_id),
+                                        "confirmation candidate transaction identity changed");
+                                    appeared = match (tx.block_hash(), tx.block_number()) {
+                                        (None, None) => true,
+                                        (Some(block_hash), Some(number)) => provider.get_block_by_number(number.into()).await?
+                                            .context("candidate block unavailable during confirmation recovery")?.header.hash == block_hash,
+                                        _ => anyhow::bail!("inconsistent transaction block metadata"),
+                                    };
+                                    if appeared { break; }
+                                }
+                            }
+                            if appeared { missing = 0; next_probe = Some(elapsed + liveness_interval); continue; }
+                            anyhow::bail!("confirmation nonce occupied by an unknown pending transaction");
+                        }
                         // With the sender's exclusive-account invariant, an identical signed
                         // transaction cannot introduce a new nonce or change value/calldata.
                         // Unlike sender/nonce lookup this standard RPC works on Syscoin geth.
@@ -930,38 +1004,25 @@ where
     }
 
     pub(crate) fn confirmation_liveness_enabled(&self) -> bool {
-        self.config.tx_liveness_max_missing_polls > 0 && !self.config.tx_liveness_poll_interval.is_zero()
+        self.config.tx_liveness_max_missing_polls > 0
+            && !self.config.tx_liveness_poll_interval.is_zero()
     }
 
-    pub(crate) async fn capture_raw_transaction(&self, hash: B256, request: &TransactionRequest) -> anyhow::Result<Option<Bytes>> {
-        let raw = match self.provider.get_raw_transaction_by_hash(hash).await {
-            Ok(raw) => raw,
-            Err(TransportError::ErrorResp(ref error)) if error.code == METHOD_NOT_FOUND_CODE => return Ok(None),
-            Err(error) => { tracing::warn!(%error, ?hash, "raw transaction temporarily unavailable"); return Ok(None); },
-        };
-        if let Some(ref bytes) = raw {
-            anyhow::ensure!(keccak256(bytes) == hash, "raw transaction hash mismatch");
-            let mut input = bytes.as_ref();
-            let tx = TxEnvelope::decode_2718(&mut input).context("invalid raw transaction envelope")?;
-            anyhow::ensure!(input.is_empty() && matches!(tx, TxEnvelope::Eip1559(_)), "unexpected raw transaction type");
-            let chain_id = match self.provider.get_chain_id().await {
-                Ok(chain_id) => chain_id,
-                Err(error) => { tracing::warn!(%error, ?hash, "cannot authenticate raw transaction without chain id"); return Ok(None); }
-            };
-            let limits = self.config.fee_config.fee_limits(self.config.force_transaction_resubmission);
-            anyhow::ensure!(Some(tx.recover_signer()?) == request.from
-                && request.nonce == Some(ConsensusTransaction::nonce(&tx))
-                && request.to == Some(ConsensusTransaction::kind(&tx))
-                && request.value.unwrap_or_default() == ConsensusTransaction::value(&tx)
-                && request.input.input() == Some(ConsensusTransaction::input(&tx))
-                && request.gas == Some(ConsensusTransaction::gas_limit(&tx))
-                && ConsensusTransaction::max_fee_per_gas(&tx) <= limits.max_fee_per_gas
-                && ConsensusTransaction::max_priority_fee_per_gas(&tx).unwrap_or_default() <= limits.max_priority_fee_per_gas
-                && ConsensusTransaction::chain_id(&tx) == Some(chain_id), "raw transaction identity mismatch");
-        }
-        Ok(raw)
+    pub(crate) async fn capture_raw_transaction(
+        &self,
+        hash: B256,
+        request: &TransactionRequest,
+    ) -> anyhow::Result<Option<Bytes>> {
+        capture_raw_transaction(
+            &self.provider,
+            hash,
+            request,
+            self.config
+                .fee_config
+                .fee_limits(self.config.force_transaction_resubmission),
+        )
+        .await
     }
-
 
     /// Detects in-flight L1 transactions from a previous session, pairs each one with the
     /// corresponding queued command, and returns them ready to hand to the main loop.
@@ -995,7 +1056,11 @@ where
             return Ok(vec![]);
         }
 
-        let chain_id = self.provider.get_chain_id().await.context("get settlement chain id during recovery")?;
+        let chain_id = self
+            .provider
+            .get_chain_id()
+            .await
+            .context("get settlement chain id during recovery")?;
 
         let in_flight_count = (pending_nonce - latest_nonce) as usize;
         tracing::info!(
@@ -1019,8 +1084,11 @@ where
                     command_name,
                     "sender-nonce lookup unavailable; waiting for pending transactions before restart",
                 );
-                self.wait_for_in_flight_txs_to_settle(operator_address).await?;
-                anyhow::bail!("pending transactions settled; restart to rebuild commands from the canonical frontier");
+                self.wait_for_in_flight_txs_to_settle(operator_address)
+                    .await?;
+                anyhow::bail!(
+                    "pending transactions settled; restart to rebuild commands from the canonical frontier"
+                );
             }
             anyhow::bail!("Error while probing eth_getTransactionBySenderAndNonce support: {e}");
         }
@@ -1050,9 +1118,14 @@ where
                 }
             };
 
-            anyhow::ensure!(tx.from() == operator_address && ConsensusTransaction::nonce(&tx) == nonce
-                && ConsensusTransaction::to(&tx) == Some(self.to_address) && ConsensusTransaction::value(&tx).is_zero()
-                && ConsensusTransaction::chain_id(&tx) == Some(chain_id), "foreign in-flight transaction at sender nonce");
+            anyhow::ensure!(
+                tx.from() == operator_address
+                    && ConsensusTransaction::nonce(&tx) == nonce
+                    && ConsensusTransaction::to(&tx) == Some(self.to_address)
+                    && ConsensusTransaction::value(&tx).is_zero()
+                    && ConsensusTransaction::chain_id(&tx) == Some(chain_id),
+                "foreign in-flight transaction at sender nonce"
+            );
 
             // Peek at the next command without consuming it so that a mismatch leaves
             // `inbound` intact for the normal send path.
@@ -1084,13 +1157,29 @@ where
                     };
                     let fees = pipelined::fee_params_of_tx(&tx);
                     let request = self.build_tx_request(
-                        tx.input().clone(), operator_address, nonce, ConsensusTransaction::gas_limit(&tx), fees,
+                        tx.input().clone(),
+                        operator_address,
+                        nonce,
+                        ConsensusTransaction::gas_limit(&tx),
+                        fees,
                     );
                     let raw_transactions = if self.confirmation_liveness_enabled() {
-                        self.capture_raw_transaction(tx.tx_hash(), &request).await?
-                            .into_iter().map(|raw| (tx.tx_hash(), raw)).collect()
-                    } else { vec![] };
-                    paired.push((tx.tx_hash(), cmd, ConfirmationResend { request, raw_transactions }));
+                        self.capture_raw_transaction(tx.tx_hash(), &request)
+                            .await?
+                            .into_iter()
+                            .map(|raw| (tx.tx_hash(), raw))
+                            .collect()
+                    } else {
+                        vec![]
+                    };
+                    paired.push((
+                        tx.tx_hash(),
+                        cmd,
+                        ConfirmationResend {
+                            request,
+                            raw_transactions,
+                        },
+                    ));
                 }
             }
         }

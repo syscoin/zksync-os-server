@@ -141,6 +141,13 @@ struct SubmitterState {
     replacement: Option<ReplacementPlan>,
 }
 
+pub(crate) fn prune_confirmed_prefix(prefix: &mut VecDeque<SimPrefixEntry>, floor: u64) -> usize {
+    while prefix.front().is_some_and(|entry| entry.nonce < floor) {
+        prefix.pop_front();
+    }
+    256_usize.saturating_sub(prefix.len())
+}
+
 impl<Input> L1Sender<Input>
 where
     Input: SendToL1 + Send + 'static,
@@ -210,6 +217,7 @@ where
                     &mut state,
                     &slots,
                     &submitted_tx,
+                    &mut resend_rx,
                     operator_address,
                 )
                 .await?;
@@ -218,10 +226,9 @@ where
                 loop {
                     loop {
                         let floor = *mined_floor_rx.borrow_and_update();
-                        while state.in_flight_prefix.front().is_some_and(|entry| entry.nonce < floor) {
-                            state.in_flight_prefix.pop_front();
+                        if prune_confirmed_prefix(&mut state.in_flight_prefix, floor) > 0 {
+                            break;
                         }
-                        if state.in_flight_prefix.len() < 256 { break; }
                         tokio::select! {
                             biased;
                             Some(request) = resend_rx.recv() => self.resend_evicted(&mut state, request, operator_address).await?,
@@ -322,7 +329,8 @@ where
                     // Same-sender transactions mine in nonce order, so head-of-line sighting
                     // is exhaustive: this receipt appearing implies nothing behind it is
                     // mined-but-unobserved for long.
-                    self.wait_for_inclusion(&mut entry, operator_address, &resend_tx).await?;
+                    self.wait_for_inclusion(&mut entry, operator_address, &resend_tx)
+                        .await?;
                     let InFlightTx {
                         nonce,
                         command,
@@ -344,7 +352,10 @@ where
                             nonce,
                             command,
                             submitted_at,
-                            resend: ConfirmationResend { request, raw_transactions },
+                            resend: ConfirmationResend {
+                                request,
+                                raw_transactions,
+                            },
                         })
                         .await
                         .is_err()
@@ -360,7 +371,9 @@ where
 
         let confirmation_forwarder = async move {
             while let Some(mined) = mined_rx.recv().await {
-                let receipt = self.wait_for_confirmed_receipt(mined.tx_hashes, mined.resend).await;
+                let receipt = self
+                    .wait_for_confirmed_receipt(mined.tx_hashes, mined.resend)
+                    .await;
                 // Observe latency before propagating errors so timeout cases are recorded.
                 L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
                     .observe(mined.submitted_at.elapsed().as_secs_f64());
@@ -406,17 +419,26 @@ where
         state: &mut SubmitterState,
         slots: &Arc<Semaphore>,
         submitted_tx: &mpsc::Sender<InFlightTx<Input>>,
+        resend_rx: &mut mpsc::Receiver<ResendRequest>,
         operator_address: Address,
     ) -> anyhow::Result<()> {
         for seed in seeds {
             let request = self.build_tx_request(
                 seed.command.solidity_call(self.gateway, &operator_address),
-                operator_address, seed.nonce, seed.gas_limit, seed.fee_params,
+                operator_address,
+                seed.nonce,
+                seed.gas_limit,
+                seed.fee_params,
             );
             let raw_transactions = if self.confirmation_liveness_enabled() {
-                self.capture_raw_transaction(seed.tx_hash, &request).await?.into_iter()
-                    .map(|raw| (seed.tx_hash, raw)).collect()
-            } else { vec![] };
+                self.capture_raw_transaction(seed.tx_hash, &request)
+                    .await?
+                    .into_iter()
+                    .map(|raw| (seed.tx_hash, raw))
+                    .collect()
+            } else {
+                vec![]
+            };
             state.in_flight_prefix.push_back(SimPrefixEntry {
                 nonce: seed.nonce,
                 calldata: seed.command.solidity_call(self.gateway, &operator_address),
@@ -427,10 +449,13 @@ where
             // If there are more seeds than window slots (the window was larger in a previous
             // session), this blocks until the inclusion watcher frees permits — it is already
             // running and needs no permits itself.
-            let permit = Arc::clone(slots)
-                .acquire_owned()
-                .await
-                .expect("in-flight window semaphore is never closed");
+            let permit = loop {
+                tokio::select! {
+                    biased;
+                    Some(request) = resend_rx.recv() => self.resend_evicted(state, request, operator_address).await?,
+                    permit = Arc::clone(slots).acquire_owned() => break permit.expect("in-flight window semaphore is never closed"),
+                }
+            };
             submitted_tx
                 .send(InFlightTx {
                     tx_hashes: vec![seed.tx_hash],
@@ -467,13 +492,7 @@ where
         // Drop prefix entries for transactions the inclusion watcher has observed mined —
         // their state is part of the provider's simulation base now.
         let mined_floor = *mined_floor_rx.borrow();
-        while state
-            .in_flight_prefix
-            .front()
-            .is_some_and(|entry| entry.nonce < mined_floor)
-        {
-            state.in_flight_prefix.pop_front();
-        }
+        prune_confirmed_prefix(&mut state.in_flight_prefix, mined_floor);
 
         let fee_params = self
             .resolve_fee_params(
@@ -513,12 +532,19 @@ where
             // this batch number is being submitted by this session.
             self.note_submitted_batches(&command);
 
-            let pending_tx = self.send_tx_with_retries(tx_request.clone(), &range).await?;
+            let pending_tx = self
+                .send_tx_with_retries(tx_request.clone(), &range)
+                .await?;
             let tx_hash = *pending_tx.tx_hash();
             let raw_transactions = if self.confirmation_liveness_enabled() {
-                self.capture_raw_transaction(tx_hash, &tx_request).await?.into_iter()
-                    .map(|raw| (tx_hash, raw)).collect()
-            } else { vec![] };
+                self.capture_raw_transaction(tx_hash, &tx_request)
+                    .await?
+                    .into_iter()
+                    .map(|raw| (tx_hash, raw))
+                    .collect()
+            } else {
+                vec![]
+            };
             state.next_nonce += 1;
             tracing::info!(
                 "{command_name}: L1 transaction submitted for {range}. Hash: {tx_hash:?} (nonce {nonce})",
@@ -623,6 +649,19 @@ where
                         format!("fetch receipt while waiting for L1 inclusion of tx {tx_hash}")
                     })?;
                 if receipt.is_some() {
+                    if self.confirmation_liveness_enabled()
+                        && !entry
+                            .raw_transactions
+                            .iter()
+                            .any(|(hash, _)| *hash == tx_hash)
+                    {
+                        if let Some(raw) = self
+                            .capture_raw_transaction(tx_hash, &entry.request)
+                            .await?
+                        {
+                            entry.raw_transactions.push((tx_hash, raw));
+                        }
+                    }
                     return Ok(tx_hash);
                 }
             }
@@ -737,7 +776,9 @@ where
         entry.fee_params = fees;
         entry.request.max_fee_per_gas = Some(fees.max_fee_per_gas);
         entry.request.max_priority_fee_per_gas = Some(fees.max_priority_fee_per_gas);
-        if let Some(raw) = raw { entry.raw_transactions.push((new_hash, raw)); }
+        if let Some(raw) = raw {
+            entry.raw_transactions.push((new_hash, raw));
+        }
         entry.submitted_at = Instant::now();
         Ok(())
     }
@@ -784,14 +825,19 @@ where
             fee_params,
         );
         let pending_tx = self
-            .send_tx_with_retries(tx_request.clone(), &format!("resend of nonce {}", request.nonce))
+            .send_tx_with_retries(
+                tx_request.clone(),
+                &format!("resend of nonce {}", request.nonce),
+            )
             .await?;
         entry.fee_params = fee_params;
 
         let new_hash = *pending_tx.tx_hash();
         let raw = if self.confirmation_liveness_enabled() {
             self.capture_raw_transaction(new_hash, &tx_request).await?
-        } else { None };
+        } else {
+            None
+        };
         tracing::info!(
             command_name = Input::COMPONENT_ID.as_str(),
             nonce = request.nonce,
@@ -859,7 +905,11 @@ where
             }));
         }
 
-        let chain_id = self.provider.get_chain_id().await.context("get settlement chain id during recovery")?;
+        let chain_id = self
+            .provider
+            .get_chain_id()
+            .await
+            .context("get settlement chain id during recovery")?;
 
         let in_flight_count = (pending_nonce - latest_nonce) as usize;
         tracing::info!(
@@ -889,8 +939,11 @@ where
                      restart with `force_transaction_resubmission.enabled = true` to replace \
                      them.",
                 );
-                self.wait_for_in_flight_txs_to_settle(operator_address).await?;
-                anyhow::bail!("pending transactions settled; restart to rebuild commands from the canonical frontier");
+                self.wait_for_in_flight_txs_to_settle(operator_address)
+                    .await?;
+                anyhow::bail!(
+                    "pending transactions settled; restart to rebuild commands from the canonical frontier"
+                );
             }
             anyhow::bail!("Error while probing eth_getTransactionBySenderAndNonce support: {e}");
         }
@@ -921,9 +974,14 @@ where
                 }
             };
 
-            anyhow::ensure!(tx.from() == operator_address && ConsensusTransaction::nonce(&tx) == nonce
-                && ConsensusTransaction::to(&tx) == Some(self.to_address) && ConsensusTransaction::value(&tx).is_zero()
-                && ConsensusTransaction::chain_id(&tx) == Some(chain_id), "foreign in-flight transaction at sender nonce");
+            anyhow::ensure!(
+                tx.from() == operator_address
+                    && ConsensusTransaction::nonce(&tx) == nonce
+                    && ConsensusTransaction::to(&tx) == Some(self.to_address)
+                    && ConsensusTransaction::value(&tx).is_zero()
+                    && ConsensusTransaction::chain_id(&tx) == Some(chain_id),
+                "foreign in-flight transaction at sender nonce"
+            );
 
             // Peek at the next command without consuming it so that a mismatch leaves
             // `inbound` intact for the normal send path.

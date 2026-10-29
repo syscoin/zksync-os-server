@@ -684,8 +684,8 @@ impl MethodNotFoundL1Proxy {
 
 /// An L1 RPC without `eth_getTransactionBySenderAndNonce` (geth family) cannot pair a previous
 /// session's in-flight transactions with queued commands. Restarted with an unsettled operator
-/// account, the pipelined sender must fall back to waiting for the account to settle —
-/// submitting nothing in the meantime — and resume sending once the leftover transaction mines.
+/// account, the pipelined sender waits for the account to settle without submitting anything,
+/// then exits so its supervisor restarts it with a fresh canonical settlement snapshot.
 ///
 /// The leftover in-flight transaction is a plain transfer from the commit operator rather than
 /// a real commit: startup L1-state discovery waits for pool-driven *contract-state* changes to
@@ -694,7 +694,7 @@ impl MethodNotFoundL1Proxy {
 /// which leaves contract state untouched — can.
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
-async fn missing_sender_nonce_rpc_stalls_sender_until_in_flight_txs_settle(
+async fn missing_sender_nonce_rpc_drains_pending_then_restarts_and_recovers(
     env: TestEnvironment,
 ) -> anyhow::Result<()> {
     let proxy =
@@ -748,7 +748,7 @@ async fn missing_sender_nonce_rpc_stalls_sender_until_in_flight_txs_settle(
         "the transfer must be pooled"
     );
 
-    let restarted = stopped.start().await?;
+    let mut restarted = stopped.start().await?;
     // The restarted RPC comes up while WAL replay is still running; new txs are validated
     // against the mid-replay state (test wallet not yet funded), so wait out the replay.
     restarted
@@ -775,12 +775,25 @@ async fn missing_sender_nonce_rpc_stalls_sender_until_in_flight_txs_settle(
         "node crashed while waiting for the operator account to settle",
     );
 
-    // Once the stray transfer mines, the sender settles and drains the queued commits.
+    // The old queue was built from the snapshot before the transfer settled. After it
+    // mines, the sender deliberately exits instead of sending from that stale snapshot.
     resume_l1_mining(&l1).await?;
-    wait_for_l1_state(&restarted, "commits resumed after settling", |state| {
-        state.last_committed_batch >= committed_before_restart + 2
-    })
+    let error = restarted
+        .wait_for_fatal_error_with_timeout(Duration::from_secs(60))
+        .await?;
+    assert!(
+        error
+            .to_string()
+            .contains("pending transactions settled; restart"),
+        "unexpected error: {error}"
+    );
+    let resumed = restarted.stop().await?.start().await?;
+    wait_for_l1_state(
+        &resumed,
+        "commits resumed after canonical restart",
+        |state| state.last_committed_batch >= committed_before_restart + 2,
+    )
     .await?;
-    assert!(!restarted.has_crashed());
+    assert!(!resumed.has_crashed());
     Ok(())
 }
