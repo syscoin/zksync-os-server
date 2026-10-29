@@ -45,7 +45,7 @@ operations on the target release, not from deposit defaults. Example schema:
   "l1_password_file": "/secure/l1-password",
   "l2_keystore": "/secure/l2-keystore.json",
   "l2_password_file": "/secure/l2-password",
-  "max_batch_size": 32,
+  "max_batch_size": 512,
   "l1_gas_limit": 1000000,
   "l1_gas_price": 1000000000,
   "priority_gas_limit": 5000000,
@@ -73,7 +73,8 @@ operations on the target release, not from deposit defaults. Example schema:
 
 All angle-bracket values and example gas/fee values must be replaced with
 reviewed deployment-specific values. Hashes are Ethereum Keccak-256 hashes of
-deployed runtime bytecode. The keeper verifies L1 and L2 chain IDs/genesis,
+deployed runtime bytecode. The batch size defaults to 512 addresses, the bridge's
+maximum; an operator may configure a smaller positive value. The keeper verifies L1 and L2 chain IDs/genesis,
 registry wiring, bridge alias and code hashes. It checks EIP-1967 implementation
 slots for the registry bridge, Bridgehub and the three L2 contracts. The required
 diamond selector entries pin the getter, priority-request and fee-quote facets

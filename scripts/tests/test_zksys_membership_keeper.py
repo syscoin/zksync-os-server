@@ -446,6 +446,28 @@ class ReadOnlyCliTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_batch_submits_up_to_512_addresses(self):
+        accounts = [f'0x{value:040x}' for value in range(1, 514)]
+        batches = []
+
+        class Hooks:
+            def verify_deployment(self, cfg): return True
+            def discover(self): return {'accounts': accounts, 'changes': [{'account': a} for a in accounts]}
+            def bridge_request(self, batch):
+                batches.append(batch)
+                return {}
+
+        class Driver:
+            def begin(self, name, rpc, kind, metadata, **kwargs):
+                self.metadata = metadata
+
+        driver = Driver()
+        runner = runner_module.KeeperRunner({}, lambda state: None, driver, None, None, None,
+                                            Hooks(), {'max_batch_size': 512})
+        self.assertEqual(runner.run_once(), 'bridge_submitted')
+        self.assertEqual(batches, [accounts[:512]])
+        self.assertEqual(driver.metadata['accounts'], accounts[:512])
+
     def test_sync_finishes_before_permissionless_activation(self):
         journal = {}
         saved = []
@@ -523,6 +545,8 @@ class HookTests(unittest.TestCase):
         config['diamond_facets'] = [{'selector': '0x' + keeper.selector(sig).hex(),
                                      'address': A, 'code_hash': '0x' + '12' * 32} for sig in signatures]
         self.assertIs(hooks_module.validate_config(config), config)
+        without_batch_size = {key: value for key, value in config.items() if key != 'max_batch_size'}
+        self.assertEqual(hooks_module.validate_config(without_batch_size)['max_batch_size'], 512)
         for field, invalid in (("max_batch_size", 513), ("max_l1_transaction_cost", 0),
                                ("l1_gas_limit", True), ("l2_chain_id", 1),
                                ("l1_keystore", "relative")):

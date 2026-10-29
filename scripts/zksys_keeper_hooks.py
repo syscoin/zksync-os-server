@@ -14,6 +14,7 @@ SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
 def validate_config(cfg):
     if type(cfg) is not dict:
         raise TransactionError('invalid config')
+    cfg.setdefault('max_batch_size', 512)
     for field in ('l1_chain_id', 'l2_chain_id', 'max_batch_size', 'l1_gas_price', 'l1_gas_limit',
                   'priority_gas_limit', 'gas_per_pubdata', 'max_priority_fee', 'max_l1_transaction_cost',
                   'l2_gas_price', 'l2_gas_limit', 'max_l2_transaction_cost'):
