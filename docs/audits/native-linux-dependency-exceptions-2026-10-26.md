@@ -195,3 +195,7 @@ value or add a signing implementation. The change does not modify Cargo
 manifests, the lockfile, native dependency features, or the reviewed advisory
 dispositions. The refreshed source fingerprint binds the changed inputs; the
 guarded scanners remain required on the final Linux CI head.
+
+The follow-up validates the identities of visible transactions in a stale
+startup suffix and adds sender recovery tests. It adds no cryptographic or
+dependency operations to the reviewed production path.

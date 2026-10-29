@@ -103,7 +103,7 @@ struct MinedTx<Input> {
 /// session (recovery calldata mismatch or a dropped transaction). The floor is the stale
 /// transactions' actual fees bumped by the regular transaction-pool price-bump rule.
 #[derive(Clone, Copy, Debug)]
-struct ReplacementPlan {
+pub(super) struct ReplacementPlan {
     /// Nonces below this replace previously-submitted transactions.
     until_nonce: u64,
     fee_floor: FeeParams,
@@ -968,8 +968,14 @@ where
                          re-sending queued commands from that nonce",
                     );
                     replacement = self
-                        .build_replacement_plan(operator_address, nonce, pending_nonce, None)
-                        .await;
+                        .build_replacement_plan(
+                            operator_address,
+                            chain_id,
+                            nonce,
+                            pending_nonce,
+                            None,
+                        )
+                        .await?;
                     break;
                 }
             };
@@ -1005,8 +1011,14 @@ where
                          commands at bumped fees",
                     );
                     replacement = self
-                        .build_replacement_plan(operator_address, nonce, pending_nonce, Some(&tx))
-                        .await;
+                        .build_replacement_plan(
+                            operator_address,
+                            chain_id,
+                            nonce,
+                            pending_nonce,
+                            Some(&tx),
+                        )
+                        .await?;
                     break;
                 }
                 Some(true) => {
@@ -1048,13 +1060,16 @@ where
     /// until_nonce)`: the per-field maximum of every still-visible stale transaction, bumped
     /// by the regular transaction-pool rule. Returns `None` when no stale transaction is
     /// visible anymore (nothing to outbid).
-    async fn build_replacement_plan(
+    /// The operator account must be exclusive to this sender: different calldata sent to the
+    /// same target cannot be distinguished from a stale command in the suffix.
+    pub(super) async fn build_replacement_plan(
         &self,
         operator_address: Address,
+        chain_id: u64,
         from_nonce: u64,
         until_nonce: u64,
         first_stale: Option<&L1TxResponse>,
-    ) -> Option<ReplacementPlan> {
+    ) -> anyhow::Result<Option<ReplacementPlan>> {
         let mut stale_fee_max: Option<FeeParams> = None;
         let mut fold = |tx: &L1TxResponse| {
             let fees = fee_params_of_tx(tx);
@@ -1073,26 +1088,28 @@ where
                 .get_transaction_by_sender_nonce(operator_address, nonce)
                 .await
             {
-                Ok(Some(tx)) => fold(&tx),
-                // A dropped tx needs no outbidding; an error here must not block startup —
-                // worst case the floor is too low and the send fails fatally with a clear
-                // "replacement transaction underpriced" error.
+                Ok(Some(tx)) => {
+                    anyhow::ensure!(
+                        tx.from() == operator_address
+                            && ConsensusTransaction::nonce(&tx) == nonce
+                            && ConsensusTransaction::to(&tx) == Some(self.to_address)
+                            && ConsensusTransaction::value(&tx).is_zero()
+                            && ConsensusTransaction::chain_id(&tx) == Some(chain_id),
+                        "foreign in-flight transaction in replacement suffix at nonce {nonce}"
+                    );
+                    fold(&tx);
+                }
                 Ok(None) => {}
                 Err(err) => {
-                    tracing::warn!(
-                        nonce,
-                        %err,
-                        "failed to fetch stale in-flight transaction while computing the \
-                         replacement fee floor",
-                    );
+                    anyhow::bail!("failed to inspect replacement suffix at nonce {nonce}: {err}");
                 }
             }
         }
 
-        stale_fee_max.map(|fees| ReplacementPlan {
+        Ok(stale_fee_max.map(|fees| ReplacementPlan {
             until_nonce,
             fee_floor: fees.replacement_floor(),
-        })
+        }))
     }
 
     /// Polls until the operator account has no pending transactions (pending nonce == latest

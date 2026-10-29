@@ -4,14 +4,15 @@
 //! `eth_getTransactionBySenderAndNonce`.
 
 use alloy::consensus::Transaction as ConsensusTransaction;
-use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, U256};
+use alloy::network::{TransactionBuilder, TransactionResponse};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::providers::ext::AnvilApi;
 use alloy::rpc::types::TransactionRequest;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, POLL_INTERVAL, ReceiptAssert};
@@ -30,6 +31,118 @@ fn fast_batches_config(config: &mut Config) {
     config.sequencer_config.block_time = Duration::from_millis(50);
     config.batcher_config.tx_per_batch_limit = 1;
     config.batcher_config.batch_timeout = Duration::from_secs(2);
+}
+
+/// The mined handoff must retain every candidate hash across a real L1 reorg.
+#[test_multisetup([CURRENT_TO_L1])]
+#[test_runtime(flavor = "multi_thread")]
+async fn pipelined_sender_confirms_original_candidate_after_replacement_is_orphaned(
+    env: TestEnvironment,
+) -> anyhow::Result<()> {
+    let proxy = MethodNotFoundL1Proxy::start(env.l1_rpc_url(), "__no_missing_method__").await?;
+    let mut config = env.default_config().await?;
+    fast_batches_config(&mut config);
+    config.l1_sender_config.pipelining_enabled = true;
+    config.l1_sender_config.command_limit = 1;
+    config.l1_sender_config.required_confirmations = 5;
+    config.l1_sender_config.poll_interval = Duration::from_millis(100);
+    config.l1_sender_config.tx_liveness_poll_interval = Duration::from_millis(100);
+    config.l1_sender_config.tx_liveness_max_missing_polls = 1;
+    let tester = env.launch_with_l1_rpc(config, proxy.url.clone()).await?;
+    let l1 = tester.l1_provider().clone();
+    let operator = commit_operator_address(tester.config()).await?;
+    let initial = fetch_l1_state(&tester).await?.last_committed_batch;
+    send_l2_txs(&tester, 4).await?;
+    wait_for_l1_state(&tester, "baseline commit", |state| {
+        state.last_committed_batch > initial
+    })
+    .await?;
+    l1.anvil_mine(Some(6), None).await?;
+    wait_for_operators_to_settle(&l1, tester.config()).await?;
+    let baseline = fetch_l1_state(&tester).await?.last_committed_batch;
+    stop_l1_mining(&l1).await?;
+    send_l2_txs(&tester, 4).await?;
+    wait_for_pooled_commits(&l1, operator, 1).await?;
+    let (nonce, _) = operator_nonces(&l1, operator).await?;
+    let original = l1
+        .get_transaction_by_sender_nonce(operator, nonce)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("original pending commit missing"))?
+        .tx_hash();
+    let raw = l1
+        .get_raw_transaction_by_hash(original)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("original signed transaction missing"))?;
+    tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        while !proxy
+            .raw_hashes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|hash| hash == &original.to_string())
+        {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("sender never captured original raw transaction"))?;
+    anyhow::ensure!(
+        l1.anvil_drop_transaction(original).await?.is_some(),
+        "original was not dropped"
+    );
+
+    let replacement = tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        loop {
+            if let Some(tx) = l1.get_transaction_by_sender_nonce(operator, nonce).await?
+                && tx.tx_hash() != original
+            {
+                return anyhow::Ok(tx.tx_hash());
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("replacement not submitted"))??;
+    let snapshot = l1.anvil_snapshot().await?;
+    proxy.watch(replacement);
+    proxy.hold_second_receipt.store(true, Ordering::SeqCst);
+    l1.anvil_mine(Some(1), None).await?;
+    tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        while proxy.observed_receipts.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("replacement was not handed to confirmation"))?;
+
+    anyhow::ensure!(
+        l1.anvil_revert(snapshot).await?,
+        "L1 snapshot revert failed"
+    );
+    let _ = l1.anvil_drop_transaction(replacement).await?;
+    let resent = l1.send_raw_transaction(&raw).await?;
+    anyhow::ensure!(
+        *resent.tx_hash() == original,
+        "original transaction hash changed"
+    );
+    l1.anvil_mine(Some(6), None).await?;
+    proxy.hold_second_receipt.store(false, Ordering::SeqCst);
+    proxy.release_receipt.notify_one();
+    let receipt = l1
+        .get_transaction_receipt(original)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("original did not re-mine"))?;
+    anyhow::ensure!(receipt.status(), "original commit reverted");
+    resume_l1_mining(&l1).await?;
+    wait_for_l1_state(&tester, "pipelined commits after reorg", |state| {
+        state.last_committed_batch >= baseline + 2
+    })
+    .await?;
+    anyhow::ensure!(
+        !tester.has_crashed(),
+        "sender crashed during candidate reorg recovery"
+    );
+    Ok(())
 }
 
 async fn send_l2_txs(tester: &Tester, count: usize) -> anyhow::Result<()> {
@@ -589,6 +702,12 @@ async fn l1_connection_blip_is_absorbed(env: TestEnvironment) -> anyhow::Result<
 /// `eth_getTransactionBySenderAndNonce`).
 struct MethodNotFoundL1Proxy {
     url: String,
+    watched: Arc<Mutex<Option<B256>>>,
+    observed_receipts: Arc<AtomicUsize>,
+    observed_raw: Arc<AtomicUsize>,
+    raw_hashes: Arc<Mutex<Vec<String>>>,
+    hold_second_receipt: Arc<AtomicBool>,
+    release_receipt: Arc<tokio::sync::Notify>,
 }
 
 impl MethodNotFoundL1Proxy {
@@ -596,6 +715,20 @@ impl MethodNotFoundL1Proxy {
         let target = target_url.to_string();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
+        let watched = Arc::new(Mutex::new(None));
+        let observed_receipts = Arc::new(AtomicUsize::new(0));
+        let observed_raw = Arc::new(AtomicUsize::new(0));
+        let raw_hashes = Arc::new(Mutex::new(Vec::new()));
+        let hold_second_receipt = Arc::new(AtomicBool::new(false));
+        let release_receipt = Arc::new(tokio::sync::Notify::new());
+        let observer = (
+            Arc::clone(&watched),
+            Arc::clone(&observed_receipts),
+            Arc::clone(&observed_raw),
+            Arc::clone(&raw_hashes),
+            Arc::clone(&hold_second_receipt),
+            Arc::clone(&release_receipt),
+        );
         tokio::spawn(async move {
             let client = reqwest::Client::new();
             loop {
@@ -604,12 +737,29 @@ impl MethodNotFoundL1Proxy {
                 };
                 let client = client.clone();
                 let target = target.clone();
+                let observer = observer.clone();
                 tokio::spawn(async move {
-                    let _ = Self::serve_connection(stream, client, target, missing_method).await;
+                    let _ =
+                        Self::serve_connection(stream, client, target, missing_method, observer)
+                            .await;
                 });
             }
         });
-        Ok(Self { url })
+        Ok(Self {
+            url,
+            watched,
+            observed_receipts,
+            observed_raw,
+            raw_hashes,
+            hold_second_receipt,
+            release_receipt,
+        })
+    }
+
+    fn watch(&self, hash: B256) {
+        *self.watched.lock().unwrap() = Some(hash);
+        self.observed_receipts.store(0, Ordering::SeqCst);
+        self.observed_raw.store(0, Ordering::SeqCst);
     }
 
     async fn serve_connection(
@@ -617,6 +767,14 @@ impl MethodNotFoundL1Proxy {
         client: reqwest::Client,
         target: String,
         missing_method: &str,
+        observer: (
+            Arc<Mutex<Option<B256>>>,
+            Arc<AtomicUsize>,
+            Arc<AtomicUsize>,
+            Arc<Mutex<Vec<String>>>,
+            Arc<AtomicBool>,
+            Arc<tokio::sync::Notify>,
+        ),
     ) -> anyhow::Result<()> {
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = tokio::io::BufReader::new(read_half);
@@ -670,6 +828,28 @@ impl MethodNotFoundL1Proxy {
                         .await?;
                     (response.status(), response.bytes().await?.to_vec())
                 };
+            let expected = *observer.0.lock().unwrap();
+            let observed = expected.is_some_and(|expected| {
+                request
+                    .get("params")
+                    .and_then(Value::as_array)
+                    .and_then(|params| params.first())
+                    .and_then(Value::as_str)
+                    == Some(expected.to_string().as_str())
+                    && serde_json::from_slice::<Value>(&response_body)
+                        .ok()
+                        .and_then(|response| response.get("result").cloned())
+                        .is_some_and(|result| !result.is_null())
+            });
+            if observed
+                && request.get("method").and_then(Value::as_str)
+                    == Some("eth_getTransactionReceipt")
+            {
+                let prior = observer.1.fetch_add(1, Ordering::SeqCst);
+                if prior >= 1 && observer.4.load(Ordering::SeqCst) {
+                    observer.5.notified().await;
+                }
+            }
             let head = format!(
                 "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
                 status.as_u16(),
@@ -678,6 +858,25 @@ impl MethodNotFoundL1Proxy {
             );
             write_half.write_all(head.as_bytes()).await?;
             write_half.write_all(&response_body).await?;
+            if request.get("method").and_then(Value::as_str) == Some("eth_getRawTransactionByHash")
+                && serde_json::from_slice::<Value>(&response_body)
+                    .ok()
+                    .and_then(|response| response.get("result").cloned())
+                    .is_some_and(|result| !result.is_null())
+                && let Some(hash) = request
+                    .get("params")
+                    .and_then(Value::as_array)
+                    .and_then(|params| params.first())
+                    .and_then(Value::as_str)
+            {
+                observer.3.lock().unwrap().push(hash.to_string());
+            }
+            if observed
+                && request.get("method").and_then(Value::as_str)
+                    == Some("eth_getRawTransactionByHash")
+            {
+                observer.2.fetch_add(1, Ordering::SeqCst);
+            }
         }
     }
 }

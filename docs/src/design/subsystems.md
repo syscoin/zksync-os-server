@@ -15,6 +15,11 @@
       `Vec<u32>` - see `batcher/mod.rs`)
     * This process requires Merkle Tree with materialized root hashes and proofs at every block boundary.
     * Runs L1 senders for each of `commit` / `prove` / `execute`
+      Each sender must have exclusive use of its operator address on the settlement layer.
+      Do not submit other transactions from that address or run another active sender with it.
+      Startup recovery may replace stale transactions to its configured target, including
+      transactions with different calldata; it cannot identify unrelated work sent to that
+      same target. Forced resubmission also replaces pending transactions.
     * Runs Priority Tree Manager that applies new L1->L2 transactions to the dynamic Merkle tree and prepares `execute` commands.
       It's run both for main node and ENs. ENs don't send `execute` txs to L1, but they need to keep the tree up to date,
       so that if the node become main, it doesn't need to build the tree from scratch.

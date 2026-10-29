@@ -133,6 +133,84 @@ fn signed_resend() -> (B256, Bytes, ConfirmationResend) {
     )
 }
 
+#[tokio::test]
+async fn replacement_suffix_rejects_foreign_transactions_and_lookup_failures() {
+    let (_, raw, request) = signed_resend();
+    let mut input = raw.as_ref();
+    let envelope = TxEnvelope::decode_2718(&mut input).unwrap();
+    let transaction = pipelined::L1TxResponse {
+        inner: alloy::consensus::transaction::Recovered::new_unchecked(
+            envelope,
+            request.request.from.unwrap(),
+        ),
+        ..Default::default()
+    };
+    let operator = request.request.from.unwrap();
+    let TxEnvelope::Eip1559(signed) = transaction.inner.inner().clone() else {
+        unreachable!();
+    };
+    let (mut nonzero_tx, signature, _) = signed.into_parts();
+    nonzero_tx.value = 1_u64.into();
+    let nonzero = pipelined::L1TxResponse {
+        inner: alloy::consensus::transaction::Recovered::new_unchecked(
+            TxEnvelope::Eip1559(alloy::consensus::Signed::new_unhashed(
+                nonzero_tx, signature,
+            )),
+            operator,
+        ),
+        ..Default::default()
+    };
+    for (expected_sender, expected_chain, expected_nonce, expected_target, should_pass) in [
+        (operator, 31337, 7, Address::ZERO, true),
+        (Address::with_last_byte(1), 31337, 7, Address::ZERO, false),
+        (operator, 1, 7, Address::ZERO, false),
+        (operator, 31337, 8, Address::ZERO, false),
+        (operator, 31337, 7, Address::with_last_byte(1), false),
+    ] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let mut sender = sender(provider, true, true);
+        sender.to_address = expected_target;
+        a.push_success(&Some(transaction.clone()));
+        let result = sender
+            .build_replacement_plan(
+                expected_sender,
+                expected_chain,
+                expected_nonce,
+                expected_nonce + 1,
+                None,
+            )
+            .await;
+        assert_eq!(result.is_ok(), should_pass);
+    }
+
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let sender = sender(provider, true, true);
+    a.push_success(&Some(nonzero));
+    assert!(
+        sender
+            .build_replacement_plan(operator, 31337, 7, 8, None)
+            .await
+            .is_err()
+    );
+
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let sender = sender(provider, true, true);
+    a.push_failure(ErrorPayload {
+        code: -32000,
+        message: "lookup failed".into(),
+        data: None,
+    });
+    assert!(
+        sender
+            .build_replacement_plan(operator, 31337, 7, 8, None)
+            .await
+            .is_err()
+    );
+}
+
 #[test]
 fn simulation_prefix_stays_bounded_until_predecessors_confirm() {
     let mut prefix: std::collections::VecDeque<_> = (0..256)
