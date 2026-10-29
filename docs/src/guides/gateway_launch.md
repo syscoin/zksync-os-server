@@ -943,8 +943,8 @@ For canonical `0xcA11bde05977b3631167028862bE2a173976CA11`, follow the
 [official deployment instructions](https://github.com/mds1/multicall3#new-deployments),
 check the deployer nonce and signed transaction gas limit, fund minimally and
 verify the exact deployed runtime. Its publicly compromised deployment EOA is
-not the project funding wallet. Opt-in service-V1 proof/reward contracts are not
-enabled by token bootstrap and are not automatically part of mock proving.
+not the project funding wallet. The optional service-V1 child setup is a
+separate post-deployment step and does not configure mock proving.
 
 Refresh EN source/build stamps, sequencer enode and direct RPC inputs, both
 explorers, token branding, wallet, portal, bridge routes/start blocks and faucet
@@ -1845,7 +1845,8 @@ work and bind recovery to one verifier mode. -->
 | `ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_SALT` / `ZKSYS_L1_REGISTRY_BRIDGE_IMPL_SALT` / `ZKSYS_L1_REGISTRY_BRIDGE_PROXY_SALT` | Optional bytes32 salts for deterministic L1 registry bridge proxy admin, implementation, and proxy deployments through the L1 CREATE2 factory |
 | `ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK` | Syscoin `nNEVMStartBlock` used to convert absolute UTXO collateral heights into NEVM-local seniority age; defaults to `1317500` |
 | `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1` / `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT2` | Effective post-NEVM seniority thresholds; default `210240` / `525600` |
-| `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS` / `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS` | Seniority bonuses in basis points; default `0` / `0` for first-year launch without seniority multiplier |
+| `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS` / `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS` | Seniority bonuses in basis points; default `0` / `0`, or required `3500` / `10000` when V1 service mode is explicitly selected |
+| `ZKSYS_ENABLE_PROVER_SERVICE_V1` | Selects the period-zero service path before L1 deployment; defaults to `false`, and must remain the same on every subsequent launch helper invocation. Requires real proving. |
 | `ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS` | Optional L1 registry bridge address override for the L2 bootstrap. If unset/zero, `zksys-l2-bootstrap.sh` reads the address persisted by `gateway-deploy-l1.sh` in `configs/contracts.yaml` |
 | `ZKSYS_L2_REGISTRY_IMPL_SALT` / `ZKSYS_L2_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 membership fact registry implementation/proxy deployments; the proxy address is the operational registry address wired to the L1 bridge |
 | `ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 reward weight registry implementation/proxy deployments; the proxy address is wired as the membership registry receiver |
@@ -1930,6 +1931,43 @@ and binding the remaining bootstrap graph. It must complete issuer deployment
 before that start time; an expired anchor is not silently moved forward.
 The token receipt, rather than the later issuer receipt or operator wall clock,
 is the recorded timing anchor. Existing absolute-time bootstrap remains available.
+
+For the intended zkSYS mainnet launch with period-zero prover service, set
+`ZKSYS_ENABLE_PROVER_SERVICE_V1=true` before L1 deployment and retain it for
+every launch helper. This selection alone does not complete or activate the
+prover service; the remaining setup steps below are required. L1 bridge configuration is then pinned to seniority
+heights `210240` / `525600` and bonus rates `3500` / `10000` basis points.
+The ordinary L2 bootstrap leaves membership delivery disconnected until
+accounting is configured, so the keeper cannot activate those delivered
+weights before that step. After the ordinary bootstrap, use
+`zksys-l2-bootstrap.sh --service-addresses` to derive the child receiver
+address needed by the NEVM message sink. The flag and the existing launch and
+bootstrap identities must match the persisted deployment.
+
+The separate `zksys-l2-bootstrap.sh --service-v1` stage deploys the child
+receiver and service registry and configures the issuer from period zero,
+then connects the membership bridge. It requires the already-deployed Gateway
+child proof gate, NEVM root proof gate and root message sink, and pins their
+operator-supplied runtime hashes and cross-chain identities. The stage requires
+`ZKSYS_SERVICE_GATEWAY_GATE`, `ZKSYS_SERVICE_ROOT_SINK`,
+`ZKSYS_SERVICE_GATEWAY_CHAIN_ADDRESS`, `ZKSYS_SERVICE_SETTLEMENT_CHAIN_ADDRESS`,
+`ZKSYS_SERVICE_SEQUENCER`, `ZKSYS_SERVICE_POLICY_HASH`,
+`ZKSYS_SERVICE_GATEWAY_VK_HASH`, `ZKSYS_SERVICE_GATEWAY_GATE_CODE_HASH`,
+`ZKSYS_SERVICE_ROOT_SINK_CODE_HASH`, `ZKSYS_SERVICE_ROOT_GATE_CODE_HASH`,
+`ZKSYS_SERVICE_RECEIPT_GRACE_SECONDS`, `ZKSYS_SERVICE_ROSTER_LEAD_SECONDS`,
+and `ZKSYS_SERVICE_DUTIES_PER_ROUND`.
+The operator must obtain and independently review those deployed identities;
+matching a supplied hash does not establish its provenance. The stage requires
+zero active weight and enough time before the issuance start. Persist its
+private `zksys-service-v1.json` deployment manifest for retries.
+
+This child stage does not deploy or configure the full proof lanes, route node
+proving through the gates, enroll an operator, publish the initial proving
+roster, or relay and activate it. Those steps, real accepted bootstrap proofs,
+the production verifier and the transport require separate implementation and
+deployment qualification before the service is ready. The membership keeper
+must deliver removals so that removed Sentries stop receiving base weight and
+are excluded from future prover eligibility checks.
 
 Preserve `zksys-token-prelude.json`, `zksys-token-receipt.json` and the complete
 bootstrap manifest in the private launch checkpoint directory. Retries reuse

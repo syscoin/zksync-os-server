@@ -233,3 +233,7 @@ are not timing or exploitation tests.
 ## Membership-expiry source re-review
 
 The membership-expiry change removes an immutable field and time-based eligibility check from the prover-service Solidity contract, and updates its Solidity tests. It does not change Rust callers, Cargo manifests, the lockfile, native dependency features, or the reviewed advisory conditions. The source fingerprint is updated to bind the changed files; the guarded CI scanners still run on the final head.
+
+## Prover-service setup source re-review
+
+The subsequent setup changes affect Solidity contracts, launch and prover-service scripts, their tests, documentation, and CI. They do not change Rust source, Cargo manifests, the lockfile, native dependency features, or the advisory dispositions reviewed here. The refreshed source fingerprint binds those inputs; this limited dependency-scope review does not certify the service contracts or deployment. Both guarded scanners remain required on the final Linux CI head.

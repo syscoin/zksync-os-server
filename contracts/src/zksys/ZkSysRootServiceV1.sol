@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {IL1BridgehubMinimal} from "./ZkSysRegistryBridge.sol";
+import {IZkSysChildMailboxV1, ZkSysL2MessageV1, ServiceMessageProofV1} from "./ZkSysServiceMessageReceiversV1.sol";
 import {
     AcceptedPackageV1,
     DutySuccessV1,
@@ -14,6 +15,13 @@ interface IZkSysRootAcceptedReceiverV1 {
     function receiveRootAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
         external;
     function receiveRootActivation(bytes32 vkHash, bytes32 qualifiedRosterRoot) external;
+    function receiveChildAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
+        external;
+    function receiveChildActivation(bytes32 vkHash, bytes32 qualifiedRosterRoot) external;
+}
+
+interface IZkSysBridgehubRegistryV1 {
+    function getZKChain(uint256 chainId) external view returns (address);
 }
 
 /// @notice NEVM outbox for messages emitted atomically by the Gateway's native proof gate.
@@ -29,6 +37,7 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
 
     struct Configuration {
         address publisher;
+        address gatewayGate;
         IL1BridgehubMinimal bridgehub;
         uint256 gatewayChainId;
         address gatewayChainAddress;
@@ -38,6 +47,7 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
     }
 
     address public immutable publisher;
+    address public immutable gatewayGate;
     IL1BridgehubMinimal public immutable bridgehub;
     uint256 public immutable gatewayChainId;
     address public immutable gatewayChainAddress;
@@ -51,12 +61,17 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
 
     constructor(Configuration memory config) {
         if (
-            config.publisher == address(0) || address(config.bridgehub).code.length == 0 || config.gatewayChainId == 0
+            config.publisher == address(0) || config.gatewayGate == address(0)
+                || address(config.bridgehub).code.length == 0 || config.gatewayChainId == 0
                 || config.gatewayChainAddress == address(0) || config.registryChainId == 0
                 || config.registryChainId == config.gatewayChainId || config.registryReceiver == address(0)
                 || config.policyHash == bytes32(0)
+                || config.gatewayChainAddress.code.length == 0
+                || IZkSysBridgehubRegistryV1(address(config.bridgehub)).getZKChain(config.gatewayChainId)
+                    != config.gatewayChainAddress
         ) revert InvalidConfiguration();
         publisher = config.publisher;
+        gatewayGate = config.gatewayGate;
         bridgehub = config.bridgehub;
         gatewayChainId = config.gatewayChainId;
         gatewayChainAddress = config.gatewayChainAddress;
@@ -116,6 +131,62 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
         );
     }
 
+    /// @notice Relay a zkSYS-lane proof report after Gateway settles it on NEVM.
+    function relayChildAccepted(
+        AcceptedPackageV1 calldata accepted,
+        DutySuccessV1[] calldata duties,
+        bool bootstrap,
+        ServiceMessageProofV1 calldata inclusion,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) external payable returns (bytes32) {
+        if (
+            accepted.chainId != registryChainId || accepted.policyHash != policyHash
+                || ZkSysServiceTypesV1.hashReport(duties) != accepted.reportHash
+        ) revert MessageNotPublished();
+        bytes memory data = abi.encode(ACCEPTED_DOMAIN, ZkSysServiceTypesV1.hashPackage(accepted), bootstrap);
+        _authenticateGateway(data, inclusion);
+        return _send(
+            keccak256(data),
+            abi.encodeCall(IZkSysRootAcceptedReceiverV1.receiveChildAccepted, (accepted, duties, bootstrap)),
+            gasLimit,
+            gasPerPubdataByteLimit,
+            refundRecipient
+        );
+    }
+
+    function relayChildActivation(
+        bytes32 vkHash,
+        bytes32 root,
+        ServiceMessageProofV1 calldata inclusion,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) external payable returns (bytes32) {
+        bytes memory data = abi.encode(ACTIVATION_DOMAIN, vkHash, root);
+        _authenticateGateway(data, inclusion);
+        return _send(
+            keccak256(data),
+            abi.encodeCall(IZkSysRootAcceptedReceiverV1.receiveChildActivation, (vkHash, root)),
+            gasLimit,
+            gasPerPubdataByteLimit,
+            refundRecipient
+        );
+    }
+
+    function _authenticateGateway(bytes memory data, ServiceMessageProofV1 calldata inclusion) private view {
+        if (IZkSysBridgehubRegistryV1(address(bridgehub)).getZKChain(gatewayChainId) != gatewayChainAddress) {
+            revert MessageNotPublished();
+        }
+        ZkSysL2MessageV1 memory message =
+            ZkSysL2MessageV1({txNumberInBatch: inclusion.txNumberInBatch, sender: gatewayGate, data: data});
+        if (!IZkSysChildMailboxV1(gatewayChainAddress)
+                .proveL2MessageInclusion(
+                    inclusion.blockOrBatchNumber, inclusion.messageIndex, message, inclusion.merkleProof
+                )) revert MessageNotPublished();
+    }
+
     function _relay(
         bytes32 hash,
         bytes memory payload,
@@ -124,6 +195,16 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
         address refundRecipient
     ) private returns (bytes32 canonicalTxHash) {
         if (!messages[hash]) revert MessageNotPublished();
+        return _send(hash, payload, gasLimit, gasPerPubdataByteLimit, refundRecipient);
+    }
+
+    function _send(
+        bytes32 hash,
+        bytes memory payload,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) private returns (bytes32 canonicalTxHash) {
         canonicalTxHash = bridgehub.requestL2TransactionDirect{value: msg.value}(
             IL1BridgehubMinimal.L2TransactionRequestDirect({
                 chainId: registryChainId,

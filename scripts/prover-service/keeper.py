@@ -106,6 +106,7 @@ def prepare(settings, request, evidence, payload, *, enrollment=None):
     """Validate the same native FRI artifacts and endorsements used by package signing."""
     s.exact(request, ("proposal", "manifest", "subscriptions", "duties"))
     proposal, duties = request["proposal"], request["duties"]
+    s.validate_empty_bootstrap_control(enrollment, proposal, request["manifest"], duties)
     statements = s.validate_evidence(settings, evidence)
     numbers = list(statements)
     s.require(len(numbers) >= 2 and type(duties) is list and len(duties) <= len(numbers), "invalid_compute_range")

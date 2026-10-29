@@ -279,6 +279,30 @@ deadlines or weakening the independent enrollment and audit trust checks.
 
 ## Inspect the phase before offering rewarded FRI work
 
+Before the first subscription, membership delivery may itself need a native
+bootstrap proof through the already-installed gate. Use uncredited bootstrap
+control work: real native FRI and SNARK proofs over at least two consecutive
+batches, with an empty duty report. The sequencer's bootstrap keeper
+configuration must pin a finalized registry block where no eligible subscribers
+exist, the zero coordinator address/hash, and the reviewed gate. Prepare the
+empty manifest signing request with a nonzero, independently chosen cursor:
+
+```sh
+python3 scripts/prover-service/bootstrap_control.py \
+  --keeper-config /trusted/child-bootstrap-keeper.json --period 0 \
+  --previous-cursor 0xREVIEWED_32_BYTE_CURSOR --output /trusted/control-manifest-request.json
+```
+
+The helper checks the pinned empty enrollment and current gate phase. The
+sequencer signs its `request`, and the operator combines `payload` and the
+signature as the ordinary manifest used by the manual `keeper.py open` and
+`service.py package` workflow. Supply the returned empty `subscriptions` and
+`duties` arrays; never attach reward duties to this authority. This is a manual
+proof and relay path, not an automatic prover or an activation transaction. An
+empty snapshot cannot initialize a dispatcher or form a later paid journal.
+After membership is delivered and a prover is enrolled, create a new nonempty
+bootstrap enrollment snapshot and journal for qualification work.
+
 ```sh
 python3 scripts/prover-service/keeper.py --config /trusted/child-keeper.json \
   --output /trusted/phase.json status

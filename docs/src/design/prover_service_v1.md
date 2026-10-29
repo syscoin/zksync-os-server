@@ -2,8 +2,9 @@
 
 This is an opt-in implementation and release plan for one shared sequencer, senior
 Sentry FRI workers, and independently endorsed SNARK wrapping for both the child
-and Gateway chains. It is **not enabled by the
-existing launch scripts**. It builds on the reproduced V32/V8 guest and production
+and Gateway chains. An optional post-deployment stage sets up the child registry
+and issuer accounting, but the full proof lanes and service activation are not
+automatically deployed or enabled by the launch scripts. It builds on the reproduced V32/V8 guest and production
 verification key. The canonical fixture regeneration marker remains in force.
 Contract tests with mock settlement prove accounting and authorization behavior;
 they do not qualify a deployed Gateway or the packaged multi-role fixture.
@@ -88,17 +89,19 @@ the same slot or create a second bonus pool. Bootstrap Gateway proofs never
 overwrite the child's production VK pin. The shared sequencer must be nonzero in
 every configuration, including child-only deployments. The optional child-only
 configuration uses zero Gateway chain ID, address and VK fields; a foundational
-Gateway deployment must enable both lanes.
+Gateway deployment must enable both lanes. The child-only configuration has no
+NEVM sink and does not support the Gateway-origin receipt route described below.
 
-Only the local immutable acceptance adapter can install accepted reports. Child
-proof acceptance comes from the child's fixed gate on Gateway through the existing
-interop message verifier at `0x10009`. Gateway proof acceptance comes from its
-fixed gate on NEVM: `ZkSysRootServiceMessageSinkV1` records that gate's message in
-the same transaction, and anyone can pay the canonical Bridgehub relay to the
-child receiver. The receiver requires the root sink's canonical alias and exact
-lane, policy and report bindings. An address comparison across chains or a signed
-post-proof attestation cannot replace either path. Root relay retries do not add
-credit. Bootstrap and service activation have separate authenticated domains.
+Only the local immutable acceptance adapter can install accepted reports. For
+child proofs, the NEVM root sink verifies the fixed Gateway gate's exact message
+against Gateway's executed batch root via its native mailbox, then forwards the
+accepted package or activation to zkSYS through Bridgehub. For Gateway proofs,
+the same sink records the NEVM gate's message atomically with proof acceptance.
+The child receiver requires the root sink's canonical alias and exact lane,
+policy and report bindings. Duplicate delivery does not add credit. The existing
+shared-root verifier remains available for separately supported proof routes; it
+must not be treated as proof of a Gateway-origin message on this topology. Both
+NEVM proof and forwarded child execution require real-chain qualification.
 
 Each settlement chain runs its own full `ZkSysProofGateV1`, priority guard and
 wrapper coordinator. The NEVM gate has the same joint sequencer/wrapper

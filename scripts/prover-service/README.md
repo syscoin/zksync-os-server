@@ -19,6 +19,10 @@ coordinator and selected-wrapper watcher automate the handoffs described below;
 they do not replace those production checks.
 The zero values in `config.example.json` deliberately fail validation.
 
+For the initial post-deployment steps, see the [prover setup entry point](post-deployment.md).
+It prepares bootstrap proof artifacts and supports durable initial enrollment and
+roster publication; proof generation and service activation remain separate.
+
 Use the [keeper operator guide](keeper-operator-guide.md) for the automated
 coordinator/wrapper workflow, package opening, selected-wrapper compute permits,
 both rental queues, and private SNARK lease recovery. The
@@ -330,6 +334,34 @@ fields. `proof_data` stays in the review artifact; the server recomputes it from
 its own canonical batches and proof. A different proof, turn, report, parent or
 range requires fresh signatures. Use the opt-in server integration only after
 the reviewed deployment, proof verification, and audit trust inputs are configured.
+
+## Initial roster publication
+
+Once real bootstrap duties qualify the initial operator and the roster cutoff
+has passed, build the complete sorted period-zero roster with `roster.py build`.
+`publish_initial_roster.py` checks that artifact against a pinned registry
+runtime, chain ID and genesis, checks the publisher's on-chain prefix and each
+next-page candidate at one canonical head, and simulates the call. It publishes
+at most 64 candidates per transaction. Supply a private configuration with
+`chain_id`, `genesis_hash`, `registry`, `registry_code_hash`, `publisher`,
+`rpc_url`, `max_head_age_seconds`, `rpc_timeout_seconds`, `gas_limit`,
+`gas_price`, `keystore`, and `password_file`; numeric fields are positive JSON
+integers, addresses/hashes lowercase `0x` hex, and signer paths absolute.
+
+```sh
+python3 scripts/prover-service/publish_initial_roster.py \
+  --config /trusted/roster-config.json --roster /trusted/roster-0.json
+python3 scripts/prover-service/publish_initial_roster.py \
+  --config /trusted/roster-config.json --roster /trusted/roster-0.json \
+  --state-dir /trusted/roster-journal --send
+```
+
+The first command only previews. Each `--send` invocation reconciles the prior
+transaction before sending another page; it retains the exact signed bytes and
+rebroadcasts those bytes if dropped. A finalized revert remains an error for
+operator review. Retain the private journal and signer account exclusively for
+this process. Successful child publication does not relay the roster, create
+either draw, or activate the proof gates or service registry.
 
 ## Durable relay
 

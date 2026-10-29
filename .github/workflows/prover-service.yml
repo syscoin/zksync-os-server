@@ -58,3 +58,42 @@ jobs:
           path: ${{ runner.temp }}/prover-service-tests.log
           if-no-files-found: warn
           retention-days: 7
+
+  prover-service-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout server and pinned Solidity dependencies
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Checkout pinned Era contracts
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: matter-labs/era-contracts
+          ref: 8fb7c29a4e3174335c6480b23f57822e054f9d5f
+          path: .ci-era-contracts
+          persist-credentials: false
+
+      - name: Prepare pinned OpenZeppelin v4 dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C .ci-era-contracts submodule update --init \
+            lib/openzeppelin-contracts-v4 lib/openzeppelin-contracts-upgradeable-v4
+          mkdir -p ../zksync-era
+          ln -s "$GITHUB_WORKSPACE/.ci-era-contracts" ../zksync-era/contracts
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1.9.0
+        with:
+          version: v1.7.1
+
+      - name: Test service contracts
+        working-directory: contracts
+        run: |
+          set -euo pipefail
+          forge test --remappings 'contracts/=../contracts/' --match-path 'test/ZkSys*Service*.t.sol'
+          forge test --remappings 'contracts/=../contracts/' --match-path 'test/ZkSysRootDraw.t.sol'

@@ -117,6 +117,28 @@ contract ZkSysAcceptedServiceReceiverV1 {
         _recordActivation(vkHash, qualifiedRosterRoot, false);
     }
 
+    /// @notice Accept a Gateway gate message verified on NEVM and forwarded by the pinned sink.
+    function receiveChildAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
+        external
+    {
+        _authenticateRoot();
+        if (accepted.chainId != block.chainid) revert WrongRegistry();
+        bytes32 messageHash =
+            keccak256(abi.encode(ACCEPTED_DOMAIN, ZkSysServiceTypesV1.hashPackage(accepted), bootstrap));
+        if (relayedMessages[messageHash]) return;
+        relayedMessages[messageHash] = true;
+        if (bootstrap) registry.acceptBootstrapDuties(accepted, duties);
+        else registry.acceptDuties(accepted, duties);
+    }
+
+    function receiveChildActivation(bytes32 vkHash, bytes32 qualifiedRosterRoot) external {
+        _authenticateRoot();
+        bytes32 messageHash = keccak256(abi.encode(ACTIVATION_DOMAIN, vkHash, qualifiedRosterRoot));
+        if (relayedMessages[messageHash]) return;
+        relayedMessages[messageHash] = true;
+        _recordActivation(vkHash, qualifiedRosterRoot, false);
+    }
+
     function receiveRootAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
         external
     {

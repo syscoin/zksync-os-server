@@ -61,6 +61,7 @@ class Rpc:
 
 
 def initialize(root, settings, subscriptions, period, endpoint, rpc, gateway=None):
+    s.require(type(subscriptions) is list and bool(subscriptions), "dispatcher_requires_enrolled_subscribers")
     subscriptions, anchor = enrollment_snapshot(settings, subscriptions, period, rpc)
     endpoint = sentry.endpoint_url(endpoint)
     lanes = {"child": {"settings": settings, "endpoint": endpoint}}
@@ -107,6 +108,8 @@ class Dispatcher:
         self.now = int(time.time()) if now is None else now
         self.state = journal.load(store.root / "state.json", list_fields=("audit.events",))
         s.require(self.state["schema_version"] == 1, "unsupported_journal")
+        s.require(type(self.state["subscriptions"]) is list and bool(self.state["subscriptions"]),
+                  "dispatcher_requires_enrolled_subscribers")
         self.settings = s.config(self.state["settings"])
         s.require(set(self.state["lanes"]) in ({"child"}, {"child", "gateway"}), "invalid_journal_lanes")
         for lane in self.state["lanes"].values():

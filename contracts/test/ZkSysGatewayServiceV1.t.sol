@@ -60,6 +60,30 @@ contract GatewayRosterMailboxMock is IZkSysChildMailboxV1 {
     }
 }
 
+/// @dev Models the direct-L1 batch-root comparison while checking the actual message leaf/path.
+contract GatewayMerkleSettlement is GateSettlement, IZkSysChildMailboxV1 {
+    mapping(uint256 => bytes32) public executedBatchRoot;
+
+    constructor(GateVerifier verifier_) GateSettlement(verifier_) {}
+
+    function setExecutedBatchRoot(uint256 batch, bytes32 root) external {
+        executedBatchRoot[batch] = root;
+    }
+
+    function proveL2MessageInclusion(uint256 batch, uint256 index, ZkSysL2MessageV1 calldata message, bytes32[] calldata proof)
+        external view returns (bool)
+    {
+        if (proof.length != 2 || index > 1 || executedBatchRoot[batch] == bytes32(0)) return false;
+        bytes32 leaf = keccak256(abi.encodePacked(
+            uint8(0), true, message.txNumberInBatch, address(0x8008),
+            bytes32(uint256(uint160(message.sender))), keccak256(message.data)
+        ));
+        bytes32 localRoot = index == 0 ? keccak256(abi.encodePacked(leaf, proof[0]))
+            : keccak256(abi.encodePacked(proof[0], leaf));
+        return keccak256(abi.encodePacked(localRoot, proof[1])) == executedBatchRoot[batch];
+    }
+}
+
 contract ZkSysGatewayServiceV1Test is Test {
     uint256 private constant CHILD = 57;
     uint256 private constant GATEWAY = 5050;
@@ -123,8 +147,9 @@ contract ZkSysGatewayServiceV1Test is Test {
         gateway.verifier = new GateVerifier();
         gateway.verifier.setVkHash(ROOT_VK);
         child.settlement = new GateSettlement(child.verifier);
-        gateway.settlement = new GateSettlement(gateway.verifier);
+        gateway.settlement = new GatewayMerkleSettlement(gateway.verifier);
         gateway.settlement.setChainId(GATEWAY);
+        hub.setChain(GATEWAY, address(gateway.settlement));
         GatePriorityCheckpoint childCheckpoint = new GatePriorityCheckpoint(POLICY);
         GatePriorityCheckpoint rootCheckpoint = new GatePriorityCheckpoint(POLICY);
         rootCheckpoint.setChainId(GATEWAY);
@@ -152,6 +177,7 @@ contract ZkSysGatewayServiceV1Test is Test {
         sink = new ZkSysRootServiceMessageSinkV1(
             ZkSysRootServiceMessageSinkV1.Configuration({
                 publisher: predictedGate,
+                gatewayGate: address(child.gate),
                 bridgehub: hub,
                 gatewayChainId: GATEWAY,
                 gatewayChainAddress: address(gateway.settlement),
@@ -317,9 +343,10 @@ contract ZkSysGatewayServiceV1Test is Test {
     function _relayAccepted(Lane memory lane, Package memory p, bool bootstrap) private {
         if (lane.executionId == CHILD) {
             bytes memory message = GateMessenger(address(0x8008)).lastMessage();
-            vm.chainId(CHILD);
-            ServiceMessageVerifierMockV1(address(0x10009)).expectMessage(GATEWAY, 1, 0, 0, address(child.gate), message);
-            receiver.relayAccepted(p.accepted, p.duties, bootstrap, _inclusion());
+            vm.chainId(ROOT);
+            ServiceMessageProofV1 memory proof = _gatewayProof(message);
+            sink.relayChildAccepted(p.accepted, p.duties, bootstrap, proof, 1_000_000, 800, address(this));
+            _deliverRoot();
         } else {
             vm.chainId(ROOT);
             sink.relayAccepted(p.accepted, p.duties, bootstrap, 1_000_000, 800, address(this));
@@ -327,6 +354,25 @@ contract ZkSysGatewayServiceV1Test is Test {
             assertEq(hub.recipient(), address(receiver));
             _deliverRoot();
         }
+    }
+
+    function _gatewayProof(bytes memory message) private returns (ServiceMessageProofV1 memory proof) {
+        return _gatewayProofForSender(message, address(child.gate));
+    }
+
+    function _gatewayProofForSender(bytes memory message, address sender) private returns (ServiceMessageProofV1 memory proof) {
+        bytes32 sibling = keccak256("gateway-other-log");
+        bytes32 sharedRoot = keccak256("gateway-shared-interop-root");
+        bytes32 leaf = keccak256(abi.encodePacked(
+            uint8(0), true, uint16(0), address(0x8008),
+            bytes32(uint256(uint160(sender))), keccak256(message)
+        ));
+        bytes32 batchRoot = keccak256(abi.encodePacked(keccak256(abi.encodePacked(leaf, sibling)), sharedRoot));
+        GatewayMerkleSettlement(address(gateway.settlement)).setExecutedBatchRoot(1, batchRoot);
+        bytes32[] memory path = new bytes32[](2);
+        path[0] = sibling;
+        path[1] = sharedRoot;
+        return ServiceMessageProofV1(1, 0, 0, path);
     }
 
     function _deliverRoot() private {
@@ -344,6 +390,79 @@ contract ZkSysGatewayServiceV1Test is Test {
         assertEq(service.bootstrapSuccesses(vm.addr(ACCOUNT_KEY)), 2);
         assertEq(service.totalQualifiedBonusWeight(0), 35_000 ether);
         assertEq(service.totalAdmittedBonusWeight(0), 0);
+    }
+
+    function testGatewayAcceptedMessageRequiresSettledProofAndDeduplicatesDelivery() public {
+        Package memory p = _bootstrap(child, 0, true);
+        bytes memory message = GateMessenger(address(0x8008)).lastMessage();
+        vm.chainId(ROOT);
+        ServiceMessageProofV1 memory proof = _gatewayProof(message);
+        proof.merkleProof[0] = keccak256("wrong-sibling");
+        vm.expectRevert(ZkSysRootServiceMessageSinkV1.MessageNotPublished.selector);
+        sink.relayChildAccepted(p.accepted, p.duties, true, proof, 1_000_000, 800, address(this));
+        proof = _gatewayProof(message);
+        hub.setChain(GATEWAY, address(0xBAD));
+        vm.expectRevert(ZkSysRootServiceMessageSinkV1.MessageNotPublished.selector);
+        sink.relayChildAccepted(p.accepted, p.duties, true, proof, 1_000_000, 800, address(this));
+        hub.setChain(GATEWAY, address(gateway.settlement));
+        p.duties[0].transactionCount++;
+        vm.expectRevert(ZkSysRootServiceMessageSinkV1.MessageNotPublished.selector);
+        sink.relayChildAccepted(p.accepted, p.duties, true, proof, 1_000_000, 800, address(this));
+        p.duties[0].transactionCount--;
+        proof = _gatewayProofForSender(message, address(0xBAD));
+        vm.expectRevert(ZkSysRootServiceMessageSinkV1.MessageNotPublished.selector);
+        sink.relayChildAccepted(p.accepted, p.duties, true, proof, 1_000_000, 800, address(this));
+        proof = _gatewayProof(message);
+        proof.blockOrBatchNumber = 2;
+        vm.expectRevert(ZkSysRootServiceMessageSinkV1.MessageNotPublished.selector);
+        sink.relayChildAccepted(p.accepted, p.duties, true, proof, 1_000_000, 800, address(this));
+        proof = _gatewayProof(message);
+        vm.chainId(CHILD);
+        vm.expectRevert(ZkSysAcceptedServiceReceiverV1.MessageNotIncluded.selector);
+        receiver.receiveChildAccepted(p.accepted, p.duties, true);
+        vm.chainId(ROOT);
+        sink.relayChildAccepted(p.accepted, p.duties, true, proof, 1_000_000, 800, address(this));
+        _deliverRoot();
+        assertEq(service.bootstrapSuccesses(vm.addr(ACCOUNT_KEY)), 1);
+        vm.chainId(ROOT);
+        sink.relayChildAccepted(p.accepted, p.duties, true, proof, 1_000_000, 800, address(this));
+        _deliverRoot();
+        assertEq(service.bootstrapSuccesses(vm.addr(ACCOUNT_KEY)), 1);
+    }
+
+    function testDirectThenRootDeliveryDoesNotDuplicateChildReceipt() public {
+        Package memory p = _bootstrap(child, 0, true);
+        bytes memory message = GateMessenger(address(0x8008)).lastMessage();
+        vm.chainId(CHILD);
+        ServiceMessageVerifierMockV1(address(0x10009)).expectMessage(GATEWAY, 1, 0, 0, address(child.gate), message);
+        receiver.relayAccepted(p.accepted, p.duties, true, _inclusion());
+        vm.chainId(ROOT);
+        sink.relayChildAccepted(p.accepted, p.duties, true, _gatewayProof(message), 1_000_000, 800, address(this));
+        _deliverRoot();
+        assertEq(service.bootstrapSuccesses(vm.addr(ACCOUNT_KEY)), 1);
+    }
+
+    function testActivationRootThenGatewayReceiptAndProofTampering() public {
+        _qualify();
+        _prepareRostersAndCoordinators();
+        vm.chainId(ROOT);
+        gateway.gate.activateService();
+        sink.relayActivation(ROOT_VK, rosterRoot, 1_000_000, 800, address(this));
+        _deliverRoot();
+        assertFalse(service.serviceActive());
+        vm.chainId(GATEWAY);
+        child.gate.activateService();
+        bytes memory message = GateMessenger(address(0x8008)).lastMessage();
+        vm.chainId(ROOT);
+        ServiceMessageProofV1 memory proof = _gatewayProof(message);
+        bytes32 childVk = child.verifier.vkHash();
+        vm.expectRevert(ZkSysRootServiceMessageSinkV1.MessageNotPublished.selector);
+        sink.relayChildActivation(bytes32(uint256(1)), rosterRoot, proof, 1_000_000, 800, address(this));
+        vm.expectRevert(ZkSysRootServiceMessageSinkV1.MessageNotPublished.selector);
+        sink.relayChildActivation(childVk, bytes32(uint256(1)), proof, 1_000_000, 800, address(this));
+        sink.relayChildActivation(childVk, rosterRoot, proof, 1_000_000, 800, address(this));
+        _deliverRoot();
+        assertTrue(service.serviceActive());
     }
 
     function _prepareRostersAndCoordinators() private {
@@ -442,9 +561,9 @@ contract ZkSysGatewayServiceV1Test is Test {
         vm.chainId(GATEWAY);
         child.gate.activateService();
         bytes memory message = GateMessenger(address(0x8008)).lastMessage();
-        vm.chainId(CHILD);
-        ServiceMessageVerifierMockV1(address(0x10009)).expectMessage(GATEWAY, 1, 0, 0, address(child.gate), message);
-        receiver.relayActivation(child.verifier.vkHash(), rosterRoot, _inclusion());
+        vm.chainId(ROOT);
+        sink.relayChildActivation(child.verifier.vkHash(), rosterRoot, _gatewayProof(message), 1_000_000, 800, address(this));
+        _deliverRoot();
         assertFalse(service.serviceActive());
         assertEq(service.totalAdmittedBonusWeight(0), 0);
         vm.chainId(ROOT);
