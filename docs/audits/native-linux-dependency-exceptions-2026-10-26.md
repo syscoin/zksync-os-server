@@ -239,3 +239,28 @@ The membership-expiry change removes an immutable field and time-based eligibili
 The subsequent setup changes affect Solidity contracts, launch and prover-service scripts, their tests, documentation, and CI. They do not change Rust source, Cargo manifests, the lockfile, native dependency features, or the advisory dispositions reviewed here. The refreshed source fingerprint binds those inputs; this limited dependency-scope review does not certify the service contracts or deployment. Both guarded scanners remain required on the final Linux CI head.
 
 The follow-up root relay changes affect the prover-service Solidity contracts, Python workers and tests, and documentation. They do not change Rust source, Cargo manifests, the lockfile, native dependency features, or the reviewed advisory dispositions. The source fingerprint is refreshed for these changes; the guarded scanners remain required on the final head.
+
+## L1 sender recovery source re-review
+
+The sender change checks canonical receipts and can retain and rebroadcast an
+already-signed EIP-1559 transaction. Its new signer recovery operates on the
+public transaction, signature and hash; it does not handle a private signing
+value or add a signing implementation. The change does not modify Cargo
+manifests, the lockfile, native dependency features, or the reviewed advisory
+dispositions. The refreshed source fingerprint binds the changed inputs; the
+guarded scanners remain required on the final Linux CI head.
+
+The follow-up validates the identities of visible transactions in a stale
+startup suffix and adds sender recovery tests. It adds no cryptographic or
+dependency operations to the reviewed production path.
+
+## CI-only release workflow review
+
+The GitHub-hosted release migration changes release and SBOM workflows, their
+policy helpers, and tests. The review against server commit `8aa4cf5` found no
+changes to Rust callers, Cargo manifests or lockfile, the pinned compiler, native
+patches, Dockerfile, or production deployment code. The Linux release build
+retains the reviewed target, GCP feature and `tokio_unstable` flag. The audit
+scope's source fingerprint is updated for these CI-only files; the lock, graph,
+package identities, advisory records and rationales are unchanged. The guarded
+Linux audit and deny jobs must still pass for the resulting commit.
