@@ -264,3 +264,15 @@ retains the reviewed target, GCP feature and `tokio_unstable` flag. The audit
 scope's source fingerprint is updated for these CI-only files; the lock, graph,
 package identities, advisory records and rationales are unchanged. The guarded
 Linux audit and deny jobs must still pass for the resulting commit.
+
+## Workspace 0.24.0 release version review
+
+The release updates the inherited workspace version, 45 exact local path
+requirements and 48 workspace package versions in `Cargo.lock` from 0.23.0 to
+0.24.0. The 1,277 external lockfile package records, including sources,
+checksums and dependency lists, are unchanged. The all-feature Linux-target
+metadata graph matches the prior reviewed graph after normalizing only the
+workspace versions. The lock, source and graph fingerprints are refreshed for
+this version-only change; advisory dispositions and fail-closed checks are
+unchanged. The guarded Linux audit and deny jobs remain required on the final
+release head.
