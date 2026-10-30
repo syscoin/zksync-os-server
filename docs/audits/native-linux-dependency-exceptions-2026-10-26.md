@@ -243,3 +243,14 @@ guarded scanners remain required on the final Linux CI head.
 The follow-up validates the identities of visible transactions in a stale
 startup suffix and adds sender recovery tests. It adds no cryptographic or
 dependency operations to the reviewed production path.
+
+## CI-only release workflow review
+
+The GitHub-hosted release migration changes release and SBOM workflows, their
+policy helpers, and tests. The review against server commit `8aa4cf5` found no
+changes to Rust callers, Cargo manifests or lockfile, the pinned compiler, native
+patches, Dockerfile, or production deployment code. The Linux release build
+retains the reviewed target, GCP feature and `tokio_unstable` flag. The audit
+scope's source fingerprint is updated for these CI-only files; the lock, graph,
+package identities, advisory records and rationales are unchanged. The guarded
+Linux audit and deny jobs must still pass for the resulting commit.

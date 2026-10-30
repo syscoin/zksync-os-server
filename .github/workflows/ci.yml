@@ -88,6 +88,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Check reviewed release inputs in clean checkout
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-server-release-inputs.py
+
       - name: Setup runner
         uses: ./.github/actions/runner-setup
 
@@ -116,6 +119,10 @@ jobs:
             scripts.tests.test_blockscout_remote_arguments \
             scripts.tests.test_blockscout_token_metadata \
             scripts.tests.test_server_release_inventory \
+            scripts.tests.test_server_release_inputs \
+            scripts.tests.test_publish_release_assets \
+            scripts.tests.test_resume_release_bins \
+            scripts.tests.test_hosted_release_workflow \
             scripts.tests.test_server_airbender_security \
             scripts.tests.test_gateway_settlement_fee_payer \
             scripts.tests.test_private_launch_files \
@@ -132,6 +139,11 @@ jobs:
             -s scripts/keygen/gateway-identity -p test_check_identity.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s scripts/releases/era-v32 -p test_release_overlay.py -v
+
+      - name: Test hosted release and image policy
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test_server_image_workflow.py
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test_dependency_track_config.py
 
       - name: Run clippy
         env:
