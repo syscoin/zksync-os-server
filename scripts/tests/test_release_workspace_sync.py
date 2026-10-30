@@ -167,6 +167,8 @@ class FakeGitHub:
             "base": {"ref": "main"},
         }
         self.pull_reads = 0
+        self.ref_reads = 0
+        self.ref_head = HEAD
         self.next_head = None
 
     def __call__(self, method, endpoint, body=None):
@@ -174,12 +176,16 @@ class FakeGitHub:
         prefix = f"repos/{REPOSITORY}/"
         if method == "GET" and endpoint == prefix + "pulls/368":
             self.pull_reads += 1
-            pull = copy.deepcopy(self.pull)
-            if self.pull_reads > 1 and self.next_head:
-                pull["head"]["sha"] = self.next_head
-            return pull
+            return copy.deepcopy(self.pull)
+        if method == "GET" and endpoint == prefix + f"git/ref/heads/{BRANCH}":
+            self.ref_reads += 1
+            head = self.next_head if self.ref_reads > 1 and self.next_head else self.ref_head
+            return {"object": {"sha": head}}
         for filename, content in (("Cargo.toml", self.manifest), ("Cargo.lock", self.lock)):
             if method == "GET" and endpoint == prefix + f"contents/{filename}?ref={HEAD}":
+                return {"encoding": "base64", "content": base64.b64encode(content.encode()).decode()}
+        for filename, content in (("Cargo.toml", expected_manifest()), ("Cargo.lock", expected_lock())):
+            if method == "GET" and endpoint == prefix + f"contents/{filename}?ref={'f' * 40}":
                 return {"encoding": "base64", "content": base64.b64encode(content.encode()).decode()}
         if method == "GET" and endpoint == prefix + f"git/commits/{HEAD}":
             return {"tree": {"sha": TREE}}
@@ -219,11 +225,29 @@ class SyncPullRequestTests(unittest.TestCase):
         self.assertEqual(writes[1][2]["parents"], [HEAD])
         self.assertEqual(writes[2][2], {"sha": NEW_COMMIT, "force": False})
         self.assertGreaterEqual(api.pull_reads, 2)
+        self.assertGreaterEqual(api.ref_reads, 2)
 
     def test_already_aligned_pr_has_no_write_requests(self):
         api = FakeGitHub(expected_manifest(), expected_lock())
         self.assertFalse(SYNC.sync_pull_request(REPOSITORY, 368, root=self.root, api=api))
         self.assertEqual(api.writes(), [])
+
+    def test_stale_pr_head_does_not_hide_unaligned_current_branch(self):
+        api = FakeGitHub()
+        api.pull["head"]["sha"] = "f" * 40
+        self.assertTrue(SYNC.sync_pull_request(REPOSITORY, 368, root=self.root, api=api))
+        writes = api.writes()
+        self.assertEqual(writes[1][2]["parents"], [HEAD])
+        self.assertEqual(writes[2][2], {"sha": NEW_COMMIT, "force": False})
+        self.assertIn(("GET", f"repos/{REPOSITORY}/contents/Cargo.toml?ref={HEAD}", None), api.calls)
+        self.assertIn(("GET", f"repos/{REPOSITORY}/contents/Cargo.lock?ref={HEAD}", None), api.calls)
+
+    def test_stale_pr_head_with_aligned_current_branch_is_a_noop(self):
+        api = FakeGitHub(expected_manifest(), expected_lock())
+        api.pull["head"]["sha"] = "f" * 40
+        self.assertFalse(SYNC.sync_pull_request(REPOSITORY, 368, root=self.root, api=api))
+        self.assertEqual(api.writes(), [])
+        self.assertGreaterEqual(api.ref_reads, 1)
 
     def test_rejects_foreign_repo_wrong_base_head_and_closed_pr(self):
         mutations = (
@@ -245,7 +269,7 @@ class SyncPullRequestTests(unittest.TestCase):
         api.next_head = "e" * 40
         with self.assertRaises(ValueError):
             SYNC.sync_pull_request(REPOSITORY, 368, root=self.root, api=api)
-        self.assertGreaterEqual(api.pull_reads, 2)
+        self.assertGreaterEqual(api.ref_reads, 2)
         self.assertFalse(any(method == "PATCH" for method, _, _ in api.calls))
 
     def test_invalid_remote_pin_fails_before_any_write(self):

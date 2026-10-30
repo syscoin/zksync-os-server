@@ -315,3 +315,15 @@ This change leaves Rust source, Cargo manifests, the lockfile, native features
 and advisory dispositions unchanged. Only the source fingerprint is refreshed;
 future release candidates still require explicit review of their changed lock,
 source and graph before either guarded Linux scanner can accept exceptions.
+
+## Workspace 0.24.1 release version review
+
+The release updates 45 exact local dependency pins and 48 local package versions
+in `Cargo.lock` from 0.24.0 to 0.24.1. All 1,277 external package records remain
+unchanged. The locked, all-feature Linux-target metadata graph matches the prior
+review after normalizing only workspace versions. The release helper also reads
+the branch reference directly because PR head metadata can lag a Release Please
+branch rewrite; regressions cover that stale-metadata case and concurrent
+advances. These changes introduce no Rust caller, native feature or advisory
+disposition changes. The lock, source and graph fingerprints bind the reviewed
+release inputs; both guarded Linux scanners remain required on the final head.
