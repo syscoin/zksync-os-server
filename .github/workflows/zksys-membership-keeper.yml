@@ -1,0 +1,49 @@
+name: zkSYS membership keeper
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  keeper-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1.9.0
+        with:
+          version: v1.7.1
+
+      - name: Test keeper
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 --version
+          cast --version
+          anvil --version
+          python3 -m unittest -v \
+            scripts.tests.test_zksys_service_component_deploy \
+            scripts.tests.test_zksys_service_gate_deploy \
+            scripts.tests.test_zksys_service_prepare_deployments \
+            scripts.tests.test_zksys_membership_keeper \
+            scripts.tests.test_zksys_keeper_transactions \
+            scripts.tests.test_zksys_keeper_core_rpc \
+            scripts.tests.test_zksys_keeper_anvil_recovery \
+            scripts.tests.test_zksys_keeper_activation_race

@@ -41,6 +41,19 @@ struct ServiceMessageProofV1 {
     bytes32[] merkleProof;
 }
 
+struct ServiceAcceptedClaimV1 {
+    AcceptedPackageV1 accepted;
+    DutySuccessV1[] duties;
+    bool bootstrap;
+    ServiceMessageProofV1 inclusion;
+}
+
+struct ServiceRootAcceptedClaimV1 {
+    AcceptedPackageV1 accepted;
+    DutySuccessV1[] duties;
+    bool bootstrap;
+}
+
 /// @notice Child-chain receiver for proof-authenticated Gateway service messages.
 /// @dev V32's canonical message verifier checks the imported Gateway root. Its history-stability
 /// assumption is the same as native interop; this is not an independent root-finality mechanism.
@@ -53,6 +66,7 @@ contract ZkSysAcceptedServiceReceiverV1 {
     error InvalidConfiguration();
     error MessageNotIncluded();
     error WrongRegistry();
+    error RootConflict();
 
     uint256 public immutable gatewayChainId;
     address public immutable gatewayGate;
@@ -64,6 +78,11 @@ contract ZkSysAcceptedServiceReceiverV1 {
     bytes32 public childActivationVk;
     bytes32 public rootActivationVk;
     bytes32 public activationRosterRoot;
+    mapping(uint256 batchNumber => bytes32 root) public gatewayBatchRoots;
+    mapping(bytes32 messageHash => bool authorized) public authorizedRootMessages;
+
+    event GatewayBatchRootReceived(uint256 indexed batchNumber, bytes32 indexed root);
+    event RootMessageAuthorized(bytes32 indexed messageHash);
 
     constructor(
         uint256 gatewayChainId_,
@@ -117,10 +136,127 @@ contract ZkSysAcceptedServiceReceiverV1 {
         _recordActivation(vkHash, qualifiedRosterRoot, false);
     }
 
+    function receiveGatewayBatchRoot(uint256 batchNumber, bytes32 root) external {
+        _authenticateRoot();
+        _storeGatewayBatchRoot(batchNumber, root);
+    }
+
+    function receiveGatewayBatchRootWithMessage(uint256 batchNumber, bytes32 root, bytes32 messageHash) external {
+        _authenticateRoot();
+        if (messageHash == bytes32(0)) revert MessageNotIncluded();
+        _storeGatewayBatchRoot(batchNumber, root);
+        if (!authorizedRootMessages[messageHash]) {
+            authorizedRootMessages[messageHash] = true;
+            emit RootMessageAuthorized(messageHash);
+        }
+    }
+
+    function _storeGatewayBatchRoot(uint256 batchNumber, bytes32 root) private {
+        if (root == bytes32(0)) revert MessageNotIncluded();
+        bytes32 previous = gatewayBatchRoots[batchNumber];
+        if (previous != bytes32(0)) {
+            if (previous != root) revert RootConflict();
+            return;
+        }
+        gatewayBatchRoots[batchNumber] = root;
+        emit GatewayBatchRootReceived(batchNumber, root);
+    }
+
+    function claimAcceptedBatch(ServiceAcceptedClaimV1[] calldata claims) external {
+        if (claims.length == 0) revert MessageNotIncluded();
+        _claimChildBatch(claims);
+    }
+
+    function claimMixedBatch(
+        ServiceAcceptedClaimV1[] calldata childClaims,
+        ServiceRootAcceptedClaimV1[] calldata rootClaims
+    ) external {
+        if (childClaims.length == 0 && rootClaims.length == 0) {
+            revert MessageNotIncluded();
+        }
+        _claimChildBatch(childClaims);
+        for (uint256 i; i < rootClaims.length; ++i) {
+            ServiceRootAcceptedClaimV1 calldata claim = rootClaims[i];
+            bytes32 hash = keccak256(
+                abi.encode(ACCEPTED_DOMAIN, ZkSysServiceTypesV1.hashPackage(claim.accepted), claim.bootstrap)
+            );
+            if (relayedRootMessages[hash]) continue;
+            if (!authorizedRootMessages[hash]) revert MessageNotIncluded();
+            _receiveRootAccepted(claim.accepted, claim.duties, claim.bootstrap);
+        }
+    }
+
+    function _claimChildBatch(ServiceAcceptedClaimV1[] calldata claims) private {
+        for (uint256 i; i < claims.length; ++i) {
+            ServiceAcceptedClaimV1 calldata claim = claims[i];
+            if (claim.accepted.chainId != block.chainid) revert WrongRegistry();
+            bytes memory data =
+                abi.encode(ACCEPTED_DOMAIN, ZkSysServiceTypesV1.hashPackage(claim.accepted), claim.bootstrap);
+            if (relayedMessages[keccak256(data)]) continue;
+            _authenticateGatewayBatch(data, claim.inclusion);
+            _receiveChildAccepted(claim.accepted, claim.duties, claim.bootstrap);
+        }
+    }
+
+    function claimActivation(bytes32 vkHash, bytes32 qualifiedRosterRoot, ServiceMessageProofV1 calldata inclusion)
+        external
+    {
+        bytes memory data = abi.encode(ACTIVATION_DOMAIN, vkHash, qualifiedRosterRoot);
+        bytes32 messageHash = keccak256(data);
+        if (relayedMessages[messageHash]) return;
+        _authenticateGatewayBatch(data, inclusion);
+        relayedMessages[messageHash] = true;
+        _recordActivation(vkHash, qualifiedRosterRoot, false);
+    }
+
+    function _authenticateGatewayBatch(bytes memory data, ServiceMessageProofV1 calldata inclusion) private view {
+        _checkRegistry();
+        bytes32 root = gatewayBatchRoots[inclusion.blockOrBatchNumber];
+        // V32's fixed 16384-leaf tree contributes 14 siblings; the final sibling is the shared root.
+        if (
+            root == bytes32(0) || inclusion.messageIndex >= 16384 || inclusion.merkleProof.length != 16
+                || inclusion.merkleProof[0] != bytes32(uint256(0x010f0001) << 224)
+        ) revert MessageNotIncluded();
+        bytes32 node = keccak256(
+            abi.encodePacked(
+                uint8(0),
+                true,
+                inclusion.txNumberInBatch,
+                address(0x8008),
+                bytes32(uint256(uint160(gatewayGate))),
+                keccak256(data)
+            )
+        );
+        for (uint256 i; i < 14; ++i) {
+            node = ((inclusion.messageIndex >> i) & 1) == 0
+                ? keccak256(abi.encodePacked(node, inclusion.merkleProof[i + 1]))
+                : keccak256(abi.encodePacked(inclusion.merkleProof[i + 1], node));
+        }
+        if (keccak256(abi.encodePacked(node, inclusion.merkleProof[15])) != root) revert MessageNotIncluded();
+    }
+
+    function _receiveChildAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
+        private
+    {
+        if (accepted.chainId != block.chainid) revert WrongRegistry();
+        bytes32 messageHash =
+            keccak256(abi.encode(ACCEPTED_DOMAIN, ZkSysServiceTypesV1.hashPackage(accepted), bootstrap));
+        if (relayedMessages[messageHash]) return;
+        relayedMessages[messageHash] = true;
+        if (bootstrap) registry.acceptBootstrapDuties(accepted, duties);
+        else registry.acceptDuties(accepted, duties);
+    }
+
     function receiveRootAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
         external
     {
         _authenticateRoot();
+        _receiveRootAccepted(accepted, duties, bootstrap);
+    }
+
+    function _receiveRootAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
+        private
+    {
         if (accepted.chainId != gatewayChainId) revert WrongRegistry();
         bytes32 messageHash =
             keccak256(abi.encode(ACCEPTED_DOMAIN, ZkSysServiceTypesV1.hashPackage(accepted), bootstrap));

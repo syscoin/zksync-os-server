@@ -18,7 +18,7 @@ coordinator address and runtime hash.
 
 The node compares `production_vk_hash` with its
 [compiled V8 identity](../../lib/types/src/protocol/proving_version.rs), currently
-`0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144`,
+`0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153`,
 and separately authenticates the deployed production verifier at startup. The
 [generated source release](../releases/era-v32/README.md) supplies this nonzero
 app-bound candidate identity for the security-patched recursion circuits;
@@ -54,6 +54,28 @@ confirmation depth come from the node's actual discovered settlement topology:
 `gateway_sender.required_confirmations` for a child settling on Gateway,
 `l1_sender.required_confirmations` for a Gateway settling on Syscoin or a direct
 child. Depth is inclusive; three means the inclusion block plus two successors.
+
+After the gate is deployed, `publication_config.py` can preview an overlay for
+one lane using its private keeper configuration:
+
+```sh
+python3 scripts/prover-service/publication_config.py \
+  --keeper-config /trusted/child-keeper.json --lane child \
+  --execution-chain-id CHILD_CHAIN_ID --settlement-chain-id GATEWAY_CHAIN_ID \
+  --directory /secure/zksys/node-service-publication
+```
+
+The directory must already exist with owner-only permissions for this preview.
+It checks lane and chain identities, reviewed gate, coordinator and guard pins,
+the source V8 key, deployed verifier and timelock prover authority at a pinned
+RPC head. The output is a JSON object usable as YAML, printed for review; the
+command neither edits a node config nor starts a node. Its VK check is against
+the source checkout, so independently confirm the node binary uses that build.
+Matching operator-supplied hashes does not establish their provenance or prove
+that no alternate native validator exists. The helper does not enroll provers,
+produce bootstrap proofs, publish a roster, or activate the service. Finish
+ordinary in-flight proof handling and the remaining bootstrap steps before
+switching the node's proof sender.
 
 After native SNARK acceptance, the node fsyncs one immutable `work.json` per
 execution chain/range/native-proof hash. It contains the exact native

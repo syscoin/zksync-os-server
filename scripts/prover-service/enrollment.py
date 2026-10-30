@@ -13,7 +13,7 @@ def fixed_word(raw):
 def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
     s.config(settings)
     s.uint(period, 64)
-    s.require(type(subscriptions) is list and 0 < len(subscriptions) <= 256, "invalid_subscription_count")
+    s.require(type(subscriptions) is list and len(subscriptions) <= 256, "invalid_subscription_count")
     s.require(rpc.call("eth_chainId", []) == settings["registry_chain_id"], "wrong_rpc_chain")
     block = (rpc.call("eth_getBlockByHash", [s.nonzero(block_hash), False]) if block_hash is not None
              else rpc.call("eth_getBlockByNumber", ["finalized", False]))
@@ -48,6 +48,7 @@ def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
                   "current_service_period_required")
     else:
         s.require(period == first and timestamp < start + first * seconds, "bootstrap_window_closed")
+    s.require(subscriptions or phase == "bootstrap", "empty_snapshot_requires_bootstrap")
     end = start + (period + 1) * seconds if active else start + period * seconds
     enrolled_count = fixed_word(view("friSubscriberCount(address,uint64)", settings["sequencer"], period))
     s.require(enrolled_count <= 256, "enrollment_exceeds_dispatcher_capacity")

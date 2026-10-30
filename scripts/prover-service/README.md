@@ -19,6 +19,10 @@ coordinator and selected-wrapper watcher automate the handoffs described below;
 they do not replace those production checks.
 The zero values in `config.example.json` deliberately fail validation.
 
+For the initial post-deployment steps, see the [prover setup entry point](post-deployment.md).
+It prepares bootstrap proof artifacts and supports durable initial enrollment and
+roster publication; proof generation and service activation remain separate.
+
 Use the [keeper operator guide](keeper-operator-guide.md) for the automated
 coordinator/wrapper workflow, package opening, selected-wrapper compute permits,
 both rental queues, and private SNARK lease recovery. The
@@ -194,8 +198,8 @@ identity at one canonical child-chain block through a **trusted RPC**. Include
 reviewed deployment and the clock authenticated by the Gateway roster receiver.
 Include the source block number, hash and timestamp. The offline helper does
 not authenticate a caller-created snapshot or claim that an account is already
-verified. The keeper must check `verifiedForSequencer`, registration, membership,
-freshness and the canonical block before using it.
+verified. The keeper must check `verifiedForSequencer`, registration, and
+membership at a current canonical block before using it.
 
 ```sh
 python3 scripts/prover-service/service.py --config /trusted/config.json \
@@ -331,6 +335,34 @@ its own canonical batches and proof. A different proof, turn, report, parent or
 range requires fresh signatures. Use the opt-in server integration only after
 the reviewed deployment, proof verification, and audit trust inputs are configured.
 
+## Initial roster publication
+
+Once real bootstrap duties qualify the initial operator and the roster cutoff
+has passed, build the complete sorted period-zero roster with `roster.py build`.
+`publish_initial_roster.py` checks that artifact against a pinned registry
+runtime, chain ID and genesis, checks the publisher's on-chain prefix and each
+next-page candidate at one canonical head, and simulates the call. It publishes
+at most 64 candidates per transaction. Supply a private configuration with
+`chain_id`, `genesis_hash`, `registry`, `registry_code_hash`, `publisher`,
+`rpc_url`, `max_head_age_seconds`, `rpc_timeout_seconds`, `gas_limit`,
+`gas_price`, `keystore`, and `password_file`; numeric fields are positive JSON
+integers, addresses/hashes lowercase `0x` hex, and signer paths absolute.
+
+```sh
+python3 scripts/prover-service/publish_initial_roster.py \
+  --config /trusted/roster-config.json --roster /trusted/roster-0.json
+python3 scripts/prover-service/publish_initial_roster.py \
+  --config /trusted/roster-config.json --roster /trusted/roster-0.json \
+  --state-dir /trusted/roster-journal --send
+```
+
+The first command only previews. Each `--send` invocation reconciles the prior
+transaction before sending another page; it retains the exact signed bytes and
+rebroadcasts those bytes if dropped. A finalized revert remains an error for
+operator review. Retain the private journal and signer account exclusively for
+this process. Successful child publication does not relay the roster, create
+either draw, or activate the proof gates or service registry.
+
 ## Durable relay
 
 For dispatcher-assigned work, use the [lease-less rental handoff](rental-handoff.md):
@@ -428,15 +460,15 @@ that a malicious sequencer has withheld neither. This is a trusted dispatcher,
 not a decentralized availability protocol.
 
 Initialization authenticates accepted account consent through every exact stored
-subscription and operator binding, fresh senior membership, policy, chain address, quota, and period clock
-against the same finalized child-chain RPC block using EIP-1898 `blockHash` with
+subscription and operator binding, senior membership, policy, chain address,
+quota, and period clock against the same finalized child-chain RPC block using EIP-1898 `blockHash` with
 `requireCanonical`. The RPC must support these methods; there is no latest-block
 fallback. ERC-1271 membership accounts with EOA operators use this same canonical
 enrollment path. Fresh operator work signatures still require canonical EOA signatures.
 The supplied account list must exactly match the on-chain FRI subscriber
-enumeration at that block after explicit fresh-membership eligibility checks.
-Removed or stale entries need no supplied subscription. Every enrolled operator
-must subscribe to both services (`services: 3`); there is no separate wrapper-only
+enumeration at that block after explicit membership eligibility checks.
+Removed or otherwise ineligible entries need no supplied subscription. Every
+enrolled operator must subscribe to both services (`services: 3`); there is no separate wrapper-only
 pool. The 256-account bound applies
 to enumerated registrations, including ineligible ones.
 

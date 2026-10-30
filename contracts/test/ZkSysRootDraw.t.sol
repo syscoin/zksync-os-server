@@ -30,6 +30,15 @@ contract RootDrawHub is IL1BridgehubMinimal {
     bytes public payload;
     address public recipient;
     uint256 public chainId;
+    mapping(uint256 => address) public chains;
+
+    function setChain(uint256 id, address diamond) external {
+        chains[id] = diamond;
+    }
+
+    function getZKChain(uint256 id) external view returns (address) {
+        return chains[id];
+    }
 
     function requestL2TransactionDirect(L2TransactionRequestDirect calldata request)
         external

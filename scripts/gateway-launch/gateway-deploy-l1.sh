@@ -739,8 +739,18 @@ deploy_zksys_l1_registry_bridge() {
   [ "${nevm_start_block}" != "0" ] || gl_die "ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK must be positive"
   seniority_height1="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1 210240 4294967295)"
   seniority_height2="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT2 525600 4294967295)"
-  seniority_level1_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS 0 10000)"
-  seniority_level2_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS 0 10000)"
+  local service_v1 seniority_default1=0 seniority_default2=0
+  service_v1="$(gl_to_lower "${ZKSYS_ENABLE_PROVER_SERVICE_V1:-false}")"
+  case "${service_v1}" in
+    true) seniority_default1=3500; seniority_default2=10000 ;;
+    false) ;;
+    *) gl_die "ZKSYS_ENABLE_PROVER_SERVICE_V1 must be true or false" ;;
+  esac
+  seniority_level1_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS "${seniority_default1}" 10000)"
+  seniority_level2_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS "${seniority_default2}" 10000)"
+  if [ "${service_v1}" = true ] && { [ "${seniority_height1}" != 210240 ] || [ "${seniority_height2}" != 525600 ] || [ "${seniority_level1_bps}" != 3500 ] || [ "${seniority_level2_bps}" != 10000 ]; }; then
+    gl_die "prover service V1 requires bridge seniority heights 210240/525600 and bps 3500/10000"
+  fi
   proxy_admin_owner="${ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS:-${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}}"
   export ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS="${proxy_admin_owner}"
   proxy_admin_owner="$(normalize_zksys_address_var ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS)"

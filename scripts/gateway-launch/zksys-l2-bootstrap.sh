@@ -5,14 +5,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+source "${SCRIPT_DIR}/_zksys_service_v1.sh"
 
 # SYSCOIN: Token-first staging makes an exact receipt-relative issuance start
 # possible without changing privileged contract bytecode or estimating wall time.
 TOKEN_PRELUDE=false
+SERVICE_V1_ONLY=false
+SERVICE_ADDRESSES_ONLY=false
 case "$#:${1:-}" in
 0:) ;;
 1:--token-prelude) TOKEN_PRELUDE=true ;;
-*) gl_die "usage: zksys-l2-bootstrap.sh [--token-prelude]" ;;
+1:--service-v1) SERVICE_V1_ONLY=true ;;
+1:--service-addresses) SERVICE_ADDRESSES_ONLY=true ;;
+*) gl_die "usage: zksys-l2-bootstrap.sh [--token-prelude|--service-v1|--service-addresses]" ;;
 esac
 
 gl_export_foundry_evm_version
@@ -43,7 +48,12 @@ gl_normalize_canonical_deployment_inputs
 gl_ensure_era_contracts_syscoin_postimage
 gl_require L1_RPC_URL
 gl_l1_broadcast_preflight
-gl_bind_gateway_launch_context
+if [ "${SERVICE_V1_ONLY}" = true ] || [ "${SERVICE_ADDRESSES_ONLY}" = true ]; then
+  gl_acquire_gateway_launch_lock
+  gl_checkpoint_assert_fingerprint_matches
+else
+  gl_bind_gateway_launch_context
+fi
 
 # SYSCOIN: exact Arachnid deterministic-deployment-proxy attestation. Merely
 # finding code at this address is insufficient on a custom-genesis chain.
@@ -59,6 +69,12 @@ ARACHNID_CREATE2_RUNTIME_HASH=0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd095
 : "${ZKSYS_ISSUER_PERIODS_PER_YEAR:=365}"
 : "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS:=3}"
 ZERO_ADDRESS="0x0000000000000000000000000000000000000000"
+ZKSYS_ENABLE_PROVER_SERVICE_V1="$(gl_to_lower "${ZKSYS_ENABLE_PROVER_SERVICE_V1:-false}")"
+case "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" in true|false) ;; *) gl_die "ZKSYS_ENABLE_PROVER_SERVICE_V1 must be true or false" ;; esac
+export ZKSYS_ENABLE_PROVER_SERVICE_V1
+if [ "${SERVICE_V1_ONLY}" = true ] || [ "${SERVICE_ADDRESSES_ONLY}" = true ]; then
+  [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = true ] || gl_die "service V1 mode requires ZKSYS_ENABLE_PROVER_SERVICE_V1=true"
+fi
 
 normalize_address_env() {
   local name="${1:?name required}"
@@ -348,6 +364,13 @@ if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" = "${ZERO_ADDRESS}" ] &&
   ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="${configured_l1_registry_bridge}"
 fi
 ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="$(normalize_address_env ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS)"
+if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
+  bridge_level1="$(cast call --rpc-url "${L1_RPC_URL}" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" 'seniorityLevel1Bps()(uint16)')"
+  bridge_level2="$(cast call --rpc-url "${L1_RPC_URL}" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" 'seniorityLevel2Bps()(uint16)')"
+  zksys_assert_service_mode_matches_bridge "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" "${bridge_level1%% *}" "${bridge_level2%% *}"
+elif [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = true ]; then
+  gl_die "prover service V1 requires the deployed L1 registry bridge"
+fi
 if [ "${L1_NETWORK}" = tanenbaum ] || [ "${L1_NETWORK}" = mainnet ]; then
   [ -n "${configured_l1_registry_bridge}" ] &&
     [ "${configured_l1_registry_bridge}" != "${ZERO_ADDRESS}" ] ||
@@ -796,7 +819,40 @@ export ZKSYS_L2_REGISTRY_PROXY_INIT_CODE_HASH ZKSYS_L2_WEIGHT_REGISTRY_IMPL_INIT
 export ZKSYS_L2_WEIGHT_REGISTRY_PROXY_INIT_CODE_HASH ZKSYS_L2_ISSUER_IMPL_INIT_CODE_HASH
 export ZKSYS_L2_ISSUER_PROXY_INIT_CODE_HASH ZKSYS_L2_STAKING_VAULT_IMPL_INIT_CODE_HASH
 export ZKSYS_L2_STAKING_VAULT_PROXY_INIT_CODE_HASH ZKSYS_L2_GAS_TANK_INIT_CODE_HASH
+if [ "${SERVICE_V1_ONLY}" = true ] || [ "${SERVICE_ADDRESSES_ONLY}" = true ]; then
+  [ -f "$(gl_checkpoint_state_dir)/zksys-l2-bootstrap.json" ] || gl_die "completed L2 bootstrap manifest is required"
+fi
 bind_zksys_l2_bootstrap_manifest
+
+if [ "${SERVICE_ADDRESSES_ONLY}" = true ]; then
+  read -r factory receiver registry <<<"$(zksys_service_v1_addresses)"
+  printf 'factory=%s\nreceiver=%s\nservice=%s\n' "${factory}" "${receiver}" "${registry}"
+  exit 0
+fi
+
+if [ "${SERVICE_V1_ONLY}" = true ]; then
+  require_create2_deployer
+  assert_proxy_admin_owner "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
+  assert_proxy_wiring "zkSYS membership registry" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_REGISTRY_ADDRESS}" "${ZKSYS_L2_REGISTRY_IMPL_ADDRESS}"
+  assert_proxy_wiring "zkSYS reward weight registry" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "${ZKSYS_L2_WEIGHT_REGISTRY_IMPL_ADDRESS}"
+  assert_proxy_wiring "zkSYS issuer" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_ISSUER_ADDRESS}" "${ZKSYS_L2_ISSUER_IMPL_ADDRESS}"
+  assert_l2_address_call "${ZKSYS_L2_ISSUER_ADDRESS}" 'registry()(address)' "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
+  assert_l2_address_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" 'weightReceiver()(address)' "${ZKSYS_L2_ISSUER_ADDRESS}"
+  assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" 'sentryNodeReceiver()(address)' "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
+  assert_l2_bool_call "${ZKSYS_L2_ISSUER_ADDRESS}" 'serviceLaunchAborted()(bool)' false
+  current_bridge="$(call_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" 'l1RegistryBridge()(address)')"
+  [ "$(gl_to_lower "${current_bridge}")" = "${ZERO_ADDRESS}" ] ||
+    [ "$(gl_to_lower "${current_bridge}")" = "$(gl_to_lower "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}")" ] ||
+    gl_die "membership bridge already points elsewhere"
+  zksys_setup_service_v1
+  if [ "$(gl_to_lower "${current_bridge}")" = "${ZERO_ADDRESS}" ]; then
+    send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" 'setL1RegistryBridge(address)' "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+  else
+    [ "$(gl_to_lower "${current_bridge}")" = "$(gl_to_lower "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}")" ] || gl_die "membership bridge already points elsewhere"
+  fi
+  assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" 'l1RegistryBridge()(address)' "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+  exit 0
+fi
 
 require_create2_deployer
 deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"
@@ -849,7 +905,7 @@ send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${MINTER_ROLE}
 send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "grantRole(bytes32,address)" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
 send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "setWeightReceiver(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" "setSentryNodeReceiver(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
-if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
+if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ] && [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = false ]; then
   send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" "setL1RegistryBridge(address)" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
 fi
 
@@ -863,8 +919,17 @@ assert_l2_uint_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "activationDelayPeriod
 assert_l2_address_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "weightReceiver()(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "sentryNodeReceiver()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
 assert_l2_address_call "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "weightRegistry()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
-if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
+if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ] && [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = false ]; then
   assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "l1RegistryBridge()(address)" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+fi
+if [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = true ]; then
+  current_bridge="$(call_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" 'l1RegistryBridge()(address)')"
+  if [ "$(gl_to_lower "${current_bridge}")" = "${ZERO_ADDRESS}" ]; then
+    echo 'zksys-l2-bootstrap: membership bridge remains disconnected until --service-v1 configures period-zero accounting'
+  else
+    [ "$(gl_to_lower "${current_bridge}")" = "$(gl_to_lower "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}")" ] || gl_die "membership bridge already points elsewhere"
+    zksys_assert_connected_service_v1
+  fi
 fi
 assert_l2_address_call "${ZKSYS_L2_GAS_TANK_ADDRESS}" "token()(address)" "${ZKSYS_L2_TOKEN_ADDRESS}"
 assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${BURNER_ROLE}" "${ZKSYS_L2_GAS_TANK_ADDRESS}"

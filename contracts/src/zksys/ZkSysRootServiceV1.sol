@@ -14,6 +14,17 @@ interface IZkSysRootAcceptedReceiverV1 {
     function receiveRootAccepted(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties, bool bootstrap)
         external;
     function receiveRootActivation(bytes32 vkHash, bytes32 qualifiedRosterRoot) external;
+    function receiveGatewayBatchRoot(uint256 batchNumber, bytes32 root) external;
+    function receiveGatewayBatchRootWithMessage(uint256 batchNumber, bytes32 root, bytes32 messageHash) external;
+}
+
+interface IZkSysBridgehubRegistryV1 {
+    function getZKChain(uint256 chainId) external view returns (address);
+    function messageRoot() external view returns (address);
+}
+
+interface IZkSysMessageRootV1 {
+    function chainBatchRoots(uint256 chainId, uint256 batchNumber) external view returns (bytes32);
 }
 
 /// @notice NEVM outbox for messages emitted atomically by the Gateway's native proof gate.
@@ -29,6 +40,7 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
 
     struct Configuration {
         address publisher;
+        address gatewayGate;
         IL1BridgehubMinimal bridgehub;
         uint256 gatewayChainId;
         address gatewayChainAddress;
@@ -38,6 +50,7 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
     }
 
     address public immutable publisher;
+    address public immutable gatewayGate;
     IL1BridgehubMinimal public immutable bridgehub;
     uint256 public immutable gatewayChainId;
     address public immutable gatewayChainAddress;
@@ -48,15 +61,23 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
 
     event MessagePublished(bytes32 indexed messageHash);
     event MessageRelayed(bytes32 indexed messageHash, bytes32 indexed canonicalTxHash);
+    event GatewayBatchRootRelayed(uint256 indexed batchNumber, bytes32 indexed root, bytes32 indexed canonicalTxHash);
+    event GatewayBatchRootMessageRelayed(
+        uint256 indexed batchNumber, bytes32 indexed messageHash, bytes32 indexed canonicalTxHash
+    );
 
     constructor(Configuration memory config) {
         if (
-            config.publisher == address(0) || address(config.bridgehub).code.length == 0 || config.gatewayChainId == 0
+            config.publisher == address(0) || config.gatewayGate == address(0)
+                || address(config.bridgehub).code.length == 0 || config.gatewayChainId == 0
                 || config.gatewayChainAddress == address(0) || config.registryChainId == 0
                 || config.registryChainId == config.gatewayChainId || config.registryReceiver == address(0)
-                || config.policyHash == bytes32(0)
+                || config.policyHash == bytes32(0) || config.gatewayChainAddress.code.length == 0
+                || IZkSysBridgehubRegistryV1(address(config.bridgehub)).getZKChain(config.gatewayChainId)
+                    != config.gatewayChainAddress
         ) revert InvalidConfiguration();
         publisher = config.publisher;
+        gatewayGate = config.gatewayGate;
         bridgehub = config.bridgehub;
         gatewayChainId = config.gatewayChainId;
         gatewayChainAddress = config.gatewayChainAddress;
@@ -116,6 +137,56 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
         );
     }
 
+    /// @notice Forward the executed Gateway root authenticated by the canonical NEVM MessageRoot.
+    function relayGatewayBatchRoot(
+        uint256 batchNumber,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) external payable returns (bytes32) {
+        return _relayGatewayBatchRoot(batchNumber, bytes32(0), gasLimit, gasPerPubdataByteLimit, refundRecipient);
+    }
+
+    function relayGatewayBatchRootWithMessage(
+        uint256 batchNumber,
+        bytes32 messageHash,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) external payable returns (bytes32) {
+        if (messageHash == bytes32(0) || !messages[messageHash]) revert MessageNotPublished();
+        return _relayGatewayBatchRoot(batchNumber, messageHash, gasLimit, gasPerPubdataByteLimit, refundRecipient);
+    }
+
+    function _relayGatewayBatchRoot(
+        uint256 batchNumber,
+        bytes32 messageHash,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) private returns (bytes32 canonicalTxHash) {
+        IZkSysBridgehubRegistryV1 hub = IZkSysBridgehubRegistryV1(address(bridgehub));
+        if (hub.getZKChain(gatewayChainId) != gatewayChainAddress) revert MessageNotPublished();
+        address messageRoot = hub.messageRoot();
+        if (messageRoot.code.length == 0) revert MessageNotPublished();
+        bytes32 root = IZkSysMessageRootV1(messageRoot).chainBatchRoots(gatewayChainId, batchNumber);
+        if (root == bytes32(0)) revert MessageNotPublished();
+        bytes memory payload = messageHash == bytes32(0)
+            ? abi.encodeCall(IZkSysRootAcceptedReceiverV1.receiveGatewayBatchRoot, (batchNumber, root))
+            : abi.encodeCall(
+                IZkSysRootAcceptedReceiverV1.receiveGatewayBatchRootWithMessage, (batchNumber, root, messageHash)
+            );
+        canonicalTxHash = _send(
+            keccak256(abi.encode(gatewayChainId, batchNumber, root, messageHash)),
+            payload,
+            gasLimit,
+            gasPerPubdataByteLimit,
+            refundRecipient
+        );
+        emit GatewayBatchRootRelayed(batchNumber, root, canonicalTxHash);
+        if (messageHash != bytes32(0)) emit GatewayBatchRootMessageRelayed(batchNumber, messageHash, canonicalTxHash);
+    }
+
     function _relay(
         bytes32 hash,
         bytes memory payload,
@@ -124,6 +195,16 @@ contract ZkSysRootServiceMessageSinkV1 is IZkSysServiceMessageSinkV1 {
         address refundRecipient
     ) private returns (bytes32 canonicalTxHash) {
         if (!messages[hash]) revert MessageNotPublished();
+        return _send(hash, payload, gasLimit, gasPerPubdataByteLimit, refundRecipient);
+    }
+
+    function _send(
+        bytes32 hash,
+        bytes memory payload,
+        uint256 gasLimit,
+        uint256 gasPerPubdataByteLimit,
+        address refundRecipient
+    ) private returns (bytes32 canonicalTxHash) {
         canonicalTxHash = bridgehub.requestL2TransactionDirect{value: msg.value}(
             IL1BridgehubMinimal.L2TransactionRequestDirect({
                 chainId: registryChainId,

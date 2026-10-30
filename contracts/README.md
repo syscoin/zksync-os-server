@@ -4,8 +4,11 @@ This Foundry project contains deployable contracts for the zkSYS launch surface.
 Security review should treat these contracts as production code, not integration
 test fixtures.
 
-The new `*V1` prover service contracts are opt-in release work and are not enabled
-by the launch scripts. See [the service design and outstanding release gates](../docs/src/design/prover_service_v1.md)
+The `*V1` prover service contracts are opt-in release work. The separate
+post-deployment child setup can deploy the service registry and receiver and
+configure period-zero accounting. It does not provision the proof lanes,
+route node proving, enroll operators, or activate the roster and relays. See
+[the service design and outstanding release gates](../docs/src/design/prover_service_v1.md)
 before deployment; mocked contract tests do not establish production proving or
 Gateway readiness.
 

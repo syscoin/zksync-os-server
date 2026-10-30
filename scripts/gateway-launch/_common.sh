@@ -198,6 +198,14 @@ gl_normalize_canonical_deployment_inputs() {
   elif [ "${root_mode}:${gateway_mode}:${edge_mode}" != "gpu:gpu:gpu" ]; then
     gl_die "the production verifier requires PROVER_MODE, GATEWAY_PROVER_MODE, and EDGE_PROVER_MODE all set to gpu"
   fi
+  case "$(gl_to_lower "${ZKSYS_ENABLE_PROVER_SERVICE_V1:-false}")" in
+  true)
+    [ "${mock_verifier}:${root_mode}:${gateway_mode}:${edge_mode}" = "false:gpu:gpu:gpu" ] ||
+      gl_die "prover service V1 requires real proofs on all chains"
+    ;;
+  false) ;;
+  *) gl_die "ZKSYS_ENABLE_PROVER_SERVICE_V1 must be true or false" ;;
+  esac
   case "${l1_network}" in
   tanenbaum | mainnet)
     # SYSCOIN: A whitespace-only value is not an explicit deployment identity.
@@ -4227,6 +4235,9 @@ l1_network = raw_effective("L1_NETWORK").lower()
 l1_chain_id = normalize_uint("L1_CHAIN_ID", "0", (1 << 256) - 1)
 bridge_enabled_raw = normalize_bool("ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE", "true")
 bridge_enabled = bridge_enabled_raw == "true"
+service_v1 = normalize_bool("ZKSYS_ENABLE_PROVER_SERVICE_V1", "false") == "true"
+if service_v1 and not bridge_enabled:
+    raise SystemExit("prover service V1 requires the L1 registry bridge")
 
 weth_defaults = {
     "5700": "0xa66b2e50c2b805f31712bea422d0d9e7d0fd0f35",
@@ -4325,12 +4336,12 @@ if bridge_enabled:
             ),
             "seniority_level1_bps": normalize_uint(
                 "ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS",
-                "0",
+                "3500" if service_v1 else "0",
                 10_000,
             ),
             "seniority_level2_bps": normalize_uint(
                 "ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS",
-                "0",
+                "10000" if service_v1 else "0",
                 10_000,
             ),
         }
@@ -4342,6 +4353,10 @@ if bridge_enabled:
     level2 = int(zksys_l1_registry_bridge["seniority_level2_bps"])
     if height1 == 0 or height2 <= height1 or level2 < level1:
         raise SystemExit("invalid zkSYS L1 registry bridge seniority config")
+    if service_v1 and (height1, height2, level1, level2) != (210240, 525600, 3500, 10000):
+        raise SystemExit("prover service V1 requires bridge heights 210240/525600 and bps 3500/10000")
+    if service_v1:
+        zksys_l1_registry_bridge["prover_service_v1"] = True
 
 if normalize_bool("USE_DUMMY_MESSAGE_ROOT", "false") != "false":
     raise SystemExit(

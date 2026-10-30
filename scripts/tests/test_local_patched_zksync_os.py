@@ -5185,6 +5185,17 @@ gl_workspace_has_resumable_syscoin_source
                 return json.loads(result.stdout)
 
             baseline = fingerprint()
+            service = fingerprint(
+                ZKSYS_ENABLE_PROVER_SERVICE_V1="true",
+                PROVER_MODE="gpu",
+                GATEWAY_PROVER_MODE="gpu",
+                SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER="false",
+            )
+            self.assertEqual(baseline["zksys_l1_registry_bridge"]["seniority_level1_bps"], "0")
+            self.assertEqual(service["zksys_l1_registry_bridge"]["seniority_level1_bps"], "3500")
+            self.assertEqual(service["zksys_l1_registry_bridge"]["seniority_level2_bps"], "10000")
+            self.assertTrue(service["zksys_l1_registry_bridge"]["prover_service_v1"])
+            self.assertNotEqual(baseline["zksys_l1_registry_bridge"], service["zksys_l1_registry_bridge"])
             self.assertEqual(baseline, fingerprint(PROTOCOL_VERSION="v32.0"))
             self.assertEqual(baseline["gateway_chain_id"], "57001")
             self.assertEqual(baseline["edge_chain_id"], "57057")

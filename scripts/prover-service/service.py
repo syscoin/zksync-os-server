@@ -213,6 +213,7 @@ class EnrollmentAuthority:
     anchor: bytes
     period: int
     block_hash: str
+    empty_bootstrap: bool
 
     def __init__(self, settings, subscriptions, period, rpc, block_hash):
         import enrollment
@@ -225,6 +226,7 @@ class EnrollmentAuthority:
         object.__setattr__(self, "anchor", canonical(anchor))
         object.__setattr__(self, "period", period)
         object.__setattr__(self, "block_hash", anchor["block_hash"])
+        object.__setattr__(self, "empty_bootstrap", not subscriptions and anchor["phase"] == "bootstrap")
         object.__setattr__(self, "rpc", rpc)
         object.__setattr__(self, "settings", json.loads(canonical(settings)))
 
@@ -249,6 +251,7 @@ class EnrollmentGroup:
         require(current_journal_id in authorities and all(type(value) is EnrollmentAuthority
                 and value.identity == EnrollmentAuthority.scope(settings) for value in authorities.values()),
                 "enrollment_group_authority_mismatch")
+        require(all(not value.empty_bootstrap for value in authorities.values()), "empty_bootstrap_cannot_join_service_group")
         for key in authorities:
             nonzero(key)
         require(rpc is not None and rpc.call("eth_chainId", []) == settings["registry_chain_id"], "wrong_rpc_chain")
@@ -744,10 +747,20 @@ def decode_proof_data(data):
     return stored(0), [stored(12 + 9 * index) for index in range(count)]
 
 
+def validate_empty_bootstrap_control(enrollment, proposal, manifest, duties):
+    if isinstance(enrollment, EnrollmentAuthority) and enrollment.empty_bootstrap:
+        require(type(proposal) is dict and proposal.get("mode") == "bootstrap" and duties == []
+                and type(manifest) is dict and type(manifest.get("payload")) is dict
+                and manifest["payload"].get("schema_version") == 1
+                and manifest["payload"].get("assignments") == []
+                and manifest["payload"].get("retries") == [], "empty_bootstrap_control_only")
+
+
 def prepare_package(settings, evidence, manifest, subscriptions, duties, proposal, snark, fri_payload, *, enrollment=None):
     statements = validate_evidence(settings, evidence)
     require(len(statements) >= 2, "wrapper_requires_two_batches")
     require(type(duties) is list and len(duties) <= len(statements), "invalid_duty_count")
+    validate_empty_bootstrap_control(enrollment, proposal, manifest, duties)
     # Idle native proofs still require wrapper endorsement, without inventing a rewarded FRI duty.
     assignments, by_hash = validate_manifest(settings, manifest, subscriptions, statements, allow_empty=not duties,
                                             enrollment=enrollment)

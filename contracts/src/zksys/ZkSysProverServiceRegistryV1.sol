@@ -39,7 +39,6 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         bytes32 policyHash;
         uint64 firstServicePeriod;
         uint64 receiptGraceSeconds;
-        uint64 membershipMaxAgeSeconds;
         uint64 rosterPublicationLeadSeconds;
         uint16 dutiesPerRound;
         uint256 gatewayChainId;
@@ -82,7 +81,6 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     uint256 public immutable periodSeconds;
     uint64 public immutable firstServicePeriod;
     uint64 public immutable receiptGraceSeconds;
-    uint64 public immutable membershipMaxAgeSeconds;
     uint64 public immutable rosterPublicationLeadSeconds;
     uint16 public immutable dutiesPerRound;
     uint256 public immutable gatewayChainId;
@@ -137,8 +135,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             address(config.membershipRegistry).code.length == 0 || config.issuer.code.length == 0
                 || config.acceptanceSource.code.length == 0 || config.settlementChainAddress == address(0)
                 || config.policyHash == bytes32(0) || config.dutiesPerRound == 0
-                || config.dutiesPerRound > MAX_DUTIES_PER_ROUND || config.membershipMaxAgeSeconds == 0
-                || config.sharedSequencer == address(0)
+                || config.dutiesPerRound > MAX_DUTIES_PER_ROUND || config.sharedSequencer == address(0)
         ) revert InvalidConfiguration();
 
         if (config.gatewayChainId == 0) {
@@ -170,7 +167,6 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         periodSeconds = secondsPerPeriod;
         firstServicePeriod = config.firstServicePeriod;
         receiptGraceSeconds = config.receiptGraceSeconds;
-        membershipMaxAgeSeconds = config.membershipMaxAgeSeconds;
         rosterPublicationLeadSeconds = config.rosterPublicationLeadSeconds;
         dutiesPerRound = config.dutiesPerRound;
         gatewayChainId = config.gatewayChainId;
@@ -247,7 +243,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         return _friSubscribers[sequencer][period][index];
     }
 
-    /// @dev A removed or stale subscriber must not block a complete dispatcher snapshot. Enumeration
+    /// @dev A removed subscriber must not block a complete dispatcher snapshot. Enumeration
     /// remains immutable; this view makes eligibility exclusions explicit at the same pinned block.
     function isEligibleFriSubscriber(address account, address sequencer, uint64 period) external view returns (bool) {
         ProverSubscriptionV1 storage sub = _subscriptions[subscriptionAt[account][sequencer][period]];
@@ -560,7 +556,6 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         (uint64 observedCoreHeight, uint64 observedAt) = membershipRegistry.membershipObservation(account);
         if (
             member.sentryNodeCollateralHeight == 0 || observedAt == 0 || observedAt > block.timestamp
-                || block.timestamp - observedAt > membershipMaxAgeSeconds
                 || observedCoreHeight < uint64(member.sentryNodeCollateralHeight) + FIRST_SENIOR_AGE
         ) revert NotSeniorOrStale(account);
 

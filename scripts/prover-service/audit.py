@@ -195,6 +195,8 @@ def validate_identity(identity, journal_id, trust, rpc):
     # independently pinned canonical block, including eligible accounts omitted from the file.
     import enrollment as enrollment_state
     s.exact(identity, ("schema_version", "settings", "subscriptions", "period", "enrollment", "lanes"))
+    s.require(type(identity["subscriptions"]) is list and bool(identity["subscriptions"]),
+              "audit_requires_enrolled_subscribers")
     s.require(identity["schema_version"] == 1 and s.keccak(s.canonical(identity)) == journal_id,
               "audit_journal_identity_mismatch")
     settings = s.config(identity["settings"])

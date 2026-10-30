@@ -2,8 +2,9 @@
 
 This is an opt-in implementation and release plan for one shared sequencer, senior
 Sentry FRI workers, and independently endorsed SNARK wrapping for both the child
-and Gateway chains. It is **not enabled by the
-existing launch scripts**. It builds on the reproduced V32/V8 guest and production
+and Gateway chains. An optional post-deployment stage sets up the child registry
+and issuer accounting, but the full proof lanes and service activation are not
+automatically deployed or enabled by the launch scripts. It builds on the reproduced V32/V8 guest and production
 verification key. The canonical fixture regeneration marker remains in force.
 Contract tests with mock settlement prove accounting and authorization behavior;
 they do not qualify a deployed Gateway or the packaged multi-role fixture.
@@ -52,13 +53,14 @@ flowchart LR
     Roster --> ChildCoordinator[Child wrapper coordinator on Gateway]
     ChildCoordinator --> ChildGate[Child proof gate on Gateway]
     ChildGate --> ChildNative[Child native timelock and Executor]
-    ChildGate -->|authenticated interop receipt| Child
+    ChildGate -->|acceptance in settled Gateway batch| GatewayRoot[Gateway batch root on NEVM]
+    GatewayRoot --> Sink
     Roster -->|proved forwarded roster| RootRoster[NEVM roster receiver]
     RootRoster --> RootCoordinator[Gateway wrapper coordinator on NEVM]
     RootCoordinator --> RootGate[Gateway proof gate on NEVM]
     RootGate --> RootNative[Gateway native timelock and Executor]
     RootGate --> Sink[NEVM message sink]
-    Sink -->|canonical Bridgehub receipt| Child
+    Sink -->|canonical Bridgehub root or receipt| Child
     Child --> Issuer[One child issuer and bonus ledger]
 ```
 
@@ -88,17 +90,33 @@ the same slot or create a second bonus pool. Bootstrap Gateway proofs never
 overwrite the child's production VK pin. The shared sequencer must be nonzero in
 every configuration, including child-only deployments. The optional child-only
 configuration uses zero Gateway chain ID, address and VK fields; a foundational
-Gateway deployment must enable both lanes.
+Gateway deployment must enable both lanes. The child-only configuration has no
+NEVM sink and does not support the Gateway-origin receipt route described below.
 
-Only the local immutable acceptance adapter can install accepted reports. Child
-proof acceptance comes from the child's fixed gate on Gateway through the existing
-interop message verifier at `0x10009`. Gateway proof acceptance comes from its
-fixed gate on NEVM: `ZkSysRootServiceMessageSinkV1` records that gate's message in
-the same transaction, and anyone can pay the canonical Bridgehub relay to the
-child receiver. The receiver requires the root sink's canonical alias and exact
-lane, policy and report bindings. An address comparison across chains or a signed
-post-proof attestation cannot replace either path. Root relay retries do not add
-credit. Bootstrap and service activation have separate authenticated domains.
+Only the local immutable acceptance adapter can install accepted reports. For
+child proofs, the NEVM sink reads Gateway's executed batch root from the native
+MessageRoot and forwards that root to zkSYS through Bridgehub. The local claim
+then proves the fixed Gateway gate's message against the imported root and
+supplies the accepted package and duties. For Gateway proofs, the NEVM gate
+publishes its message atomically with proof acceptance; its hash may accompany a
+root for a local claim, or the native message can be forwarded separately.
+The receiver authenticates the sink alias and checks lane, policy and report
+bindings. Duplicate delivery does not add credit. The existing shared-root
+verifier remains available for separately supported proof routes; it must not be
+treated as proof of a Gateway-origin message on this topology. Both NEVM proof
+and forwarded child execution require real-chain qualification.
+
+The gate publishes acceptance when the native proof is verified. On an unchanged
+zkSYS chain history, a finalized accounting claim in a later zkSYS batch follows
+execution of the earlier batches in order. The root uses the normal priority
+message route and needs no additional operator-submitted Gateway transaction.
+
+An authorized settlement-layer revert of a verified but unexecuted batch can
+leave the gate and coordinator cursors ahead of the native chain; recovery for
+this exceptional case has not been qualified. Whether a replacement batch could
+lead to finalized stale credit under the intended sole-prover configuration has
+not been established. Qualify both this recovery and real cross-chain delivery
+before running the service unattended.
 
 Each settlement chain runs its own full `ZkSysProofGateV1`, priority guard and
 wrapper coordinator. The NEVM gate has the same joint sequencer/wrapper
@@ -114,9 +132,10 @@ the period so the roster can be proved to Gateway and its root entropy prepared.
 This cutoff and the receipt grace must cover measured cross-chain proof latency.
 
 An account that previously completed a full quota for this sequencer can renew
-its shared-service wrapper eligibility during an idle period, provided its senior membership
-is still fresh. Renewal adds no bonus admission, success credit, or denominator
-weight. This keeps capable verified wrappers available when sparse demand has not
+its shared-service wrapper eligibility during an idle period, provided it remains
+an eligible senior Sentry in the membership registry. Renewal adds no bonus
+admission, success credit, or denominator weight. This keeps capable verified
+wrappers available when sparse demand has not
 produced another FRI quota. A newcomer or a partial qualifier cannot use renewal.
 Roster messages bind the issuer clock and first service period as well as the
 chain, registry, policy, root, and count.
@@ -160,6 +179,13 @@ its Bridgehub message must actually reach the child before the deadline.
 At least one authenticated child bootstrap receipt must establish the child's VK
 before activation; its report may be empty if all qualifying duties came from
 Gateway. Gateway qualification cannot establish or overwrite that child pin.
+
+During the supervised launch, confirm that all bootstrap reports from both gates
+have reached the registry before relaying both activation messages. The automatic
+claim worker waits for its discovered bootstrap reports, but activation relay is
+permissionless: another caller can deliver both activations first. Once the
+registry activates, it rejects remaining bootstrap reports, so the worker's
+ordering alone cannot enforce this launch requirement.
 
 The first roster is transported by native bootstrap proofs before coordinator
 installation. After a gate activates, its ready first roster may jointly authorize
@@ -283,12 +309,12 @@ strings or Basic Auth into on-chain Sentry identity. The current v1 API remains 
 compute lease API.
 
 The opt-in `dispatcher.py` adapter now uses that API on the trusted sequencer
-host. It verifies account-signed subscriptions, operator bindings, fresh senior
+host. It verifies account-signed subscriptions, operator bindings, senior
 membership and deployment parameters at one finalized child-chain block. It
 checks its supplied accounts against the complete on-chain FRI enrollment
-enumeration at that block, with explicit eligibility exclusions for stale or
-removed members, then authenticates per-job operator readiness with EIP-712. A protected, exclusively
-locked journal assigns nonempty native batches in sorted per-account round-robin
+enumeration at that block, with explicit eligibility exclusions for removed or
+otherwise ineligible members, then authenticates per-job operator readiness with
+EIP-712. A protected, exclusively locked journal assigns nonempty native batches in sorted per-account round-robin
 order, retaining cursor, slots, exact leases, signed offers and retry history.
 Both execution queues share that account cursor and quota bitmap. Enrollment and
 readiness use the child registry domain; native batch statements and proof

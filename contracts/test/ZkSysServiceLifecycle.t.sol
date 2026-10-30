@@ -122,7 +122,6 @@ contract ZkSysServiceLifecycleTest is Test {
                 policyHash: POLICY,
                 firstServicePeriod: 0,
                 receiptGraceSeconds: 100,
-                membershipMaxAgeSeconds: 1_000_000,
                 rosterPublicationLeadSeconds: 100,
                 dutiesPerRound: 2,
                 gatewayChainId: gatewayEnabled ? GATEWAY : 0,
@@ -430,6 +429,24 @@ contract ZkSysServiceLifecycleTest is Test {
             _sign(OPERATOR_KEY, digest)
         );
         _relayAccepted(false);
+    }
+
+    function testUnchangedMembershipRemainsEligibleUntilAuthenticatedRemoval() public {
+        address account = vm.addr(ALICE_KEY);
+        vm.warp(block.timestamp + 200_000);
+        assertEq(service.seniorBonus(account), 35_000 ether);
+        assertTrue(service.isEligibleFriSubscriber(account, vm.addr(SEQUENCER_KEY), 0));
+        assertEq(weights.weightOf(account), 135_000 ether);
+
+        ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
+        updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate(account, 0, 0);
+        vm.prank(membership.aliasedL1RegistryBridge());
+        membership.applyL1SentryNodeUpdates(updates, 211_241, uint64(block.timestamp));
+
+        assertFalse(service.isEligibleFriSubscriber(account, vm.addr(SEQUENCER_KEY), 0));
+        assertEq(weights.weightOf(account), 0);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.NotSeniorOrStale.selector, account));
+        service.seniorBonus(account);
     }
 
     function testBootstrapDrawActivationJointProofAndRewardComposition() public {
