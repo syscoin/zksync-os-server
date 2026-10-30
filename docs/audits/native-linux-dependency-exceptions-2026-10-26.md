@@ -303,3 +303,15 @@ changes Python storage and worker callers, tests and documentation only. No Rust
 source, Cargo manifest, lockfile, native feature or advisory disposition changes.
 The source fingerprint binds the replacement storage paths; both guarded Linux
 scanners remain required on the final head.
+
+## Generated release workspace alignment re-review
+
+The release workflow now runs a trusted helper after Release Please to align
+local dependency pins and local lockfile package versions on its generated PR.
+The helper preserves external dependency records, rejects concurrent branch
+advances, and does not resolve dependencies or execute candidate PR code. The
+remaining changes are regression tests, their CI invocation and release docs.
+This change leaves Rust source, Cargo manifests, the lockfile, native features
+and advisory dispositions unchanged. Only the source fingerprint is refreshed;
+future release candidates still require explicit review of their changed lock,
+source and graph before either guarded Linux scanner can accept exceptions.

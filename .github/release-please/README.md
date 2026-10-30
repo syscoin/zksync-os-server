@@ -18,8 +18,15 @@ if it has expired or an existing release asset differs, publication stops for
 investigation rather than replacing the asset.
 
 Release-please changes the workspace version in `Cargo.toml` and its manifest.
-Before merging the generated release PR, update the matching workspace package
-versions in `Cargo.lock` without refreshing unrelated dependencies. Review the
+The following workflow step automatically aligns exact local dependency pins
+and workspace package versions in `Cargo.lock` on that generated PR. It edits
+only these two files, preserves external dependency versions and checksums, and
+does not run Cargo resolution or execute code from the PR. It validates the
+same-repository release branch and stops if its head changes while preparing the
+update. Repeated runs are harmless when versions already agree. An unsupported
+manifest layout or ambiguous version-qualified lock reference stops for review.
+
+Before merging the generated release PR, review the
 lock, source and dependency graph changes against the existing Linux advisory
 exceptions in `scripts/security/native-linux-review.json`, then update its
 fingerprints only after that review. The native Linux security-audit PR checks
