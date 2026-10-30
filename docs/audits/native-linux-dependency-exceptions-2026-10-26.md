@@ -185,3 +185,14 @@ The guard regressions exercise changed sources, graph edges/features, package
 identities, compiler/target overrides, changed advisory records, malformed
 reports and unknown findings. These are tests of the exception boundary; they
 are not timing or exploitation tests.
+
+## CI-only release workflow review
+
+The GitHub-hosted release migration changes release and SBOM workflows, their
+policy helpers, and tests. The review against server commit `8aa4cf5` found no
+changes to Rust callers, Cargo manifests or lockfile, the pinned compiler, native
+patches, Dockerfile, or production deployment code. The Linux release build
+retains the reviewed target, GCP feature and `tokio_unstable` flag. The audit
+scope's source fingerprint is updated for these CI-only files; the lock, graph,
+package identities, advisory records and rationales are unchanged. The guarded
+Linux audit and deny jobs must still pass for the resulting commit.

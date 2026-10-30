@@ -1,54 +1,156 @@
-name: SBOM generation and upload to Dependency Track
+name: Generate and retain server SBOMs
 
 on:
   workflow_call:
     inputs:
       version:
-        description: Version string to sync (e.g. 1.2.3)
+        description: Tag representing the immutable build
+        required: true
+        type: string
+      source_sha:
+        description: Exact source commit of the built image
+        required: true
+        type: string
+      image_name:
+        description: GHCR server image name
+        required: true
+        type: string
+      image_digest:
+        description: Immutable image digest returned by the build
         required: true
         type: string
 
-jobs:
-  create-parent-project:
-    name: Create or verify Dependency Track collection project
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+permissions:
+  contents: read
 
-      - name: Create or verify Dependency Track collection project
-        shell: bash
-        run: |
-          bash .github/scripts/create-dtrack-collection-project.sh
+jobs:
+  identity:
+    name: Validate image identity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate immutable source and digest
         env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          [[ "${VERSION}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "${VERSION}" != latest ]]
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${IMAGE_NAME}" == "ghcr.io/${REPO_OWNER,,}/zksync-os-server" ]]
+
+  dependency-track-config:
+    name: Check Dependency Track configuration
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.config.outputs.enabled }}
+    steps:
+      - name: Checkout trusted configuration checker
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .sbom-tooling
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Require complete configuration when enabled
+        id: config
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
+          DT_HOSTNAME: ${{ vars.DEPENDENCY_TRACK_SERVER_HOSTNAME }}
+          DT_API_KEY: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
+          DT_PARENT_UUID: ${{ vars.DEPENDENCY_TRACK_PARENT_PROJECT_UUID }}
+        run: |
+          set -euo pipefail
+          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git -C .sbom-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          [[ -z "$(git -C .sbom-tooling status --porcelain --untracked-files=all)" ]]
+          enabled="$(python3 .sbom-tooling/.github/scripts/dependency-track-config.py)"
+          echo "enabled=${enabled}" >> "${GITHUB_OUTPUT}"
+          if [[ "${enabled}" == false ]]; then
+            echo "Dependency Track is not configured. SBOMs are retained as GitHub artifacts; external vulnerability tracking was not run." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+  dependency-track-project:
+    name: Create or verify Dependency Track project
+    needs: [identity, dependency-track-config]
+    if: ${{ needs.dependency-track-config.outputs.enabled == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted Dependency Track tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .sbom-tooling
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Create or verify collection project
+        env:
+          TOOLING_SHA: ${{ job.workflow_sha }}
           DT_BASE_URL: https://${{ vars.DEPENDENCY_TRACK_SERVER_HOSTNAME }}
           DT_API_KEY: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
           PROJECT_NAME: ${{ github.event.repository.name }}
           PROJECT_VERSION: ${{ inputs.version }}
           PARENT_UUID: ${{ vars.DEPENDENCY_TRACK_PARENT_PROJECT_UUID }}
+        run: |
+          set -euo pipefail
+          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git -C .sbom-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          [[ -z "$(git -C .sbom-tooling status --porcelain --untracked-files=all)" ]]
+          bash .sbom-tooling/.github/scripts/create-dtrack-collection-project.sh
 
   sbom-code:
-    name: Generate and upload SBOM of the source code for analysis
-    needs: create-parent-project
+    name: Generate source SBOM
+    needs: [identity, dependency-track-config, dependency-track-project]
+    if: ${{ !cancelled() && needs.identity.result == 'success' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
-      - name: Checkout code
+      - name: Checkout exact release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Generate CycloneDX file on code analysis
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: source
+          persist-credentials: false
+      - name: Verify source identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C source rev-parse HEAD)" == "${SOURCE_SHA}" ]]
+          [[ -z "$(git -C source status --porcelain --untracked-files=all)" ]]
+      - name: Generate source CycloneDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          path: .
-          output-file: "bom-code.cdx.json"
-          format: 'cyclonedx-json@1.6'
+          path: source
+          output-file: bom-source.cdx.json
+          format: cyclonedx-json@1.6
           upload-artifact: 'false'
           upload-release-assets: 'false'
-
-      - name: Upload CycloneDX file to Dependency Track
+      - name: Bind source identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          jq -e --arg sha "${SOURCE_SHA}" --arg digest "${IMAGE_DIGEST}" '
+            if .bomFormat != "CycloneDX" or .specVersion != "1.6" then error("invalid CycloneDX") else . end
+            | if any((.metadata.properties // [])[]; .name == "io.syscoin.server.source-sha" or .name == "io.syscoin.server.image-digest") then error("duplicate server identity") else . end
+            | .metadata.properties = ((.metadata.properties // []) + [
+                {name: "io.syscoin.server.source-sha", value: $sha},
+                {name: "io.syscoin.server.image-digest", value: $digest}])
+          ' bom-source.cdx.json > bom-source.bound.cdx.json
+      - name: Retain source SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-source-sbom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bom-source.bound.cdx.json
+          if-no-files-found: error
+      - name: Upload source SBOM to Dependency Track
+        if: ${{ needs.dependency-track-project.result == 'success' }}
         uses: DependencyTrack/gh-upload-sbom@b717d6595efa77a7ff1b18b57ac28597afc75d77 # v4.0.0
         with:
           serverhostname: ${{ vars.DEPENDENCY_TRACK_SERVER_HOSTNAME }}
@@ -56,42 +158,59 @@ jobs:
           projectname: "${{ github.event.repository.name }}-code"
           projectversion: ${{ inputs.version }}
           isLatest: true
-          bomfilename: "bom-code.cdx.json"
+          bomfilename: bom-source.bound.cdx.json
           autocreate: true
           parentname: ${{ github.event.repository.name }}
           parentversion: ${{ inputs.version }}
 
   sbom-image:
-    name: Generate and upload SBOM of the container images for analysis
-    needs: create-parent-project
+    name: Generate image SBOM
+    needs: [identity, dependency-track-config, dependency-track-project]
+    if: ${{ !cancelled() && needs.identity.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
-    strategy:
-      matrix:
-        app: [zksync-os-server]
     steps:
-      - name: Generate CycloneDX file on image analysis
+      - name: Generate SBOM from immutable image
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}:${{ inputs.version }}
+          image: ${{ inputs.image_name }}@${{ inputs.image_digest }}
           registry-username: ${{ github.repository_owner }}
           registry-password: ${{ secrets.GITHUB_TOKEN }}
-          output-file: "bom-${{ matrix.app }}-image.cdx.json"
-          format: 'cyclonedx-json@1.6'
+          output-file: bom-image.cdx.json
+          format: cyclonedx-json@1.6
           upload-artifact: 'false'
           upload-release-assets: 'false'
-
-      - name: Upload CycloneDX file to Dependency Track
+      - name: Bind image identity
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          jq -e --arg sha "${SOURCE_SHA}" --arg digest "${IMAGE_DIGEST}" '
+            if .bomFormat != "CycloneDX" or .specVersion != "1.6" then error("invalid CycloneDX") else . end
+            | if any((.metadata.properties // [])[]; .name == "io.syscoin.server.source-sha" or .name == "io.syscoin.server.image-digest") then error("duplicate server identity") else . end
+            | .metadata.properties = ((.metadata.properties // []) + [
+                {name: "io.syscoin.server.source-sha", value: $sha},
+                {name: "io.syscoin.server.image-digest", value: $digest}])
+          ' bom-image.cdx.json > bom-image.bound.cdx.json
+      - name: Retain image SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-image-sbom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bom-image.bound.cdx.json
+          if-no-files-found: error
+      - name: Upload image SBOM to Dependency Track
+        if: ${{ needs.dependency-track-project.result == 'success' }}
         uses: DependencyTrack/gh-upload-sbom@b717d6595efa77a7ff1b18b57ac28597afc75d77 # v4.0.0
         with:
           serverhostname: ${{ vars.DEPENDENCY_TRACK_SERVER_HOSTNAME }}
           apikey: ${{ secrets.DEPENDENCY_TRACK_API_KEY }}
-          projectname: "${{ matrix.app }}-image"
+          projectname: zksync-os-server-image
           projectversion: ${{ inputs.version }}
           isLatest: true
-          bomfilename: "bom-${{ matrix.app }}-image.cdx.json"
+          bomfilename: bom-image.bound.cdx.json
           autocreate: true
           parentname: ${{ github.event.repository.name }}
           parentversion: ${{ inputs.version }}
