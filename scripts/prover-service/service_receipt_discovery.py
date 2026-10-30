@@ -144,34 +144,30 @@ def receipt_for(rpc, event, gate):
     return receipt
 
 
-def block_receipts(rpc, number):
-    """Match every returned receipt to the canonical block's transaction inventory."""
+def block_events(rpc, number, gate):
+    """Query this canonical block for gate events; the trusted RPC must not omit logs."""
     block = rpc.call('eth_getBlockByNumber', [number, False])
     s.require(type(block) is dict and block.get('number') == number, 'source_block_unavailable')
     block_hash = hex32(block['hash'])
     txs = block.get('transactions')
-    s.require(type(txs) is list and all(isinstance(tx, str) for tx in txs), 'source_transactions_unavailable')
-    for tx in txs:
-        hex32(tx)
-    s.require(len(txs) == len(set(txs)), 'duplicate_source_transaction')
-    try:
-        receipts = rpc.call('eth_getBlockReceipts', [number])
-    except relay.RpcError as error:
-        if error.code != -32601:
-            raise
-        receipts = [rpc.call('eth_getTransactionReceipt', [tx]) for tx in txs]
-    except s.Error as error:
-        if str(error) != 'rpc_response_limit':
-            raise
-        receipts = [rpc.call('eth_getTransactionReceipt', [tx]) for tx in txs]
-    s.require(type(receipts) is list and len(receipts) == len(txs), 'incomplete_source_receipts')
-    for index, (tx, receipt) in enumerate(zip(txs, receipts)):
-        s.require(type(receipt) is dict and receipt.get('transactionHash') == tx
-                  and receipt.get('blockHash') == block_hash and receipt.get('blockNumber') == number
-                  and q(receipt.get('transactionIndex')) == index and q(receipt.get('status')) in (0, 1)
-                  and type(receipt.get('logs')) is list, 'source_block_receipt_mismatch')
+    s.require(type(txs) is list, 'source_transactions_unavailable')
+    events = rpc.call('eth_getLogs', [{'blockHash': block_hash, 'address': gate,
+                                      'topics': [[ACCEPTED, ACTIVATED]]}])
+    s.require(type(events) is list, 'invalid_source_events')
+    previous = None
+    for event in events:
+        s.require(type(event) is dict and event.get('address') == gate
+                  and event.get('blockHash') == block_hash and event.get('blockNumber') == number
+                  and event.get('removed', False) is False, 'invalid_source_event')
+        topics = event.get('topics')
+        s.require(type(topics) is list and topics and topics[0] in (ACCEPTED, ACTIVATED), 'invalid_source_topics')
+        index, log_index = q(event.get('transactionIndex')), q(event.get('logIndex'))
+        s.require(index < len(txs) and event.get('transactionHash') == txs[index], 'source_event_inventory_mismatch')
+        s.require(previous is None or (previous[0] <= index and previous[1] < log_index),
+                  'invalid_source_log_order')
+        previous = (index, log_index)
     canonical_block(rpc, number, block_hash)
-    return receipts
+    return events
 
 
 def messenger_index(receipt, gate, payload):
@@ -276,29 +272,12 @@ def discover(gateway_rpc, l1_rpc, cfg, cursor, artifact_roots):
         anchor = {'blockHash': block_hash, 'requireCanonical': True}
         end = min(height, cursor[name] + cfg['scan_blocks'] - 1)
         if cursor[name] <= end:
-            seen = set()
-            previous = None
             for block in range(cursor[name], end + 1):
-                for receipt in block_receipts(rpc, hex(block)):
-                    for event in receipt['logs']:
-                        s.require(type(event) is dict, 'invalid_source_log')
-                        topics = event.get('topics')
-                        if event.get('address') != gate or type(topics) is not list or not topics or topics[0] not in (ACCEPTED, ACTIVATED):
-                            continue
-                        s.require(event.get('transactionHash') == receipt['transactionHash']
-                                  and event.get('blockHash') == receipt['blockHash']
-                                  and event.get('blockNumber') == receipt['blockNumber']
-                                  and q(event.get('transactionIndex')) == q(receipt['transactionIndex']),
-                                  'source_event_receipt_mismatch')
-                        position = (block, q(event['transactionIndex']), q(event['logIndex']))
-                        s.require((previous is None or previous < position)
-                                  and (event['transactionHash'], event['logIndex']) not in seen,
-                                  'invalid_source_log_order')
-                        previous = position; seen.add((event['transactionHash'], event['logIndex']))
-                        result = discover_one(rpc, gate, addr(cfg['root_sink']), event, from_root, cfg,
-                                              [artifact_roots['root' if from_root else 'child']], anchor)
-                        if result is not None:
-                            reports.append(result)
+                for event in block_events(rpc, hex(block), gate):
+                    result = discover_one(rpc, gate, addr(cfg['root_sink']), event, from_root, cfg,
+                                          [artifact_roots['root' if from_root else 'child']], anchor)
+                    if result is not None:
+                        reports.append(result)
         canonical_block(rpc, head['number'], block_hash)
         s.require(q(rpc.call('eth_chainId', [])) == chain_id, 'source_chain_changed')
         next_cursor[name] = end + 1

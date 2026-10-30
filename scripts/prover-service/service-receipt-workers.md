@@ -117,9 +117,12 @@ transactions are journaled and retry only their saved bytes after disappearance.
 
 Root and native publishers confirm the NEVM transaction and zkSYS delivery; the
 claimant confirms finalized zkSYS state. They inherit the native priority
-operation's finality assumptions. The source scanner reads every receipt of
-finalized source blocks and therefore needs a complete, trusted RPC view. When a
-whole-block receipt response is too large it retries individual receipts; an
-individual response over the RPC size limit fails closed and requires operator
-attention. Real settlement latency must fit the configured accounting grace
-window or late duty reports may not earn credit.
+operation's finality assumptions. For each finalized source block, the scanner
+queries only the configured gate's acceptance and activation logs by exact block
+hash. It validates each returned event against the block's transaction inventory,
+the corresponding receipt and the canonical block. The independently trusted
+RPC must return every matching log: the worker does not reconstruct receipt tries
+or independently prove that the log result is complete. An oversized filtered log
+response or matching receipt fails closed without advancing the discovery cursor
+and requires operator attention. Real settlement latency must fit the configured
+accounting grace window or late duty reports may not earn credit.

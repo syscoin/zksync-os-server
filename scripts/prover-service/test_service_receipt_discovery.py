@@ -28,9 +28,12 @@ class Rpc:
             if self.reorg and params[0] != 'finalized':
                 return {**self.head, 'hash': h(999), 'transactions': [self.receipt['transactionHash']] if self.receipt else []}
             return {**copy.deepcopy(self.head), 'transactions': [self.receipt['transactionHash']] if self.receipt else []}
-        if method == 'eth_getBlockReceipts':
-            if self.no_block_receipts: raise relay.RpcError(-32601)
-            return [] if self.receipt is None or self.truncate else [copy.deepcopy(self.receipt)]
+        if method == 'eth_getLogs':
+            query = params[0]
+            assert query['address'] == self.gate
+            assert query['topics'] == [[d.ACCEPTED, d.ACTIVATED]]
+            return ([copy.deepcopy(self.event)] if self.event is not None
+                    and self.event['blockHash'] == query['blockHash'] else [])
         if method == 'eth_getTransactionReceipt': return copy.deepcopy(self.receipt)
         if method == 'eth_getTransactionByHash': return copy.deepcopy(self.tx)
         if method == 'eth_call': return self.vk
@@ -167,47 +170,48 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, 'source_block_receipt_mismatch|source_block_changed'):
             d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
 
-    def test_truncated_block_receipts_do_not_advance_cursor(self):
+    def test_event_outside_block_inventory_does_not_advance_cursor(self):
         event, receipt, tx = self.accepted_receipt()
+        event['transactionHash'] = h(999)
         gateway = Rpc(99, self.head, self.gate, event, receipt, tx)
-        gateway.truncate = True
-        with self.assertRaisesRegex(s.Error, 'incomplete_source_receipts'):
-            d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
+        cursor = {'gateway': 7, 'l1': 8}
+        with self.assertRaisesRegex(s.Error, 'source_event_inventory_mismatch'):
+            d.discover(gateway, self.empty_l1, self.cfg, cursor, self.roots)
+        self.assertEqual(cursor, {'gateway': 7, 'l1': 8})
 
-    def test_receipts_must_match_full_block_transaction_order(self):
+    def test_event_receipt_must_match_transaction_index(self):
         event, receipt, tx = self.accepted_receipt()
         gateway = Rpc(99, self.head, self.gate, event, receipt, tx)
         gateway.receipt['transactionIndex'] = '0x1'
-        with self.assertRaisesRegex(s.Error, 'source_block_receipt_mismatch'):
+        with self.assertRaisesRegex(s.Error, 'source_receipt_mismatch'):
             d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
 
-    def test_block_receipts_unsupported_uses_every_transaction_receipt(self):
+    def test_large_unrelated_receipt_is_never_requested(self):
         event, receipt, tx = self.accepted_receipt()
-        gateway = Rpc(99, self.head, self.gate, event, receipt, tx)
-        gateway.no_block_receipts = True
-        cursor, reports = d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
-        self.assertEqual(cursor['gateway'], 8)
-        self.assertEqual(len(reports), 1)
-        self.assertTrue(any(method == 'eth_getTransactionReceipt' for method, _ in gateway.calls))
-
-    def test_oversized_block_receipts_fall_back_without_skipping(self):
-        event, receipt, tx = self.accepted_receipt()
-        class OversizedRpc(Rpc):
+        unrelated = h(23)
+        class UnrelatedRpc(Rpc):
             def call(self, method, params):
+                if method == 'eth_getBlockByNumber':
+                    block = super().call(method, params)
+                    if params[0] != 'finalized':
+                        block['transactions'].append(unrelated)
+                    return block
+                if method == 'eth_getTransactionReceipt' and params[0] == unrelated:
+                    raise AssertionError('unrelated oversized receipt must not be requested')
                 if method == 'eth_getBlockReceipts':
-                    raise s.Error('rpc_response_limit')
+                    raise AssertionError('block receipts must not be requested')
                 return super().call(method, params)
-        gateway = OversizedRpc(99, self.head, self.gate, event, receipt, tx)
+        gateway = UnrelatedRpc(99, self.head, self.gate, event, receipt, tx)
         cursor, reports = d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
         self.assertEqual(cursor['gateway'], 8)
         self.assertEqual(len(reports), 1)
-        self.assertTrue(any(method == 'eth_getTransactionReceipt' for method, _ in gateway.calls))
+        self.assertEqual([p[0] for m, p in gateway.calls if m == 'eth_getTransactionReceipt'], [receipt['transactionHash']])
 
-    def test_oversized_individual_receipt_fails_closed(self):
+    def test_oversized_matched_receipt_fails_closed(self):
         event, receipt, tx = self.accepted_receipt()
         class OversizedRpc(Rpc):
             def call(self, method, params):
-                if method in ('eth_getBlockReceipts', 'eth_getTransactionReceipt'):
+                if method == 'eth_getTransactionReceipt':
                     raise s.Error('rpc_response_limit')
                 return super().call(method, params)
         gateway = OversizedRpc(99, self.head, self.gate, event, receipt, tx)
@@ -216,14 +220,82 @@ class DiscoveryTests(unittest.TestCase):
             d.discover(gateway, self.empty_l1, self.cfg, cursor, self.roots)
         self.assertEqual(cursor, {'gateway': 7, 'l1': 8})
 
+    def test_oversized_filtered_logs_fail_closed(self):
+        event, receipt, tx = self.accepted_receipt()
+        class OversizedRpc(Rpc):
+            def call(self, method, params):
+                if method == 'eth_getLogs':
+                    raise s.Error('rpc_response_limit')
+                return super().call(method, params)
+        gateway = OversizedRpc(99, self.head, self.gate, event, receipt, tx)
+        cursor = {'gateway': 7, 'l1': 8}
+        with self.assertRaisesRegex(s.Error, 'rpc_response_limit'):
+            d.discover(gateway, self.empty_l1, self.cfg, cursor, self.roots)
+        self.assertEqual(cursor, {'gateway': 7, 'l1': 8})
+
+    def test_multiple_gate_events_are_processed_in_order(self):
+        accepted_event, accepted_receipt, tx = self.accepted_receipt()
+        root, vk, activation_hash = h(1011), h(1012), h(25)
+        activation_event = {'address': self.gate, 'topics': [d.ACTIVATED, '0x' + '00' * 12 + a(200)[2:]],
+                            'data': root, 'transactionHash': activation_hash, 'blockHash': h(7),
+                            'blockNumber': '0x7', 'transactionIndex': '0x1', 'logIndex': '0x1', 'removed': False}
+        payload = s.raw_hex(s.keccak(b'ZKSYS_SERVICE_ACTIVATION_V1')) + s.raw_hex(vk) + s.raw_hex(root)
+        message = {'sender': d.MESSENGER, 'key': '0x' + '00' * 12 + self.gate[2:], 'value': s.keccak(payload),
+                   'transactionLogIndex': '0x0', 'transactionIndex': '0x1', 'shardId': '0x0', 'isService': True}
+        activation_receipt = {'transactionHash': activation_hash, 'blockHash': h(7), 'blockNumber': '0x7',
+                              'transactionIndex': '0x1', 'status': '0x1', 'logs': [activation_event],
+                              'l2ToL1Logs': [message]}
+        class MultipleRpc(Rpc):
+            def call(self, method, params):
+                if method == 'eth_getBlockByNumber':
+                    result = super().call(method, params)
+                    if params[0] != 'finalized':
+                        result['transactions'].append(activation_hash)
+                    return result
+                if method == 'eth_getLogs':
+                    self.calls.append((method, params))
+                    return [copy.deepcopy(accepted_event), copy.deepcopy(activation_event)]
+                if method == 'eth_getTransactionReceipt' and params[0] == activation_hash:
+                    self.calls.append((method, params))
+                    return copy.deepcopy(activation_receipt)
+                return super().call(method, params)
+        gateway = MultipleRpc(99, self.head, self.gate, accepted_event, accepted_receipt, tx, vk)
+        cursor, reports = d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
+        self.assertEqual(cursor['gateway'], 8)
+        self.assertEqual([report['kind'] for report in reports], ['accepted', 'activation'])
+        self.assertEqual([report['sourceTransactionHash'] for report in reports], [h(22), activation_hash])
+        logs_queries = [params[0] for method, params in gateway.calls if method == 'eth_getLogs']
+        self.assertEqual(logs_queries, [{'blockHash': h(7), 'address': self.gate,
+                                         'topics': [[d.ACCEPTED, d.ACTIVATED]]}])
+
+    def test_malformed_filtered_event_fails_closed(self):
+        event, receipt, tx = self.accepted_receipt()
+        class MalformedRpc(Rpc):
+            def call(self, method, params):
+                if method == 'eth_getLogs':
+                    return [{**self.event, 'address': a(999)}]
+                return super().call(method, params)
+        gateway = MalformedRpc(99, self.head, self.gate, event, receipt, tx)
+        with self.assertRaisesRegex(s.Error, 'invalid_source_event'):
+            d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
+
+    def test_duplicate_or_unsorted_events_fail_closed(self):
+        event, receipt, tx = self.accepted_receipt()
+        class DuplicateRpc(Rpc):
+            def call(self, method, params):
+                if method == 'eth_getLogs':
+                    return [copy.deepcopy(self.event), copy.deepcopy(self.event)]
+                return super().call(method, params)
+        gateway = DuplicateRpc(99, self.head, self.gate, event, receipt, tx)
+        with self.assertRaisesRegex(s.Error, 'invalid_source_log_order'):
+            d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
+
     def test_scan_block_window_never_skips_later_block(self):
         event, receipt, tx = self.accepted_receipt()
         class RangeRpc(Rpc):
             def call(self, method, params):
                 if method == 'eth_getBlockByNumber' and params[0] in ('finalized', '0x8'):
                     return {'number': '0x8', 'hash': h(8), 'transactions': []}
-                if method == 'eth_getBlockReceipts' and params[0] == '0x8':
-                    return []
                 return super().call(method, params)
         gateway = RangeRpc(99, self.head, self.gate, event, receipt, tx)
         cfg = {**self.cfg, 'scan_blocks': 1}
