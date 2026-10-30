@@ -8,10 +8,59 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVICE = ROOT / "scripts/gateway-launch/_zksys_service_v1.sh"
+BOOTSTRAP = ROOT / "scripts/gateway-launch/zksys-l2-bootstrap.sh"
 COMMON = ROOT / "scripts/gateway-launch/_common.sh"
 
 
 class ServiceLaunchTests(unittest.TestCase):
+    def test_staking_grant_follows_configuration_and_resumes(self):
+        bootstrap = BOOTSTRAP.read_text()
+        start = bootstrap.index("  zksys_assert_staking_deferred\n")
+        end = bootstrap.index("  if [ ", start)
+        stage = bootstrap[start:end]
+        self.assertIn("zksys_setup_service_v1", stage)
+        self.assertIn("zksys_enable_staking", stage)
+        command = '''source "$1"
+            export ZKSYS_L2_ISSUER_ADDRESS=issuer ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS=weight
+            export ZKSYS_L2_STAKING_VAULT_ADDRESS=vault STAKE_WEIGHT_UPDATER_ROLE=role
+            call_l2() {
+                if [ "$1" = issuer ]; then cat "$TEST_STATE_DIR/configured";
+                else cat "$TEST_STATE_DIR/staking"; fi
+            }
+            assert_l2_bool_call() {
+                local actual
+                actual="$(call_l2 "$1" "$2")"
+                [ "$actual" = "$3" ]
+            }
+            send_l2() {
+                [ "$(cat "$TEST_STATE_DIR/configured")" = 1 ]
+                echo true > "$TEST_STATE_DIR/staking"
+                echo grant >> "$TEST_STATE_DIR/events"
+            }
+            zksys_setup_service_v1() {
+                if [ "$(cat "$TEST_STATE_DIR/configured")" = 0 ]; then
+                    [ "$(cat "$TEST_STATE_DIR/staking")" = false ]
+                    echo 1 > "$TEST_STATE_DIR/configured"
+                    echo configure >> "$TEST_STATE_DIR/events"
+                fi
+            }
+        ''' + stage
+        for configured, staking, expected, events in [
+            (0, False, 0, ["configure", "grant"]),
+            (1, False, 0, ["grant"]),
+            (1, True, 0, []),
+            (0, True, 1, []),
+        ]:
+            with self.subTest(configured=configured, staking=staking), tempfile.TemporaryDirectory() as directory:
+                state = Path(directory)
+                (state / "configured").write_text(f"{configured}\n")
+                (state / "staking").write_text(f"{str(staking).lower()}\n")
+                (state / "events").write_text("")
+                env = {**os.environ, "TEST_STATE_DIR": directory}
+                result = subprocess.run(["bash", "-ec", command, "test", str(SERVICE)], env=env)
+                self.assertEqual(result.returncode, expected)
+                self.assertEqual((state / "events").read_text().splitlines(), events)
+
     def test_sink_and_registry_must_use_same_bridgehub(self):
         command = ('source "$1"; gl_to_lower() { tr "[:upper:]" "[:lower:]" <<< "$1"; }; '
                    'gl_die() { exit 1; }; zksys_assert_shared_bridgehub "$2" "$3"')
