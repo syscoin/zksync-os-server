@@ -36,7 +36,7 @@ class Hooks(FakeHooks):
     def readiness(self, report):
         return {'proof': None} if report['id'] in self.ready else None
     def discover(self, cursor): return {'gateway': 2, 'l1': 2}, copy.deepcopy(self.reports)
-    def collect_requests(self, records, previous): return previous
+    def collect_requests(self, records, previous, assigned, unrooted): return previous
     def publish_requests(self, requests): pass
     def already_claimed(self, report): return None
     def prepare_claim(self, reports, proofs):
@@ -136,18 +136,20 @@ class RequestTests(unittest.TestCase):
         hooks.proof = lambda report: {'blockOrBatchNumber': report['batch']}
         native = {'kind': 'unresolved', 'fromRoot': True, 'bootstrap': False, 'packageHash': h(8)}
         child = {'kind': 'activation', 'fromRoot': False, 'batch': 9}
-        records = {'a': {'report': native}, 'b': {'report': child}}
-        result = hooks.collect_requests(records, [])
+        records = {'a': {'report': native, 'status': 'pending'}, 'b': {'report': child, 'status': 'pending'}}
+        requests, assigned, unrooted = {}, {}, {'b': True}
+        result = hooks.collect_requests(records, requests, assigned, unrooted)
         digest = s.keccak(local.receipts.report_message(native))
-        self.assertEqual(result, [{'batch': 9, 'messageHash': digest}])
-        self.assertEqual(hooks.collect_requests({}, result), result)
+        self.assertEqual(result, {'9': {'batch': 9, 'messageHash': digest}})
+        self.assertEqual(hooks.collect_requests({}, result, assigned, unrooted), result)
         native2 = dict(native, packageHash=h(9))
-        records['c'] = {'report': native2}
-        result2 = hooks.collect_requests(records, result)
+        records['c'] = {'report': native2, 'status': 'pending'}
+        result2 = hooks.collect_requests(records, result, assigned, unrooted)
         self.assertEqual(result2, result)
-        records['d'] = {'report': dict(child, batch=10)}
-        result3 = hooks.collect_requests(records, result2)
-        self.assertIn({'batch': 10, 'messageHash': s.keccak(local.receipts.report_message(native2))}, result3)
+        records['d'] = {'report': dict(child, batch=10), 'status': 'pending'}
+        unrooted['d'] = True
+        result3 = hooks.collect_requests(records, result2, assigned, unrooted)
+        self.assertIn({'batch': 10, 'messageHash': s.keccak(local.receipts.report_message(native2))}, result3.values())
 
     def test_consensus_limit_splits_before_signing(self):
         class Rpc:

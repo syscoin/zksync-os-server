@@ -17,6 +17,7 @@ import time
 import bootstrap_enrollment
 import keeper
 import relay
+import receipt_storage as storage
 import service as s
 import workflow_io as io
 from service_transaction_driver import ServiceTransactionDriver
@@ -267,7 +268,8 @@ def step(cfg, journal, save, driver, hooks, now):
             s.require(hooks.received(child, meta['batch'], meta['root'], meta['messageHash']), 'root_delivery_state_mismatch')
         journal['history'].append({'batch': meta['batch'], 'status': 'delivered', 'txHash': entry['txHash'],
                                    'canonicalHash': digest, 'blockHash': child['blockHash']})
-        journal['completed'].append({'batch': meta['batch'], 'messageHash': meta['messageHash']})
+        item = {'batch': meta['batch'], 'messageHash': meta['messageHash']}
+        journal['completed'][storage.completed_key(item)] = item
         journal['nextRetryAt'] = 0
         del entries['root']
         save(journal)
@@ -275,16 +277,15 @@ def step(cfg, journal, save, driver, hooks, now):
     if now < journal['nextRetryAt']: return 'retry_wait'
     inbox_path = Path(cfg['requests_file'])
     if not inbox_path.exists() and not inbox_path.is_symlink(): return 'awaiting_request_inbox'
-    inbox = io.private_json(inbox_path)
-    s.exact(inbox, ('version', 'identity', 'requests'))
-    s.require(inbox['version'] == 1 and inbox['identity'] == cfg['requests_identity'][2:] and type(inbox['requests']) is list, 'invalid_root_requests')
     requests = []
-    for item in inbox['requests']:
-        s.exact(item, ('batch', 'messageHash'))
-        s.require(type(item['batch']) is int and item['batch'] > 0, 'invalid_root_request_batch')
-        s.raw_hex(item['messageHash'], 32)
-        if item not in journal['completed'] and item not in requests:
-            requests.append(item)
+    seen = set()
+    with storage.request_snapshot(inbox_path, cfg['requests_identity'][2:]) as (items, _):
+        for item in items:
+            key = storage.completed_key(item)
+            if key not in journal['completed'] and key not in seen:
+                requests.append(item)
+                seen.add(key)
+    requests.sort(key=lambda item: (item['batch'], item['messageHash']))
     if not requests: return 'no_requested_roots'
     for item in requests:
         batch, message_hash = item['batch'], item['messageHash']
@@ -292,7 +293,7 @@ def step(cfg, journal, save, driver, hooks, now):
         if snapshot is None: continue
         if snapshot['imported'] == snapshot['root'] and snapshot['authorized']:
             journal['history'].append({'batch': batch, 'messageHash': message_hash, 'status': 'already_delivered'})
-            journal['completed'].append(item)
+            journal['completed'][storage.completed_key(item)] = item
             save(journal)
             return 'already_delivered'
         request, metadata = hooks.prepare(batch, message_hash, snapshot)
@@ -337,13 +338,13 @@ def main():
         identity = hashlib.sha256(s.canonical(cfg)).hexdigest()
         path = root / 'gateway-roots.json'
         if path.exists() or path.is_symlink():
-            journal = io.private_json(path)
+            journal = storage.load(path, 'root')
             s.require(journal.get('version') == 1 and journal.get('identity') == identity, 'root_journal_identity_changed')
         else:
-            journal = {'version': 1, 'identity': identity, 'completed': [], 'nextRetryAt': 0,
-                       'transactions': {}, 'history': []}
-            relay.atomic_json(path, journal)
-        save = lambda value: relay.atomic_json(path, value)
+            journal = storage.journal.State({'version': 1, 'identity': identity, 'completed': {}, 'nextRetryAt': 0,
+                       'transactions': {}, 'history': []})
+            storage.save(path, journal, 'root')
+        save = lambda value: storage.save(path, value, 'root')
         driver = ServiceTransactionDriver(journal, save, signer.sign, signer.decode, signer.hash_raw)
         hooks = Hooks(cfg, l1, child, signer)
         failures = 0

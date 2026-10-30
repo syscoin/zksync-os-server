@@ -293,3 +293,13 @@ channel-close error that can precede the sender's intended exit in task-manager
 reporting. It retains settlement, nonce and restart-progress assertions and
 changes no production Rust code or dependency operations. The source fingerprint
 also binds this test-only correction.
+
+## Receipt-worker indexed storage re-review
+
+The receipt workers now reuse the existing indexed Python journal for retained
+reports, requests and history. A read-only snapshot helper keeps cross-worker
+observations coherent; regression tests cover migration and restart. This
+changes Python storage and worker callers, tests and documentation only. No Rust
+source, Cargo manifest, lockfile, native feature or advisory disposition changes.
+The source fingerprint binds the replacement storage paths; both guarded Linux
+scanners remain required on the final head.

@@ -12,7 +12,9 @@ import sys
 import time
 
 import bootstrap_enrollment
+import journal
 import relay
+import receipt_storage as storage
 import service as s
 import service_gateway_root_relayer as roots
 import service_receipt_relay as receipts
@@ -101,41 +103,61 @@ class Runner(machine.ReceiptRunner):
     def discover(self):
         claim_path = Path(self.claim_journal)
         if not claim_path.exists() and not claim_path.is_symlink(): return
-        source = io.private_json(claim_path)
-        s.require(source.get('version') == 1 and source.get('identity') == self.claim_identity
-                  and type(source.get('records')) is dict, 'native_claim_journal_changed')
-        records = source['records']
+        inbox = None
         if self.requests_file:
             inbox_path = Path(self.requests_file)
             if not inbox_path.exists() and not inbox_path.is_symlink(): return
             inbox = io.private_json(inbox_path)
-            s.exact(inbox, ('version', 'identity', 'requests'))
-            s.require(inbox['version'] == 1 and inbox['identity'] == self.requests_identity
-                      and type(inbox['requests']) is list, 'native_request_inbox_changed')
+            s.require(type(inbox) is dict and inbox.get('identity') == self.requests_identity, 'native_request_inbox_changed')
+            if inbox.get('version') == 1:
+                s.exact(inbox, ('version', 'identity', 'requests'))
+                s.require(type(inbox['requests']) is list, 'native_request_inbox_changed')
+            else:
+                s.exact(inbox, ('version', 'identity', 'claimJournal', 'claimIdentity'))
+                s.require(inbox['version'] == 2 and Path(inbox['claimJournal']) == claim_path
+                          and inbox['claimIdentity'] == self.claim_identity, 'native_request_inbox_changed')
+        with journal.snapshot(claim_path, map_fields=storage.CLAIM_MAPS, list_fields=storage.HISTORY) as source:
+            s.require(source.get('version') == 1 and source.get('identity') == self.claim_identity,
+                      'native_claim_journal_changed')
+            storage._normalize(source, 'claim')
+            s.exact(source.get('cursor'), ('gateway', 'l1'))
+            cursor = dict(source['cursor'])
+            records = dict(journal.status_items(source['records'], ('pending',)))
+            for key in source['activations']:
+                records[key] = source['records'][key]
+            for key, _ in journal.status_items(self.journal['records'], ('pending',)):
+                observed = source['records'].get(key)
+                if observed is not None:
+                    records[key] = observed
             self.bundled = set()
-            for item in inbox['requests']:
-                s.exact(item, ('batch', 'messageHash'))
-                s.require(type(item['batch']) is int and item['batch'] > 0, 'native_invalid_request')
-                s.raw_hex(item['messageHash'], 32)
-                self.bundled.add(item['messageHash'])
-        s.exact(source.get('cursor'), ('gateway', 'l1'))
-        for key, existing in self.journal['records'].items():
+            if inbox and inbox['version'] == 1:
+                for item in inbox['requests']:
+                    storage.request_key(item)
+                    self.bundled.add(item['messageHash'])
+            elif inbox:
+                for value in records.values():
+                    report = value['report']
+                    if report['fromRoot'] and report['kind'] in ('accepted', 'unresolved'):
+                        digest = s.keccak(receipts.report_message(report))
+                        if digest in source['rootRequestHashes']:
+                            self.bundled.add(digest)
+        for key, existing in journal.status_items(self.journal['records'], ('pending',)):
             observed = records.get(key)
             if existing['status'] == 'pending' and observed and observed.get('status') == 'complete':
-                existing['status'] = 'complete'
+                self.journal['records'][key]['status'] = 'complete'
         pending_bootstrap = any(v.get('status') == 'pending' and v.get('report', {}).get('bootstrap')
                                 for v in records.values())
         activations = [v['report'] for v in records.values() if v.get('report', {}).get('kind') == 'activation']
         for report in activations:
             self.hooks.validate_report(report)
         pairs = {v['roster_root'] for v in activations if v['fromRoot']
-                 and source['cursor']['l1'] > s.uint(v['sourceBlockNumber'])}
+                 and cursor['l1'] > s.uint(v['sourceBlockNumber'])}
         pairs &= {v['roster_root'] for v in activations if not v['fromRoot']
-                  and source['cursor']['gateway'] > s.uint(v['sourceBlockNumber'])}
+                  and cursor['gateway'] > s.uint(v['sourceBlockNumber'])}
         # Bootstrap reports from both chains are visible when both activation
         # events have passed their source cursors; only then may activation complete.
         activation_ready = not pending_bootstrap and bool(pairs)
-        for key, existing in list(self.journal['records'].items()):
+        for key, existing in list(journal.status_items(self.journal['records'], ('pending',))):
             if existing['status'] == 'pending' and existing['report']['kind'] == 'activation' and (
                 not activation_ready or existing['report']['roster_root'] not in pairs):
                 del self.journal['records'][key]
@@ -155,8 +177,8 @@ class Runner(machine.ReceiptRunner):
 
     def select(self):
         now = int(self.clock())
-        eligible = [(k, v) for k, v in self.journal['records'].items()
-                    if v['status'] == 'pending' and v['nextRetryAt'] <= now
+        eligible = [(k, v) for k, v in journal.status_items(self.journal['records'], ('pending',))
+                    if v['nextRetryAt'] <= now
                     and (v['report']['kind'] != 'accepted' or not self.bundled
                          or s.keccak(receipts.report_message(v['report'])) not in self.bundled
                          or now >= v.get('firstSeen', now) + self.fallback_delay_seconds)]
@@ -202,12 +224,12 @@ def main():
         path = directory / 'service-native-receipts.json'
         identity = hashlib.sha256(s.canonical(config)).hexdigest()
         if path.exists() or path.is_symlink():
-            journal = io.private_json(path)
+            journal = storage.load(path, 'native')
             s.require(journal.get('version') == 1 and journal.get('identity') == identity, 'native_journal_identity_changed')
         else:
-            journal = {'version': 1, 'identity': identity, 'transactions': {}, 'records': {}, 'split': [], 'history': []}
-            relay.atomic_json(path, journal)
-        save = lambda value: relay.atomic_json(path, value)
+            journal = storage.journal.State({'version': 1, 'identity': identity, 'transactions': {}, 'records': {}, 'split': [], 'history': []})
+            storage.save(path, journal, 'native')
+        save = lambda value: storage.save(path, value, 'native')
         driver = ServiceTransactionDriver(journal, save, signer.sign, signer.decode, signer.hash_raw)
         hooks = Hooks(cfg, l1, gateway, child, signer)
         worker = Runner(journal, save, driver, l1.call, child.call, hooks,

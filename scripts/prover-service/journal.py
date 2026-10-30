@@ -1,6 +1,7 @@
 """Durable indexed journals without a lifetime limit on retained work."""
 
 from collections.abc import MutableMapping, Sequence
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -16,7 +17,7 @@ MAX_ROWS = 512
 MAX_INLINE_EVENTS = 1024
 MAX_INLINE_BYTES = 8 * 1024 * 1024
 MAX_CACHE = 32
-TERMINAL_ROWS = {"accepted", "accepted_elsewhere", "reverted", "confirmed", "settled", "superseded",
+TERMINAL_ROWS = {"accepted", "accepted_elsewhere", "reverted", "confirmed", "settled", "superseded", "complete",
                  "returned", "expired", "obsolete", "rejected", "unexported_pick_abandoned", "no_job"}
 
 
@@ -306,6 +307,75 @@ def load(path, *, map_fields=("operations",), list_fields=()):
     except BaseException:
         connection.close()
         raise
+
+
+class _SnapshotMap(SQLiteMap):
+    def __init__(self, connection, name):
+        self.connection, self.name, self.owns_connection = connection, name, False
+        self.cache, self.original, self.deleted = {}, {}, set()
+
+    def __setitem__(self, key, value):
+        raise TypeError("journal snapshot is read-only")
+
+    def __delitem__(self, key):
+        raise TypeError("journal snapshot is read-only")
+
+    def flush(self):
+        raise TypeError("journal snapshot is read-only")
+
+    def sync(self):
+        raise TypeError("journal snapshot is read-only")
+
+
+class _SnapshotEvents(SQLiteEvents):
+    def __init__(self, connection, name):
+        self.connection, self.name, self.pending = connection, name, []
+        self.committed = connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+
+    def append(self, event):
+        raise TypeError("journal snapshot is read-only")
+
+    def flush(self):
+        raise TypeError("journal snapshot is read-only")
+
+
+@contextmanager
+def snapshot(path, *, map_fields=("operations",), list_fields=()):
+    """Read a coherent journal without creating or changing its database."""
+    path = Path(path)
+    raw = s.read(path, private=True)
+    marker = _decode(raw)
+    database = path.with_name(path.name + ".sqlite3")
+    s.require(not database.is_symlink(), "journal_database_symlink")
+    if not database.exists():
+        s.require(marker.get("storage_version") != 2, "journal_database_missing")
+        yield State(marker)
+        return
+    s.require(database.is_file() and database.stat().st_mode & 0o077 == 0, "private_journal_database_required")
+    connection = sqlite3.connect(database.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None)
+    try:
+        # Pin metadata and every lazy map/list read to the same committed state.
+        connection.execute("BEGIN")
+        row = connection.execute("SELECT value FROM metadata WHERE key='state'").fetchone()
+        s.require(row is not None, "journal_metadata_missing")
+        if marker.get("storage_version") != 2:
+            origin = connection.execute("SELECT value FROM metadata WHERE key='origin'").fetchone()
+            s.require(origin is not None and origin[0] == hashlib.sha256(raw).hexdigest(),
+                      "journal_migration_source_changed")
+        state = State(_decode(row[0]))
+        for field in (*map_fields, *list_fields):
+            if field == "audit.events" and "audit" not in state:
+                continue
+            parent, key = _field(state, field)
+            name = ("map_" if field in map_fields else "list_") + field.replace(".", "_")
+            s.require(name.replace("_", "").isalnum(), "invalid_journal_table")
+            exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+            if exists:
+                parent[key] = _SnapshotMap(connection, name) if field in map_fields else _SnapshotEvents(connection, name)
+        yield state
+        connection.execute("COMMIT")
+    finally:
+        connection.close()
 
 
 def save(path, state, *, map_fields=("operations",), list_fields=()):

@@ -16,7 +16,9 @@ import sys
 import time
 
 import bootstrap_enrollment
+import journal
 import relay
+import receipt_storage as storage
 import service as s
 import service_receipt_relay as receipts
 import service_receipt_runner as machine
@@ -70,41 +72,46 @@ def calldata(reports, proofs):
 
 
 class Hooks(receipts.Hooks):
-    def __init__(self, cfg, l1, gateway, zksys, signer, gas_price, inbox=None):
+    def __init__(self, cfg, l1, gateway, zksys, signer, gas_price, inbox=None, claim_path=None, claim_identity=None):
         super().__init__(cfg, l1, gateway, zksys, signer)
         self.gas_price = gas_price
         self.inbox = inbox
+        self.claim_path, self.claim_identity = claim_path, claim_identity
 
-    def collect_requests(self, records, previous):
-        requests = {(item['batch'], item['messageHash']) for item in previous}
-        batches = {batch for batch, _ in requests}
+    def collect_requests(self, records, requests, assigned, unrooted):
+        batches = set()
         hashes = set()
-        for value in records.values():
+        resolved = []
+        for _, value in journal.status_items(records, ('pending',)):
             report = value['report']
-            if report['fromRoot']:
-                if value.get('status', 'pending') == 'pending' and report['kind'] in ('accepted', 'unresolved'):
-                    hashes.add(s.keccak(receipts.report_message(report)))
-            else:
-                proof = value.get('rootProof')
-                if proof is None:
-                    proof = self.proof(report)
-                    if proof is not None:
-                        value['rootProof'] = proof
-                if proof is not None:
-                    batches.add(s.uint(proof['blockOrBatchNumber']))
-        # Keep every prior request; attach at most one native hash to a newly
-        # discovered batch. Extra native reports use the native relay path.
-        assigned = {digest for _, digest in requests if digest != s.ZERO}
-        represented = {batch for batch, _ in requests}
-        unassigned = iter(sorted(hashes - assigned))
-        for batch in sorted(batches - represented):
-            requests.add((batch, next(unassigned, s.ZERO)))
-        return [{'batch': batch, 'messageHash': digest} for batch, digest in sorted(requests)]
+            if report['fromRoot'] and report['kind'] in ('accepted', 'unresolved'):
+                digest = s.keccak(receipts.report_message(report))
+                if digest not in assigned:
+                    hashes.add(digest)
+        for key in list(unrooted):
+            value = records[key]
+            proof = value.get('rootProof') or self.proof(value['report'])
+            if proof is not None:
+                batch = s.uint(proof['blockOrBatchNumber'])
+                s.require(batch > 0, 'invalid_root_request_batch')
+                if str(batch) not in requests:
+                    batches.add(batch)
+                resolved.append((key, proof))
+        for key, proof in resolved:
+            records[key]['rootProof'] = proof
+            del unrooted[key]
+        unassigned = iter(sorted(hashes))
+        for batch in sorted(batches):
+            digest = next(unassigned, s.ZERO)
+            requests[str(batch)] = {'batch': batch, 'messageHash': digest}
+            if digest != s.ZERO:
+                assigned[digest] = True
+        return requests
 
     def publish_requests(self, requests):
         if self.inbox is not None:
             identity = hashlib.sha256(s.canonical(self.cfg)).hexdigest()
-            relay.atomic_json(self.inbox, {'version': 1, 'identity': identity, 'requests': requests})
+            storage.publish_descriptor(self.inbox, identity, self.claim_path, self.claim_identity)
 
     def already_claimed(self, report):
         block, anchor = self.anchor(self.zksys, self.cfg['zksys_chain_id'], self.cfg['zksys_genesis'])
@@ -192,6 +199,15 @@ class Hooks(receipts.Hooks):
 class ClaimRunner(machine.ReceiptRunner):
     def __init__(self, journal, save, driver, zksys_rpc, hooks, *, clock=time.time):
         super().__init__(journal, save, driver, zksys_rpc, zksys_rpc, hooks, clock=clock)
+        storage._normalize(journal, 'claim')
+
+    def index_discovery(self, changes):
+        for key, value in changes.items():
+            report = value['report']
+            if not report['fromRoot'] and value.get('rootProof') is None:
+                self.journal['rootPending'][key] = True
+            if report['kind'] == 'activation':
+                self.journal['activations'][key] = report
 
     def remove_split(self, ids):
         selected = set(ids)
@@ -206,32 +222,33 @@ class ClaimRunner(machine.ReceiptRunner):
         if 'claim' in self.journal['transactions']:
             return self.resume_claim()
         self.discover()
-        for value in self.journal['records'].values():
-            if value['status'] == 'pending':
-                self.hooks.validate_report(value['report'])
-                finalized = self.hooks.already_claimed(value['report'])
-                if finalized is not None:
-                    value.update(status='complete', observedFinalizedBlockHash=finalized)
+        for key, value in journal.status_items(self.journal['records'], ('pending',)):
+            self.hooks.validate_report(value['report'])
+            finalized = self.hooks.already_claimed(value['report'])
+            if finalized is not None:
+                self.journal['records'][key].update(status='complete', observedFinalizedBlockHash=finalized)
         # External or direct-path claims can complete a previously split item.
-        for key, value in self.journal['records'].items():
-            if value['status'] == 'complete':
-                self.remove_split([key])
-        requests = self.hooks.collect_requests(self.journal['records'], self.journal.get('rootRequests', []))
-        self.journal['rootRequests'] = requests
+        for group in self.journal['split'][:]:
+            for key in group:
+                if self.journal['records'][key]['status'] == 'complete':
+                    self.remove_split([key])
+        requests = self.hooks.collect_requests(self.journal['records'], self.journal['rootRequests'],
+                                               self.journal['rootRequestHashes'], self.journal['rootPending'])
         self.save(self.journal)
         self.hooks.publish_requests(requests)
         records, now = self.journal['records'], int(self.clock())
         ready = {}
-        for key, value in records.items():
-            if value['status'] == 'pending' and value['nextRetryAt'] <= now:
+        pending = list(journal.status_items(records, ('pending',)))
+        for key, value in pending:
+            if value['nextRetryAt'] <= now:
                 candidate = self.hooks.readiness(value['report'])
                 if candidate is not None:
                     ready[key] = candidate
         if not ready:
             return 'awaiting_roots_or_reports'
-        pending_bootstrap = any(v['status'] == 'pending' and v['report'].get('bootstrap') for v in records.values())
+        pending_bootstrap = any(v['report'].get('bootstrap') for _, v in pending)
         split_members = {key for group in self.journal['split'] for key in group}
-        activations = [value['report'] for value in records.values() if value['report']['kind'] == 'activation']
+        activations = list(self.journal['activations'].values())
         cursor = self.journal['cursor']
         roots = {report['roster_root'] for report in activations if report['fromRoot']
                  and cursor['l1'] > s.uint(report['sourceBlockNumber'])}
@@ -349,14 +366,14 @@ def main():
         identity = hashlib.sha256(s.canonical(config)).hexdigest()
         path = directory / 'service-local-claim.json'
         if path.exists() or path.is_symlink():
-            journal = io.private_json(path)
+            journal = storage.load(path, 'claim')
             s.require(journal.get('version') == 1 and journal.get('identity') == identity, 'claim_journal_identity_changed')
         else:
-            journal = {'version': 1, 'identity': identity, 'transactions': {}, 'records': {}, 'split': [], 'history': []}
-            relay.atomic_json(path, journal)
-        save = lambda value: relay.atomic_json(path, value)
+            journal = storage.journal.State({'version': 1, 'identity': identity, 'transactions': {}, 'records': {}, 'split': [], 'history': []})
+            storage.save(path, journal, 'claim')
+        save = lambda value: storage.save(path, value, 'claim')
         driver = ServiceTransactionDriver(journal, save, signer.sign, signer.decode, signer.hash_raw)
-        hooks = Hooks(cfg, l1, gateway, zksys, signer, gas_price, directory / 'service-root-requests.json')
+        hooks = Hooks(cfg, l1, gateway, zksys, signer, gas_price, directory / 'service-root-requests.json', path, identity)
         worker = ClaimRunner(journal, save, driver, zksys.call, hooks)
         run_loop(worker, cfg['poll_seconds'], args.once, emit=lambda line: print(line, flush=True))
     finally:
