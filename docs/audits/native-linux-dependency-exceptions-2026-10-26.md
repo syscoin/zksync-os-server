@@ -288,6 +288,12 @@ native dependency feature or advisory disposition changes. The source fingerprin
 is refreshed for these inputs; both guarded Linux scanners remain required on
 the final head.
 
+The restart integration-test follow-up accepts the exact downstream SNARK
+channel-close error that can precede the sender's intended exit in task-manager
+reporting. It retains settlement, nonce and restart-progress assertions and
+changes no production Rust code or dependency operations. The source fingerprint
+also binds this test-only correction.
+
 ## Receipt-worker indexed storage re-review
 
 The receipt workers now reuse the existing indexed Python journal for retained

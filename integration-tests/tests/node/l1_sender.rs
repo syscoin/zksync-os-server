@@ -1066,10 +1066,14 @@ async fn missing_sender_nonce_rpc_drains_pending_then_restarts_and_recovers(
         .wait_for_fatal_error_with_timeout(Duration::from_secs(60))
         .await?;
     let error_text = error.to_string();
+    // Closing the sender's output can surface the downstream SNARK task's error first.
     assert!(
         error_text.contains("pending transactions settled; restart")
             || (error_text.contains("node startup readiness gate")
-                && error_text.contains("SNARK readiness source exited after node became ready")),
+                && error_text.contains("SNARK readiness source exited after node became ready"))
+            || error_text.starts_with(
+                "Critical task `snark_job_manager` panicked: `pipeline segment failed: SNARK pipeline inbound channel closed after startup recovery",
+            ),
         "unexpected error: {error}"
     );
     let receipt = l1
