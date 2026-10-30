@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.24.1](https://github.com/syscoin/zksync-os-server/compare/v0.24.0...v0.24.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **launch:** defer staking until service accounting is configured ([7b714e1](https://github.com/syscoin/zksync-os-server/commit/7b714e1079921c4f15d65520b04130eccd6be5fa))
+* **prover-service:** index receipt worker journals ([4896fbe](https://github.com/syscoin/zksync-os-server/commit/4896fbe5007124d548280170464cd6e3234bdaab))
+* **prover-service:** scan only relevant gate logs ([32defdf](https://github.com/syscoin/zksync-os-server/commit/32defdf99110745f0af5eb5d1b3f565ebda7f138))
+* **prover-service:** target event discovery and defer staking setup ([420d59d](https://github.com/syscoin/zksync-os-server/commit/420d59dae5059542a76a7bf2fbac27675969b287))
+* **prover-service:** use indexed receipt worker journals ([88c645a](https://github.com/syscoin/zksync-os-server/commit/88c645a01878f8fea87efead79bc44dd6c5cf253))
+* **release:** align generated workspace pins and lockfile ([8cd34c9](https://github.com/syscoin/zksync-os-server/commit/8cd34c9f89851a57a840c93e259b945abc0c2ee4))
+* **release:** sync internal pins and lockfile automatically ([a622f6c](https://github.com/syscoin/zksync-os-server/commit/a622f6cfe159aedce9716983ef207d927dba0a9d))
+
 ## [0.24.0](https://github.com/syscoin/zksync-os-server/compare/v0.23.0...v0.24.0) (2026-10-30)
 
 
