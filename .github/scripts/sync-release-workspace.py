@@ -91,7 +91,9 @@ def sync_pull_request(repository, number, root=ROOT, api=github_api):
     if (pr["state"] != "open" or pr["base"]["ref"] != "main"
             or pr["head"]["repo"]["full_name"] != repository or pr["head"]["ref"] != BRANCH):
         raise ValueError("unexpected release pull request repository or branch")
-    head = pr["head"]["sha"]
+    # PR metadata can lag Release Please's branch update; read the ref itself.
+    reference = f"{endpoint}/git/ref/heads/{BRANCH}"
+    head = api("GET", reference)["object"]["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise ValueError("invalid release head")
     contents = {}
@@ -129,7 +131,7 @@ def sync_pull_request(repository, number, root=ROOT, api=github_api):
         "message": "chore(release): align internal workspace versions",
         "tree": tree["sha"], "parents": [head]})
     current = api("GET", f"{endpoint}/pulls/{number}")
-    if current["state"] != "open" or current["head"]["sha"] != head:
+    if current["state"] != "open" or api("GET", reference)["object"]["sha"] != head:
         raise ValueError("release head changed during version alignment")
     # A concurrent branch advance is also rejected by GitHub's fast-forward check.
     api("PATCH", f"{endpoint}/git/refs/heads/{BRANCH}", {"sha": new_commit["sha"], "force": False})
