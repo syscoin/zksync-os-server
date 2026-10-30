@@ -1940,16 +1940,16 @@ For the intended zkSYS mainnet launch with period-zero prover service, set
 every launch helper. This selection alone does not complete or activate the
 prover service; the remaining setup steps below are required. L1 bridge configuration is then pinned to seniority
 heights `210240` / `525600` and bonus rates `3500` / `10000` basis points.
-The ordinary L2 bootstrap leaves membership delivery disconnected until
-accounting is configured, so the keeper cannot activate those delivered
-weights before that step. After the ordinary bootstrap, use
+The ordinary L2 bootstrap leaves membership delivery disconnected and staking
+disabled until accounting is configured, so neither can activate reward weight
+before that step. After the ordinary bootstrap, use
 `zksys-l2-bootstrap.sh --service-addresses` to derive the child receiver
 address needed by the NEVM message sink. The flag and the existing launch and
 bootstrap identities must match the persisted deployment.
 
 The separate `zksys-l2-bootstrap.sh --service-v1` stage deploys the child
 receiver and service registry and configures the issuer from period zero,
-then connects the membership bridge. It requires the already-deployed Gateway
+then enables staking and connects the membership bridge. It requires the already-deployed Gateway
 child proof gate, NEVM root proof gate and root message sink, and pins their
 operator-supplied runtime hashes and cross-chain identities. The stage requires
 `ZKSYS_SERVICE_GATEWAY_GATE`, `ZKSYS_SERVICE_ROOT_SINK`,

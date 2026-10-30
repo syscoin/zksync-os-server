@@ -15,6 +15,27 @@ zksys_assert_shared_bridgehub() {
     gl_die "root sink Bridgehub does not match the L1 registry bridge"
 }
 
+zksys_assert_staking_deferred() {
+  local current
+  current="$(call_l2 "${ZKSYS_L2_ISSUER_ADDRESS}" 'serviceStartPeriodPlusOne()(uint256)')"
+  if [ "${current}" = 0 ]; then
+    assert_l2_bool_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" 'hasRole(bytes32,address)(bool)' false \
+      "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+  fi
+}
+
+zksys_enable_staking() {
+  local enabled
+  enabled="$(call_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" 'hasRole(bytes32,address)(bool)' \
+    "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}")"
+  if [ "${enabled}" = false ]; then
+    send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" 'grantRole(bytes32,address)' \
+      "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+  fi
+  assert_l2_bool_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" 'hasRole(bytes32,address)(bool)' true \
+    "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+}
+
 zksys_assert_connected_service_v1() {
   local manifest service
   manifest="$(gl_checkpoint_state_dir)/zksys-service-v1.json"
