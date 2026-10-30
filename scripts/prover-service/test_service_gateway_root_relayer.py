@@ -43,7 +43,7 @@ def state(tmp_path):
     path.write_text(json.dumps({'version': 1, 'identity': '22' * 32, 'requests': []}))
     path.chmod(0o600)
     cfg = {'requests_file': str(path), 'requests_identity': '0x' + '22' * 32, 'zksys_chain_id': 2}
-    journal = {'transactions': {}, 'completed': [], 'history': [], 'nextRetryAt': 0}
+    journal = {'transactions': {}, 'completed': {}, 'history': [], 'nextRetryAt': 0}
     return path, cfg, journal, Driver(journal), Hooks()
 
 
@@ -66,7 +66,7 @@ def test_only_requested_batches_and_bundled_hash(tmp_path):
         assert r.step(cfg, journal, lambda _: None, driver, hooks, 3) == 'l2_pending'
     with mock.patch.object(r, 'finalized_receipt', return_value={'status': '0x1', 'blockHash': root}):
         assert r.step(cfg, journal, lambda _: None, driver, hooks, 4) == 'delivered'
-    assert journal['completed'] == [{'batch': 100, 'messageHash': digest}]
+    assert list(journal['completed'].values()) == [{'batch': 100, 'messageHash': digest}]
     assert r.step(cfg, journal, lambda _: None, driver, hooks, 5) == 'no_requested_roots'
 
 
@@ -79,7 +79,7 @@ def test_l2_revert_retry_never_completes_unaccepted_hash(tmp_path):
     driver.result = {'blockHash': root}
     with mock.patch.object(r, 'finalized_receipt', return_value={'status': '0x0', 'blockHash': root}):
         assert r.step(cfg, journal, lambda _: None, driver, hooks, 2) == 'l2_reverted_retry_scheduled'
-    assert journal['completed'] == []
+    assert journal['completed'] == {}
     assert r.step(cfg, journal, lambda _: None, driver, hooks, 3) == 'retry_wait'
     assert r.step(cfg, journal, lambda _: None, driver, hooks, 63) == 'submitted'
 

@@ -6,6 +6,8 @@ No network or signer is trusted merely because an item appears in the journal.
 """
 import copy
 import time
+from collections.abc import MutableMapping
+import journal
 from zksys_keeper_transactions import FinalizedRevert, TransactionError, finalized_receipt
 
 
@@ -21,7 +23,7 @@ class ReceiptRunner:
         journal.setdefault('transactions', {})
         journal.setdefault('split', [])
         journal.setdefault('history', [])
-        if not isinstance(journal['records'], dict) or not isinstance(journal['split'], list):
+        if not isinstance(journal['records'], MutableMapping) or not isinstance(journal['split'], list):
             raise TransactionError('invalid receipt journal')
 
     def discover(self):
@@ -31,8 +33,10 @@ class ReceiptRunner:
         cursor, found = self.hooks.discover(self.journal.get('cursor'))
         if not isinstance(found, list):
             raise TransactionError('invalid discovery result')
-        records = copy.deepcopy(self.journal['records'])
-        for record in records.values():
+        records = self.journal['records']
+        changes = {}
+        for key, original in journal.status_items(records, ('pending',)):
+            record = copy.deepcopy(original)
             if record['status'] == 'pending' and record['report']['kind'] == 'unresolved':
                 self.hooks.validate_report(record['report'])
                 resolved = self.hooks.hydrate(record['report'])
@@ -40,17 +44,24 @@ class ReceiptRunner:
                     self.hooks.validate_resolution(record['report'], resolved)
                     self.hooks.validate_report(resolved)
                     record['report'] = resolved
+                    changes[key] = record
         for report in found:
             self.hooks.validate_report(report)
             key = report['id']
-            if key in records:
-                if records[key]['report'] != report:
+            existing = changes.get(key, records.get(key))
+            if existing is not None:
+                if existing['report'] != report:
                     raise TransactionError('source report identity changed')
             else:
-                records[key] = {'report': report, 'status': 'pending', 'failures': 0, 'nextRetryAt': 0}
-        self.journal['records'] = records
+                changes[key] = {'report': report, 'status': 'pending', 'failures': 0, 'nextRetryAt': 0}
+        for key, value in changes.items():
+            records[key] = value
+        self.index_discovery(changes)
         self.journal['cursor'] = cursor
         self.save(self.journal)
+
+    def index_discovery(self, changes):
+        pass
 
     def run_once(self):
         if self.hooks.verify_deployment() is not True:
@@ -63,8 +74,8 @@ class ReceiptRunner:
         self.discover()
         chosen = self.select()
         if not chosen:
-            if any(value['status'] == 'pending' and value['report']['kind'] == 'unresolved'
-                   for value in self.journal['records'].values()):
+            if any(value['report']['kind'] == 'unresolved'
+                   for _, value in journal.status_items(self.journal['records'], ('pending',))):
                 return 'awaiting_retained_artifacts'
             return 'idle'
         reports = [self.journal['records'][key]['report'] for key in chosen]
@@ -86,8 +97,8 @@ class ReceiptRunner:
 
     def select(self):
         records, now = self.journal['records'], int(self.clock())
-        eligible = {key for key, value in records.items() if value['status'] == 'pending'
-                    and value['nextRetryAt'] <= now}
+        pending = list(journal.status_items(records, ('pending',)))
+        eligible = {key for key, value in pending if value['nextRetryAt'] <= now}
         split_ids = set()
         for group in self.journal['split']:
             if not isinstance(group, list) or not group or len(group) != len(set(group)):
@@ -96,7 +107,7 @@ class ReceiptRunner:
                 raise TransactionError('unknown split report')
             split_ids.update(group)
             if any(records[key]['report']['kind'] == 'activation' for key in group) and any(
-                value['status'] == 'pending' and value['report'].get('bootstrap') for value in records.values()
+                value['report'].get('bootstrap') for _, value in pending
             ):
                 continue
             if all(key in eligible for key in group):
@@ -113,7 +124,7 @@ class ReceiptRunner:
             return accepts
         # Do not activate while a previously discovered bootstrap report remains
         # unresolved, even if it is waiting for its next retry.
-        if any(v['status'] == 'pending' and v['report'].get('bootstrap') for v in records.values()):
+        if any(value['report'].get('bootstrap') for _, value in pending):
             return []
         activations = sorted((key for key in eligible - split_ids if records[key]['report']['kind'] == 'activation'), key=position)
         return activations[:1]

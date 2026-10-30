@@ -106,9 +106,13 @@ python3 scripts/prover-service/service_native_receipt_relayer.py --config /priva
 
 Run each command continuously under a process supervisor, adding `--execute`.
 For a single supervised iteration add `--once`; it does not continue polling.
-Start the local claimant first: it atomically publishes the root-request inbox
-and its discovery journal for the other workers. The publisher and native relay
-wait for those files. Monitor process failures, missing artifacts, unconfirmed
+Start the local claimant first: it publishes a private root-request descriptor
+and its discovery journal for the other workers. The descriptor points to the
+claim journal, so the publisher and native relay need read access to both files
+and the journal's adjacent SQLite database. Keep the whole state directory
+together across restarts and backups. Existing JSON journals and request inboxes
+are read during migration. The publisher and native relay wait for those files.
+Monitor process failures, missing artifacts, unconfirmed
 transactions, retry/split status and accounting deadlines. The local worker
 estimates and simulates zkSYS claims and splits rejected batches; no fixed small
 report limit is imposed. The worker uses a `1 << 24` transaction gas ceiling;
