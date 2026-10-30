@@ -886,6 +886,27 @@ contract ZkSysIssuerTest is Test {
         assertLe(token.totalSupply(), issuer.totalScheduledRewards());
     }
 
+    function testStakingCanStartAfterPeriodZeroServiceConfiguration() public {
+        bytes32 updaterRole = registry.STAKE_WEIGHT_UPDATER_ROLE();
+        vm.prank(admin);
+        registry.revokeRole(updaterRole, address(stakingVault));
+
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        vm.expectRevert();
+        stakingVault.deposit{value: 1 ether}();
+        assertEq(stakingVault.stakeOf(alice), 0);
+        assertEq(stakingVault.totalStaked(), 0);
+        assertEq(registry.totalWeight(), 0);
+
+        _configureService(0);
+        vm.prank(admin);
+        registry.grantRole(updaterRole, address(stakingVault));
+        _depositStake(alice, 1 ether);
+        assertEq(stakingVault.stakeOf(alice), 1 ether);
+        assertEq(registry.totalWeight(), 1 ether);
+    }
+
     function testServiceConfigurationRequiresCleanRegistryAndFutureMatchingPeriod() public {
         IssuerServiceSourceMock source = new IssuerServiceSourceMock(issuer, 0);
         _depositStake(alice, 1 ether);

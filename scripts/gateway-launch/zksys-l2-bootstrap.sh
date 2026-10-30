@@ -830,6 +830,8 @@ if [ "${SERVICE_ADDRESSES_ONLY}" = true ]; then
   exit 0
 fi
 
+STAKE_WEIGHT_UPDATER_ROLE="$(cast keccak "$(cast from-ascii STAKE_WEIGHT_UPDATER_ROLE)")"
+
 if [ "${SERVICE_V1_ONLY}" = true ]; then
   require_create2_deployer
   assert_proxy_admin_owner "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
@@ -844,7 +846,9 @@ if [ "${SERVICE_V1_ONLY}" = true ]; then
   [ "$(gl_to_lower "${current_bridge}")" = "${ZERO_ADDRESS}" ] ||
     [ "$(gl_to_lower "${current_bridge}")" = "$(gl_to_lower "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}")" ] ||
     gl_die "membership bridge already points elsewhere"
+  zksys_assert_staking_deferred
   zksys_setup_service_v1
+  zksys_enable_staking
   if [ "$(gl_to_lower "${current_bridge}")" = "${ZERO_ADDRESS}" ]; then
     send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" 'setL1RegistryBridge(address)' "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
   else
@@ -898,11 +902,12 @@ assert_proxy_wiring "zkSYS native staking vault" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS
 
 MINTER_ROLE="$(cast keccak "$(cast from-ascii MINTER_ROLE)")"
 BURNER_ROLE="$(cast keccak "$(cast from-ascii BURNER_ROLE)")"
-STAKE_WEIGHT_UPDATER_ROLE="$(cast keccak "$(cast from-ascii STAKE_WEIGHT_UPDATER_ROLE)")"
 
 echo "zksys-l2-bootstrap: wiring issuer minter role and registry receivers"
 send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
-send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "grantRole(bytes32,address)" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+if [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = false ]; then
+  send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "grantRole(bytes32,address)" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+fi
 send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "setWeightReceiver(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" "setSentryNodeReceiver(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
 if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ] && [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = false ]; then
@@ -914,7 +919,11 @@ send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${BURNER_ROLE}
 
 echo "zksys-l2-bootstrap: verifying role and receiver wiring"
 assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
-assert_l2_bool_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+if [ "${ZKSYS_ENABLE_PROVER_SERVICE_V1}" = true ]; then
+  zksys_assert_staking_deferred
+else
+  assert_l2_bool_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+fi
 assert_l2_uint_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "activationDelayPeriods()(uint256)" "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS}"
 assert_l2_address_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "weightReceiver()(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "sentryNodeReceiver()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
