@@ -1,0 +1,1003 @@
+use super::*;
+use crate::commands::commit::CommitCommand;
+use crate::config::L1SenderConfig;
+use alloy::consensus::SignableTransaction;
+use alloy::consensus::{Receipt, ReceiptEnvelope, ReceiptWithBloom};
+use alloy::eips::eip2718::Encodable2718;
+use alloy::network::EthereumWallet;
+use alloy::primitives::U64;
+use alloy::providers::ProviderBuilder;
+use alloy::rpc::json_rpc::ErrorPayload;
+use alloy::rpc::types::{Block, Header};
+use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::{SignerSync, local::PrivateKeySigner};
+use alloy::transports::mock::Asserter;
+use zksync_os_operator_signer::SignerConfig;
+use zksync_os_provider::NodeProvider;
+
+async fn provider(asserter: &Asserter) -> NodeProvider {
+    let header: Header = Header::default();
+    asserter.push_success(&header);
+    asserter.push_success(&header);
+    asserter.push_failure(ErrorPayload {
+        code: METHOD_NOT_FOUND_CODE,
+        message: "eth_config unavailable".into(),
+        data: None,
+    });
+    asserter.push_success(&U64::from(zksync_os_provider::ANVIL_L1_CHAIN_ID));
+    NodeProvider::new(
+        ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .wallet(EthereumWallet::default())
+            .connect_mocked_client(asserter.clone()),
+    )
+    .await
+    .expect("mock provider")
+}
+
+fn sender(provider: NodeProvider, pipelined: bool, liveness: bool) -> L1Sender<CommitCommand> {
+    L1Sender {
+        provider,
+        config: L1SenderConfig {
+            operator_signer: SignerConfig::Local(SigningKey::from_slice(&[1; 32]).unwrap()),
+            fee_config: L1SenderFeeConfig {
+                max_fee_per_gas_wei: SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI,
+                max_priority_fee_per_gas_wei: SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI,
+                max_fee_per_gas_replacement_multiplier: 2.0,
+                max_priority_fee_per_gas_replacement_multiplier: 2.0,
+            },
+            force_transaction_resubmission: false,
+            command_limit: 1,
+            pipelining_enabled: pipelined,
+            poll_interval: Duration::from_millis(1),
+            transaction_timeout: Duration::from_secs(1),
+            tx_liveness_poll_interval: Duration::from_nanos(1),
+            tx_liveness_max_missing_polls: u32::from(liveness),
+            gateway_da_admission_retry_timeout: Duration::from_secs(1),
+            gateway_da_admission_retry_interval: Duration::from_millis(1),
+            required_confirmations: 2,
+            nonce_error_max_attempts: 1,
+            nonce_error_retry_backoff: Duration::from_millis(1),
+            phantom_data: Default::default(),
+        },
+        to_address: Address::ZERO,
+        gateway: false,
+        commit_submitted_tx: None,
+        sl_block_number: 42,
+    }
+}
+
+fn receipt(tx: B256, block_hash: B256, height: u64) -> TransactionReceipt {
+    TransactionReceipt {
+        inner: ReceiptEnvelope::Eip1559(ReceiptWithBloom {
+            receipt: Receipt {
+                status: true.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        transaction_hash: tx,
+        transaction_index: Some(0),
+        block_hash: Some(block_hash),
+        block_number: Some(height),
+        gas_used: 21_000,
+        effective_gas_price: 1,
+        blob_gas_used: None,
+        blob_gas_price: None,
+        from: Address::with_last_byte(1),
+        to: Some(Address::ZERO),
+        contract_address: None,
+    }
+}
+
+fn block(hash: B256, height: u64) -> Block {
+    let mut block: Block = Block::default();
+    block.header.hash = hash;
+    block.header.inner.number = height;
+    block
+}
+
+fn resend() -> ConfirmationResend {
+    ConfirmationResend {
+        request: TransactionRequest {
+            from: Some(Address::with_last_byte(1)),
+            nonce: Some(7),
+            ..Default::default()
+        },
+        raw_transactions: vec![],
+    }
+}
+
+fn signed_resend() -> (B256, Bytes, ConfirmationResend) {
+    // Public test key 0x0101... signs this EIP-1559 transaction for chain 31337.
+    let raw = Bytes::from(alloy::primitives::hex::decode(
+        "02f868827a6907824e20824e208252089400000000000000000000000000000000000000008080c001a0fd1d41851151787a744fcc7907b27c732a834610b1c8804f4cce9a8bd14a93f9a0201a8dd84874e987ea0166b7714219a6c9d2b3db94852fa9f3332028416694eb",
+    ).unwrap());
+    let hash = alloy::primitives::keccak256(&raw);
+    let request = TransactionRequest {
+        from: Some(
+            "0x1a642f0e3c3af545e7acbd38b07251b3990914f1"
+                .parse()
+                .unwrap(),
+        ),
+        to: Some(Address::ZERO.into()),
+        nonce: Some(7),
+        gas: Some(21_000),
+        input: Bytes::new().into(),
+        ..Default::default()
+    };
+    (
+        hash,
+        raw.clone(),
+        ConfirmationResend {
+            request,
+            raw_transactions: vec![(hash, raw)],
+        },
+    )
+}
+
+fn signed_resend_with_fee(fee: u128) -> (B256, Bytes, ConfirmationResend) {
+    let (_, raw, mut original) = signed_resend();
+    let mut input = raw.as_ref();
+    let TxEnvelope::Eip1559(signed) = TxEnvelope::decode_2718(&mut input).unwrap() else {
+        unreachable!()
+    };
+    let (mut tx, _, _) = signed.into_parts();
+    tx.max_fee_per_gas = fee;
+    tx.max_priority_fee_per_gas = fee;
+    let signer = PrivateKeySigner::from_slice(&[1; 32]).unwrap();
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let raw = Bytes::from(TxEnvelope::Eip1559(tx.into_signed(signature)).encoded_2718());
+    let hash = keccak256(&raw);
+    original.raw_transactions = vec![(hash, raw.clone())];
+    (hash, raw, original)
+}
+
+fn signed_transaction_at_nonce(nonce: u64, input: Bytes) -> pipelined::L1TxResponse {
+    let (_, raw, original) = signed_resend();
+    let mut bytes = raw.as_ref();
+    let TxEnvelope::Eip1559(signed) = TxEnvelope::decode_2718(&mut bytes).unwrap() else {
+        unreachable!()
+    };
+    let (mut tx, _, _) = signed.into_parts();
+    tx.nonce = nonce;
+    tx.input = input;
+    let signer = PrivateKeySigner::from_slice(&[1; 32]).unwrap();
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    pipelined::L1TxResponse {
+        inner: alloy::consensus::transaction::Recovered::new_unchecked(
+            TxEnvelope::Eip1559(tx.into_signed(signature)),
+            original.request.from.unwrap(),
+        ),
+        block_hash: None,
+        block_number: None,
+        transaction_index: None,
+        effective_gas_price: None,
+        block_timestamp: None,
+    }
+}
+
+#[tokio::test]
+async fn replacement_suffix_rejects_foreign_transactions_and_lookup_failures() {
+    let (_, raw, request) = signed_resend();
+    let mut input = raw.as_ref();
+    let envelope = TxEnvelope::decode_2718(&mut input).unwrap();
+    let transaction = pipelined::L1TxResponse {
+        inner: alloy::consensus::transaction::Recovered::new_unchecked(
+            envelope,
+            request.request.from.unwrap(),
+        ),
+        block_hash: None,
+        block_number: None,
+        transaction_index: None,
+        effective_gas_price: None,
+        block_timestamp: None,
+    };
+    let operator = request.request.from.unwrap();
+    let TxEnvelope::Eip1559(signed) = transaction.inner.inner().clone() else {
+        unreachable!();
+    };
+    let (mut nonzero_tx, signature, _) = signed.into_parts();
+    nonzero_tx.value = alloy::primitives::U256::from_limbs([1, 0, 0, 0]);
+    let nonzero = pipelined::L1TxResponse {
+        inner: alloy::consensus::transaction::Recovered::new_unchecked(
+            TxEnvelope::Eip1559(alloy::consensus::Signed::new_unhashed(
+                nonzero_tx, signature,
+            )),
+            operator,
+        ),
+        block_hash: None,
+        block_number: None,
+        transaction_index: None,
+        effective_gas_price: None,
+        block_timestamp: None,
+    };
+    for (expected_sender, expected_chain, expected_nonce, expected_target, should_pass) in [
+        (operator, 31337, 7, Address::ZERO, true),
+        (Address::with_last_byte(1), 31337, 7, Address::ZERO, false),
+        (operator, 1, 7, Address::ZERO, false),
+        (operator, 31337, 8, Address::ZERO, false),
+        (operator, 31337, 7, Address::with_last_byte(1), false),
+    ] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let mut sender = sender(provider, true, true);
+        sender.to_address = expected_target;
+        a.push_success(&Some(transaction.clone()));
+        let result = sender
+            .build_replacement_plan(
+                expected_sender,
+                expected_chain,
+                expected_nonce,
+                expected_nonce + 1,
+                None,
+            )
+            .await;
+        assert_eq!(result.is_ok(), should_pass);
+    }
+
+    let a = Asserter::new();
+    let client = provider(&a).await;
+    let fixture = sender(client, true, true);
+    a.push_success(&Some(nonzero));
+    assert!(
+        fixture
+            .build_replacement_plan(operator, 31337, 7, 8, None)
+            .await
+            .is_err()
+    );
+
+    let a = Asserter::new();
+    let client = provider(&a).await;
+    let fixture = sender(client, true, true);
+    a.push_failure(ErrorPayload {
+        code: -32000,
+        message: "lookup failed".into(),
+        data: None,
+    });
+    assert!(
+        fixture
+            .build_replacement_plan(operator, 31337, 7, 8, None)
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn simulation_prefix_stays_bounded_until_predecessors_confirm() {
+    let mut prefix: std::collections::VecDeque<_> = (0..256)
+        .map(|nonce| SimPrefixEntry {
+            nonce,
+            calldata: Bytes::new(),
+            gas_limit: 21_000,
+            fee_params: FeeParams {
+                max_fee_per_gas: 20_000,
+                max_priority_fee_per_gas: 20_000,
+            },
+        })
+        .collect();
+    // First inclusion does not advance the canonical confirmation floor.
+    assert_eq!(pipelined::prune_confirmed_prefix(&mut prefix, 0), 0);
+    assert_eq!(prefix.front().unwrap().nonce, 0);
+    assert_eq!(pipelined::prune_confirmed_prefix(&mut prefix, 1), 1);
+    assert_eq!(prefix.front().unwrap().nonce, 1);
+    assert_eq!(pipelined::prune_confirmed_prefix(&mut prefix, 256), 256);
+    assert!(prefix.is_empty());
+}
+
+#[tokio::test]
+async fn confirms_any_previously_submitted_hash_on_the_canonical_chain() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let original = B256::with_last_byte(1);
+        let replacement = B256::with_last_byte(2);
+        let block_hash = B256::with_last_byte(3);
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Some(receipt(original, block_hash, 10)));
+        a.push_success(&Some(block(block_hash, 10)));
+        a.push_success(&U64::from(11));
+        a.push_success(&Some(block(block_hash, 10)));
+        let sender = sender(provider, pipelined, false);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![replacement, original], resend()),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("canonical original should confirm");
+        assert_eq!(confirmed.transaction_hash, original);
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn orphaned_receipt_is_never_forwarded_and_later_canonical_receipt_confirms() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let tx = B256::with_last_byte(1);
+        let orphan = B256::with_last_byte(2);
+        let canonical = B256::with_last_byte(3);
+        a.push_success(&U64::from(11));
+        a.push_success(&Some(receipt(tx, orphan, 10)));
+        a.push_success(&Some(block(canonical, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(tx, canonical, 10)));
+        a.push_success(&Some(block(canonical, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(canonical, 10)));
+        let sender = sender(provider, pipelined, false);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![tx], resend()),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("later canonical receipt should confirm");
+        assert_eq!(confirmed.block_hash, Some(canonical));
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn block_changed_during_depth_check_is_retried_without_forwarding_stale_receipt() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let tx = B256::with_last_byte(1);
+        let first = B256::with_last_byte(2);
+        let second = B256::with_last_byte(3);
+        a.push_success(&U64::from(11));
+        a.push_success(&Some(receipt(tx, first, 10)));
+        a.push_success(&Some(block(first, 10)));
+        a.push_success(&U64::from(11));
+        a.push_success(&Some(block(second, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(tx, second, 10)));
+        a.push_success(&Some(block(second, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(second, 10)));
+        let sender = sender(provider, pipelined, false);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![tx], resend()),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("changed block must be retried");
+        assert_eq!(confirmed.block_hash, Some(second));
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn temporarily_missing_canonical_block_is_retried() {
+    for pipelined in [false, true] {
+        for missing_on_recheck in [false, true] {
+            let a = Asserter::new();
+            let provider = provider(&a).await;
+            let tx = B256::with_last_byte(1);
+            let canonical = B256::with_last_byte(3);
+            a.push_success(&U64::from(11));
+            a.push_success(&Some(receipt(tx, canonical, 10)));
+            if missing_on_recheck {
+                a.push_success(&Some(block(canonical, 10)));
+                a.push_success(&U64::from(11));
+            }
+            a.push_success(&Option::<Block>::None);
+            a.push_success(&U64::from(12));
+            a.push_success(&Some(receipt(tx, canonical, 10)));
+            a.push_success(&Some(block(canonical, 10)));
+            a.push_success(&U64::from(12));
+            a.push_success(&Some(block(canonical, 10)));
+            let sender = sender(provider, pipelined, false);
+            let confirmed = tokio::time::timeout(
+                Duration::from_secs(2),
+                sender.wait_for_confirmed_receipt(vec![tx], resend()),
+            )
+            .await
+            .expect("wait timed out")
+            .expect("block availability should be retried");
+            assert_eq!(confirmed.block_hash, Some(canonical));
+            assert!(a.read_q().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn missing_block_for_seen_transaction_is_inconclusive_not_eviction() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (hash, raw, original) = signed_resend();
+        let mut bytes = raw.as_ref();
+        let envelope = TxEnvelope::decode_2718(&mut bytes).unwrap();
+        let canonical = B256::with_last_byte(3);
+        let transaction = alloy::rpc::types::Transaction {
+            inner: alloy::consensus::transaction::Recovered::new_unchecked(
+                envelope,
+                original.request.from.unwrap(),
+            ),
+            block_hash: Some(canonical),
+            block_number: Some(10),
+            transaction_index: Some(0),
+            effective_gas_price: Some(20_000),
+            block_timestamp: Some(1),
+        };
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Some(transaction));
+        a.push_success(&U64::from(31337));
+        a.push_success(&Option::<Block>::None);
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(hash, canonical, 10)));
+        a.push_success(&Some(block(canonical, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(canonical, 10)));
+        let sender = sender(provider, pipelined, true);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![hash], original),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("missing block must be retried");
+        assert_eq!(confirmed.block_hash, Some(canonical));
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn refuses_to_resend_after_sender_nonce_was_consumed() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let original = B256::with_last_byte(1);
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+        a.push_success(&U64::from(8));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        let sender = sender(provider, pipelined, true);
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![original], resend()),
+        )
+        .await
+        .expect("wait timed out")
+        .expect_err("consumed nonce must fail closed");
+        assert!(error.to_string().contains("nonce consumed"), "{error:#}");
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn missing_previously_mined_transaction_resends_saved_signed_hash() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (tx, _raw, original) = signed_resend();
+        let included = B256::with_last_byte(3);
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+        a.push_success(&U64::from(7));
+        a.push_success(&U64::from(7));
+        a.push_success(&U64::from(7));
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
+        a.push_success(&tx);
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(tx, included, 10)));
+        a.push_success(&Some(block(included, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(included, 10)));
+        let sender = sender(provider, pipelined, true);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![tx], original),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("saved transaction should be observed again");
+        assert_eq!(confirmed.transaction_hash, tx);
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn refuses_unknown_pending_nonce_and_missing_signed_bytes() {
+    for pipelined in [false, true] {
+        for occupied in [false, true] {
+            let a = Asserter::new();
+            let provider = provider(&a).await;
+            a.push_success(&U64::from(11));
+            a.push_success(&Option::<TransactionReceipt>::None);
+            a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+            a.push_success(&U64::from(7));
+            a.push_success(&U64::from(if occupied { 8 } else { 7 }));
+            if occupied {
+                a.push_success(&U64::from(31337));
+                a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+                a.push_success(&Some(signed_transaction_at_nonce(
+                    7,
+                    Bytes::from_static(&[1]),
+                )));
+                a.push_success(&U64::from(31337));
+            }
+            let sender = sender(provider, pipelined, true);
+            let original = if occupied {
+                signed_resend().2
+            } else {
+                resend()
+            };
+            let error = tokio::time::timeout(
+                Duration::from_secs(2),
+                sender.wait_for_confirmed_receipt(vec![B256::with_last_byte(1)], original),
+            )
+            .await
+            .expect("wait timed out")
+            .expect_err("unverified replacement must fail closed");
+            let expected = if occupied {
+                "unknown pending transaction"
+            } else {
+                "signed raw transaction unavailable"
+            };
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert!(a.read_q().is_empty());
+        }
+    }
+}
+
+fn push_exact_nonce_vacant_with_later_queued(a: &Asserter, use_txpool: bool) {
+    if use_txpool {
+        a.push_failure(ErrorPayload {
+            code: METHOD_NOT_FOUND_CODE,
+            message: "sender/nonce lookup unavailable".into(),
+            data: None,
+        });
+        let mut pool = BTreeMap::new();
+        pool.insert(
+            "pending",
+            BTreeMap::<String, pipelined::L1TxResponse>::new(),
+        );
+        pool.insert(
+            "queued",
+            BTreeMap::from([(
+                "8".to_string(),
+                signed_transaction_at_nonce(8, Bytes::new()),
+            )]),
+        );
+        a.push_success(&pool);
+    } else {
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
+    }
+}
+
+#[tokio::test]
+async fn gap_before_a_queued_later_nonce_rebroadcasts_the_original() {
+    for use_txpool in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (hash, _, original) = signed_resend();
+        let canonical = B256::with_last_byte(3);
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
+        a.push_success(&U64::from(7));
+        a.push_success(&U64::from(9));
+        a.push_success(&U64::from(31337));
+        a.push_success(&Option::<pipelined::L1TxResponse>::None);
+        push_exact_nonce_vacant_with_later_queued(&a, use_txpool);
+        a.push_success(&U64::from(7));
+        push_exact_nonce_vacant_with_later_queued(&a, use_txpool);
+        a.push_success(&hash);
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(hash, canonical, 10)));
+        a.push_success(&Some(block(canonical, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(canonical, 10)));
+        let sender = sender(provider, true, true);
+        let confirmed = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![hash], original),
+        )
+        .await
+        .expect("wait timed out")
+        .expect("vacant nonce should permit exact-byte recovery");
+        assert_eq!(confirmed.transaction_hash, hash);
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn nonce_occupancy_requires_a_supported_exact_lookup() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    for method in ["sender/nonce", "txpool"] {
+        a.push_failure(ErrorPayload {
+            code: METHOD_NOT_FOUND_CODE,
+            message: format!("{method} unavailable").into(),
+            data: None,
+        });
+    }
+    let (hash, _, original) = signed_resend();
+    let error = exact_nonce_blocks_rebroadcast(
+        &provider,
+        original.request.from.unwrap(),
+        7,
+        &original.request,
+        &[hash],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("enable txpool_contentFrom"));
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn txpool_exact_nonce_rejects_a_foreign_occupant() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    a.push_failure(ErrorPayload {
+        code: METHOD_NOT_FOUND_CODE,
+        message: "sender/nonce lookup unavailable".into(),
+        data: None,
+    });
+    let mut pool = BTreeMap::new();
+    pool.insert(
+        "pending",
+        BTreeMap::from([(
+            "7".to_string(),
+            signed_transaction_at_nonce(7, Bytes::from_static(&[1])),
+        )]),
+    );
+    pool.insert("queued", BTreeMap::<String, pipelined::L1TxResponse>::new());
+    a.push_success(&pool);
+    a.push_success(&U64::from(31337));
+    let (hash, _, original) = signed_resend();
+    let error = exact_nonce_blocks_rebroadcast(
+        &provider,
+        original.request.from.unwrap(),
+        7,
+        &original.request,
+        &[hash],
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("unknown pending transaction"));
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn queued_unknown_nonce_is_rejected_even_when_pending_nonce_is_unchanged() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let (hash, _, original) = signed_resend();
+    a.push_success(&U64::from(11));
+    a.push_success(&Option::<TransactionReceipt>::None);
+    a.push_success(&Option::<pipelined::L1TxResponse>::None);
+    a.push_success(&U64::from(7));
+    a.push_success(&U64::from(7));
+    a.push_success(&U64::from(7));
+    a.push_failure(ErrorPayload {
+        code: METHOD_NOT_FOUND_CODE,
+        message: "sender/nonce lookup unavailable".into(),
+        data: None,
+    });
+    let mut pool = BTreeMap::new();
+    pool.insert(
+        "pending",
+        BTreeMap::<String, pipelined::L1TxResponse>::new(),
+    );
+    pool.insert(
+        "queued",
+        BTreeMap::from([(
+            "7".to_string(),
+            signed_transaction_at_nonce(7, Bytes::from_static(&[1])),
+        )]),
+    );
+    a.push_success(&pool);
+    a.push_success(&U64::from(31337));
+    let sender = sender(provider, true, true);
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        sender.wait_for_confirmed_receipt(vec![hash], original),
+    )
+    .await
+    .expect("wait timed out")
+    .expect_err("queued foreign transaction must block rebroadcast");
+    assert!(error.to_string().contains("unknown pending transaction"));
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn exact_nonce_lookup_errors_are_not_treated_as_vacancy() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    a.push_failure(ErrorPayload {
+        code: -32000,
+        message: "temporary lookup failure".into(),
+        data: None,
+    });
+    let (hash, _, original) = signed_resend();
+    let error = exact_nonce_blocks_rebroadcast(
+        &provider,
+        original.request.from.unwrap(),
+        7,
+        &original.request,
+        &[hash],
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("cannot determine exact pending nonce")
+    );
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn malformed_txpool_nonce_keys_never_establish_vacancy() {
+    for (key, nonce) in [("07", 7), ("eight", 8), ("8", 7)] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        a.push_failure(ErrorPayload {
+            code: METHOD_NOT_FOUND_CODE,
+            message: "sender/nonce lookup unavailable".into(),
+            data: None,
+        });
+        let mut pool = BTreeMap::new();
+        pool.insert(
+            "pending",
+            BTreeMap::<String, pipelined::L1TxResponse>::new(),
+        );
+        pool.insert(
+            "queued",
+            BTreeMap::from([(
+                key.to_string(),
+                signed_transaction_at_nonce(nonce, Bytes::new()),
+            )]),
+        );
+        a.push_success(&pool);
+        let (hash, _, original) = signed_resend();
+        let error = exact_nonce_blocks_rebroadcast(
+            &provider,
+            original.request.from.unwrap(),
+            7,
+            &original.request,
+            &[hash],
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("nonce key"), "{error:#}");
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn orphaned_or_unavailable_exact_nonce_header_is_inconclusive() {
+    for header_available in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let mut transaction = signed_transaction_at_nonce(7, Bytes::new());
+        let hash = transaction.tx_hash();
+        transaction.block_hash = Some(B256::with_last_byte(2));
+        transaction.block_number = Some(10);
+        a.push_success(&Some(transaction));
+        if header_available {
+            a.push_success(&Some(block(B256::with_last_byte(3), 10)));
+        } else {
+            a.push_success(&Option::<Block>::None);
+        }
+        let (_, _, original) = signed_resend();
+        assert!(
+            exact_nonce_blocks_rebroadcast(
+                &provider,
+                original.request.from.unwrap(),
+                7,
+                &original.request,
+                &[hash],
+            )
+            .await
+            .expect("orphaned or unavailable header must remain inconclusive")
+        );
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn exact_nonce_lookup_recognizes_a_tracked_transaction() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let transaction = signed_transaction_at_nonce(7, Bytes::new());
+    let hash = transaction.tx_hash();
+    let (_, _, original) = signed_resend();
+    a.push_success(&Some(transaction));
+    a.push_success(&U64::from(31337));
+    assert!(
+        exact_nonce_blocks_rebroadcast(
+            &provider,
+            original.request.from.unwrap(),
+            7,
+            &original.request,
+            &[hash],
+        )
+        .await
+        .unwrap()
+    );
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn confirmation_nonce_is_rechecked_before_rebroadcast() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let (hash, _, original) = signed_resend();
+    let canonical = B256::with_last_byte(3);
+    a.push_success(&U64::from(11));
+    a.push_success(&Option::<TransactionReceipt>::None);
+    a.push_success(&Option::<pipelined::L1TxResponse>::None);
+    a.push_success(&U64::from(7));
+    a.push_success(&U64::from(7));
+    // Another block arrives after the initial probes but before sending.
+    a.push_success(&U64::from(8));
+    a.push_success(&U64::from(12));
+    a.push_success(&Some(receipt(hash, canonical, 10)));
+    a.push_success(&Some(block(canonical, 10)));
+    a.push_success(&U64::from(12));
+    a.push_success(&Some(block(canonical, 10)));
+    let sender = sender(provider, true, true);
+    let confirmed = tokio::time::timeout(
+        Duration::from_secs(2),
+        sender.wait_for_confirmed_receipt(vec![hash], original),
+    )
+    .await
+    .expect("wait timed out")
+    .expect("new canonical receipt should be observed before resending");
+    assert_eq!(confirmed.transaction_hash, hash);
+    assert!(a.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn raw_capture_rejects_bytes_for_a_different_hash() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    a.push_success(&Some(Bytes::from_static(&[2, 1, 2, 3])));
+    let sender = sender(provider, false, false);
+    let error = sender
+        .capture_raw_transaction(B256::with_last_byte(42), &resend().request)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("raw transaction hash mismatch"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn raw_capture_checks_real_signature_and_full_request_identity() {
+    for field in [
+        "ok", "sender", "nonce", "target", "value", "input", "gas", "chain",
+    ] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (hash, raw, mut original) = signed_resend();
+        match field {
+            "sender" => original.request.from = Some(Address::with_last_byte(7)),
+            "nonce" => original.request.nonce = Some(8),
+            "target" => original.request.to = Some(Address::with_last_byte(8).into()),
+            "value" => original.request.value = Some(U256::from(1)),
+            "input" => original.request.input = Bytes::from_static(&[1]).into(),
+            "gas" => original.request.gas = Some(21_001),
+            _ => {}
+        }
+        a.push_success(&Some(raw.clone()));
+        a.push_success(&U64::from(if field == "chain" { 31338 } else { 31337 }));
+        let sender = sender(provider, false, false);
+        let result = sender
+            .capture_raw_transaction(hash, &original.request)
+            .await;
+        if field == "ok" || field == "gas" {
+            assert_eq!(result.unwrap(), Some(raw));
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("raw transaction identity mismatch"),
+                "{field}"
+            );
+        }
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn over_cap_recovered_transaction_is_tracked_but_not_rebroadcast() {
+    for pipelined in [false, true] {
+        let a = Asserter::new();
+        let provider = provider(&a).await;
+        let (hash, raw, original) = signed_resend_with_fee(40_000);
+        let mut sender = sender(provider, pipelined, true);
+        sender.config.fee_config.max_fee_per_gas_wei = 30_000;
+        sender.config.fee_config.max_priority_fee_per_gas_wei = 30_000;
+        a.push_success(&Some(raw.clone()));
+        a.push_success(&U64::from(31337));
+        let captured = sender
+            .capture_raw_transaction(hash, &original.request)
+            .await
+            .unwrap();
+        assert_eq!(captured, Some(raw));
+
+        let included = B256::with_last_byte(3);
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(receipt(hash, included, 10)));
+        a.push_success(&Some(block(included, 10)));
+        a.push_success(&U64::from(12));
+        a.push_success(&Some(block(included, 10)));
+        let confirmed = sender
+            .wait_for_confirmed_receipt(
+                vec![hash],
+                ConfirmationResend {
+                    request: original.request.clone(),
+                    raw_transactions: vec![(hash, captured.unwrap())],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(confirmed.transaction_hash, hash);
+
+        a.push_success(&U64::from(11));
+        a.push_success(&Option::<TransactionReceipt>::None);
+        a.push_success(&Option::<alloy::rpc::types::Transaction>::None);
+        a.push_success(&U64::from(7));
+        a.push_success(&U64::from(7));
+        let err = tokio::time::timeout(
+            Duration::from_secs(2),
+            sender.wait_for_confirmed_receipt(vec![hash], original),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("exceed confirmation recovery fee limits"),
+            "{err:#}"
+        );
+        assert!(a.read_q().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn resend_selects_an_eligible_older_authenticated_candidate() {
+    let a = Asserter::new();
+    let provider = provider(&a).await;
+    let (high_hash, high_raw, original) = signed_resend_with_fee(40_000);
+    let (low_hash, low_raw, _) = signed_resend();
+    let mut sender = sender(provider, true, true);
+    sender.config.fee_config.max_fee_per_gas_wei = 30_000;
+    sender.config.fee_config.max_priority_fee_per_gas_wei = 30_000;
+    for (hash, raw) in [(low_hash, &low_raw), (high_hash, &high_raw)] {
+        a.push_success(&Some(raw.clone()));
+        a.push_success(&U64::from(31337));
+        assert_eq!(
+            sender
+                .capture_raw_transaction(hash, &original.request)
+                .await
+                .unwrap(),
+            Some(raw.clone())
+        );
+    }
+    let candidates = [(low_hash, low_raw.clone()), (high_hash, high_raw)];
+    let (selected, bytes) = select_resend_candidate(
+        &candidates,
+        &[high_hash, low_hash],
+        sender.config.fee_config.fee_limits(false),
+    )
+    .unwrap();
+    assert_eq!((*selected, bytes), (low_hash, &low_raw));
+    assert!(a.read_q().is_empty());
+}

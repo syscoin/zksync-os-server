@@ -150,6 +150,48 @@ This supports a conditional applicability exception for the exact pinned Linux
 configuration. It does not establish constant-time production machine code or
 extend to other callers, compilers, CPU targets, or the separate prover build.
 
+## RUSTSEC-2026-0418: libz-sys build environment
+
+The exact RustSec record at database revision
+[`ee1a49a2769a24a596afc1c20cb33748d2769586`](https://github.com/RustSec/advisory-db/blob/ee1a49a2769a24a596afc1c20cb33748d2769586/crates/libz-sys/RUSTSEC-2026-0418.md)
+describes a Unix build-script environment dump when `libz-sys` through 1.1.30
+runs its zlib probe with `cc` 1.6.0 or later. The report is applicable by crate
+version to locked `libz-sys 1.1.22`; the scoped production build has two
+independently checked conditions that prevent this specific dump:
+
+- The server's locked Linux feature trees, both default and `gcp`, enable
+  `libz-sys/static` through `rocksdb 0.24.0` and `librocksdb-sys`'s `static`
+  feature. In the checksum-verified `libz-sys 1.1.22` crate,
+  [`build.rs`](https://github.com/rust-lang/libz-sys/blob/7a4e6d74ee26c954ee9c512b0ee7bad81b7b5e06/build.rs)
+  defines `want_static` as the static feature OR `LIBZ_SYS_STATIC=1` and takes
+  the static-build branch before `zlib_installed` can print the probe command.
+  The workspace all-features Linux graph also has `static` enabled.
+- The exact `libz-sys` build-dependency edge resolves to checksum-verified
+  `cc 1.2.62`, before the advisory's 1.6.0 change. Its
+  [`Tool::to_command`](https://github.com/rust-lang/cc-rs/blob/37a5f8f4e1a2eaf4cf483fc0fb97d35761b720c5/src/tool.rs)
+  copies only explicitly configured compiler variables, rather than clearing
+  and copying the entire ambient environment into the debug-printed command.
+
+The guard now binds both crate versions, registry sources and checksums; checks
+the `cc` build edge and static feature in the exact all-features graph; and
+independently checks the default and `gcp` server feature trees. It rejects
+`LIBZ_SYS_*`, C/C++ compiler, flags, archiver and target-linker environment
+overrides in addition to its existing compiler and native-library restrictions.
+The advisory record is bound by its SHA-256 and must be re-reviewed if changed.
+This is a conditional disposition for the recorded Linux server configuration,
+not a claim that other versions, features, compiler arguments or builds cannot
+leak secrets. Passing the audit does not retroactively establish the contents
+of earlier build caches or artifacts.
+
+The actual cargo-deny 0.20.2 raw report from run `40912534150` at source
+`03d4d1b0ba6b6d8a81f8fea80bac48f576a9515a` contained this finding with a null
+package checksum; the locked checksum is verified separately. With the reviewed
+disposition, that raw report retains no unreviewed vulnerability or unsound
+finding. Independently, cargo-audit 0.22.0 on the exact lock, Linux target and
+the same RustSec revision reports the finding with the locked checksum, and
+its raw report also retains no unreviewed finding. These source/report checks
+do not substitute for running both guarded scanners on the final Linux CI head.
+
 ## Re-review requirements
 
 Before accepting an exception after any drift, review the changed source and
@@ -165,6 +207,8 @@ In particular, re-review is required for:
   caller changes invalidating the public-input distinction.
 - Alternate native library linkage or environment overrides outside the recorded
   build configuration.
+- A `libz-sys` or `cc` version/source change, loss of the static feature or the
+  reviewed build-dependency edge, or a change in either server feature tree.
 
 The reviewer should approve these per-advisory conditions, not a blanket package
 allowlist. A passing guarded audit remains one release check; it does not replace
@@ -185,6 +229,20 @@ The guard regressions exercise changed sources, graph edges/features, package
 identities, compiler/target overrides, changed advisory records, malformed
 reports and unknown findings. These are tests of the exception boundary; they
 are not timing or exploitation tests.
+
+## L1 sender recovery source re-review
+
+The sender change checks canonical receipts and can retain and rebroadcast an
+already-signed EIP-1559 transaction. Its new signer recovery operates on the
+public transaction, signature and hash; it does not handle a private signing
+value or add a signing implementation. The change does not modify Cargo
+manifests, the lockfile, native dependency features, or the reviewed advisory
+dispositions. The refreshed source fingerprint binds the changed inputs; the
+guarded scanners remain required on the final Linux CI head.
+
+The follow-up validates the identities of visible transactions in a stale
+startup suffix and adds sender recovery tests. It adds no cryptographic or
+dependency operations to the reviewed production path.
 
 ## CI-only release workflow review
 
