@@ -327,3 +327,12 @@ branch rewrite; regressions cover that stale-metadata case and concurrent
 advances. These changes introduce no Rust caller, native feature or advisory
 disposition changes. The lock, source and graph fingerprints bind the reviewed
 release inputs; both guarded Linux scanners remain required on the final head.
+
+## Prover-service CI budget re-review
+
+The Python service job's timeout increases from 30 to 60 minutes after the
+release run exhausted its budget with 477 tests passing and four remaining.
+The discovery command, test sources, assertions, compatible prover pin and
+Foundry version are unchanged. No runtime source, dependency, native feature or
+advisory disposition changes. Only the source fingerprint is refreshed for this
+CI setting; the guarded Linux scanners remain required on the final head.
