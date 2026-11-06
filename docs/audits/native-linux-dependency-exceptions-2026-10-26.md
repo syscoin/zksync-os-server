@@ -381,3 +381,38 @@ branch rewrite; regressions cover that stale-metadata case and concurrent
 advances. These changes introduce no Rust caller, native feature or advisory
 disposition changes. The lock, source and graph fingerprints bind the reviewed
 release inputs; both guarded Linux scanners remain required on the final head.
+
+## Prover-service CI budget re-review
+
+The Python service job's timeout increases from 30 to 60 minutes after the
+release run exhausted its budget with 477 tests passing and four remaining.
+The discovery command, test sources, assertions, compatible prover pin and
+Foundry version are unchanged. No runtime source, dependency, native feature or
+advisory disposition changes. Only the source fingerprint is refreshed for this
+CI setting; the guarded Linux scanners remain required on the final head.
+
+## Actix and Azure dependency re-review — 2026-11-06
+
+Fresh guarded scans of `a80fc147` against RustSec revision
+`309392b18f6b17022f82c701f300433126901068` reported four Actix advisories
+(RUSTSEC-2026-0446, -0447, -0448 and -0455) in cargo-audit, and
+RUSTSEC-2026-0439 for Azure Key Vault in both scanners.
+
+The lockfile upgrades `actix-http` to 3.20.3 and `actix-web` to 4.18.2,
+with their required router, server and impl-more updates. The optional
+`sentry-actix` graph retains these packages, while the default and GCP server
+feature trees enable Sentry tracing without Actix. The reviewed resolved
+graph includes Actix HTTP's new default feature set, which drops its previous
+implicit WebSocket feature. The four Actix findings are addressed by patched
+package versions.
+
+The server's Azure signer reuses a `KeyClient`. The compatible
+`azure_security_keyvault_keys` 1.0.1 patch moves the scope-cache write after
+successful authentication-challenge verification. Its public clients, models,
+features and dependency requirements match 1.0.0. The workspace minimum and
+locked checksum are updated.
+
+These changes add no advisory exceptions. The existing crypto-bigint and
+libz-sys dispositions remain bound by the refreshed source, lock and graph
+fingerprints. The combined source also includes PR #370's reviewed Python
+test timeout change. Both guarded scanners must pass on this combined head.
