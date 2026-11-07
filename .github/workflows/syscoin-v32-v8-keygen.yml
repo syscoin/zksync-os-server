@@ -53,8 +53,8 @@ env:
   OFFLINE_GATEWAY_IDENTITY_SHA256: 2efa802311ab4efb3827e820ba41df33867820d11e7f08c3ec62f27c7dc3bf3a
 
   AIRBENDER_REPOSITORY: https://github.com/syscoin/zksync-airbender.git
-  AIRBENDER_COMMIT: 0d8c852954afcae1f160151a17fe80886f1755b0
-  AIRBENDER_TREE: a41a4a18eeb102b405bcb63ad7ca85e9b6b13213
+  AIRBENDER_COMMIT: 7f68838bf1b7d0c8f6b4848cf3a6c93cb3c2bc02
+  AIRBENDER_TREE: 2f2d38a11020844883d0e617bf476dd2430d3c2e
   AIRBENDER_RELEASE: v0.6.0-rc.2
   STOCK_AIRBENDER_COMMIT: 03454c7a41053a4b88bb421e97fb9efe893a92f5
   AIRBENDER_PLATFORM_REPOSITORY: https://github.com/matter-labs/airbender-platform.git
@@ -65,8 +65,8 @@ env:
   WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
   PROVER_TOOLING_REPOSITORY: https://github.com/syscoin/zksync-airbender-prover.git
   # Exact paired prover tooling; build/loader evidence is in the release manifest.
-  PROVER_TOOLING_COMMIT: 981137adde3d2e45c40441c3045000b48ecfeb47
-  PROVER_TOOLING_TREE: 34f01d072405171226f9bc7d6b18adb193a1cfa3
+  PROVER_TOOLING_COMMIT: 35242ff573ba363168dddffa8b26aa8afd26ef80
+  PROVER_TOOLING_TREE: 5eadcf40e9c2fff63aae88de337ed1e54f231fb3
   PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
   PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
   REGISTERED_V8_VK_HASH: "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153"

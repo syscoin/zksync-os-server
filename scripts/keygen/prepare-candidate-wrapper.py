@@ -16,8 +16,8 @@ except ImportError:
 
 
 # Exact paired prover tooling; build/loader evidence is in the release manifest.
-PROVER_TOOLING_COMMIT = "981137adde3d2e45c40441c3045000b48ecfeb47"
-PROVER_TOOLING_TREE = "34f01d072405171226f9bc7d6b18adb193a1cfa3"
+PROVER_TOOLING_COMMIT = "35242ff573ba363168dddffa8b26aa8afd26ef80"
+PROVER_TOOLING_TREE = "5eadcf40e9c2fff63aae88de337ed1e54f231fb3"
 WRAPPER_REPOSITORY = "https://github.com/syscoin/zkos-wrapper.git"
 WRAPPER_COMMIT = "816a3598c60fac37d02cf1dcd1bc48b2e2c75de1"
 WRAPPER_TREE = "a1e9a551b9588b1dfab5c5088554fc69770c0e85"
@@ -26,8 +26,8 @@ CRYPTO_URL = "https://github.com/syscoin/zksync-crypto.git"
 CRYPTO_COMMIT = "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77"
 CRYPTO_TREE = "c52391d0df82126d27e5c76810e9df85c61875d0"
 FORK = "https://github.com/syscoin/zksync-airbender"
-FORK_COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
-FORK_TREE = "a41a4a18eeb102b405bcb63ad7ca85e9b6b13213"
+FORK_COMMIT = "7f68838bf1b7d0c8f6b4848cf3a6c93cb3c2bc02"
+FORK_TREE = "2f2d38a11020844883d0e617bf476dd2430d3c2e"
 NEW_SOURCE = f"git+{FORK}?rev={FORK_COMMIT}#{FORK_COMMIT}"
 AIRBENDER_DEPS = {
     "unified_reduced_machine_verifier", "blake_verifier", "execution_utils",
