@@ -1,9 +1,12 @@
 # Native Linux dependency advisory applicability review — 2026-10-26
 
-This review covers the server source and dependency graph at
-`f8d141db2f8666d1ce1a53b6f48eb7a272e2b74f`. It supports the applicability
-exceptions below for the reviewed configuration. It does not establish an
-application exploit, prove constant-time machine code, or approve a release.
+This review began with the server source and dependency graph at
+`f8d141db2f8666d1ce1a53b6f48eb7a272e2b74f`. The dated re-reviews below record
+subsequent changes, including the 2026-11-03 Zstd backport upgrade from the
+`e8cff2dce88991a38c334f2800ade0ef0c02dcb5` server baseline. The current policy
+binds the reviewed source and dependency identities; superseded dispositions
+are retained as history. This review does not establish an application exploit,
+prove constant-time machine code, or approve a release.
 
 ## Scope and enforcement
 
@@ -36,8 +39,8 @@ independently built prover.
 
 ## Source identities and reviewed consumers
 
-The Zstd packages are `zstd 0.13.3`, `zstd-safe 7.2.4`, and
-`zstd-sys 2.0.15+zstd.1.5.7`. Their reviewed direct Rust consumers are
+The current Zstd packages are `zstd 0.13.4`, `zstd-safe 7.4.0`, and
+`zstd-sys 2.1.2+zstd.1.5.7`. Their reviewed direct Rust consumers are
 `async-compression 0.4.27`, `reth-zstd-compressors 0.6.0`, `reth-nippy-jar 2.5.0`,
 and the server's integration-test build script. `librocksdb-sys 0.17.3+10.4.2`
 also depends on `zstd-sys` and invokes the native C API, not the affected
@@ -47,8 +50,10 @@ Registry source identities, recorded by the crates' `.cargo_vcs_info.json`, are:
 
 | Crate | Upstream source identity |
 | --- | --- |
-| `zstd 0.13.3` | [`gyscos/zstd-rs@52e9d41a645fb49edcf1ed3df765f380dbcf13b2`](https://github.com/gyscos/zstd-rs/tree/52e9d41a645fb49edcf1ed3df765f380dbcf13b2) |
-| `zstd-safe 7.2.4`, `zstd-sys 2.0.15+zstd.1.5.7` | [`gyscos/zstd-rs@229054099aa73f7e861762f687d7e07cac1d9b3b`](https://github.com/gyscos/zstd-rs/tree/229054099aa73f7e861762f687d7e07cac1d9b3b) |
+| `zstd 0.13.4`, `zstd-safe 7.4.0` | [`gyscos/zstd-rs@357eb72b038676f8609dcb9e3f727e7da050e055`](https://github.com/gyscos/zstd-rs/tree/357eb72b038676f8609dcb9e3f727e7da050e055) |
+| `zstd-sys 2.1.2+zstd.1.5.7` | [`gyscos/zstd-rs@75bc74045a2f6ea0439aeed7e159a266da20aac0`](https://github.com/gyscos/zstd-rs/tree/75bc74045a2f6ea0439aeed7e159a266da20aac0) |
+| Historical `zstd 0.13.3` | [`gyscos/zstd-rs@52e9d41a645fb49edcf1ed3df765f380dbcf13b2`](https://github.com/gyscos/zstd-rs/tree/52e9d41a645fb49edcf1ed3df765f380dbcf13b2) |
+| Historical `zstd-safe 7.2.4`, `zstd-sys 2.0.15+zstd.1.5.7` | [`gyscos/zstd-rs@229054099aa73f7e861762f687d7e07cac1d9b3b`](https://github.com/gyscos/zstd-rs/tree/229054099aa73f7e861762f687d7e07cac1d9b3b) |
 | `async-compression 0.4.27` | [`Nullus157/async-compression@7256c69b1a72883c35a524342af0db4c1a62b1ea`](https://github.com/Nullus157/async-compression/tree/7256c69b1a72883c35a524342af0db4c1a62b1ea) |
 | `reth-zstd-compressors 0.6.0` | [`paradigmxyz/reth-core@e14f5105b49785bddd3793a86ab2fa49acff5650`](https://github.com/paradigmxyz/reth-core/tree/e14f5105b49785bddd3793a86ab2fa49acff5650) |
 | `reth-nippy-jar 2.5.0` | [`paradigmxyz/reth@189c0df32617afc488e0f091dbface1bd72cceb4`](https://github.com/paradigmxyz/reth/tree/189c0df32617afc488e0f091dbface1bd72cceb4) |
@@ -70,11 +75,60 @@ and [raw encoder](https://github.com/Nullus157/async-compression/blob/7256c69b1a
 Tower HTTP's [encoder setup](https://github.com/tower-rs/tower-http/blob/33166c8104be9b40ec15c480503d50d8c2312062/tower-http/src/compression/body.rs#L350-L381)
 uses the ordinary quality setting and, when needed, `WindowLog(23)`.
 
-## Zstandard advisory dispositions
+## Zstandard backport re-review — 2026-11-03
+
+The scheduled audit at server commit
+[`e8cff2dc`](https://github.com/syscoin/zksync-os-server/actions/runs/41604082671)
+stopped because the recorded RUSTSEC-2026-0391 fingerprint no longer matched.
+The [RustSec update](https://github.com/RustSec/advisory-db/commit/759d6a49a7760947c9e8a548712d85f80a3d4e84)
+adds `^0.13.4` as patched and splits the affected function ranges into
+`>=0.13.2, <0.13.4` and `>=0.14.0, <0.14.3`. It leaves the affected
+`with_context` functions and vulnerability description unchanged. The prior
+0.13.3 caller exclusion remained applicable, but a compatible patched release
+is now available.
+
+The server upgrades to `zstd 0.13.4` and `zstd-safe 7.4.0`, published from
+upstream commit
+[`357eb72b`](https://github.com/gyscos/zstd-rs/tree/357eb72b038676f8609dcb9e3f727e7da050e055),
+and `zstd-sys 2.1.2+zstd.1.5.7`, published from
+[`75bc7404`](https://github.com/gyscos/zstd-rs/tree/75bc74045a2f6ea0439aeed7e159a266da20aac0).
+These releases repair RUSTSEC-2026-0391, RUSTSEC-2026-0395 through
+RUSTSEC-2026-0406, and RUSTSEC-2026-0410. All fourteen Zstd applicability
+exceptions are removed from the active policy, rather than accepting the new
+0391 fingerprint for the old package. The remaining applicability exceptions
+are RUSTSEC-2026-0387 for `crypto-bigint` and RUSTSEC-2026-0418 for `libz-sys`.
+
+The upgrade remains within the existing consumers' compatible Cargo version
+requirements and retains the same bundled Zstd 1.5.7 native library. The
+consumer versions and the enabled Zstd features listed above are unchanged.
+The selected `zstd-sys 2.1.2` native C, header and assembly files are
+byte-identical to 2.0.17, and its bindings retain the APIs used by the pinned
+consumers. Its optional `cmake`, `vendored` and `bindgen` features are not
+enabled in the reviewed graph.
+
+The integration-test dependency is now pinned to `zstd 0.13.4`; the
+lockfile, package identities and resolved graph record the three upgraded
+crates. The source review still finds owned streaming contexts or bulk-only
+reusable contexts in the pinned consumers. In particular, the current
+[`integration-tests/build.rs`](https://github.com/syscoin/zksync-os-server/blob/e8cff2dce88991a38c334f2800ade0ef0c02dcb5/integration-tests/build.rs#L12-L46)
+creates a fresh read decoder for each authenticated component-state decode.
+
+[RUSTSEC-2026-0410](https://github.com/RustSec/advisory-db/blob/759d6a49a7760947c9e8a548712d85f80a3d4e84/crates/zstd-sys/RUSTSEC-2026-0410.md)
+records `>=2.1.2` as patched. Selecting that release also removes the need
+for the previous native-target exclusion for this wasm allocator finding.
+
+The refreshed fingerprints and reduced exception policy must pass both
+guarded scanners on the final Linux head. The historical validation below
+does not establish a result for this upgrade.
+
+## Historical Zstandard dispositions — superseded by patched releases
 
 The advisory conditions were read from RustSec database snapshot
-`a78282a1414d6c28cc228c4eae3570451affb0dc`; the policy additionally binds the
-individual record contents so a revised advisory requires review.
+`a78282a1414d6c28cc228c4eae3570451affb0dc` for `zstd 0.13.3`,
+`zstd-safe 7.2.4` and `zstd-sys 2.0.15+zstd.1.5.7`. These fourteen
+dispositions and the supporting caller analysis are historical; the current
+packages use the repairs described above.
+The active policy no longer suppresses these advisory IDs.
 
 | Advisory | Applicability disposition for the scoped build |
 | --- | --- |
@@ -91,7 +145,7 @@ individual record contents so a revised advisory requires review.
 | [RUSTSEC-2026-0404](https://github.com/RustSec/advisory-db/blob/a78282a1414d6c28cc228c4eae3570451affb0dc/crates/zstd-safe/RUSTSEC-2026-0404.md) — `DCtx::try_clone` double free | No reviewed caller invokes `DCtx::try_clone`; the bulk and raw decoder wrappers do not implicitly clone their C context. |
 | [RUSTSEC-2026-0405](https://github.com/RustSec/advisory-db/blob/a78282a1414d6c28cc228c4eae3570451affb0dc/crates/zstd-safe/RUSTSEC-2026-0405.md) — out-of-range `InBuffer::pos` | The advisory specifically lists `seekable::SeekableCStream::compress_stream`; `seekable` is disabled. Independently, [raw operations](https://github.com/gyscos/zstd-rs/blob/52e9d41a645fb49edcf1ed3df765f380dbcf13b2/src/stream/raw.rs#L34-L48), [the reader](https://github.com/gyscos/zstd-rs/blob/52e9d41a645fb49edcf1ed3df765f380dbcf13b2/src/stream/zio/reader.rs#L136-L148), and [the writer](https://github.com/gyscos/zstd-rs/blob/52e9d41a645fb49edcf1ed3df765f380dbcf13b2/src/stream/zio/writer.rs#L242-L252) construct a fresh input buffer at position zero from a real slice. Async codecs use bounds-checked subslices and advance only after successful calls; Reth bulk callers have no streaming position input. No caller accepts arbitrary external `pos` metadata. |
 | [RUSTSEC-2026-0406](https://github.com/RustSec/advisory-db/blob/a78282a1414d6c28cc228c4eae3570451affb0dc/crates/zstd-safe/RUSTSEC-2026-0406.md) — changing an unfinished multithreaded context | The required worker threads are absent: `zstdmt` is disabled and no reviewed caller enables `NbWorkers`. This does not cover builds that substitute another native Zstd library or enable workers. |
-| [RUSTSEC-2026-0410](https://github.com/RustSec/advisory-db/blob/a78282a1414d6c28cc228c4eae3570451affb0dc/crates/zstd-sys/RUSTSEC-2026-0410.md) — wasm allocator shim | The affected allocator shim is wasm32-specific. The scoped target is explicitly native `x86_64-unknown-linux-gnu`; no wasm exception is granted. |
+| [RUSTSEC-2026-0410](https://github.com/RustSec/advisory-db/blob/a78282a1414d6c28cc228c4eae3570451affb0dc/crates/zstd-sys/RUSTSEC-2026-0410.md) — wasm allocator shim | The affected allocator shim is wasm32-specific. The original scoped target was native `x86_64-unknown-linux-gnu`; no wasm exception was granted. |
 
 For the buffer-bound conclusions, `InBuffer::around` initializes position zero
 and its position setter checks the slice length in
@@ -214,7 +268,7 @@ The reviewer should approve these per-advisory conditions, not a blanket package
 allowlist. A passing guarded audit remains one release check; it does not replace
 the remaining release qualification, integration coverage, or security review.
 
-## Validation
+## Historical validation — 2026-10-26
 
 Both guarded scanners were exercised on the supplied Linux x86_64 build server
 against RustSec snapshot `a78282a1414d6c28cc228c4eae3570451affb0dc`.
@@ -336,3 +390,29 @@ The discovery command, test sources, assertions, compatible prover pin and
 Foundry version are unchanged. No runtime source, dependency, native feature or
 advisory disposition changes. Only the source fingerprint is refreshed for this
 CI setting; the guarded Linux scanners remain required on the final head.
+
+## Actix and Azure dependency re-review — 2026-11-06
+
+Fresh guarded scans of `a80fc147` against RustSec revision
+`309392b18f6b17022f82c701f300433126901068` reported four Actix advisories
+(RUSTSEC-2026-0446, -0447, -0448 and -0455) in cargo-audit, and
+RUSTSEC-2026-0439 for Azure Key Vault in both scanners.
+
+The lockfile upgrades `actix-http` to 3.20.3 and `actix-web` to 4.18.2,
+with their required router, server and impl-more updates. The optional
+`sentry-actix` graph retains these packages, while the default and GCP server
+feature trees enable Sentry tracing without Actix. The reviewed resolved
+graph includes Actix HTTP's new default feature set, which drops its previous
+implicit WebSocket feature. The four Actix findings are addressed by patched
+package versions.
+
+The server's Azure signer reuses a `KeyClient`. The compatible
+`azure_security_keyvault_keys` 1.0.1 patch moves the scope-cache write after
+successful authentication-challenge verification. Its public clients, models,
+features and dependency requirements match 1.0.0. The workspace minimum and
+locked checksum are updated.
+
+These changes add no advisory exceptions. The existing crypto-bigint and
+libz-sys dispositions remain bound by the refreshed source, lock and graph
+fingerprints. The combined source also includes PR #370's reviewed Python
+test timeout change. Both guarded scanners must pass on this combined head.
