@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -22,6 +23,9 @@ BRANCH = "release-please--branches--main--components--zksync-os-server"
 HEAD = "a" * 40
 TREE = "b" * 40
 NEW_COMMIT = "c" * 40
+BASE = "1" * 40
+REVIEW = '{"lock_sha256": "old"}\n'
+RELEASE_MANIFEST = '{".": "0.25.0"}\n'
 
 MANIFEST = '''# Keep formatting and unrelated dependency requirements intact.
 [workspace]
@@ -157,10 +161,11 @@ dependencies = [
 
 
 class FakeGitHub:
-    def __init__(self, manifest=MANIFEST, lock=LOCK):
+    def __init__(self, manifest=MANIFEST, lock=LOCK, review=REVIEW):
         self.calls = []
         self.manifest = manifest
         self.lock = lock
+        self.review = review
         self.pull = {
             "state": "open",
             "head": {"sha": HEAD, "ref": BRANCH, "repo": {"full_name": REPOSITORY}},
@@ -177,11 +182,14 @@ class FakeGitHub:
         if method == "GET" and endpoint == prefix + "pulls/368":
             self.pull_reads += 1
             return copy.deepcopy(self.pull)
+        if method == "GET" and endpoint == prefix + "git/ref/heads/main":
+            return {"object": {"sha": BASE}}
         if method == "GET" and endpoint == prefix + f"git/ref/heads/{BRANCH}":
             self.ref_reads += 1
             head = self.next_head if self.ref_reads > 1 and self.next_head else self.ref_head
             return {"object": {"sha": head}}
-        for filename, content in (("Cargo.toml", self.manifest), ("Cargo.lock", self.lock)):
+        for filename, content in (("Cargo.toml", self.manifest), ("Cargo.lock", self.lock),
+                                  (SYNC.RELEASE_MANIFEST, RELEASE_MANIFEST), (SYNC.REVIEW_PATH, self.review)):
             if method == "GET" and endpoint == prefix + f"contents/{filename}?ref={HEAD}":
                 return {"encoding": "base64", "content": base64.b64encode(content.encode()).decode()}
         for filename, content in (("Cargo.toml", expected_manifest()), ("Cargo.lock", expected_lock())):
@@ -207,6 +215,16 @@ class SyncPullRequestTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         (self.root / "Cargo.toml").write_text(MANIFEST.replace(NEW_VERSION, OLD_VERSION))
+        (self.root / "Cargo.lock").write_text(LOCK)
+        release_manifest = self.root / SYNC.RELEASE_MANIFEST
+        release_manifest.parent.mkdir(parents=True)
+        release_manifest.write_text('{".": "0.24.0"}\n')
+        self.base_patch = mock.patch.object(SYNC, "git_output", return_value=BASE)
+        self.tree_patch = mock.patch.object(SYNC, "validate_release_tree")
+        self.refresh_patch = mock.patch.object(SYNC, "refresh_review", side_effect=lambda root, candidate, versions, version: candidate[SYNC.REVIEW_PATH])
+        for patcher in (self.base_patch, self.tree_patch, self.refresh_patch):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         for name in ("alpha", "beta"):
             member = self.root / "lib" / name
             member.mkdir(parents=True)
@@ -231,6 +249,103 @@ class SyncPullRequestTests(unittest.TestCase):
         api = FakeGitHub(expected_manifest(), expected_lock())
         self.assertFalse(SYNC.sync_pull_request(REPOSITORY, 368, root=self.root, api=api))
         self.assertEqual(api.writes(), [])
+
+
+    def test_aligned_cargo_with_stale_review_still_writes_policy(self):
+        api = FakeGitHub(expected_manifest(), expected_lock())
+        with mock.patch.object(SYNC, "refresh_review", return_value='{"lock_sha256": "new"}\n'):
+            self.assertTrue(SYNC.sync_pull_request(REPOSITORY, 368, root=self.root, api=api))
+        writes = api.writes()
+        self.assertEqual({entry["path"] for entry in writes[0][2]["tree"]}, {SYNC.REVIEW_PATH})
+        self.assertEqual(writes[-1][2], {"sha": NEW_COMMIT, "force": False})
+
+    def test_exact_version_projection_rejects_arbitrary_manifest_lock_or_release_changes(self):
+        candidate = {"Cargo.toml": expected_manifest(), "Cargo.lock": expected_lock(),
+                     SYNC.RELEASE_MANIFEST: RELEASE_MANIFEST}
+        versions = {"alpha": NEW_VERSION, "beta": NEW_VERSION}
+        SYNC.validate_version_only(self.root, candidate, versions, NEW_VERSION)
+        for name, changed in (
+            ("Cargo.toml", candidate["Cargo.toml"].replace('features = ["one"]', 'features = ["two"]')),
+            ("Cargo.lock", candidate["Cargo.lock"].replace("unchanged-external-checksum", "forged")),
+            (SYNC.RELEASE_MANIFEST, '{".": "0.25.0", "unreviewed": "1"}'),
+        ):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                SYNC.validate_version_only(self.root, {**candidate, name: changed}, versions, NEW_VERSION)
+
+    def test_release_tree_rejects_source_changes_and_truncation(self):
+        self.tree_patch.stop()
+        before = [{"path": "lib/alpha/src/lib.rs", "mode": "100644", "type": "blob", "sha": "old"},
+                  {"path": "Cargo.toml", "mode": "100644", "type": "blob", "sha": "old"}]
+        after = copy.deepcopy(before)
+        after[1]["sha"] = "updated"
+        def api(method, endpoint, body=None):
+            if "/compare/" in endpoint:
+                return {"merge_base_commit": {"sha": BASE}, "status": "ahead"}
+            tree = before if f"/trees/{BASE}?" in endpoint else after
+            return {"tree": tree, "truncated": False}
+        SYNC.validate_release_tree(api, "repos/test/repo", BASE, HEAD)
+        after[0]["sha"] = "malicious"
+        with self.assertRaisesRegex(ValueError, "unreviewed release source change"):
+            SYNC.validate_release_tree(api, "repos/test/repo", BASE, HEAD)
+        def truncated(method, endpoint, body=None):
+            if "/compare/" in endpoint:
+                return {"merge_base_commit": {"sha": BASE}, "status": "ahead"}
+            return {"tree": [], "truncated": True}
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            SYNC.validate_release_tree(truncated, "repos/test/repo", BASE, HEAD)
+
+    def test_base_policy_must_match_the_committed_review(self):
+        policy_path = self.root / SYNC.REVIEW_PATH
+        policy_path.parent.mkdir(parents=True)
+        policy_path.write_text(REVIEW)
+        with mock.patch.object(SYNC.subprocess, "check_output", return_value=REVIEW.encode()):
+            SYNC.validate_committed_policy(self.root)
+        with mock.patch.object(SYNC.subprocess, "check_output", return_value=b"different policy"):
+            with self.assertRaisesRegex(ValueError, "differs from the committed"):
+                SYNC.validate_committed_policy(self.root)
+
+    def test_host_and_compiler_scope_are_enforced(self):
+        audit = mock.Mock()
+        policy = {"rustc_commit": "reviewed-compiler"}
+        with mock.patch.object(SYNC.subprocess, "check_output", return_value="commit-hash: reviewed-compiler\n"):
+            SYNC.validate_audit_environment(audit, self.root, policy)
+        audit.validate_host.assert_called_once()
+        with mock.patch.object(SYNC.subprocess, "check_output", return_value="commit-hash: other-compiler\n"):
+            with self.assertRaisesRegex(ValueError, "compiler differs"):
+                SYNC.validate_audit_environment(audit, self.root, policy)
+        audit.validate_host.side_effect = ValueError("unreviewed target")
+        with mock.patch.object(SYNC.subprocess, "check_output") as compiler:
+            with self.assertRaisesRegex(ValueError, "unreviewed target"):
+                SYNC.validate_audit_environment(audit, self.root, policy)
+            compiler.assert_not_called()
+
+    def test_normalized_graph_detects_feature_and_dependency_changes(self):
+        audit = SYNC.audit_module(ROOT)
+        base = {
+            "packages": [
+                {"id": "local", "name": "alpha", "version": OLD_VERSION, "source": None,
+                 "manifest_path": str(self.root / "lib/alpha/Cargo.toml")},
+                {"id": "external", "name": "external", "version": "1.0.0", "source": "registry"},
+            ],
+            "resolve": {"nodes": [
+                {"id": "local", "features": ["default"], "deps": [
+                    {"name": "external", "pkg": "external", "dep_kinds": [{"kind": None, "target": None}]}
+                ]},
+                {"id": "external", "features": [], "deps": []},
+            ]},
+        }
+        release = copy.deepcopy(base)
+        release["packages"][0]["version"] = NEW_VERSION
+        expected = SYNC.normalized_graph(audit, base, self.root, {"alpha"})
+        self.assertEqual(expected, SYNC.normalized_graph(audit, release, self.root, {"alpha"}))
+        for mutate in (
+            lambda graph: graph["packages"][1].update(version="2.0.0"),
+            lambda graph: graph["resolve"]["nodes"][1]["features"].append("unreviewed"),
+            lambda graph: graph["resolve"]["nodes"][0]["deps"].clear(),
+        ):
+            changed = copy.deepcopy(release)
+            mutate(changed)
+            self.assertNotEqual(expected, SYNC.normalized_graph(audit, changed, self.root, {"alpha"}))
 
     def test_stale_pr_head_does_not_hide_unaligned_current_branch(self):
         api = FakeGitHub()
