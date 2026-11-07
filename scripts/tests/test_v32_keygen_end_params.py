@@ -16,11 +16,11 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 KEYGEN = REPO / "scripts/keygen"
-COMMIT = "7f68838bf1b7d0c8f6b4848cf3a6c93cb3c2bc02"
-TREE = "2f2d38a11020844883d0e617bf476dd2430d3c2e"
+COMMIT = "a4484a145fdc1062f2df9b8d3a4b0697c9b18e0c"
+TREE = "991263739a869619d54d883d3235156298f07c9d"
 SOURCE_HASH = "95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7"
-MANIFEST_HASH = "e49c00f252e53e7b33a740433ffaaaf3676f024e57d8f18abe9731dce45e4494"
-LOCK_HASH = "0c954724977b2193e8807d3357989e38e9508bec3fa372c0176b4d05a7fb0dab"
+MANIFEST_HASH = "714ae2b94b305b58fb05d64783b084c3e7304d993005b2c096b6565f67617d57"
+LOCK_HASH = "e6b3bd1c409a52596fc8c76724d2ce59f7fd3a9e0bb99119364a5bdbd100c371"
 
 
 class EndParamsAssetTests(unittest.TestCase):
@@ -80,8 +80,8 @@ class EndParamsAssetTests(unittest.TestCase):
                         workflow.index('compute-aux-params'))
         preparer = (KEYGEN / "prepare-candidate-wrapper.py").read_text()
         for name, value in (
-            ("PROVER_TOOLING_COMMIT", "35242ff573ba363168dddffa8b26aa8afd26ef80"),
-            ("PROVER_TOOLING_TREE", "5eadcf40e9c2fff63aae88de337ed1e54f231fb3"),
+            ("PROVER_TOOLING_COMMIT", "d7fd48ea0edfe87f6bdd434e829e1a7cb6be8aac"),
+            ("PROVER_TOOLING_TREE", "f5daa7a59f56bdd6253b86d42c9b3c5039e11078"),
         ):
             self.assertIn(f"{name}: {value}", workflow)
             self.assertIn(f'{name} = "{value}"', preparer)
@@ -230,9 +230,9 @@ class EndParamsBuildWrapperTests(unittest.TestCase):
             if args[-1] == '--show-toplevel':
                 print(os.environ['FAKE_AIRBENDER'])
             elif args[-1] == 'HEAD':
-                print(os.environ.get('FAKE_COMMIT', '7f68838bf1b7d0c8f6b4848cf3a6c93cb3c2bc02'))
+                print(os.environ.get('FAKE_COMMIT', 'a4484a145fdc1062f2df9b8d3a4b0697c9b18e0c'))
             elif args[-1] == 'HEAD^{tree}':
-                print(os.environ.get('FAKE_TREE', '2f2d38a11020844883d0e617bf476dd2430d3c2e'))
+                print(os.environ.get('FAKE_TREE', '991263739a869619d54d883d3235156298f07c9d'))
             elif args[-1] == '--porcelain':
                 print(os.environ.get('FAKE_STATUS', ''), end='')
             else:
