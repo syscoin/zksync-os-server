@@ -90,6 +90,7 @@ def github_api(method, endpoint, body=None):
 
 
 REVIEW_PATH = "scripts/security/native-linux-review.json"
+REVIEW_INPUTS = (REVIEW_PATH, "scripts/check-native-audit.py", "scripts/tests/test_native_audit.py")
 RELEASE_MANIFEST = ".github/release-please/manifest.json"
 RELEASE_FILES = {"Cargo.toml", "Cargo.lock", RELEASE_MANIFEST, "CHANGELOG.md", REVIEW_PATH}
 FINGERPRINTS = {"lock_sha256", "source_sha256", "graph_sha256"}
@@ -168,10 +169,13 @@ def normalized_graph(audit, graph, root, workspace_names):
     return audit.graph_fingerprint(graph, root)
 
 
-def validate_committed_policy(root):
-    expected = subprocess.check_output(["git", "-C", str(root), "show", "HEAD:" + REVIEW_PATH])
-    if (root / REVIEW_PATH).read_bytes() != expected:
-        raise ValueError("reviewed base policy differs from the committed file")
+def validate_committed_review_inputs(root):
+    # These files are excluded from the source fingerprint and must be checked
+    # directly before the guard module is imported and used.
+    for name in REVIEW_INPUTS:
+        expected = subprocess.check_output(["git", "-C", str(root), "show", "HEAD:" + name])
+        if (root / name).read_bytes() != expected:
+            raise ValueError("reviewed base audit input differs from the committed file: " + name)
 
 
 def validate_audit_environment(audit, root, policy):
@@ -185,8 +189,8 @@ def refresh_review(root, candidate, versions, version):
     # Reaffirm the existing review first. Only the exact mechanical release delta
     # is eligible for deriving new source, lock and graph fingerprints.
     validate_version_only(root, candidate, versions, version)
+    validate_committed_review_inputs(root)
     audit = audit_module(root)
-    validate_committed_policy(root)
     policy = json.loads((root / REVIEW_PATH).read_text())
     validate_audit_environment(audit, root, policy)
     branch_policy = json.loads(candidate[REVIEW_PATH])
@@ -199,6 +203,7 @@ def refresh_review(root, candidate, versions, version):
         raise ValueError("reviewed Cargo.lock changed during metadata")
     audit.validate_context(root, policy, before)
     audit.validate_libz_server_builds(root, policy)
+    audit.validate_context(root, policy, metadata(root))
     with tempfile.TemporaryDirectory(prefix="release-audit-projection-") as directory:
         projected = Path(directory) / "source"
         subprocess.run(["git", "clone", "--quiet", "--shared", str(root), str(projected)], check=True)
@@ -213,8 +218,10 @@ def refresh_review(root, candidate, versions, version):
         new.update(lock_sha256=hashlib.sha256((projected / "Cargo.lock").read_bytes()).hexdigest(),
                    source_sha256=audit.source_fingerprint(projected),
                    graph_sha256=audit.graph_fingerprint(after, projected))
-        audit.validate_context(projected, new, after)
         audit.validate_libz_server_builds(projected, new)
+        audit.validate_context(projected, new, metadata(projected))
+    validate_committed_review_inputs(root)
+    audit.validate_context(root, policy, metadata(root))
     old_hashes = {key: policy[key] for key in FINGERPRINTS}
     current_hashes = {key: branch_policy.get(key) for key in FINGERPRINTS}
     new_hashes = {key: new[key] for key in FINGERPRINTS}

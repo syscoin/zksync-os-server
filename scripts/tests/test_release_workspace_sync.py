@@ -294,15 +294,22 @@ class SyncPullRequestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "truncated"):
             SYNC.validate_release_tree(truncated, "repos/test/repo", BASE, HEAD)
 
-    def test_base_policy_must_match_the_committed_review(self):
-        policy_path = self.root / SYNC.REVIEW_PATH
-        policy_path.parent.mkdir(parents=True)
-        policy_path.write_text(REVIEW)
-        with mock.patch.object(SYNC.subprocess, "check_output", return_value=REVIEW.encode()):
-            SYNC.validate_committed_policy(self.root)
-        with mock.patch.object(SYNC.subprocess, "check_output", return_value=b"different policy"):
-            with self.assertRaisesRegex(ValueError, "differs from the committed"):
-                SYNC.validate_committed_policy(self.root)
+    def test_excluded_audit_inputs_must_match_the_committed_review(self):
+        for name in SYNC.REVIEW_INPUTS:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(name)
+        def committed(command):
+            return command[-1].removeprefix("HEAD:").encode()
+        with mock.patch.object(SYNC.subprocess, "check_output", side_effect=committed):
+            SYNC.validate_committed_review_inputs(self.root)
+            for name in SYNC.REVIEW_INPUTS:
+                path = self.root / name
+                original = path.read_text()
+                path.write_text("tampered")
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, "audit input differs"):
+                    SYNC.validate_committed_review_inputs(self.root)
+                path.write_text(original)
 
     def test_host_and_compiler_scope_are_enforced(self):
         audit = mock.Mock()
