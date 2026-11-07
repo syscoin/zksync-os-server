@@ -6353,11 +6353,11 @@ gl_checkpoint_assert_fingerprint_matches
     def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
         manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        self.assertIn('rev = "a4484a145fdc1062f2df9b8d3a4b0697c9b18e0c"', manifest)
+        self.assertIn('rev = "99c0b6d2d935828e1f4ff89acfc9e33d21d40f59"', manifest)
         self.assertIn('git = "https://github.com/syscoin/zksync-airbender"', manifest)
         self.assertNotIn('tag = "v0.6.0-rc.1"', manifest)
         self.assertIn(
-            "?rev=a4484a145fdc1062f2df9b8d3a4b0697c9b18e0c#a4484a145fdc1062f2df9b8d3a4b0697c9b18e0c",
+            "?rev=99c0b6d2d935828e1f4ff89acfc9e33d21d40f59#99c0b6d2d935828e1f4ff89acfc9e33d21d40f59",
             lock,
         )
         self.assertNotIn("?tag=v0.6.0-rc.1", lock)

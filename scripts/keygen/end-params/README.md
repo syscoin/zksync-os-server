@@ -1,7 +1,7 @@
 # Locked Airbender end_params helper
 
 The reviewed Syscoin Airbender fork commit
-`a4484a145fdc1062f2df9b8d3a4b0697c9b18e0c` does not track a root
+`99c0b6d2d935828e1f4ff89acfc9e33d21d40f59` does not track a root
 `Cargo.lock`. Running its full CLI workspace with `cargo --locked` therefore
 cannot create a reproducible helper build. This minimal CPU-only harness supplies
 the reviewed lock without changing the upstream `tools/cli/src/bin/end_params.rs`.
@@ -12,8 +12,8 @@ The exact build inputs are:
 
 | Input | SHA256 |
 | --- | --- |
-| Cargo.toml | `714ae2b94b305b58fb05d64783b084c3e7304d993005b2c096b6565f67617d57` |
-| Cargo.lock | `e6b3bd1c409a52596fc8c76724d2ce59f7fd3a9e0bb99119364a5bdbd100c371` |
+| Cargo.toml | `aebe1a39ed8fed9b07ee590cd1bf04ee3ce2f0ad7827161c2bcc9d81333cda8b` |
+| Cargo.lock | `b1801aff9a607ad249b4a2060fb5a58d947655e2c5901f979f491b1da31d96cf` |
 | src/end_params.rs | `95a59eca0f59f7de4d2e256a6edde5eb4248a563e2ff506d9a8fa3dd136ba2c7` |
 
 The 203-package lock was generated once from wrapper commit
