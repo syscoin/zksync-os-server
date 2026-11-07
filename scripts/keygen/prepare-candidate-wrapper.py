@@ -16,8 +16,8 @@ except ImportError:
 
 
 # Exact paired prover tooling; build/loader evidence is in the release manifest.
-PROVER_TOOLING_COMMIT = "981137adde3d2e45c40441c3045000b48ecfeb47"
-PROVER_TOOLING_TREE = "34f01d072405171226f9bc7d6b18adb193a1cfa3"
+PROVER_TOOLING_COMMIT = "6daa02a84fbade0fce9e949cec46e36dc8ff5071"
+PROVER_TOOLING_TREE = "3b190759678d2b086a91808b4dea0de79054900d"
 WRAPPER_REPOSITORY = "https://github.com/syscoin/zkos-wrapper.git"
 WRAPPER_COMMIT = "816a3598c60fac37d02cf1dcd1bc48b2e2c75de1"
 WRAPPER_TREE = "a1e9a551b9588b1dfab5c5088554fc69770c0e85"
@@ -26,8 +26,10 @@ CRYPTO_URL = "https://github.com/syscoin/zksync-crypto.git"
 CRYPTO_COMMIT = "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77"
 CRYPTO_TREE = "c52391d0df82126d27e5c76810e9df85c61875d0"
 FORK = "https://github.com/syscoin/zksync-airbender"
-FORK_COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
-FORK_TREE = "a41a4a18eeb102b405bcb63ad7ca85e9b6b13213"
+FORK_COMMIT = "b91eeaecc4d1b9a42ea6843432bb3e014899b303"
+FORK_TREE = "ce3d73c3901e0aada9dfca1319eea8a1e5fddbb5"
+WRAPPER_AIRBENDER_COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
+WRAPPER_AIRBENDER_SOURCE = f"git+{FORK}?rev={WRAPPER_AIRBENDER_COMMIT}#{WRAPPER_AIRBENDER_COMMIT}"
 NEW_SOURCE = f"git+{FORK}?rev={FORK_COMMIT}#{FORK_COMMIT}"
 AIRBENDER_DEPS = {
     "unified_reduced_machine_verifier", "blake_verifier", "execution_utils",
@@ -84,7 +86,7 @@ def normalized_manifest(raw: bytes, crypto_root: str) -> bytes:
     if airbender != AIRBENDER_DEPS or any(
         dependencies[name].get("git") != FORK
         or dependencies[name].get("rev") != FORK_COMMIT
-        or "tag" in dependencies[name] for name in airbender
+        or any(key in dependencies[name] for key in ("tag", "branch")) for name in airbender
     ):
         raise ValueError("unexpected candidate Airbender manifest graph")
     return json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
@@ -191,17 +193,17 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
                  if isinstance(row, dict) and "zksync-airbender" in row.get("git", "")}
     if airbender != AIRBENDER_DEPS or any(
         dependencies[name].get("git") != FORK
-        or dependencies[name].get("rev") != FORK_COMMIT
-        or "tag" in dependencies[name] for name in airbender
+        or dependencies[name].get("rev") != WRAPPER_AIRBENDER_COMMIT
+        or any(key in dependencies[name] for key in ("tag", "branch")) for name in airbender
     ):
         raise ValueError("unexpected wrapper Airbender dependencies")
 
     canonical = tomllib.loads(lock)
-    fork_air = [row for row in canonical["package"] if row.get("source") == NEW_SOURCE]
+    fork_air = [row for row in canonical["package"] if row.get("source") == WRAPPER_AIRBENDER_SOURCE]
     crypto_source = crypto_pins["upstream_lock_source"]
     old_crypto = [row for row in canonical["package"] if row.get("source") == crypto_source]
     crypto_names = {row["name"] for row in old_crypto}
-    if (len(fork_air) != 44 or lock.count(NEW_SOURCE) != 44
+    if (len(fork_air) != 44 or lock.count(WRAPPER_AIRBENDER_SOURCE) != 44
             or len(old_crypto) != len(WRAPPER_CRYPTO_PACKAGES)
             or crypto_names != WRAPPER_CRYPTO_PACKAGES
             or any(row["version"] != crypto_pins["upstream_packages"][row["name"]]
@@ -209,16 +211,27 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
             or set(crypto_paths) != set(crypto_pins["upstream_packages"])):
         raise ValueError("unexpected wrapper proving lock graph")
     if any("zksync-airbender" in row.get("source", "")
-           and row["source"] != NEW_SOURCE for row in canonical["package"]):
+           and row["source"] != WRAPPER_AIRBENDER_SOURCE for row in canonical["package"]):
         raise ValueError("mixed Airbender sources in wrapper lock")
     if any("github.com/matter-labs/zksync-crypto" in row.get("source", "")
            and "zksync-crypto-gpu" not in row.get("source", "")
            and row.get("source") != crypto_source for row in canonical["package"]):
         raise ValueError("mixed common crypto sources in wrapper lock")
 
+    # The immutable wrapper predates this runtime revision. Retarget only its
+    # reviewed dependency aliases after validating the complete original graph.
+    new_manifest = manifest
+    for name in sorted(airbender):
+        pattern = (r'(?m)^([ \t]*' + re.escape(name)
+                   + r'\s*=\s*\{[^\n]*\brev\s*=\s*)"'
+                   + WRAPPER_AIRBENDER_COMMIT + r'"')
+        new_manifest, count = re.subn(pattern, r'\g<1>"' + FORK_COMMIT + '"', new_manifest)
+        if count != 1:
+            raise ValueError("unexpected wrapper Airbender dependency layout")
+
     # The CPU wrapper uses ten common-crypto packages; bind precisely those to
     # the prover's verified fork tree without changing the stock-control graph.
-    new_manifest = manifest + '\n[patch.' + json.dumps(crypto_pins["upstream_url"]) + ']\n'
+    new_manifest += '\n[patch.' + json.dumps(crypto_pins["upstream_url"]) + ']\n'
     for name in sorted(crypto_names):
         new_manifest += (json.dumps(name) + " = { path = "
                          + json.dumps(str(crypto / crypto_paths[name])) + " }\n")
@@ -228,7 +241,13 @@ def pin(wrapper: Path, crypto: Path, crypto_pins: dict, crypto_paths: dict,
         raise ValueError("unexpected wrapper lock layout")
     for index, row in enumerate(canonical["package"], 1):
         source = row.get("source")
-        if source == crypto_source:
+        if source == WRAPPER_AIRBENDER_SOURCE:
+            source_line = "source = " + json.dumps(source) + "\n"
+            if blocks[index].count(source_line) != 1:
+                raise ValueError("unexpected wrapper Airbender source row")
+            blocks[index] = blocks[index].replace(
+                source_line, "source = " + json.dumps(NEW_SOURCE) + "\n")
+        elif source == crypto_source:
             source_line = "source = " + json.dumps(crypto_source) + "\n"
             if blocks[index].count(source_line) != 1:
                 raise ValueError("unexpected common crypto source row")

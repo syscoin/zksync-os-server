@@ -80,6 +80,7 @@ fn verify_syscoin_source(manifest: &Path) -> anyhow::Result<()> {
 
 fn main() {
     let metadata = MetadataCommand::new()
+        .other_options(vec!["--locked".to_owned()])
         .exec()
         .expect("failed to read Cargo metadata");
     let forward_systems: Vec<_> = metadata

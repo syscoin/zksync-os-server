@@ -130,11 +130,11 @@ zk_os_evm_interpreter = { package = "evm_interpreter", git = "https://github.com
 # SYSCOIN: Airbender crates for verifying V8 FRI proofs submitted by external provers. This exact
 # reviewed Syscoin fork commit must match the prover, embedded Security100 recursion programs,
 # and the app-bound commitment recorded with `V8_VK_HASH`; zkOS remains final v0.4.0.
-execution_utils = { git = "https://github.com/syscoin/zksync-airbender", rev = "0d8c852954afcae1f160151a17fe80886f1755b0", features = [
+execution_utils = { git = "https://github.com/syscoin/zksync-airbender", rev = "b91eeaecc4d1b9a42ea6843432bb3e014899b303", features = [
     "verifier_binaries",
 ] }
-riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "0d8c852954afcae1f160151a17fe80886f1755b0" }
-verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "0d8c852954afcae1f160151a17fe80886f1755b0" }
+riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "b91eeaecc4d1b9a42ea6843432bb3e014899b303" }
+verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "b91eeaecc4d1b9a42ea6843432bb3e014899b303" }
 
 # Other dependencies.
 

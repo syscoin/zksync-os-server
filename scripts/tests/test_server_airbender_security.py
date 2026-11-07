@@ -12,8 +12,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 FORK = "https://github.com/syscoin/zksync-airbender"
-COMMIT = "0d8c852954afcae1f160151a17fe80886f1755b0"
-TREE = "a41a4a18eeb102b405bcb63ad7ca85e9b6b13213"
+COMMIT = "b91eeaecc4d1b9a42ea6843432bb3e014899b303"
+TREE = "ce3d73c3901e0aada9dfca1319eea8a1e5fddbb5"
 SOURCE = f"git+{FORK}?rev={COMMIT}#{COMMIT}"
 LEGACY = (
     "git+https://github.com/matter-labs/zksync-airbender"
@@ -33,6 +33,10 @@ class ServerAirbenderPinTests(unittest.TestCase):
         sources = {row.get("source") for row in lock["package"]
                    if "zksync-airbender" in row.get("source", "")}
         self.assertEqual(sources, {SOURCE, LEGACY})
+        for name in ("blake2s_u32", "common_constants", "cs", "field", "riscv_transpiler", "worker"):
+            package_sources = [row["source"] for row in lock["package"]
+                               if row["name"] == name and row["version"] == "0.1.0"]
+            self.assertEqual(package_sources, sorted(package_sources))
         text = (ROOT / "Cargo.lock").read_text()
         self.assertNotIn("?tag=v0.6.0-rc.2#", text)
 
@@ -46,6 +50,15 @@ class ServerAirbenderPinTests(unittest.TestCase):
         self.assertIn('set -- build --locked --release --bin zksync-os-server', launcher)
         self.assertEqual(launcher.count('run_cargo_with_stable_workspace_graph "$@"'), 2)
         self.assertIn("workspace_cargo_graph_digest", helper)
+
+    def test_multivm_metadata_preserves_the_locked_graph(self):
+        build_script = (ROOT / "lib/multivm/build.rs").read_text()
+        self.assertIn(
+            'MetadataCommand::new()\n'
+            '        .other_options(vec!["--locked".to_owned()])\n'
+            '        .exec()',
+            build_script,
+        )
 
     def test_fork_tree_is_recorded_for_keygen(self):
         workflow = (ROOT / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
