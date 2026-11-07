@@ -416,3 +416,11 @@ These changes add no advisory exceptions. The existing crypto-bigint and
 libz-sys dispositions remain bound by the refreshed source, lock and graph
 fingerprints. The combined source also includes PR #370's reviewed Python
 test timeout change. Both guarded scanners must pass on this combined head.
+
+## Runtime backport lock ordering review — 2026-11-07
+
+The Airbender runtime pin update requires canonical ordering of six duplicate
+package pairs in `Cargo.lock`. All 1,324 package records retain their dependency
+edges, versions, sources and checksums. The multivm build script now passes
+`--locked` to its nested Cargo metadata command. The workspace byte-integrity
+guard remains enabled, and the source and lock fingerprints bind these changes.
