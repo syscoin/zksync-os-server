@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.24.2](https://github.com/syscoin/zksync-os-server/compare/v0.24.1...v0.24.2) (2026-11-07)
+
+
+### Bug Fixes
+
+* **build:** preserve canonical locked metadata during compilation ([b22278a](https://github.com/syscoin/zksync-os-server/commit/b22278a7af47b0b1bbaaec8d742accab0bf909f5))
+* **deps:** apply compatible Zstd security backports ([a80fc14](https://github.com/syscoin/zksync-os-server/commit/a80fc147bc57051d33d7759c6ba3101471d47db7))
+* **deps:** patch Actix and Azure and integrate CI test budget ([8ed9071](https://github.com/syscoin/zksync-os-server/commit/8ed90711d0b6bcd050ca70d0bbaddf566ea03187))
+* **deps:** patch Zstd, Actix and Azure advisories ([ac7745a](https://github.com/syscoin/zksync-os-server/commit/ac7745aebf78a43707a68c872d69ba027b478570))
+* **deps:** preserve canonical Cargo lockfile formatting ([4d7a5e3](https://github.com/syscoin/zksync-os-server/commit/4d7a5e31476305380f4df99c35615358949e1498))
+* **keygen:** retarget the pinned wrapper Airbender graph ([9e5aba7](https://github.com/syscoin/zksync-os-server/commit/9e5aba70d50d0d88144c60554346c4c86b71bec5))
+* **prover:** align runtime source with compiled GPU backport ([b4a9d92](https://github.com/syscoin/zksync-os-server/commit/b4a9d92626bb42e795291e816c8561d6861b6df1))
+* **prover:** pin circuit-preserving Airbender runtime fixes ([790f78c](https://github.com/syscoin/zksync-os-server/commit/790f78c4710e6f6c7ea90f5fb9881eb30ea219bd))
+* **prover:** pin complete runtime memory safety backports ([07e50c9](https://github.com/syscoin/zksync-os-server/commit/07e50c9a591c261a8427c1c1003d089d3c96586f))
+* **prover:** pin initialized compact setup storage ([ebc9cb1](https://github.com/syscoin/zksync-os-server/commit/ebc9cb1e2732fce739014bfb6ff631041e0fb645))
+
 ## [0.24.1](https://github.com/syscoin/zksync-os-server/compare/v0.24.0...v0.24.1) (2026-10-30)
 
 
