@@ -17,7 +17,7 @@ concurrency:
 jobs:
   prover-service:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       PYTHONDONTWRITEBYTECODE: '1'
       ZKSYNC_OS_SERVER_DIR: ${{ github.workspace }}
