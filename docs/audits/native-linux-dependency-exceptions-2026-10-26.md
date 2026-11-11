@@ -424,3 +424,19 @@ package pairs in `Cargo.lock`. All 1,324 package records retain their dependency
 edges, versions, sources and checksums. The multivm build script now passes
 `--locked` to its nested Cargo metadata command. The workspace byte-integrity
 guard remains enabled, and the source and lock fingerprints bind these changes.
+
+
+## Transaction forwarding deadline re-review — 2026-11-11
+
+The RPC forwarder now bounds the complete provider request and reports transport
+expiry as an unknown upstream outcome. Both ordinary and synchronous forwarding
+retain the existing local cleanup path. HTTP provider construction retains the
+same Alloy/Reqwest transport and TLS implementation, while disabling automatic
+request retries. The remaining changes are loopback tests and error mapping.
+
+These changes introduce no secret arithmetic, compression use, dependency,
+native feature, build setting or advisory-disposition changes. Public timeout
+arithmetic uses Alloy's existing U256 type. The crypto-bigint and libz-sys
+applicability boundaries remain unchanged. Only the reviewed source fingerprint
+is refreshed; lock, graph, package and advisory fingerprints stay unchanged.
+Both guarded Linux scanners remain required on the resulting head.
