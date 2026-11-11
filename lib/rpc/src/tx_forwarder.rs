@@ -45,6 +45,8 @@ impl TxForwardEndpoint {
                 // A failed submission may already have reached the leader. Never replay it.
                 let client = reqwest::Client::builder()
                     .retry(reqwest::retry::never())
+                    // A 307/308 redirect can replay a submitted transaction just like a retry.
+                    .redirect(reqwest::redirect::Policy::none())
                     .build()
                     .map_err(TransportErrorKind::custom)?;
                 ProviderBuilder::new().connect_reqwest(client, url).erased()
@@ -327,11 +329,17 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
 
+    #[derive(Clone)]
+    enum UpstreamResponse {
+        Rpc(Duration, serde_json::Value),
+        Redirect(u16, String),
+    }
+
     // Capture requests without needing a chain, and keep stalled connections open until
     // the client cancels them. The task owns its connection tasks for deterministic cleanup.
     async fn upstream(
         partial_body: bool,
-        response: Option<(Duration, serde_json::Value)>,
+        response: Option<UpstreamResponse>,
     ) -> (
         TxForwardEndpoint,
         mpsc::UnboundedReceiver<serde_json::Value>,
@@ -342,15 +350,14 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (sent, received) = mpsc::unbounded_channel();
         let (closed, disconnections) = mpsc::unbounded_channel();
-        let task =
-            tokio::spawn(async move {
-                let mut connections = tokio::task::JoinSet::new();
-                loop {
-                    let (mut socket, _) = listener.accept().await.unwrap();
-                    let sent = sent.clone();
-                    let closed = closed.clone();
-                    let response = response.clone();
-                    connections.spawn(async move {
+        let task = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let sent = sent.clone();
+                let closed = closed.clone();
+                let response = response.clone();
+                connections.spawn(async move {
                     let mut bytes = Vec::new();
                     let request = loop {
                         let mut chunk = [0; 4096];
@@ -378,17 +385,23 @@ mod tests {
                         }
                     };
                     sent.send(request.clone()).unwrap();
-                    if let Some((delay, result)) = response {
-                        tokio::time::sleep(delay).await;
-                        let mut reply = serde_json::json!({"jsonrpc":"2.0", "id":request["id"]});
-                        let key = if result.is_string() { "result" } else { "error" };
-                        reply[key] = result;
-                        let body = reply.to_string();
-                        let reply = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
+                    if let Some(response) = response {
+                        let reply = match response {
+                            UpstreamResponse::Rpc(delay, result) => {
+                                tokio::time::sleep(delay).await;
+                                let mut reply = serde_json::json!({"jsonrpc":"2.0", "id":request["id"]});
+                                let key = if result.is_string() { "result" } else { "error" };
+                                reply[key] = result;
+                                let body = reply.to_string();
+                                format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(), body
+                                )
+                            }
+                            UpstreamResponse::Redirect(status, location) => format!(
+                                "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            ),
+                        };
                         let _ = socket.write_all(reply.as_bytes()).await;
                     } else {
                         if partial_body {
@@ -403,8 +416,8 @@ mod tests {
                         }
                     }
                 });
-                }
-            });
+            }
+        });
         (
             TxForwardEndpoint::connect(&url).await.unwrap(),
             received,
@@ -513,8 +526,14 @@ mod tests {
     async fn sync_budget_allows_upstream_wait_and_preserves_remote_timeout() {
         let remote_error =
             serde_json::json!({"code":4,"message":"upstream wait expired","data":{"test":true}});
-        let (endpoint, mut requests, _disconnections, task) =
-            upstream(false, Some((Duration::from_millis(150), remote_error))).await;
+        let (endpoint, mut requests, _disconnections, task) = upstream(
+            false,
+            Some(UpstreamResponse::Rpc(
+                Duration::from_millis(150),
+                remote_error,
+            )),
+        )
+        .await;
         let mut forwarder = TxForwarder::static_target(endpoint);
         forwarder.transport_timeout = Duration::from_millis(100);
         let err = forwarder
@@ -532,6 +551,119 @@ mod tests {
         assert_eq!(requests.recv().await.unwrap()["params"][1], "0x1f4");
         assert!(requests.try_recv().is_err());
         task.abort();
+    }
+
+    async fn submit(forwarder: &TxForwarder, sync: bool, hash: B256) -> Result<(), TxForwardError> {
+        if sync {
+            forwarder
+                .forward_raw_transaction_sync(hash, &Bytes::new(), Some(U256::ZERO), Duration::ZERO)
+                .await
+                .map(|_| ())
+        } else {
+            forwarder.forward_raw_transaction(hash, &Bytes::new()).await
+        }
+    }
+
+    #[tokio::test]
+    async fn redirects_cannot_replay_either_submission_method() {
+        for status in [307, 308] {
+            for sync in [false, true] {
+                let (destination, mut replayed, _, destination_task) = upstream(false, None).await;
+                let (endpoint, mut requests, _, task) = upstream(
+                    false,
+                    Some(UpstreamResponse::Redirect(status, destination.rpc_url)),
+                )
+                .await;
+                let forwarder = TxForwarder::static_target(endpoint);
+                let result = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    submit(&forwarder, sync, B256::ZERO),
+                )
+                .await
+                .expect("redirected submission did not return promptly");
+                assert!(matches!(result, Err(TxForwardError::Rpc(_))));
+                assert_eq!(
+                    requests.recv().await.unwrap()["method"],
+                    if sync {
+                        "eth_sendRawTransactionSync"
+                    } else {
+                        "eth_sendRawTransaction"
+                    }
+                );
+                assert!(requests.try_recv().is_err());
+                assert!(replayed.try_recv().is_err(), "redirect replayed the POST");
+                task.abort();
+                destination_task.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn in_flight_leader_change_does_not_replay_or_extend_the_deadline() {
+        for sync in [false, true] {
+            let hash = B256::repeat_byte(9);
+            let (old, mut old_requests, _, old_task) = upstream(false, None).await;
+            let response = if sync {
+                serde_json::json!({"code":4,"message":"upstream wait expired"})
+            } else {
+                serde_json::json!(hash)
+            };
+            let (new, mut new_requests, _, new_task) =
+                upstream(false, Some(UpstreamResponse::Rpc(Duration::ZERO, response))).await;
+            let mut status = RaftConsensusStatus {
+                node_id: "local".into(),
+                state: "follower".into(),
+                is_leader: false,
+                current_leader: Some("old".into()),
+                current_term: 1,
+                last_applied_index: None,
+            };
+            let (sender, receiver) = watch::channel(Some(status.clone()));
+            let mut forwarder = TxForwarder::consensus_leader(
+                "local".into(),
+                receiver,
+                HashMap::from([("old".into(), old), ("new".into(), new)]),
+            );
+            forwarder.transport_timeout = Duration::from_millis(300);
+            let in_flight_forwarder = forwarder.clone();
+            let in_flight =
+                tokio::spawn(async move { submit(&in_flight_forwarder, sync, hash).await });
+            // Change leadership only after the old leader has received the transaction.
+            old_requests.recv().await.unwrap();
+            status.current_leader = Some("new".into());
+            status.current_term += 1;
+            sender.send(Some(status)).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(2), in_flight)
+                .await
+                .expect("leadership change left forwarding unbounded")
+                .unwrap();
+            assert!(matches!(result, Err(TxForwardError::Timeout { tx_hash }) if tx_hash == hash));
+            assert!(old_requests.try_recv().is_err());
+            assert!(
+                new_requests.try_recv().is_err(),
+                "in-flight transaction was replayed"
+            );
+
+            let result = submit(&forwarder, sync, hash).await;
+            if sync {
+                assert_eq!(
+                    result
+                        .unwrap_err()
+                        .as_rpc_error()
+                        .unwrap()
+                        .as_error_resp()
+                        .unwrap()
+                        .code,
+                    4
+                );
+            } else {
+                result.unwrap();
+            }
+            new_requests.recv().await.unwrap();
+            assert!(old_requests.try_recv().is_err());
+            old_task.abort();
+            new_task.abort();
+        }
     }
 
     #[tokio::test]
@@ -576,8 +708,14 @@ mod tests {
     #[tokio::test]
     async fn successful_async_forward_returns_without_waiting_for_a_receipt() {
         let hash = B256::repeat_byte(3);
-        let (endpoint, mut requests, _disconnections, task) =
-            upstream(false, Some((Duration::ZERO, serde_json::json!(hash)))).await;
+        let (endpoint, mut requests, _disconnections, task) = upstream(
+            false,
+            Some(UpstreamResponse::Rpc(
+                Duration::ZERO,
+                serde_json::json!(hash),
+            )),
+        )
+        .await;
         let forwarder = TxForwarder::static_target(endpoint);
         forwarder
             .forward_raw_transaction(hash, &Bytes::new())
