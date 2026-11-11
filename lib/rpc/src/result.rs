@@ -276,9 +276,10 @@ fn forward_error_to_rpc_err(
                 payload.data.clone(),
             )
         }
-        TxForwardError::Rpc(_) | TxForwardError::NoKnownLeader | TxForwardError::NoProvider(_) => {
-            internal_rpc_err(display.to_string())
-        }
+        TxForwardError::Rpc(_)
+        | TxForwardError::NoKnownLeader
+        | TxForwardError::NoProvider(_)
+        | TxForwardError::Timeout { .. } => internal_rpc_err(display.to_string()),
     }
 }
 
@@ -413,6 +414,28 @@ impl fmt::Display for RevertError {
 mod tests {
     use super::*;
     use zksync_os_rpc_api::types::LogProofTarget;
+
+    #[test]
+    fn forwarding_deadline_reports_unknown_outcome_and_tx_hash() {
+        let hash = alloy::primitives::B256::repeat_byte(7);
+        let result = Result::<(), EthSendRawTransactionError>::Err(
+            TxForwardError::Timeout { tx_hash: hash }.into(),
+        )
+        .to_rpc_result()
+        .unwrap_err();
+        assert_eq!(result.code(), jsonrpsee::types::error::INTERNAL_ERROR_CODE);
+        assert!(result.message().contains("outcome is unknown"));
+        assert!(result.message().contains(&hash.to_string()));
+        assert!(!result.message().contains("rejected"));
+        let sync_error: EthSendRawTransactionSyncError =
+            EthSendRawTransactionError::ForwardError(TxForwardError::Timeout { tx_hash: hash })
+                .into();
+        let sync_result = Result::<(), _>::Err(sync_error)
+            .to_rpc_result()
+            .unwrap_err();
+        assert_eq!(sync_result.code(), result.code());
+        assert_eq!(sync_result.message(), result.message());
+    }
 
     // SYSCOIN: Resource contention must stay distinct from malformed installed criteria.
     #[test]

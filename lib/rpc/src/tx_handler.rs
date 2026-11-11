@@ -1,7 +1,7 @@
 use crate::eth_call_handler::build_pending_block_context;
 use crate::eth_impl::build_api_receipt;
 use crate::metrics::{TX_SUBMISSION, TxRejectionReason};
-use crate::tx_forwarder::{TxForwardError, TxForwarder};
+use crate::tx_forwarder::{SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT, TxForwardError, TxForwarder};
 use crate::{ReadRpcStorage, RpcConfig};
 use alloy::consensus::Transaction;
 use alloy::consensus::transaction::SignerRecoverable;
@@ -29,9 +29,6 @@ use zksync_os_types::{
     L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState, ZkTransaction,
 };
 
-/// Maximum user provided timeout for `eth_sendRawTransactionSync`. Chosen liberally as waiting is
-/// inexpensive.
-const SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(30);
 // SYSCOIN: Bitcoin DA supports up to 32 compact blob hashes per edge batch.
 const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
 // SYSCOIN: missing compact DA refs are cheap to cache and prevent no-fee exact replay loops from
@@ -424,7 +421,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let forwarding_result = {
                 let _guard = ForwardingLatencyGuard::new();
                 forwarder
-                    .forward_raw_transaction_sync(tx_hash, &bytes, max_wait_ms)
+                    .forward_raw_transaction_sync(tx_hash, &bytes, max_wait_ms, timeout_duration)
                     .await
             };
             match forwarding_result {
@@ -625,7 +622,8 @@ fn forwarding_error_should_rollback_local_tx(err: &TxForwardError) -> bool {
             RpcError::SerError(_) | RpcError::UnsupportedFeature(_) | RpcError::LocalUsageError(_),
         )
         | TxForwardError::NoKnownLeader
-        | TxForwardError::NoProvider(_) => true,
+        | TxForwardError::NoProvider(_)
+        | TxForwardError::Timeout { .. } => true,
         TxForwardError::Rpc(
             RpcError::Transport(_) | RpcError::NullResp | RpcError::DeserError { .. },
         ) => true,
@@ -1112,6 +1110,13 @@ mod tests {
         let null_response = TxForwardError::Rpc(RpcError::<TransportErrorKind>::NullResp);
 
         assert!(forwarding_error_should_rollback_local_tx(&null_response));
+        let deadline = TxForwardError::Timeout {
+            tx_hash: B256::ZERO,
+        };
+        assert!(forwarding_error_should_rollback_local_tx(&deadline));
+        assert!(!forwarding_error_indicates_main_node_already_knows_tx(
+            &deadline
+        ));
     }
 
     #[tokio::test]
