@@ -1,7 +1,7 @@
 use crate::eth_call_handler::build_pending_block_context;
 use crate::eth_impl::build_api_receipt;
 use crate::metrics::{TX_SUBMISSION, TxRejectionReason};
-use crate::tx_forwarder::{TxForwardError, TxForwarder};
+use crate::tx_forwarder::{SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT, TxForwardError, TxForwarder};
 use crate::{ReadRpcStorage, RpcConfig};
 use alloy::consensus::Transaction;
 use alloy::consensus::transaction::SignerRecoverable;
@@ -29,9 +29,6 @@ use zksync_os_types::{
     L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState, ZkTransaction,
 };
 
-/// Maximum user provided timeout for `eth_sendRawTransactionSync`. Chosen liberally as waiting is
-/// inexpensive.
-const SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(30);
 // SYSCOIN: Bitcoin DA supports up to 32 compact blob hashes per edge batch.
 const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
 // SYSCOIN: missing compact DA refs are cheap to cache and prevent no-fee exact replay loops from
@@ -227,14 +224,15 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         let hash = self.admit_to_local_mempool(&tx_bytes).await?;
 
         if let Some(tx_forwarder) = self.tx_forwarder.as_ref() {
-            // If the handler future is dropped before the forward returns
-            // (e.g. client disconnect), `local_cleanup` removes the orphaned
-            // local mempool entry on drop. Disarm only on a successful forward.
-            let mut local_cleanup = RemoveOnDrop::new(&self.mempool, hash);
-            let forwarding_result = {
-                let _guard = ForwardingLatencyGuard::new();
-                tx_forwarder.forward_raw_transaction(hash, &tx_bytes).await
-            };
+            let forwarding_result = forward_with_cleanup(
+                tx_forwarder.forward_raw_transaction(hash, &tx_bytes),
+                || {
+                    self.mempool
+                        .remove_forwarding_rollback_transactions(vec![hash])
+                },
+                false,
+            )
+            .await;
             // We do not need to wait for pending transaction here, so it's safe to forget about it
             if let Err(err) = forwarding_result {
                 tracing::debug!(%err, "forwarding error from main node back to user");
@@ -242,15 +240,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                 // or already knows it. Transport failures must not create EN-only pending state.
                 if forwarding_error_indicates_main_node_already_knows_tx(&err) {
                     tracing::debug!(%err, %hash, "main node already knows forwarded transaction");
-                    local_cleanup.disarm();
                     return Ok(hash);
-                }
-                if !forwarding_error_should_rollback_local_tx(&err) {
-                    local_cleanup.disarm();
                 }
                 return Err(err.into());
             }
-            local_cleanup.disarm();
         }
 
         Ok(hash)
@@ -414,33 +407,28 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // SYSCOIN: forward the caller's EIP-7966 timeout so EN callers see the same
             // bounded wait semantics as callers connected to the main node.
             //
-            // If the future is dropped before we learn main's verdict (e.g.,
-            // client disconnect), `local_cleanup` removes the orphaned local
-            // mempool entry on drop. Disarm only when we explicitly want to
-            // keep the local mirror: forward succeeded, main reported the tx
-            // as already known, or main reported an EIP-7966 timeout (tx still
-            // pending on main).
-            let mut local_cleanup = RemoveOnDrop::new(&self.mempool, tx_hash);
-            let forwarding_result = {
-                let _guard = ForwardingLatencyGuard::new();
-                forwarder
-                    .forward_raw_transaction_sync(tx_hash, &bytes, max_wait_ms)
-                    .await
-            };
+            let forwarding_result = forward_with_cleanup(
+                forwarder.forward_raw_transaction_sync(
+                    tx_hash,
+                    &bytes,
+                    max_wait_ms,
+                    timeout_duration,
+                ),
+                || {
+                    self.mempool
+                        .remove_forwarding_rollback_transactions(vec![tx_hash])
+                },
+                true,
+            )
+            .await;
             match forwarding_result {
-                Ok(Some(receipt)) => {
-                    local_cleanup.disarm();
-                    return Ok(receipt);
-                }
-                Ok(None) => {
-                    local_cleanup.disarm();
-                }
+                Ok(Some(receipt)) => return Ok(receipt),
+                Ok(None) => {}
                 Err(err) => {
                     tracing::debug!(%err, "sync transaction forwarding error back to user");
                     if let Some(RpcError::ErrorResp(payload)) = err.as_rpc_error()
                         && payload.code == EIP_7966_TIMEOUT_CODE
                     {
-                        local_cleanup.disarm();
                         return Err(EthSendRawTransactionSyncError::Timeout(timeout_duration));
                     }
                     // SYSCOIN: if main already knows the tx, keep the local mirror and wait
@@ -451,13 +439,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                             %tx_hash,
                             "main node already knows sync-forwarded transaction; waiting locally"
                         );
-                        local_cleanup.disarm();
                     } else {
-                        // SYSCOIN: mirror async forwarding semantics. Ambiguous transport/response
-                        // failures roll back on drop so EN pending state cannot diverge from main.
-                        if !forwarding_error_should_rollback_local_tx(&err) {
-                            local_cleanup.disarm();
-                        }
                         return Err(EthSendRawTransactionError::ForwardError(err).into());
                     }
                 }
@@ -625,7 +607,8 @@ fn forwarding_error_should_rollback_local_tx(err: &TxForwardError) -> bool {
             RpcError::SerError(_) | RpcError::UnsupportedFeature(_) | RpcError::LocalUsageError(_),
         )
         | TxForwardError::NoKnownLeader
-        | TxForwardError::NoProvider(_) => true,
+        | TxForwardError::NoProvider(_)
+        | TxForwardError::Timeout { .. } => true,
         TxForwardError::Rpc(
             RpcError::Transport(_) | RpcError::NullResp | RpcError::DeserError { .. },
         ) => true,
@@ -807,36 +790,40 @@ impl Drop for ForwardingLatencyGuard {
     }
 }
 
-/// Removes a tx from the local mempool on drop, unless explicitly disarmed.
-/// Lets callers reconcile a half-finished forward with the local mirror:
-/// if the handler future is dropped before the forward returns a verdict,
-/// the orphan entry is cleaned up.
-struct RemoveOnDrop<'a, Mempool: L2Subpool> {
-    mempool: &'a Mempool,
-    tx_hash: B256,
-    armed: bool,
-}
-
-impl<'a, Mempool: L2Subpool> RemoveOnDrop<'a, Mempool> {
-    fn new(mempool: &'a Mempool, tx_hash: B256) -> Self {
-        Self {
-            mempool,
-            tx_hash,
-            armed: true,
+/// Own the post-admission cleanup across the complete forwarding await. Dropping either
+/// handler future removes its local mirror; only a definite acceptance keeps it. An EIP-7966
+/// timeout means accepted-but-pending only for the synchronous RPC method.
+async fn forward_with_cleanup<T>(
+    forward: impl Future<Output = Result<T, TxForwardError>>,
+    rollback: impl FnOnce(),
+    preserve_sync_timeout: bool,
+) -> Result<T, TxForwardError> {
+    let mut cleanup = RemoveOnDrop(Some(rollback));
+    let _latency = ForwardingLatencyGuard::new();
+    let result = forward.await;
+    let keep_local = match &result {
+        Ok(_) => true,
+        Err(err) => {
+            !forwarding_error_should_rollback_local_tx(err)
+                || (preserve_sync_timeout
+                    && err
+                        .as_rpc_error()
+                        .and_then(RpcError::as_error_resp)
+                        .is_some_and(|payload| payload.code == EIP_7966_TIMEOUT_CODE))
         }
+    };
+    if keep_local {
+        drop(cleanup.0.take());
     }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
+    result
 }
 
-impl<Mempool: L2Subpool> Drop for RemoveOnDrop<'_, Mempool> {
+struct RemoveOnDrop<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> Drop for RemoveOnDrop<F> {
     fn drop(&mut self) {
-        if self.armed {
-            // SYSCOIN: preserve the forwarding rollback metric when cleanup happens on drop.
-            self.mempool
-                .remove_forwarding_rollback_transactions(vec![self.tx_hash]);
+        if let Some(rollback) = self.0.take() {
+            rollback();
         }
     }
 }
@@ -1112,6 +1099,144 @@ mod tests {
         let null_response = TxForwardError::Rpc(RpcError::<TransportErrorKind>::NullResp);
 
         assert!(forwarding_error_should_rollback_local_tx(&null_response));
+        let deadline = TxForwardError::Timeout {
+            tx_hash: B256::ZERO,
+        };
+        assert!(forwarding_error_should_rollback_local_tx(&deadline));
+        assert!(!forwarding_error_indicates_main_node_already_knows_tx(
+            &deadline
+        ));
+    }
+
+    #[derive(Default)]
+    struct ForwardingMirror {
+        pending: std::collections::HashSet<B256>,
+        rollbacks: Vec<B256>,
+    }
+
+    fn admitted_mirror(hash: B256) -> Arc<Mutex<ForwardingMirror>> {
+        Arc::new(Mutex::new(ForwardingMirror {
+            pending: [hash].into(),
+            rollbacks: Vec::new(),
+        }))
+    }
+
+    fn mirror_rollback(mirror: Arc<Mutex<ForwardingMirror>>, hash: B256) -> impl FnOnce() {
+        move || {
+            let mut mirror = mirror.lock().unwrap();
+            assert!(mirror.pending.remove(&hash));
+            mirror.rollbacks.push(hash);
+        }
+    }
+
+    fn remote_forwarding_error(code: i64, message: &str) -> TxForwardError {
+        TxForwardError::Rpc(RpcError::ErrorResp(
+            serde_json::from_value(serde_json::json!({"code": code, "message": message})).unwrap(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn forwarding_deadline_rolls_back_admitted_mirror_once_for_both_handlers() {
+        for sync in [false, true] {
+            let hash = B256::repeat_byte(1);
+            let mirror = admitted_mirror(hash);
+            let result = forward_with_cleanup(
+                async {
+                    tokio::time::timeout(
+                        Duration::from_millis(1),
+                        std::future::pending::<Result<(), TxForwardError>>(),
+                    )
+                    .await
+                    .map_err(|_| TxForwardError::Timeout { tx_hash: hash })?
+                },
+                mirror_rollback(mirror.clone(), hash),
+                sync,
+            )
+            .await;
+            assert!(matches!(result, Err(TxForwardError::Timeout { tx_hash }) if tx_hash == hash));
+            let mirror = mirror.lock().unwrap();
+            assert!(mirror.pending.is_empty());
+            assert_eq!(mirror.rollbacks, [hash]);
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarding_cancellation_rolls_back_admitted_mirror_once_for_both_handlers() {
+        for sync in [false, true] {
+            let hash = B256::repeat_byte(2);
+            let mirror = admitted_mirror(hash);
+            let (started, received) = tokio::sync::oneshot::channel();
+            let forward = async move {
+                started.send(()).unwrap();
+                std::future::pending::<Result<(), TxForwardError>>().await
+            };
+            let call = tokio::spawn(forward_with_cleanup(
+                forward,
+                mirror_rollback(mirror.clone(), hash),
+                sync,
+            ));
+            received.await.unwrap();
+            assert!(mirror.lock().unwrap().pending.contains(&hash));
+            call.abort();
+            assert!(call.await.unwrap_err().is_cancelled());
+            let mirror = mirror.lock().unwrap();
+            assert!(mirror.pending.is_empty());
+            assert_eq!(mirror.rollbacks, [hash]);
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarding_success_and_already_known_keep_admitted_mirror() {
+        for sync in [false, true] {
+            for result in [
+                Ok(()),
+                Err(remote_forwarding_error(-32000, "already known")),
+            ] {
+                let hash = B256::repeat_byte(3);
+                let mirror = admitted_mirror(hash);
+                let was_success = result.is_ok();
+                let result = forward_with_cleanup(
+                    std::future::ready(result),
+                    mirror_rollback(mirror.clone(), hash),
+                    sync,
+                )
+                .await;
+                assert_eq!(result.is_ok(), was_success);
+                let mirror = mirror.lock().unwrap();
+                assert!(mirror.pending.contains(&hash));
+                assert!(mirror.rollbacks.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_receipt_timeout_keeps_mirror_only_for_sync_handler() {
+        for sync in [false, true] {
+            let hash = B256::repeat_byte(4);
+            let mirror = admitted_mirror(hash);
+            let result = forward_with_cleanup(
+                std::future::ready(Err::<(), _>(remote_forwarding_error(
+                    EIP_7966_TIMEOUT_CODE,
+                    "receipt wait expired",
+                ))),
+                mirror_rollback(mirror.clone(), hash),
+                sync,
+            )
+            .await;
+            assert_eq!(
+                result
+                    .unwrap_err()
+                    .as_rpc_error()
+                    .unwrap()
+                    .as_error_resp()
+                    .unwrap()
+                    .code,
+                EIP_7966_TIMEOUT_CODE
+            );
+            let mirror = mirror.lock().unwrap();
+            assert_eq!(mirror.pending.contains(&hash), sync);
+            assert_eq!(mirror.rollbacks.len(), usize::from(!sync));
+        }
     }
 
     #[tokio::test]

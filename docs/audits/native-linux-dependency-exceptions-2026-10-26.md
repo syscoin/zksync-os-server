@@ -424,3 +424,56 @@ package pairs in `Cargo.lock`. All 1,324 package records retain their dependency
 edges, versions, sources and checksums. The multivm build script now passes
 `--locked` to its nested Cargo metadata command. The workspace byte-integrity
 guard remains enabled, and the source and lock fingerprints bind these changes.
+
+
+## Transaction forwarding deadline re-review — 2026-11-11
+
+The RPC forwarder now bounds the complete provider request and reports transport
+expiry as an unknown upstream outcome. Both ordinary and synchronous forwarding
+retain the existing local cleanup path. HTTP provider construction retains the
+same Alloy/Reqwest transport and TLS implementation, while disabling automatic
+request retries. The remaining changes are loopback tests and error mapping.
+
+These changes introduce no secret arithmetic, compression use, dependency,
+native feature, build setting or advisory-disposition changes. Public timeout
+arithmetic uses Alloy's existing U256 type. The crypto-bigint and libz-sys
+applicability boundaries remain unchanged. Only the reviewed source fingerprint
+is refreshed; lock, graph, package and advisory fingerprints stay unchanged.
+Both guarded Linux scanners remain required on the resulting head.
+
+## Forwarding follow-up and dependency re-review — 2026-11-11
+
+The forwarding client also disables HTTP redirects: a 307 or 308 must not replay
+a transaction POST. Loopback tests cover both submission methods and a leadership
+change after the old leader receives a request. Both handlers share their existing
+post-admission rollback policy in one cancellation-safe helper; tests cover local
+mirror cleanup on a deadline or cancellation and retention after acceptance,
+already-known responses, and synchronous receipt-wait expiry.
+
+The failed audit at `6b82fbf` reported five Hickory advisories
+(RUSTSEC-2026-0487 through -0491) and rustix RUSTSEC-2026-0486. The lockfile
+updates `hickory-proto` from 0.26.1 to 0.26.3, within the existing network and
+resolver packages' requirements, and `rustix` from 1.0.8 to 1.1.6. The rustix
+change also requires `xattr` 1.7.0: it uses the new explicit size-query APIs,
+whereas xattr 1.6.1 uses empty buffers for size queries. The associated
+`linux-raw-sys` update is 0.9.4 to 0.12.1. No application API change is required.
+
+Hickory's patched versions remove the five advisory version matches, but do not
+justify a blanket claim about all DNS allocation behavior. The generic message
+decoder still reserves a header-specified number of question slots. The server
+unconditionally disables Reth DNS discovery; Reth constructs the Hickory resolver
+only when discovery is configured. Boot-node host resolution uses Tokio instead.
+Re-enabling DNS discovery requires a fresh review of that allocation path. The
+text-parser advisories do not describe Reth's wire-format TXT lookup; the server's
+release overflow checks would not mitigate the TSIG underflow if it were reached.
+
+The rustix advisory affects empty-buffer extended-attribute getters and listing
+APIs. The inspected application dependency route is tar archive unpacking, which
+uses xattr setters and defaults to disabling archive xattrs. That review did not
+establish application exploitation; the compatible patched dependencies remove
+the advisory match without relying on an applicability exception.
+
+These changes add no advisory exceptions. Existing crypto-bigint and libz-sys
+identities, native features, and reviewed callers remain unchanged. Refresh the
+source, lock and resolved-graph fingerprints together and require both guarded
+Linux scanners to pass on the resulting head.
