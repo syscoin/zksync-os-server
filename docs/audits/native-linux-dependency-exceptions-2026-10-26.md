@@ -477,3 +477,33 @@ These changes add no advisory exceptions. Existing crypto-bigint and libz-sys
 identities, native features, and reviewed callers remain unchanged. Refresh the
 source, lock and resolved-graph fingerprints together and require both guarded
 Linux scanners to pass on the resulting head.
+
+## Hickory network and resolver re-review — 2026-11-12
+
+A fresh scan of release candidate `03777f0` against RustSec revision
+`af7b3ec33460b8e2de8d422e16d628518891a519` reports twelve additional version
+matches: RUSTSEC-2026-0506 through -0509 and -0517 through -0520 in
+`hickory-net` 0.26.1, and RUSTSEC-2026-0513 through -0516 in
+`hickory-resolver` 0.26.1. The published patched minimum is 0.26.2.
+
+Update both packages to 0.26.3, retaining the already-pinned `hickory-proto`
+0.26.3. Reth's existing resolver requirement permits this patch update. The
+resolved feature choices and Rust 1.88 minimum are unchanged, and existing
+Tokio, ipnet and resolv-conf versions satisfy the new dependency minima. No
+application interface change is needed.
+
+The DNSSEC-specific findings require features absent from the inspected server
+graph, and two resolver findings require the opt-in recursive resolver. That
+does not exclude the ordinary-DNS findings: malformed UDP responses can abort
+lookups, and repeated truncated responses can consume a lookup's time budget.
+The server still unconditionally disables Reth's DNS-discovery route. Both boot
+and trusted-peer hostname resolution use Tokio's lookup_host instead. This
+review does not establish an active affected application path or an exploit.
+
+Use the compatible patched packages rather than new advisory exceptions. The
+earlier warning about generic question-vector allocation in hickory-proto still
+applies if DNS discovery is enabled in future. The existing crypto-bigint and
+libz-sys dispositions retain their package identities and feature boundaries;
+refresh only the reviewed source, lock and graph fingerprints for this update.
+The dependency change is reviewed on main before the release helper projects
+the mechanical 0.24.3 version changes; both exact heads require guarded scans.
