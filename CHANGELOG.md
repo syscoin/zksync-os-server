@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.24.3](https://github.com/syscoin/zksync-os-server/compare/v0.24.2...v0.24.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **deps:** update Hickory network and resolver ([e25520b](https://github.com/syscoin/zksync-os-server/commit/e25520bfcdcba2618e166abe4609d92e96de98bd))
+* **deps:** update Hickory network and resolver ([3939654](https://github.com/syscoin/zksync-os-server/commit/3939654a90bd80f7794e44d29d2e762176da3eaa))
+* **deps:** update Quinn protocol and UDP pins ([9c2cf30](https://github.com/syscoin/zksync-os-server/commit/9c2cf30da80142915328d4df894c495c1b4f61e4))
+* **deps:** update Quinn protocol and UDP pins ([ba79b56](https://github.com/syscoin/zksync-os-server/commit/ba79b562b1267ad3be7260708e3febbfb728030d))
+* **rpc:** bound transaction forwarding waits ([efc0f63](https://github.com/syscoin/zksync-os-server/commit/efc0f63f2dbe9c21a09b23a7e71358fc717a99b8))
+* **rpc:** bound transaction forwarding waits ([73c9c6f](https://github.com/syscoin/zksync-os-server/commit/73c9c6fa8fe76ebea5145ff88afc3bab1efb8f44))
+* **rpc:** prevent forwarding replay and cover cleanup ([15bcc18](https://github.com/syscoin/zksync-os-server/commit/15bcc1882d7b90b72e567c56f64c7f4d0d4d4211))
+
 ## [0.24.2](https://github.com/syscoin/zksync-os-server/compare/v0.24.1...v0.24.2) (2026-11-07)
 
 
