@@ -507,3 +507,34 @@ libz-sys dispositions retain their package identities and feature boundaries;
 refresh only the reviewed source, lock and graph fingerprints for this update.
 The dependency change is reviewed on main before the release helper projects
 the mechanical 0.24.3 version changes; both exact heads require guarded scans.
+
+## Quinn optional dependency re-review — 2026-11-13
+
+A fresh scan of release candidate `33cb53e` against RustSec revision
+`4ef2df8e806a65e2f1ecc14f56f51249062b23d6` reports RUSTSEC-2026-0523 and
+-0524 for `quinn-proto` 0.11.18, and RUSTSEC-2026-0538 for `quinn-udp`
+0.5.14. Update those packages to 0.11.19 and 0.5.16 respectively, retaining
+`quinn` 0.11.9. Its existing requirements permit both patches without an
+application interface change or any additional dependency update.
+
+The two protocol advisories require an active QUIC connection: excessive
+peer-initiated bidirectional streams or a peer-supplied oversized Initial
+token. The UDP receive-loop advisory affects a platform-specific receive
+path that excludes Linux; that exclusion does not apply to the two protocol
+advisories. The inspected server does not construct a Quinn endpoint or
+enable reqwest's optional HTTP/3 support. The lockfile alone is therefore
+not evidence of runtime exposure.
+
+Resolved Linux server, GCP server and all-feature workspace test dependency trees
+are identical before and after the update, including development edges.
+Generation-only Cargo unit graphs contain no Quinn compilation units in
+those configurations. Cargo metadata still retains the optional entries,
+so its review fingerprint changes even though the active build trees do not.
+
+The patches retain their dependency and feature requirements, except that
+quinn-udp widens its Windows dependency range and raises its declared Rust
+minimum to 1.85, already supported by the pinned toolchain. These changes
+add no advisory exceptions. Preserve the existing crypto-bigint and libz-sys
+dispositions and refresh the source, lock and metadata graph fingerprints
+after checking the resolved feature graph. The generated release head must
+receive its own guarded audit after the reviewed dependency fix lands on main.
