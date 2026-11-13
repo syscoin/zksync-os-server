@@ -517,9 +517,10 @@ A fresh scan of release candidate `33cb53e` against RustSec revision
 `quinn` 0.11.9. Its existing requirements permit both patches without an
 application interface change or any additional dependency update.
 
-The two protocol advisories require an active QUIC connection: excessive
-peer-initiated bidirectional streams or a peer-supplied oversized Initial
-token. The UDP receive-loop advisory affects a platform-specific receive
+The protocol advisories concern excessive peer-initiated bidirectional streams
+after the handshake, and oversized Retry or cached address-validation tokens
+processed by a QUIC client. The latter can occur before a connection is
+established. The UDP receive-loop advisory affects a platform-specific receive
 path that excludes Linux; that exclusion does not apply to the two protocol
 advisories. The inspected server does not construct a Quinn endpoint or
 enable reqwest's optional HTTP/3 support. The lockfile alone is therefore
