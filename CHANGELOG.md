@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.24.4](https://github.com/syscoin/zksync-os-server/compare/v0.24.3...v0.24.4) (2026-11-16)
+
+
+### Bug Fixes
+
+* **rpc:** preserve exact simulation fees and apply public read policy ([6f6de72](https://github.com/syscoin/zksync-os-server/commit/6f6de72415727b35dc15c391eee930af4f759bee))
+* **rpc:** preserve exact simulation fees and public read policy ([0a00380](https://github.com/syscoin/zksync-os-server/commit/0a0038067404593298830868189df0be277bce1d))
+* **rpc:** require execution policy for full simulations ([b2a9da2](https://github.com/syscoin/zksync-os-server/commit/b2a9da207a9ef4bdc3ab6572b3c550713022d24f))
+
 ## [0.24.3](https://github.com/syscoin/zksync-os-server/compare/v0.24.2...v0.24.3) (2026-11-13)
 
 
