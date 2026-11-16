@@ -667,10 +667,8 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         *self.last_constructed_block_context.borrow()
     }
 
-    pub(crate) fn public_read_policy_session(&self) -> Option<PolicySession> {
-        self.policy_client
-            .as_ref()
-            .map(|client| client.public_simulation_session(AccessType::Read))
+    pub(crate) fn public_execution_policy_session(&self) -> Option<PolicySession> {
+        public_execution_policy_session(self.policy_client.as_ref())
     }
 
     pub(crate) fn policy_client_configured(&self) -> bool {
@@ -787,6 +785,11 @@ fn simulate_with_optional_policy<V: ViewState>(
     } else {
         execute(tx, block_context, view)
     }
+}
+
+// Full simulations return state-dependent gas and sequential effects, matching estimateGas policy.
+fn public_execution_policy_session(client: Option<&PolicyClient>) -> Option<PolicySession> {
+    client.map(|client| client.public_simulation_session(AccessType::Write))
 }
 
 // SYSCOIN: Bind the highest estimate probe to public provenance before any VM outcome escapes.
@@ -1083,6 +1086,85 @@ mod tests {
         assert_eq!(original_fee_cap(Some(8), fees.gas_price), 8);
         assert_eq!(original_fee_cap(Some(0), 0), 0);
         assert_eq!(original_fee_cap(None, 4), 4);
+    }
+
+    #[tokio::test]
+    async fn full_simulation_requires_write_policy_without_sender_exemption() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use zksync_os_interface::tracing::{BeginTxContext, TxValidator};
+        use zksync_os_tx_validators::policy_client::{
+            Component, Config, DEFAULT_POLICY_TRACE_LIMITS,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 1024];
+            let body_start = loop {
+                let size = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(size, 0);
+                bytes.extend_from_slice(&chunk[..size]);
+                if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = std::str::from_utf8(&bytes[..body_start]).unwrap();
+            assert!(headers.starts_with("POST /admit "));
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            while bytes.len() - body_start < length {
+                let size = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(size, 0);
+                bytes.extend_from_slice(&chunk[..size]);
+            }
+            let request: serde_json::Value =
+                serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
+            let response = if request["accessType"] == "read" {
+                r#"{"allow":true}"#
+            } else {
+                r#"{"allow":false}"#
+            };
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).as_bytes()).await.unwrap();
+            request
+        });
+        let from = Address::from([0x11; 20]);
+        let client = PolicyClient::new(Config {
+            url: format!("http://{address}"),
+            component: Component::Rpc,
+            request_timeout: std::time::Duration::from_secs(5),
+            protocol_version: "1".into(),
+            expected_protocol_version: None,
+            bypass_from: std::collections::HashSet::from([from]),
+            trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
+            auth_token: Some("simulation-policy-test".into()),
+        })
+        .unwrap();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut policy = public_execution_policy_session(Some(&client)).unwrap();
+            policy.begin_tx(&BeginTxContext {
+                from,
+                to: Some(Address::ZERO),
+                value: U256::ZERO,
+                calldata: &[],
+                gas_limit: 21_000,
+            })
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            result,
+            Err(InvalidTransaction::FilteredByValidator)
+        ));
+        assert_eq!(service.await.unwrap()["accessType"], "write");
+        assert!(public_execution_policy_session(None).is_none());
     }
 
     // SYSCOIN: Exercise the first-probe policy boundary with a closed local transport, not VM work.

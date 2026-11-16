@@ -990,3 +990,66 @@ async fn concurrent_sessions_dont_share_slot() {
     // Both judge calls fired and each body has exactly one frame.
     assert_eq!(judge_mock.calls(), 2);
 }
+
+#[tokio::test]
+async fn sequential_public_simulations_reset_denied_trace_before_next_call() {
+    let server = MockServer::start();
+    let admit = server.mock(|when, then| {
+        when.method(Method::POST).path("/admit").is_true(|req| {
+            let body: serde_json::Value = serde_json::from_slice(req.body().as_ref()).unwrap();
+            body["accessType"] == "write"
+        });
+        then.status(200).json_body(json!({"allow": true}));
+    });
+    let denied = server.mock(|when, then| {
+        when.method(Method::POST).path("/judge").is_true(|req| {
+            let body: serde_json::Value = serde_json::from_slice(req.body().as_ref()).unwrap();
+            body["accessType"] == "write" && body["trace"]["frame"]["calldata"] == "0xaa"
+        });
+        then.status(200).json_body(json!({"allow": false}));
+    });
+    let allowed = server.mock(|when, then| {
+        when.method(Method::POST).path("/judge").is_true(|req| {
+            let body: serde_json::Value = serde_json::from_slice(req.body().as_ref()).unwrap();
+            body["accessType"] == "write"
+                && body["trace"]["frame"]["calldata"] == "0xbb"
+                && body["trace"]["frame"]["children"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+        });
+        then.status(200).json_body(json!({"allow": true}));
+    });
+    let mut config = base_config(&server);
+    config.bypass_from.insert(FROM);
+    let client = PolicyClient::new(config).unwrap();
+    let (first, second) = spawn_blocking(move || {
+        let mut policy = client.public_simulation_session(AccessType::Write);
+        let mut tracer = policy.paired_tracer();
+        let mut execute = |input: u8| {
+            EvmTracer::begin_tx(&mut tracer, &[input]);
+            TxValidator::begin_tx(&mut policy, &test_context()).unwrap();
+            tracer.on_new_execution_frame(&MockFrame {
+                caller: FROM,
+                callee: TO,
+                modifier: CallModifier::NoModifier,
+                input: vec![input],
+                value: U256::ZERO,
+            });
+            tracer.after_execution_frame_completed(None);
+            let result = TxValidator::finish_tx(&mut policy);
+            EvmTracer::finish_tx(&mut tracer);
+            result
+        };
+        (execute(0xaa), execute(0xbb))
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        first,
+        Err(InvalidTransaction::FilteredByValidator)
+    ));
+    assert!(second.is_ok());
+    assert_eq!(admit.calls(), 2);
+    assert_eq!(denied.calls(), 1);
+    assert_eq!(allowed.calls(), 1);
+}

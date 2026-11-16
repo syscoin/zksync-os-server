@@ -169,7 +169,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             let tx_source = TxListSource {
                 transactions: txs.iter().cloned().map(|tx| tx.encode()).collect(),
             };
-            let block_output = if let Some(mut policy) = self.public_read_policy_session() {
+            let block_output = if let Some(mut policy) = self.public_execution_policy_session() {
                 let mut tracer = policy.paired_tracer();
                 run_block(
                     block_context,
