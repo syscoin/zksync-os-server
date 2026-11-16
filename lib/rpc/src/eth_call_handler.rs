@@ -259,7 +259,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                     nonce,
                     max_priority_fee_per_gas: max_priority_fee_per_gas
                         .ok_or(EthCallError::MissingPriorityFee)?,
-                    max_fee_per_gas: gas_price,
+                    max_fee_per_gas: original_fee_cap(max_fee_per_gas, gas_price),
                     gas_limit,
                     to,
                     value,
@@ -667,6 +667,10 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         *self.last_constructed_block_context.borrow()
     }
 
+    pub(crate) fn public_execution_policy_session(&self) -> Option<PolicySession> {
+        public_execution_policy_session(self.policy_client.as_ref())
+    }
+
     pub(crate) fn policy_client_configured(&self) -> bool {
         self.policy_client.is_some()
     }
@@ -783,6 +787,11 @@ fn simulate_with_optional_policy<V: ViewState>(
     }
 }
 
+// Full simulations return state-dependent gas and sequential effects, matching estimateGas policy.
+fn public_execution_policy_session(client: Option<&PolicyClient>) -> Option<PolicySession> {
+    client.map(|client| client.public_simulation_session(AccessType::Write))
+}
+
 // SYSCOIN: Bind the highest estimate probe to public provenance before any VM outcome escapes.
 fn initial_estimate_probe(
     client: Option<&PolicyClient>,
@@ -806,7 +815,7 @@ fn map_simulate_invalid_to_call_error(err: InvalidTransaction) -> EthCallError {
 /// SYSCOIN: VM validator support, not evidence of an authenticated protocol transaction.
 /// Public callers can supply an L1 transaction type but the L1 VM path does not
 /// run policy hooks. Preserve that path only when no policy is configured.
-fn ensure_public_policy_type_supported(
+pub(crate) fn ensure_public_policy_type_supported(
     policy_configured: bool,
     tx_type: ZkTxType,
 ) -> Result<(), EthCallError> {
@@ -900,6 +909,11 @@ impl GasRange {
         }
         Ok(())
     }
+}
+
+// The fee cap controls validation and prepayment independently of GASPRICE.
+fn original_fee_cap(requested: Option<u128>, effective: u128) -> u128 {
+    requested.unwrap_or(effective)
 }
 
 fn set_gas_limit(tx: &mut ZkTransaction, gas_limit: u64) {
@@ -1064,6 +1078,94 @@ pub enum EthCallError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulation_keeps_signed_fee_cap_and_effective_price_distinct() {
+        let fees = CallFees::ensure_fees(None, Some(8), Some(1), 3, false).unwrap();
+        assert_eq!(fees.gas_price, 4);
+        assert_eq!(original_fee_cap(Some(8), fees.gas_price), 8);
+        assert_eq!(original_fee_cap(Some(0), 0), 0);
+        assert_eq!(original_fee_cap(None, 4), 4);
+    }
+
+    #[tokio::test]
+    async fn full_simulation_requires_write_policy_without_sender_exemption() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use zksync_os_interface::tracing::{BeginTxContext, TxValidator};
+        use zksync_os_tx_validators::policy_client::{
+            Component, Config, DEFAULT_POLICY_TRACE_LIMITS,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 1024];
+            let body_start = loop {
+                let size = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(size, 0);
+                bytes.extend_from_slice(&chunk[..size]);
+                if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = std::str::from_utf8(&bytes[..body_start]).unwrap();
+            assert!(headers.starts_with("POST /admit "));
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap();
+            while bytes.len() - body_start < length {
+                let size = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(size, 0);
+                bytes.extend_from_slice(&chunk[..size]);
+            }
+            let request: serde_json::Value =
+                serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
+            let response = if request["accessType"] == "read" {
+                r#"{"allow":true}"#
+            } else {
+                r#"{"allow":false}"#
+            };
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).as_bytes()).await.unwrap();
+            request
+        });
+        let from = Address::from([0x11; 20]);
+        let client = PolicyClient::new(Config {
+            url: format!("http://{address}"),
+            component: Component::Rpc,
+            request_timeout: std::time::Duration::from_secs(5),
+            protocol_version: "1".into(),
+            expected_protocol_version: None,
+            bypass_from: std::collections::HashSet::from([from]),
+            trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
+            auth_token: Some("simulation-policy-test".into()),
+        })
+        .unwrap();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut policy = public_execution_policy_session(Some(&client)).unwrap();
+            policy.begin_tx(&BeginTxContext {
+                from,
+                to: Some(Address::ZERO),
+                value: U256::ZERO,
+                calldata: &[],
+                gas_limit: 21_000,
+            })
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            result,
+            Err(InvalidTransaction::FilteredByValidator)
+        ));
+        assert_eq!(service.await.unwrap()["accessType"], "write");
+        assert!(public_execution_policy_session(None).is_none());
+    }
 
     // SYSCOIN: Exercise the first-probe policy boundary with a closed local transport, not VM work.
     #[tokio::test]
