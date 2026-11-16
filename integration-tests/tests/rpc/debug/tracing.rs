@@ -715,13 +715,21 @@ async fn debug_trace_call_js_tracer(env: TestEnvironment) -> anyhow::Result<()> 
 
     let mut opts = GethDebugTracingCallOptions::default();
     opts.tracing_options.tracer = Some(GethDebugTracerType::JsTracer(js_str.to_string()));
+    // Preserve a payable fee cap while exercising the tracer's contract frames.
+    let block = tester
+        .l2_provider
+        .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+        .await?
+        .context("latest block unavailable")?;
+    let block_id = BlockId::from(block.header.number);
     call_request.max_priority_fee_per_gas = Some(1);
-    call_request.max_fee_per_gas = Some(u128::MAX);
+    call_request.max_fee_per_gas =
+        Some(u128::from(block.header.base_fee_per_gas.unwrap_or_default()) + 1);
     call_request.set_from(tester.l2_wallet.default_signer().address());
 
     let trace = tester
         .l2_provider
-        .debug_trace_call(call_request, BlockId::latest(), opts)
+        .debug_trace_call(call_request, block_id, opts)
         .await?;
 
     let addresses = custom_js_trace_value(trace)
@@ -772,13 +780,21 @@ async fn debug_trace_call_js_tracer_with_db(env: TestEnvironment) -> anyhow::Res
 
     let mut opts = GethDebugTracingCallOptions::default();
     opts.tracing_options.tracer = Some(GethDebugTracerType::JsTracer(js_str.to_string()));
+    // Preserve a payable fee cap while exercising the tracer's contract frames.
+    let block = tester
+        .l2_provider
+        .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+        .await?
+        .context("latest block unavailable")?;
+    let block_id = BlockId::from(block.header.number);
     call_request.max_priority_fee_per_gas = Some(1);
-    call_request.max_fee_per_gas = Some(u128::MAX);
+    call_request.max_fee_per_gas =
+        Some(u128::from(block.header.base_fee_per_gas.unwrap_or_default()) + 1);
     call_request.set_from(tester.l2_wallet.default_signer().address());
 
     let trace = tester
         .l2_provider
-        .debug_trace_call(call_request, BlockId::latest(), opts)
+        .debug_trace_call(call_request, block_id, opts)
         .await?;
 
     let values = custom_js_trace_value(trace)
@@ -864,13 +880,21 @@ async fn debug_trace_call_stack(env: TestEnvironment) -> anyhow::Result<()> {
 
     let mut opts = GethDebugTracingCallOptions::default();
     opts.tracing_options.tracer = Some(GethDebugTracerType::JsTracer(js_str.to_string()));
+    // Preserve a payable fee cap while exercising the tracer's contract frames.
+    let block = tester
+        .l2_provider
+        .get_block_by_number(alloy::eips::BlockNumberOrTag::Latest)
+        .await?
+        .context("latest block unavailable")?;
+    let block_id = BlockId::from(block.header.number);
     call_request.max_priority_fee_per_gas = Some(1);
-    call_request.max_fee_per_gas = Some(u128::MAX);
+    call_request.max_fee_per_gas =
+        Some(u128::from(block.header.base_fee_per_gas.unwrap_or_default()) + 1);
     call_request.set_from(tester.l2_wallet.default_signer().address());
 
     let trace = tester
         .l2_provider
-        .debug_trace_call(call_request, BlockId::latest(), opts)
+        .debug_trace_call(call_request, block_id, opts)
         .await?;
 
     let stacks = custom_js_trace_value(trace)
