@@ -259,7 +259,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                     nonce,
                     max_priority_fee_per_gas: max_priority_fee_per_gas
                         .ok_or(EthCallError::MissingPriorityFee)?,
-                    max_fee_per_gas: gas_price,
+                    max_fee_per_gas: original_fee_cap(max_fee_per_gas, gas_price),
                     gas_limit,
                     to,
                     value,
@@ -667,6 +667,12 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         *self.last_constructed_block_context.borrow()
     }
 
+    pub(crate) fn public_read_policy_session(&self) -> Option<PolicySession> {
+        self.policy_client
+            .as_ref()
+            .map(|client| client.public_simulation_session(AccessType::Read))
+    }
+
     pub(crate) fn policy_client_configured(&self) -> bool {
         self.policy_client.is_some()
     }
@@ -806,7 +812,7 @@ fn map_simulate_invalid_to_call_error(err: InvalidTransaction) -> EthCallError {
 /// SYSCOIN: VM validator support, not evidence of an authenticated protocol transaction.
 /// Public callers can supply an L1 transaction type but the L1 VM path does not
 /// run policy hooks. Preserve that path only when no policy is configured.
-fn ensure_public_policy_type_supported(
+pub(crate) fn ensure_public_policy_type_supported(
     policy_configured: bool,
     tx_type: ZkTxType,
 ) -> Result<(), EthCallError> {
@@ -900,6 +906,11 @@ impl GasRange {
         }
         Ok(())
     }
+}
+
+// The fee cap controls validation and prepayment independently of GASPRICE.
+fn original_fee_cap(requested: Option<u128>, effective: u128) -> u128 {
+    requested.unwrap_or(effective)
 }
 
 fn set_gas_limit(tx: &mut ZkTransaction, gas_limit: u64) {
@@ -1064,6 +1075,15 @@ pub enum EthCallError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulation_keeps_signed_fee_cap_and_effective_price_distinct() {
+        let fees = CallFees::ensure_fees(None, Some(8), Some(1), 3, false).unwrap();
+        assert_eq!(fees.gas_price, 4);
+        assert_eq!(original_fee_cap(Some(8), fees.gas_price), 8);
+        assert_eq!(original_fee_cap(Some(0), 0), 0);
+        assert_eq!(original_fee_cap(None, 4), 4);
+    }
 
     // SYSCOIN: Exercise the first-probe policy boundary with a closed local transport, not VM work.
     #[tokio::test]

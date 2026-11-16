@@ -1,4 +1,4 @@
-use crate::eth_call_handler::{EthCallError, EthCallHandler};
+use crate::eth_call_handler::{EthCallError, EthCallHandler, ensure_public_policy_type_supported};
 use crate::eth_impl::{build_api_log, build_api_tx};
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
@@ -163,24 +163,34 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 overridden_view.clone(),
                 !validation,
             )?;
-            // SYSCOIN: `eth_simulateV1` executes a whole synthetic block with `NopValidator`.
-            // Caller-supplied protocol types are not authenticated; reject every nonempty
-            // synthetic block instead of letting callers bypass the policy service.
-            if self.policy_client_configured() && !txs.is_empty() {
-                return Err(EthCallError::PolicyDenied);
+            for tx in &txs {
+                ensure_public_policy_type_supported(self.policy_client_configured(), tx.tx_type())?;
             }
             let tx_source = TxListSource {
                 transactions: txs.iter().cloned().map(|tx| tx.encode()).collect(),
             };
-            let block_output = run_block(
-                block_context,
-                overridden_view.clone(),
-                overridden_view,
-                tx_source,
-                NoopTxCallback,
-                &mut NopTracer,
-                &mut NopValidator,
-            )
+            let block_output = if let Some(mut policy) = self.public_read_policy_session() {
+                let mut tracer = policy.paired_tracer();
+                run_block(
+                    block_context,
+                    overridden_view.clone(),
+                    overridden_view,
+                    tx_source,
+                    NoopTxCallback,
+                    &mut tracer,
+                    &mut policy,
+                )
+            } else {
+                run_block(
+                    block_context,
+                    overridden_view.clone(),
+                    overridden_view,
+                    tx_source,
+                    NoopTxCallback,
+                    &mut NopTracer,
+                    &mut NopValidator,
+                )
+            }
             .map_err(EthCallError::ForwardSubsystemError)?;
 
             let (simulated_block, mut block_overlay) = build_simulated_block_response(
