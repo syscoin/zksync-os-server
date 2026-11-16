@@ -1191,3 +1191,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "simulate_runtime_tests.rs"]
+mod runtime_tests;
