@@ -1,0 +1,204 @@
+{
+  "schema": "syscoin-v32-staged-guest-identity-v1",
+  "qualification": "testnet fixture replay and native recursion program identity",
+  "guest": {
+    "source_commit": "3c9bdcbc93e96198460cb8fa4da07932f6bf9310",
+    "source_tree": "ec14ec8941e28825893ddb689a10a23099617f69",
+    "target": "riscv32im-risc0-zkvm-elf",
+    "command": "./dump_bin.sh --type multiblock-batch",
+    "rust_toolchain": "nightly-2026-02-10",
+    "platform_cli_commit": "72cce091dbaa13a9ce1f4a8df2bd90baede03cfe",
+    "workspace_cargo_lock_sha256": "049905f6d422a59083fa021c30d41bbd8312f72880993edf2939895cfd06cdb9",
+    "guest_cargo_lock_sha256": "d6863d99a9e876ef55b7abf69f520567cab51668a91374c96c3ce5891a140610",
+    "bin_sha256": "536ac0ca152db40430c7e9c0ebac0a814e516b889efc029b9c6cca0140f62cdf",
+    "text_sha256": "aa7ef4d303b243bcc1df24fb85c66655e91b551a730dfc19655ec374cd4d2c5f",
+    "elf_sha256": "d32f84fed298748ee1e629d806d50d9712559a6aa8e825886a7c927d15dff77a"
+  },
+  "recursion": {
+    "native_derivation_commit": "5cff603b014108adf172ad933add11edb5f54ffb",
+    "protocol_candidate_airbender_commit": "5a4928f651bb627ac5adf334fc6640bb6db5d79a",
+    "security_bits": 100,
+    "profile": "default",
+    "native_full_setup_executable_sha256": "363cdc0c5f09f6313153199fcdb686b44be889d09997a4efbb073c0e1d9022b9",
+    "native_cargo_lock_sha256": "6495ac0b774bf3af1a2e1f44006a33eee77a6449b91300b95eb130b5809fd9c8",
+    "method": "Full native setup of all three executable images, cross-checked against the scalar seven-round BLAKE2s fold of pinned recursion snapshots.",
+    "asset_sha256": {
+      "tools/verifier/recursion_in_unrolled_layer_security_100_bits.bin": "1e34e53a71d073d8b273fa8114dc6faaeaf9a76c2aec06643563a69cc7dd8a43",
+      "tools/verifier/recursion_in_unrolled_layer_security_100_bits.text": "4e68c57b18d194b5fdedf3ae2d1d2dab6f3da47160c964f02e9793077dd66ed8",
+      "tools/verifier/recursion_in_unrolled_layer_security_100_bits.setup.json": "41cc3eaf365bcc1f814bae2559d7a58f9ae88ed9c137b9c5d5c248c81609eb9d",
+      "tools/verifier/recursion_in_unified_layer_security_100_bits.bin": "03cc1cb4bfd70fe55cb1014bfcb6a7e587c154f7144477c801a99f4466f09c2e",
+      "tools/verifier/recursion_in_unified_layer_security_100_bits.text": "c9ef9dd7c618f0e4e24e39be5d888440029b0985214eb47ed569a6c21c6366cd",
+      "tools/verifier/recursion_in_unified_layer_security_100_bits.setup.json": "ea2a9c105811c992386992f20a4b8266c790f7935622a71b8d70c81c9021d08e"
+    },
+    "app_end_params": [
+      3663570152,
+      4173903943,
+      2495119803,
+      1962296943,
+      33824161,
+      2475923638,
+      2560395390,
+      2041520630
+    ],
+    "base_chain": [
+      2568030437,
+      1185036990,
+      685765785,
+      2463024875,
+      2241881662,
+      3205642959,
+      3530117681,
+      832882880
+    ],
+    "unrolled_setup_end_params": [
+      1757619238,
+      3867707985,
+      2589696740,
+      1147332593,
+      2464853468,
+      2051242771,
+      2798820451,
+      3200077023
+    ],
+    "unrolled_chain": [
+      3877392435,
+      527484776,
+      3033476532,
+      117998260,
+      3772537395,
+      2329149334,
+      1715787962,
+      2035499317
+    ],
+    "unified_setup_end_params": [
+      127830082,
+      234200099,
+      3482646709,
+      3809141483,
+      2686257166,
+      629858516,
+      3373154251,
+      3606817127
+    ],
+    "unified_chain": [
+      347547154,
+      3278936102,
+      1765529674,
+      4284489224,
+      2157947891,
+      429977575,
+      3900820039,
+      2740166159
+    ],
+    "unified_chain_words_hex": "14b72612c3709826693bd84aff601e08809fabf319a0efe7e881ca47a3539e0f"
+  },
+  "witness_replay": {
+    "protocol_version": "v32.0",
+    "execution_version": 7,
+    "fixture_chain_id": 57057,
+    "fixture_config_sha256": "f3b6cbaf792a1d283ef99bc6940d2e31e8cf0926931137160bd2376deef67491",
+    "chain_config_hash": "0x6f1e12a490f6ec7f09775ba8b13723a0f0f96648070a165ba75ec9a6afa6effe",
+    "sequence_sha256": "ad8e34b76c55db8a6d0e0f7801f94a899b77345a7ca6e4f0c6af61e7470e9449",
+    "platform_cli_sha256": "699618b46e29fce4828e21f1b3ed6fd365a673c29f8f21c883fa81fb56dd3e95",
+    "airbender_cli_sha256": "75107f353132792aaa3ad7e64b7411625fa2f4e2cfa617553800e132031cda34",
+    "result_encoding": "Eight u32 result registers in little-endian order. Reported cycles come from the platform simulator.",
+    "batches": [
+      {
+        "batch_id": 1,
+        "first_block": 1,
+        "last_block": 1,
+        "input_words": 18112,
+        "input_sha256": "8a478fd728f7a017f4c8bdfe948098b785857833bbf66a947791c7bac5b0fd99",
+        "manifest_sha256": "2c58863754c29602e09933f0958180846ebc66a3a9b8ae197bd0c49249838c74",
+        "public_input_hash": "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+        "state_before": "0xec4a6d11ed43e56364b38684633718eea0c3c270849ccef03dfcf2721a2b77fb",
+        "state_after": "0x6f24493fd97fdf1a381c0649019948f12e82a54b6246a6a93b375638fe235968",
+        "reported_cycles": 1357334
+      },
+      {
+        "batch_id": 2,
+        "first_block": 2,
+        "last_block": 2,
+        "input_words": 6998,
+        "input_sha256": "6b7596e71e200447460e29a4bd362506cad64d68af704e7436ccbeb25db40d48",
+        "manifest_sha256": "c0346454ae1ec13b425b2d4ecf6185c7b64acc3c6dd63409e0c9b15a5d5cc5c5",
+        "public_input_hash": "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076",
+        "state_before": "0x6f24493fd97fdf1a381c0649019948f12e82a54b6246a6a93b375638fe235968",
+        "state_after": "0x5ae86e8f2462af5a6198d15c1e22f9438ad6f4e265dd47fdfa39e1af286ab8c3",
+        "reported_cycles": 982351
+      },
+      {
+        "batch_id": 3,
+        "first_block": 3,
+        "last_block": 3,
+        "input_words": 6998,
+        "input_sha256": "2c2732837df08e05c02278547e98961b4f337862bfc5289c88508d263252a508",
+        "manifest_sha256": "bf5247d065e24a7c011dfd7234926661e753d7ef2633acde1d0ec14841adf6bf",
+        "public_input_hash": "0x115d25b90f5a7a592edafad9974b4987aa9682770c31d0faebcefdd6ff43e809",
+        "state_before": "0x5ae86e8f2462af5a6198d15c1e22f9438ad6f4e265dd47fdfa39e1af286ab8c3",
+        "state_after": "0xfc952898cae26423fb9b90ceee62802a93ad5c94c81f793b017c2494a0439660",
+        "reported_cycles": 982351
+      },
+      {
+        "batch_id": 4,
+        "first_block": 4,
+        "last_block": 4,
+        "input_words": 6998,
+        "input_sha256": "d30444de070d100a4edc7b354de0812e0b348da14725a50aaf215b5da8b52216",
+        "manifest_sha256": "9198568262ad8d402cf0e2c6730fba634649a5f914d930a1df6602b8f53054b4",
+        "public_input_hash": "0x4d5f4ba04cceeb7a0121da06cb32debc1c85bb7e219de705a9435aa577a3e465",
+        "state_before": "0xfc952898cae26423fb9b90ceee62802a93ad5c94c81f793b017c2494a0439660",
+        "state_after": "0x3f9cb3684c4462632a35e7750830d90d361fa5c61a01ce6359999a64b12f3dee",
+        "reported_cycles": 982351
+      },
+      {
+        "batch_id": 5,
+        "first_block": 5,
+        "last_block": 5,
+        "input_words": 6998,
+        "input_sha256": "43ca0d567f8da272064619f80c3432be4c753cc5e79d73555b59f25f14fd8ea3",
+        "manifest_sha256": "8c1b76e161c11c2b18af7340999c23bff3920932db0fee579a5f6c9952ba49e3",
+        "public_input_hash": "0x6586016c0cd07170cd3f3d7d4a8959685bd97e202414ff67be4aa6eb955101e8",
+        "state_before": "0x3f9cb3684c4462632a35e7750830d90d361fa5c61a01ce6359999a64b12f3dee",
+        "state_after": "0x1d63b769d5422f37dae1168d8bf574a6e45204afc7e31ca85abf7ed7d9ff47c9",
+        "reported_cycles": 982351
+      },
+      {
+        "batch_id": 6,
+        "first_block": 6,
+        "last_block": 6,
+        "input_words": 6998,
+        "input_sha256": "23bc49fc5e95b8d7166f8987f9832c7a4fa1955ddd8ce15c5e02dfea1d7a04d9",
+        "manifest_sha256": "6bc4e4e4ad3965f7800103997c8b42a50873b19dd67841edde3c203375f73673",
+        "public_input_hash": "0xcdc998ab6d06ef3f44c011fec89b6631f4d08a76981fdd439909cb2d1348e8ac",
+        "state_before": "0x1d63b769d5422f37dae1168d8bf574a6e45204afc7e31ca85abf7ed7d9ff47c9",
+        "state_after": "0xccef22397b21c5d5dc7fa88d20e703ce171d4ca884c7bb2243d3decf4bf1ff1a",
+        "reported_cycles": 982351
+      },
+      {
+        "batch_id": 7,
+        "first_block": 7,
+        "last_block": 7,
+        "input_words": 6998,
+        "input_sha256": "6f08b8c8ea19132f7311e174759ae25742a7375f3f62980944914a28a380a564",
+        "manifest_sha256": "6f9646bfb7a77644edabb11c1e90e3b7f9a8cbfa6c37d53a4db8f12d4ec4ab44",
+        "public_input_hash": "0xa1dd68c1ec3bda72ca1d64dad66ed55b1f72de0488546ee9991a6bdaa1fccb9b",
+        "state_before": "0xccef22397b21c5d5dc7fa88d20e703ce171d4ca884c7bb2243d3decf4bf1ff1a",
+        "state_after": "0x0929f9f3891c360f1f48711db87d4d78c2658092039787bc4b56f0e95a6c94e6",
+        "reported_cycles": 982351
+      },
+      {
+        "batch_id": 8,
+        "first_block": 8,
+        "last_block": 8,
+        "input_words": 6998,
+        "input_sha256": "1f99c0946bee5705dd43cf022b9bf50c45e9578895592e83deb6a095a75a5dcd",
+        "manifest_sha256": "e44eddb7a9c72ad5792de68d7b5802d97c72b3bc859ac4a8e458b7bac92be983",
+        "public_input_hash": "0x19e15c71258a2e1caafb65d4593061964834d707561d8ce6bd51c9a3f41cb3e6",
+        "state_before": "0x0929f9f3891c360f1f48711db87d4d78c2658092039787bc4b56f0e95a6c94e6",
+        "state_after": "0x4eec76de0793f969273a900d2f29e262b9ac313bfd31104071da642344df9e00",
+        "reported_cycles": 982351
+      }
+    ]
+  }
+}
