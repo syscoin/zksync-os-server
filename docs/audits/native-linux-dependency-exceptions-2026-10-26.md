@@ -539,3 +539,7 @@ add no advisory exceptions. Preserve the existing crypto-bigint and libz-sys
 dispositions and refresh the source, lock and metadata graph fingerprints
 after checking the resolved feature graph. The generated release head must
 receive its own guarded audit after the reviewed dependency fix lands on main.
+
+## Actix HTTP parser dependency on November 17
+
+The full lockfile audit flagged three HTTP/1 advisories in actix-http 3.20.3. The lock now selects 3.21.3, whose fixes cover chunked trailer parsing, quoted chunk extensions and keep-alive request timeouts. Sentry's optional Actix integration accounts for this dependency in Cargo metadata. The Linux server's default compiled dependency tree has no Actix HTTP node. The update changes only the actix-http version and registry checksum. The two existing native advisory dispositions maintain their previous scope. [Trailer parsing](https://rustsec.org/advisories/RUSTSEC-2026-0552.html) · [Chunk extensions](https://rustsec.org/advisories/RUSTSEC-2026-0553.html) · [Keep-alive timeout](https://rustsec.org/advisories/RUSTSEC-2026-0554.html)
