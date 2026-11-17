@@ -87,6 +87,16 @@ The released worker's sampled card occupancy peaked at 22,594 MiB during the ran
 
 The same V2 process repeated the two-batch range in 69.551 s. The smaller PLONK domain cut final-stage proving time by 86.5%. RISC wrapping now accounts for most of the warm range latency. In these samples the whole-worker peak board occupancy persisted. The server's normal byte decoder and app-bound verifier accepted both exact V2 packets against their independently derived batch statements, and rejected incorrect public input and trailing data. The native CLI boundary tests also passed. The fresh range SNARK was accepted by both normal compiled settlement contracts. [EVM receipt](syscoin-v32-airbender-v2-router-replay-2026-11-17.json)
 
+### Range scaling on the GPU
+
+For two independently verified FRI leaves, the GPU performed one merge pass in 1.162 s and one shrink pass in 0.676 s. Eight contiguous leaves required 3.353 s for the merge and 1.823, 1.119, 0.873 and 0.677 s for four shrink passes. The measured GPU proving passes totaled 1.838 s and 7.845 s respectively. Both workloads reached 20.6171875 GiB of live device allocations. Both sampled board high-water marks were 22,558 MiB. Independent native verification of the eight-batch output matched the exact ordered statement `0x0355137bde7b49d57aebbb5d36eed84834413ce60acbdd1e20e970923eba765c` and the registered recursion chain.
+
+The normal eight-range worker submitted a 44-word SNARK in 78.459 s from lease to submission. The first FRI leaf took 7.428 s and each later leaf took 4.912–4.945 s. The samples contain one native system transaction followed by seven minimal executed blocks. Both the generated PLONK contract and the dual router accepted the ordered public input. In a separate rehearsal, the stock Forge L1 and CTM deployers created the production-mode router and registered its slot-8 PLONK contract. Both deployed instances accepted the normal two-batch proof. [Eight-batch EVM receipt](syscoin-v32-airbender-v2-eight-batch-router-replay-2026-11-17.json) · [CTM deployment and replay](syscoin-v32-airbender-v2-ctm-router-replay-2026-11-17.json)
+
+### 8 GiB worker limit
+
+With 8,588,361,728 device bytes available on the RTX 5090, the V2 SNARK worker reserved 7,980,711,936 bytes and failed in RISC setup before accepting a job. One request required 35,713 blocks of 262,144 bytes, or 8.719 GiB, before other live buffers. CPU merging alone leaves this independent wrapper allocation in place. The experiment limited available memory on the same card. An actual 8 GiB model could have different timings.
+
 ### Streaming FRI verifier queries
 
 The experimental verifier authenticates each opening against its committed Merkle caps, compares its index to the Fiat–Shamir transcript and completes its FRI folds before reusing the query storage. The Security100 query count and transcript inputs are the same. In RV32 replays, each workload consumed every oracle word and matched all 16 native result registers. [Streaming implementation](https://github.com/syscoin/zksync-airbender/pull/6)
@@ -97,4 +107,4 @@ The experimental verifier authenticates each opening against its committed Merkl
 | Unified single-batch verifier | 246,961 → 51,488 | 11,957,098 → 11,942,196 |
 | Unified two-batch combiner | 247,143 → 51,670 | 23,917,963 → 23,888,159 |
 
-The two-batch runs performed 697,648 Blake delegations and consumed 1,110,338 words in both implementations. CPU simulation took 163–170 ms with the default and 157–167 ms with streaming. These runs measure guest RAM and instructions. Device allocator high-water marks and end-to-end proof latency require a separate GPU comparison. The default contract proposal binds the non-streaming verifier. Adopting the streaming verifier changes the program commitment and requires a separately generated key.
+The two-batch runs performed 697,648 Blake delegations and consumed 1,110,338 words in both implementations. CPU simulation took 163–170 ms with the default and 157–167 ms with streaming. These runs measure guest RAM and instructions. Device allocator high-water marks and end-to-end proof latency require a separate GPU comparison. Both RV32 binaries rejected the same truncated 555,167-word input at the missing final read. The default contract proposal binds the non-streaming verifier. Adopting the streaming verifier changes the program commitment and requires a separately generated key.
