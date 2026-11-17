@@ -217,7 +217,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore = "opt-in native witness smoke export requires externally hash-bound final genesis and guest"]
 async fn dump_v8_simplest_batch_prover_input() -> anyhow::Result<()> {
-    export_native_batches(1).await
+    export_native_batches(WitnessWorkload::Smoke(1)).await
 }
 
 /// Two distinct contiguous batches for real aggregation: setup, then an empty block.
@@ -225,16 +225,60 @@ async fn dump_v8_simplest_batch_prover_input() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore = "opt-in sequential witness export requires externally hash-bound final genesis and guest"]
 async fn dump_v8_two_batch_prover_inputs() -> anyhow::Result<()> {
-    export_native_batches(2).await
+    export_native_batches(WitnessWorkload::Smoke(2)).await
 }
 
 #[tokio::test]
 #[ignore = "opt-in witness export for range-merge performance measurements"]
 async fn dump_v8_eight_batch_prover_inputs() -> anyhow::Result<()> {
-    export_native_batches(8).await
+    export_native_batches(WitnessWorkload::Smoke(8)).await
 }
 
-async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
+const SIGNED_TRANSFER_COUNT: u64 = 16;
+
+enum WitnessWorkload {
+    Smoke(u64),
+    SignedTransfers,
+}
+
+#[tokio::test]
+#[ignore = "opt-in native proving benchmark with a funded offline signer"]
+async fn dump_v8_transfer_batch_prover_inputs() -> anyhow::Result<()> {
+    export_native_batches(WitnessWorkload::SignedTransfers).await
+}
+
+fn signed_transfers_for_benchmark(chain_id: u64) -> anyhow::Result<Vec<ZkTransaction>> {
+    use alloy::consensus::{SignableTransaction, TxEip1559};
+    use alloy::primitives::TxKind;
+    use alloy::signers::SignerSync;
+    use zksync_os_types::{L2Envelope, ZkEnvelope};
+
+    // A public test-only secret makes the signed workload reproducible from the same genesis.
+    let signer = PrivateKeySigner::from_slice(&[1; 32])?;
+    let mut txs = Vec::with_capacity(SIGNED_TRANSFER_COUNT as usize);
+    for nonce in 0..SIGNED_TRANSFER_COUNT {
+        let tx = TxEip1559 {
+            chain_id,
+            nonce,
+            gas_limit: 100_000,
+            max_fee_per_gas: u128::from(INITIAL_BASE_FEE),
+            to: TxKind::Call(Address::repeat_byte(0x40 + nonce as u8)),
+            value: U256::from(nonce + 1),
+            ..Default::default()
+        };
+        let signature = signer.sign_hash_sync(&tx.signature_hash())?;
+        txs.push(
+            ZkEnvelope::L2(L2Envelope::Eip1559(tx.into_signed(signature))).try_into_recovered()?,
+        );
+    }
+    Ok(txs)
+}
+
+async fn export_native_batches(workload: WitnessWorkload) -> anyhow::Result<()> {
+    let (batch_count, signed_transfers) = match workload {
+        WitnessWorkload::Smoke(count) => (count, false),
+        WitnessWorkload::SignedTransfers => (2, true),
+    };
     ensure!(batch_count > 0, "native batch range must be nonempty");
     let config_path = PathBuf::from(
         std::env::var("V8_PROVER_INPUT_CONFIG")
@@ -275,10 +319,23 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
                 config.sl_chain_id,
                 u64::MAX,
             ))]
+        } else if signed_transfers && batch_number == 2 {
+            signed_transfers_for_benchmark(config.chain_id)?
         } else {
             vec![]
         };
         let block = executed_tree_block_from_record(&tree, &read_state, &genesis_state, record);
+        if signed_transfers {
+            ensure!(
+                block.output.tx_results.len() == block.record.transactions.len()
+                    && block
+                        .output
+                        .tx_results
+                        .iter()
+                        .all(|result| result.as_ref().is_ok_and(|tx| tx.is_success())),
+                "transfer workload did not execute every fixture transaction successfully"
+            );
+        }
         let native = generate_batch_run(
             &[NativeBatchBlock {
                 replay_record: &block.record,
@@ -320,7 +377,7 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
             .chunks_exact(4)
             .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
             .collect();
-        let manifest = json!({
+        let mut manifest = json!({
             "schema_version": 1,
             "app_bin_sha256": config.app_bin_sha256,
             "app_text_sha256": config.app_text_sha256,
@@ -330,7 +387,9 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
             "expected_public_input_hash": native.batch_public_input_hash,
             "expected_security100_program_commitment": config.expected_security100_program_commitment,
             "context": {
-                "purpose": if batch_count == 1 {
+                "purpose": if signed_transfers {
+                    "settlement-ID initialization, then signed EIP-1559 transfers from a prefunded offline genesis account"
+                } else if batch_count == 1 {
                     "single-SetSLChainId genuine proof smoke; not representative throughput"
                 } else if batch_count == 2 {
                     "two contiguous real native batches (SetSLChainId then empty block); aggregation smoke, not representative throughput"
@@ -353,7 +412,7 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
                 "compact_da_commit_target": target,
                 "first_block_number": batch_number,
                 "last_block_number": batch_number,
-                "system_transaction_count": block.record.transactions.len(),
+                "system_transaction_count": block.record.transactions.iter().filter(|tx| tx.as_system_tx_type().is_some()).count(),
                 "state_before": native.previous_state_commitment,
                 "state_after": native.new_state_commitment,
                 "chain_config_hash": zksync_os_native_pig::chain_config_hash(config.chain_id)?,
@@ -374,6 +433,16 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
             fs::create_dir(&directory)?;
             directory
         };
+        if signed_transfers {
+            let transfers = block
+                .record
+                .transactions
+                .iter()
+                .filter(|tx| matches!(tx.envelope(), zksync_os_types::ZkEnvelope::L2(_)))
+                .count();
+            manifest["context"]["signed_eip1559_transfer_count"] = json!(transfers);
+            manifest["context"]["gas_used"] = json!(block.output.header.gas_used);
+        }
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         write_new(&output_dir.join("v8_simplest_prover_input.le.bin"), &bytes)?;
         write_new(
@@ -411,7 +480,9 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
         let manifest = json!({
             "schema_version": 1,
             "release_attestation": false,
-            "purpose": if batch_count == 2 {
+            "purpose": if signed_transfers {
+                "native proof benchmark with 16 signed EIP-1559 transfers from an offline prefunded account"
+            } else if batch_count == 2 {
                 "two contiguous native batches for real FRI aggregation smoke"
             } else {
                 "contiguous native batches for measuring range merge cost"
