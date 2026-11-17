@@ -255,8 +255,8 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
-        self.assertEqual(module.SOURCE, "b7df93e478b31479c95928b6fd2cc8a8aeed8c87")
-        self.assertEqual(module.CANDIDATE, "35e4dad23e0844780fe2b66f9691e7f7df338a04")
+        self.assertEqual(module.SOURCE, "eba365c69d357027165f373642bd1979cf5e0c4b")
+        self.assertEqual(module.CANDIDATE, "11d41dae8b711eb293fbed9cbf3a125502e253a4")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
                          "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153")
@@ -477,8 +477,8 @@ class BundleAndLauncherTests(unittest.TestCase):
             ROOT / "scripts/apply-era-contracts-syscoin-patch.sh",
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
-        self.assertEqual(result["source_tree"], "b7df93e478b31479c95928b6fd2cc8a8aeed8c87")
-        self.assertEqual(result["candidate_tree"], "35e4dad23e0844780fe2b66f9691e7f7df338a04")
+        self.assertEqual(result["source_tree"], "eba365c69d357027165f373642bd1979cf5e0c4b")
+        self.assertEqual(result["candidate_tree"], "11d41dae8b711eb293fbed9cbf3a125502e253a4")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])

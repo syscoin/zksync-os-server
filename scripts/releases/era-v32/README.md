@@ -2,7 +2,7 @@
 
 ## V8 reserved proof word
 
-The current release source tree is `b7df93e478b31479c95928b6fd2cc8a8aeed8c87` and the generated tree is `35e4dad23e0844780fe2b66f9691e7f7df338a04`. The production dual verifier requires the carried-hash header word to be zero. Its PLONK verifier uses the existing V8 guest key. The Linux EVM and EraVM builds reproduced 278 inventory rows, with three changes covering the dual verifier, testnet subclass and embedding Gateway deployer. All 39 router tests passed. An isolated Prague EVM accepted the retained two-batch V8 proof and rejected a nonzero reserved word with `NonZeroCarriedHash()`. Live Gateway and root settlement remain pending. [Contract PR](https://github.com/syscoin/era-contracts/pull/20)
+The current release source tree is `eba365c69d357027165f373642bd1979cf5e0c4b` and the generated tree is `11d41dae8b711eb293fbed9cbf3a125502e253a4`. The production dual verifier requires the carried-hash header word to be zero. Its PLONK verifier uses the existing V8 guest key. The Linux EVM and EraVM builds reproduced 278 inventory rows, with three changes covering the dual verifier, testnet subclass and embedding Gateway deployer. All 40 router tests passed, including both single-batch reserved-word cases. An isolated Prague EVM accepted the retained two-batch V8 proof and rejected a nonzero reserved word with `NonZeroCarriedHash()`. Live Gateway and root settlement remain pending. [Contract PR](https://github.com/syscoin/era-contracts/pull/20)
 
 ## Canonical query-bit candidate: offline proof and EVM qualification
 

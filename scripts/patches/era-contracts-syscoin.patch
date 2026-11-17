@@ -5916,7 +5916,7 @@ index 0000000000000000000000000000000000000000..e29f756454421fc073a29f9bccc327e7
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-index 23d9ea906769199415fdba37714e5f43b22ee1f2..4ac87961c974fd62d074ce13fe314c5dfa34712f 100644
+index 23d9ea906769199415fdba37714e5f43b22ee1f2..573e54ccbe928371ad25b9a0ece35d36a6a8239b 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 @@ -6 +6,2 @@ import {Test} from "forge-std/Test.sol";
@@ -6248,29 +6248,41 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..4ac87961c974fd62d074ce13fe314c5d
 -        assertEq(result, expected);
 +        vm.expectRevert(NonZeroCarriedHash.selector);
 +        verifier.verify(publicInputs, proof);
-@@ -294,15 +425 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -294,3 +425 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        // When initial hash is 0, it takes the first public input as the starting hash
 -        uint256 expected = publicInputs[0];
 -        expected = uint256(keccak256(abi.encodePacked(expected, publicInputs[1]))) >> 32;
--
--        assertEq(result, expected);
--    }
--
++        uint256 expected = uint256(keccak256(abi.encodePacked(publicInputs))) >> 32;
+@@ -301,2 +430 @@ contract ZKsyncOSDualVerifierTest is Test {
 -    function test_computeZKsyncOSHash_singleInput() public view {
 -        uint256 initialHash = 12345;
--        uint256[] memory publicInputs = new uint256[](1);
++    function testFuzz_computeZKsyncOSHash_singleInputWithZeroInitial(uint256 batchHash) public view {
+@@ -304,5 +432 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        publicInputs[0] = 100;
 -
 -        uint256 result = verifier.computeZKsyncOSHash(initialHash, publicInputs);
 -
 -        uint256 expected = uint256(keccak256(abi.encodePacked(initialHash, publicInputs[0]))) >> 32;
-+        uint256 expected = uint256(keccak256(abi.encodePacked(publicInputs))) >> 32;
-@@ -320,2 +437,2 @@ contract ZKsyncOSDualVerifierTest is Test {
++        publicInputs[0] = batchHash;
+@@ -310 +434 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        assertEq(result, expected);
++        assertEq(verifier.computeZKsyncOSHash(0, publicInputs), batchHash >> 32);
+@@ -313,2 +437,2 @@ contract ZKsyncOSDualVerifierTest is Test {
+-    function test_computeZKsyncOSHash_singleInputWithZeroInitial() public view {
+-        uint256 initialHash = 0;
++    function testFuzz_computeZKsyncOSHash_singleInputRejectsNonzeroCarry(uint256 carriedHash, uint256 batchHash) public {
++        vm.assume(carriedHash != 0);
+@@ -316 +440 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        publicInputs[0] = 100;
++        publicInputs[0] = batchHash;
+@@ -318,4 +442,2 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        uint256 result = verifier.computeZKsyncOSHash(initialHash, publicInputs);
+-
 -        // When initial is 0 and there's only one input, result is that input
 -        assertEq(result, publicInputs[0]);
-+        // Truncation is applied once even for a single-batch range.
-+        assertEq(result, publicInputs[0] >> 32);
-@@ -326,11 +443,5 @@ contract ZKsyncOSDualVerifierTest is Test {
++        vm.expectRevert(NonZeroCarriedHash.selector);
++        verifier.computeZKsyncOSHash(carriedHash, publicInputs);
+@@ -326,11 +448,5 @@ contract ZKsyncOSDualVerifierTest is Test {
 -    function testFuzz_computeZKsyncOSHash_deterministicResults(
 -        uint256 initialHash,
 -        uint256 input1,
@@ -6287,10 +6299,10 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..4ac87961c974fd62d074ce13fe314c5d
 +        publicInputs[0] = a;
 +        publicInputs[1] = b;
 +        publicInputs[2] = c;
-@@ -338 +449 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -338 +454 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        assertEq(result1, result2);
 +        assertEq(verifier.computeZKsyncOSHash(0, publicInputs), uint256(keccak256(abi.encodePacked(a, b, c))) >> 32);
-@@ -349 +460 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -349 +465 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        proof[0] = verifierType; // type in lower 8 bits, version 0
 +        proof[0] = verifierType | (8 << 8); // type in lower 8 bits, canonical version 8
 diff --git a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol b/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol

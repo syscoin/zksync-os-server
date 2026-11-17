@@ -13,8 +13,8 @@ import tempfile
 
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
-CHECKER_SHA = "cf08088fda2f9f578e97d47b2febe3023eebf46ba627363b7b448432863729cb"
-MANIFEST_SHA = "cd143f3fd559591b0f5ebed6321be694cfbdb128a68fb11ed222019b87db3cd8"
+CHECKER_SHA = "c30b829d26994942cc3721635b7997c5189c855e24f5f481e80d24523a388c52"
+MANIFEST_SHA = "756b6056519a547bd5486737fcec0b9fbdbb58dbdffc8c872fe858838e4cb8b1"
 VK = "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
