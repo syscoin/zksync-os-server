@@ -539,3 +539,7 @@ add no advisory exceptions. Preserve the existing crypto-bigint and libz-sys
 dispositions and refresh the source, lock and metadata graph fingerprints
 after checking the resolved feature graph. The generated release head must
 receive its own guarded audit after the reviewed dependency fix lands on main.
+
+## v32 router source review on November 17
+
+The reserved-word guard changes the Solidity router, its tests and the derived contract inventory. The server applicator, release checks and keygen workflow pin the resulting trees. Comparing the release to server v0.24.4 found identical Rust source, Cargo manifests, lockfile, toolchain, compiler options and native library settings. The contract materializer invokes the same build tools and refreshes their approved input identities. No new caller reaches the scoped crypto-bigint or libz-sys APIs through these changes.
