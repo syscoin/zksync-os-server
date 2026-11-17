@@ -1,0 +1,8 @@
+{
+  "upstream_commit": "69bc430549e88f9264066d14f2001707572c5d33",
+  "base_tree": "6935489bdbc7b1ed31e608677d1b2418b10691b5",
+  "source_repository": "https://github.com/syscoin/zksync-os",
+  "source_commit": "3c9bdcbc93e96198460cb8fa4da07932f6bf9310",
+  "source_tree": "ec14ec8941e28825893ddb689a10a23099617f69",
+  "patch_sha256": "ae0e5a1272ab531748f93f153f03dd857e160fdc4fbc36697b292d8570440e5a"
+}

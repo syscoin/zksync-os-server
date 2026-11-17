@@ -1,0 +1,116 @@
+diff --git a/basic_bootloader/src/bootloader/constants.rs b/basic_bootloader/src/bootloader/constants.rs
+index ee471a4fd4ae2a91e07582a2ae795dd0f73fdefd..cfbf3f246f827c0a16ff8f2a92db46b6b0aeedb0 100644
+--- a/basic_bootloader/src/bootloader/constants.rs
++++ b/basic_bootloader/src/bootloader/constants.rs
+@@ -4 +4,4 @@ use basic_system::cost_constants::{
+-use basic_system::system_functions::keccak256::keccak256_native_cost_for_rounds_u64;
++use basic_system::system_functions::keccak256::{
++    keccak256_native_cost_for_rounds_u64, keccak256_native_cost_u64,
++};
++use zk_ee::common_structs::logs_storage::L2_TO_L1_LOG_TREE_HEIGHT;
+@@ -427,8 +430,16 @@ pub const BLOCK_INTRINSIC_PUBDATA_BYTES: u64 =
+-/// Intrinsic per-block native overhead, applied to block-limit enforcement
+-/// from block start. Covers fixed pre-tx-loop system work: the EIP-2935
+-/// historical block hash write, the direct L2ChainAssetHandler prewarm, and
+-/// the rolled-back, non-zero L2AssetTracker notification that admits mandatory
+-/// L1-finalization preimages. Conservatively charge each synthetic call as one
+-/// cold AssetTracker notification.
+-pub const BLOCK_INTRINSIC_NATIVE: u64 =
+-    EIP_2935_INTRINSIC_NATIVE + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST;
++// The proving post-op reads the shared tree height, its dynamic root and the
++// settlement chain ID with local FORMAL_INFINITE resources. A slot can be new.
++const BATCH_CONTEXT_NATIVE_COST: u64 = 3
++    * (WARM_STORAGE_READ_NATIVE_COST + COLD_NEW_STORAGE_READ_NATIVE_COST)
++    + keccak256_native_cost_u64(32);
++
++// Each published log pays for its leaf and one internal hash. Padding the
++// rightmost subtree to the fixed tree height can still need H - 1 hashes.
++const LOG_TREE_FINALIZATION_NATIVE_COST: u64 =
++    (L2_TO_L1_LOG_TREE_HEIGHT as u64 - 1) * keccak256_native_cost_u64(64);
++
++/// Native work reserved before selecting transactions for the block.
++pub const BLOCK_INTRINSIC_NATIVE: u64 = EIP_2935_INTRINSIC_NATIVE
++    + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST
++    + BATCH_CONTEXT_NATIVE_COST
++    + LOG_TREE_FINALIZATION_NATIVE_COST;
+@@ -449,0 +461,23 @@ mod tests {
++    #[test]
++    fn block_native_reserve_covers_mandatory_v32_work() {
++        use super::*;
++        let max_residual = (1..=1usize << L2_TO_L1_LOG_TREE_HEIGHT)
++            .map(|leaves| {
++                let internal: usize = (1..=L2_TO_L1_LOG_TREE_HEIGHT)
++                    .map(|level| leaves.div_ceil(1usize << level))
++                    .sum();
++                internal.saturating_sub(leaves) as u64
++            })
++            .max()
++            .unwrap();
++        assert_eq!(max_residual, L2_TO_L1_LOG_TREE_HEIGHT as u64 - 1);
++        assert_eq!(
++            BLOCK_INTRINSIC_NATIVE,
++            EIP_2935_INTRINSIC_NATIVE
++                + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST
++                + 3 * (WARM_STORAGE_READ_NATIVE_COST + COLD_NEW_STORAGE_READ_NATIVE_COST)
++                + keccak256_native_cost_u64(32)
++                + max_residual * keccak256_native_cost_u64(64)
++        );
++    }
++
+diff --git a/basic_system/src/system_functions/keccak256.rs b/basic_system/src/system_functions/keccak256.rs
+index f0b231ed1a4b612ea4cf68c3a377a8306d777fe0..d841df3f15ba69ab33e503007bf7752575631418 100644
+--- a/basic_system/src/system_functions/keccak256.rs
++++ b/basic_system/src/system_functions/keccak256.rs
+@@ -31 +31 @@ impl<R: Resources> SystemFunction<R, Keccak256Errors> for Keccak256Impl {
+-pub fn keccak256_native_cost_u64(len: usize) -> u64 {
++pub const fn keccak256_native_cost_u64(len: usize) -> u64 {
+@@ -33 +33 @@ pub fn keccak256_native_cost_u64(len: usize) -> u64 {
+-    let rounds = core::cmp::max(1, len.saturating_add(1).div_ceil(KECCAK256_CHUNK_SIZE));
++    let rounds = len.saturating_add(1).div_ceil(KECCAK256_CHUNK_SIZE);
+diff --git a/evm_interpreter/src/utils.rs b/evm_interpreter/src/utils.rs
+index 00f919127dd4ad736206d0b81d24b7106ccfd387..268508c0534f5e49f8e71264c164477370b9477c 100644
+--- a/evm_interpreter/src/utils.rs
++++ b/evm_interpreter/src/utils.rs
+@@ -24 +24,4 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
+-        src.try_to_usize().ok_or(error_to_set)
++        // Heap growth and its native charge must follow the proving guest's address width.
++        src.try_to_u32()
++            .map(|value| value as usize)
++            .ok_or(error_to_set)
+@@ -31,4 +34 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
+-    /// narrowing done by [`Self::cast_to_usize`]. A `usize` narrowing accepts
+-    /// different lengths on the 64-bit forward host and on the 32-bit proving
+-    /// target. A charge after the narrowing therefore makes the two
+-    /// executions spend different resources for the same input.
++    /// narrowing to the guest address width done by [`Self::cast_to_usize`].
+diff --git a/supporting_crates/u256/src/conversions.rs b/supporting_crates/u256/src/conversions.rs
+index 1895f72b21cc80e44ca94e48a3a827082f6e26ad..431c30f9be4346670f676b1209682a12f23c33f7 100644
+--- a/supporting_crates/u256/src/conversions.rs
++++ b/supporting_crates/u256/src/conversions.rs
+@@ -43,0 +44,6 @@ macro_rules! impl_conversions {
++            #[inline(always)]
++            pub fn try_to_u32(&self) -> Option<u32> {
++                self.try_to_u64()
++                    .and_then(|value| u32::try_from(value).ok())
++            }
++
+@@ -81,0 +88,19 @@ pub(crate) use impl_conversions;
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    fn u32_conversion_matches_the_guest_address_width() {
++        for (limbs, expected) in [
++            ([0, 0, 0, 0], Some(0)),
++            ([u32::MAX as u64, 0, 0, 0], Some(u32::MAX)),
++            ([1u64 << 32, 0, 0, 0], None),
++            ([0, 1, 0, 0], None),
++        ] {
++            assert_eq!(crate::naive::U256::from_limbs(limbs).try_to_u32(), expected);
++            assert_eq!(
++                crate::risc_v::U256::from_limbs(limbs).try_to_u32(),
++                expected
++            );
++        }
++    }
++}
