@@ -27,6 +27,10 @@ This record follows the pre-launch testnet candidate. The comparison release is 
 | Reuse constrained FRI openings and folding arithmetic. Buffer fresh OS randomness at both final PLONK padding call sites. | With the same RISC VK and canonical-bit constraint, occupied Security100 compression rows fell from **53,789 to 41,640** (22.59%). Both circuits pad to 65,536 rows. Native-versus-circuit arithmetic checks and five randomness-buffer tests passed. | [Wrapper implementation and synthesis test](https://github.com/syscoin/zksync-protocol/pull/1) |
 | Use public V2 recursion setup snapshots and preserve release identity checks, warm-worker scheduling, and host cache management. Adopt the public final PLONK domain of 2²². | The earlier Syscoin domain was 2²⁵. The GPU combiner still has its own device allocator, so the PLONK change alone cannot establish an 8 GB worker. | [Worker port](https://github.com/syscoin/zksync-airbender-prover/pull/27) · [Wrapper port](https://github.com/syscoin/zksync-protocol/pull/1) |
 
+The worker build now binds its Cargo target and release receipts to the full source content. Reusing an older target had returned a stale unregistered binary for the updated registry source. Startup rejected it before a lease. The regression covers older file modification times, changes to ordinary Rust files and build-script inputs, and unchanged-input cache reuse. [Worker fix](https://github.com/syscoin/zksync-airbender-prover/commit/30eebe3) · [Regression and artifact checks](https://github.com/syscoin/zksync-airbender-prover/commit/0985777d073c67b26e8bd28e64e864e70dc2cde9)
+
+The Linux lockfile scan also identified three November 17 HTTP parser advisories in Sentry's optional Actix integration. The patched version is 3.21.3. Both scoped cargo-audit and cargo-deny scans passed on the updated server port and the release branch. [Dependency PR](https://github.com/syscoin/zksync-os-server/pull/383)
+
 ## OS changes requiring a different guest
 
 The candidate OS patch validates EVM memory operands at the same 32-bit width on the host and RV32. It also adds 808,664 native units to the fixed v32 block reserve for three storage reads, one derived key and finalization of the L2-to-L1 log tree. The server holds this patch separately from the v32 guest used for the proving comparison. Its replacement guest, commitment and settlement VK must be derived together before activation. [OS source](https://github.com/syscoin/zksync-os/pull/1) · [Server-owned candidate patch](https://github.com/syscoin/zksync-os-server/pull/382)
@@ -56,6 +60,26 @@ The comparison uses the released worker and the candidate on the same RTX 5090 w
 | Device pool reservation reported at SNARK setup | 33,139,720,192 bytes |
 
 The released worker's sampled card occupancy peaked at 22,594 MiB during the range merge, 32,140 MiB during RISC wrapping and again during compression, and 30,846 MiB during the final PLONK phase. The V2 GPU combiner requests 21,820 one-MiB allocator blocks. Its source records an upstream Security100 high-water mark of 21,564 blocks. The remaining 256 blocks provide fragmentation headroom. This configuration requires more than an 8 GiB GPU for the merge alone. The sampled occupancy and allocator suballocation peaks answer different questions. [Combiner configuration](https://github.com/syscoin/zksync-airbender/blob/d8965007df1bd7f11a5279a10fe36bbfebaaac58/tools/cli/src/prover_utils.rs#L872-L882)
+
+### Normal V2 worker on the same RTX 5090
+
+| Security100 measurement | Released v0.9.1 | Public V2 port |
+| --- | ---: | ---: |
+| Cold FRI startup to first lease | 104.351 s | 51.373 s |
+| FRI first batch, lease to submit | 7.647 s | 7.313 s |
+| FRI second batch, lease to submit | 4.035 s | 4.835 s |
+| FRI process peak RSS | 46.18 GiB | 46.28 GiB |
+| FRI board peak | 29,432 MiB | 29,434 MiB |
+| Cold SNARK startup to lease | 231.862 s | 86.665 s |
+| Two-batch range, lease to submission | 164.063 s | 71.660 s |
+| RISC wrapper GPU proving | 52.514 s | 50.785 s |
+| Compression GPU proving | 1.252 s | 1.402 s |
+| Final PLONK GPU proving | 99.406 s | 13.405 s |
+| Final PLONK board peak | 30,846 MiB | 5,296 MiB |
+| Full SNARK worker process peak RSS | 83.50 GiB | 59.70 GiB |
+| Full SNARK worker board peak | 32,144 MiB | 32,144 MiB |
+
+The same V2 process repeated the two-batch range in 69.551 s. The smaller PLONK domain cut final-stage proving time by 86.5%. RISC wrapping now accounts for most of the warm range latency. In these samples the whole-worker peak board occupancy persisted. The server's normal byte decoder and app-bound verifier accepted both exact V2 packets against their independently derived batch statements, and rejected incorrect public input and trailing data. The native CLI boundary tests also passed. The fresh range SNARK was accepted by both normal compiled settlement contracts. [EVM receipt](syscoin-v32-airbender-v2-router-replay-2026-11-17.json)
 
 ### Streaming FRI verifier queries
 
