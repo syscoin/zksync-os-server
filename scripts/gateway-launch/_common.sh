@@ -147,6 +147,24 @@ gl_validate_l1_network_pair() {
   export L1_NETWORK
 }
 
+# The settlement L1 ID does not enter the signature of an ordinary L2 transaction.
+gl_assert_mainnet_signing_domains() {
+  [ "${L1_NETWORK:-}" = "mainnet" ] || return 0
+  python3 - "$@" <<'PYTHON'
+import re
+import sys
+
+used = {57, 5700, 57001, 57057}
+for name, value in zip(("GATEWAY_CHAIN_ID", "EDGE_CHAIN_ID"), sys.argv[1:]):
+    if not re.fullmatch(r"[0-9]+", value) or not 0 < int(value) < 2**32:
+        raise SystemExit(f"mainnet deployment requires an explicit positive uint32 {name}")
+    domain = int(value)
+    if domain in used:
+        raise SystemExit(f"{name}={domain} collides with a Syscoin signing domain")
+    used.add(domain)
+PYTHON
+}
+
 # SYSCOIN: Canonical deployments never use the upstream dummy MessageRoot, and
 # test-verifier selection is durable on-chain state. Normalize both before the
 # checkpoint fingerprint or any deployment command can consume them.

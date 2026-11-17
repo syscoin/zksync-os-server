@@ -534,7 +534,7 @@ class BundleAndLauncherTests(unittest.TestCase):
 
     def standalone_dispatch(self, script, mode="gpu", mock="false", gateway=None,
                             edge=None, network="localhost", chain_id="auto",
-                            normalize_first=False, args=()):
+                            normalize_first=False, args=(), gateway_id=None, edge_id=None):
         launcher_dir = ROOT / "scripts/gateway-launch"
         source = (launcher_dir / script).read_text()
         common_source = 'source "${SCRIPT_DIR}/_common.sh"\n'
@@ -547,7 +547,7 @@ class BundleAndLauncherTests(unittest.TestCase):
             gateway_dir = Path(directory).resolve()
             config = gateway_dir / "chains/zksys/ZkStack.yaml"
             put(config, json.dumps({
-                "name": "zksys", "chain_id": 57057,
+                "name": "zksys", "chain_id": int(edge_id) if edge_id and edge_id.isdecimal() else 57057,
                 "prover_version": "NoProofs" if (edge or mode).lower() == "no-proofs" else "Gpu",
                 "l1_batch_commit_data_generator_mode": "Rollup", "vm_option": "ZKSyncOsVM",
                 "evm_emulator": False,
@@ -570,7 +570,8 @@ class BundleAndLauncherTests(unittest.TestCase):
                        ZKSYS_ISSUER_START_TIME="10000", PYTHONDONTWRITEBYTECODE="1",
                        PYTHONPATH=str(gateway_dir))
             for name, value in (("GATEWAY_PROVER_MODE", gateway), ("EDGE_PROVER_MODE", edge),
-                                ("L1_NETWORK", network)):
+                                ("L1_NETWORK", network), ("GATEWAY_CHAIN_ID", gateway_id),
+                                ("EDGE_CHAIN_ID", edge_id)):
                 if value is not None:
                     env[name] = value
             if chain_id == "auto":
@@ -589,7 +590,7 @@ gl_build_zkstack_cli_release() { printf 'BUILD\n'; }
 gl_acquire_gateway_launch_lock() { printf 'LOCK\n'; }
 gl_non_l1_cast() {
   [ "$*" = 'chain-id --rpc-url http://edge.invalid' ] || return 90
-  printf '57057\n'
+  printf '%s\n' "${EDGE_CHAIN_ID:-57057}"
 }
 bash() {
   case "${1:-}" in
@@ -698,10 +699,24 @@ python3() {
                     result = self.standalone_dispatch(script, network=network, chain_id=chain_id)
                     self.assert_no_source_dispatch(result)
 
+    def test_mainnet_creation_rejects_existing_signing_domains_before_source_setup(self):
+        for script in ("gateway-ecosystem-create.sh", "gateway-chain-init.sh",
+                       "edge-chain-create-init.sh"):
+            for gateway_id in (None, "57", "5700", "57001", "057057", "0", "4294967296", "0xdead"):
+                with self.subTest(script=script, gateway_id=gateway_id):
+                    self.assert_no_source_dispatch(self.standalone_dispatch(
+                        script, network="mainnet", gateway_id=gateway_id, edge_id="70002"))
+        for edge_id in (None, "057001", "57057", "070001", "0"):
+            with self.subTest(edge_id=edge_id):
+                self.assert_no_source_dispatch(self.standalone_dispatch(
+                    "edge-chain-create-init.sh", network="mainnet",
+                    gateway_id="70001", edge_id=edge_id))
+
     def test_standalone_mainnet_real_route_and_mock_guards_remain_intact(self):
         for script in self.STANDALONE_ENTRYPOINTS:
             with self.subTest(script=script, route="real"):
-                real = self.standalone_dispatch(script, "GPU", "FALSE", network="MaInNeT")
+                real = self.standalone_dispatch(script, "GPU", "FALSE", network="MaInNeT",
+                                                gateway_id="70001", edge_id="70002")
                 self.assert_dispatch_route(real, script, network="mainnet")
             for mock in ("TRUE", "FALSE"):
                 with self.subTest(script=script, mock=mock):

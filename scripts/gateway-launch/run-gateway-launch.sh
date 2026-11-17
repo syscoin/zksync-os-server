@@ -159,6 +159,7 @@ esac
 gl_reject_no_proofs_on_mainnet
 gl_validate_l1_signer_policy
 gl_normalize_canonical_deployment_inputs
+gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${EDGE_CHAIN_ID:-}"
 
 case "${L1_RPC_URL}" in
 http://* | https://*) ;;
