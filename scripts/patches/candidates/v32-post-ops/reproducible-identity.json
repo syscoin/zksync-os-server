@@ -1,0 +1,139 @@
+{
+  "schema": "syscoin-v32-reproducible-testnet-guest-v1",
+  "guest": {
+    "source_commit": "3c9bdcbc93e96198460cb8fa4da07932f6bf9310",
+    "source_tree": "ec14ec8941e28825893ddb689a10a23099617f69",
+    "target": "riscv32im-risc0-zkvm-elf",
+    "features": [
+      "proving",
+      "production",
+      "multiblock-batch"
+    ],
+    "profile": "release",
+    "rust_toolchain": "nightly-2026-02-10",
+    "platform_cli_commit": "72cce091dbaa13a9ce1f4a8df2bd90baede03cfe",
+    "reproducible_build_command": "cargo airbender build --app-name multiblock_batch --release --reproducible --workspace-root .. -- --features proving,production,multiblock-batch -j 2",
+    "container_image_id": "sha256:6923f84aa5d3e737118bf821c47fbcd8af0f373dbc39f90f7670b100b2567842",
+    "guest_cargo_lock_sha256": "d6863d99a9e876ef55b7abf69f520567cab51668a91374c96c3ce5891a140610",
+    "first_workspace_cargo_lock_sha256": "049905f6d422a59083fa021c30d41bbd8312f72880993edf2939895cfd06cdb9",
+    "second_workspace_cargo_lock_sha256": "3c8f598d8752d41603b640865854647e25da7d34bafbdd3c8f13c430ca456c91",
+    "clean_container_builds": 2,
+    "bin_sha256": "9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d",
+    "text_sha256": "4648aea720d7acb9317d90047b2640f85baacf15bfdfe340c21c03dc3984f932",
+    "elf_sha256": "91942d6668c880ce1264f7e8a14844370d8b855862394301f22d60258b5fdbff"
+  },
+  "recursion": {
+    "native_derivation_commit": "5cff603b014108adf172ad933add11edb5f54ffb",
+    "protocol_candidate_airbender_commit": "5a4928f651bb627ac5adf334fc6640bb6db5d79a",
+    "security_bits": 100,
+    "profile": "default",
+    "native_full_setup_executable_sha256": "363cdc0c5f09f6313153199fcdb686b44be889d09997a4efbb073c0e1d9022b9",
+    "native_cargo_lock_sha256": "6495ac0b774bf3af1a2e1f44006a33eee77a6449b91300b95eb130b5809fd9c8",
+    "asset_sha256": {
+      "tools/verifier/recursion_in_unrolled_layer_security_100_bits.bin": "1e34e53a71d073d8b273fa8114dc6faaeaf9a76c2aec06643563a69cc7dd8a43",
+      "tools/verifier/recursion_in_unrolled_layer_security_100_bits.text": "4e68c57b18d194b5fdedf3ae2d1d2dab6f3da47160c964f02e9793077dd66ed8",
+      "tools/verifier/recursion_in_unrolled_layer_security_100_bits.setup.json": "41cc3eaf365bcc1f814bae2559d7a58f9ae88ed9c137b9c5d5c248c81609eb9d",
+      "tools/verifier/recursion_in_unified_layer_security_100_bits.bin": "03cc1cb4bfd70fe55cb1014bfcb6a7e587c154f7144477c801a99f4466f09c2e",
+      "tools/verifier/recursion_in_unified_layer_security_100_bits.text": "c9ef9dd7c618f0e4e24e39be5d888440029b0985214eb47ed569a6c21c6366cd",
+      "tools/verifier/recursion_in_unified_layer_security_100_bits.setup.json": "ea2a9c105811c992386992f20a4b8266c790f7935622a71b8d70c81c9021d08e"
+    },
+    "app_end_params": [
+      839576545,
+      3543917221,
+      2899651412,
+      806767598,
+      3089479141,
+      4060592819,
+      839382617,
+      2072453320
+    ],
+    "base_chain": [
+      2914759842,
+      1899467952,
+      1944497128,
+      2562991871,
+      1719452737,
+      3569220438,
+      748773170,
+      1790974896
+    ],
+    "unrolled_setup_end_params": [
+      1757619238,
+      3867707985,
+      2589696740,
+      1147332593,
+      2464853468,
+      2051242771,
+      2798820451,
+      3200077023
+    ],
+    "unrolled_chain": [
+      4275528380,
+      1104877345,
+      803701673,
+      3297802092,
+      714874844,
+      3580318949,
+      530856081,
+      1776175505
+    ],
+    "unified_setup_end_params": [
+      127830082,
+      234200099,
+      3482646709,
+      3809141483,
+      2686257166,
+      629858516,
+      3373154251,
+      3606817127
+    ],
+    "unified_chain": [
+      3210469728,
+      3427495935,
+      857477333,
+      2439585292,
+      1600315163,
+      3763909344,
+      4003237832,
+      3361999974
+    ],
+    "unified_chain_words_hex": "bf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66"
+  },
+  "witness_replay": {
+    "fixture_chain_id": 57057,
+    "protocol_version": "v32.0",
+    "execution_version": 7,
+    "sequence_sha256": "ad8e34b76c55db8a6d0e0f7801f94a899b77345a7ca6e4f0c6af61e7470e9449",
+    "source_statements": {
+      "path": "identity.json",
+      "json_pointer": "/witness_replay/batches",
+      "sha256": "9a4f52ca9ea6e0967ca7affb550dddd9f56a63fe2f32f5ec96b3cbd4c7c4dec8",
+      "fields": [
+        "batch_id",
+        "first_block",
+        "last_block",
+        "input_words",
+        "input_sha256",
+        "manifest_sha256",
+        "public_input_hash",
+        "state_before",
+        "state_after"
+      ]
+    },
+    "first_batch": 1,
+    "last_batch": 8,
+    "matching_statements_per_runner": 8,
+    "platform_runner_sha256": "699618b46e29fce4828e21f1b3ed6fd365a673c29f8f21c883fa81fb56dd3e95",
+    "airbender_runner_sha256": "75107f353132792aaa3ad7e64b7411625fa2f4e2cfa617553800e132031cda34",
+    "platform_reported_cycles": [
+      1355893,
+      980910,
+      980910,
+      980910,
+      980910,
+      980910,
+      980910,
+      980910
+    ]
+  }
+}
