@@ -13,8 +13,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 FORK = "https://github.com/syscoin/zksync-airbender"
-COMMIT = "5cff603b014108adf172ad933add11edb5f54ffb"
-TREE = "7a79407297344618c4568b36393259d5984981ba"
+COMMIT = "5a4928f651bb627ac5adf334fc6640bb6db5d79a"
+TREE = "a6835b7eed85d9361c9e1aceb51a7988cbda09a8"
 SOURCE = f"git+{FORK}?rev={COMMIT}#{COMMIT}"
 LEGACY = (
     "git+https://github.com/matter-labs/zksync-airbender"

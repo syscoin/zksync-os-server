@@ -14,7 +14,7 @@ import tempfile
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
 CHECKER_SHA = "f0a05b6567a6a24c5cbbddc68d7f2e1e93c5ea627d5b48e9b04789734b60b8ad"
-MANIFEST_SHA = "2e6efa468c62a4050cd42a0c95205306e9a90943ab7fe4d2f86111590686a89e"
+MANIFEST_SHA = "36d67ce3c98a893e5c191fcb770002be5edb3d10c78c5832f37c2b0d157d0ce4"
 VK = "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,

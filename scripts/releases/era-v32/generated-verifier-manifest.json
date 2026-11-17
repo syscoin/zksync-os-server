@@ -240,7 +240,9 @@
     "nonzero_reserved_word_rejected": true,
     "live_submission_used": false,
     "deployment_attested": false,
-    "release_promoted": false
+    "release_promoted": false,
+    "measured_airbender_commit": "5cff603b014108adf172ad933add11edb5f54ffb",
+    "measured_protocol_commit": "0c1e920de67d8ffcfd6d33c59b578ad147e95319"
   },
   "historical_pre_canonical_query_proof_qualification": {
     "status": "completed_offline_minimal_input_native_and_normal_profile_evm_qualification",
@@ -417,17 +419,17 @@
   },
   "v2_prover": {
     "repository": "https://github.com/syscoin/zksync-airbender-prover",
-    "worker_commit": "0985777d073c67b26e8bd28e64e864e70dc2cde9",
-    "worker_tree": "98b2afaab9008b83b58fa2bef523e6fc5d305967",
+    "worker_commit": "ec790318f00e225cd11283a4d5fb7a521f4670a6",
+    "worker_tree": "95bbb6fba72b263654ffed54c656551dfcc6a733",
     "airbender": {
       "repository": "https://github.com/syscoin/zksync-airbender",
-      "commit": "5cff603b014108adf172ad933add11edb5f54ffb",
-      "tree": "7a79407297344618c4568b36393259d5984981ba"
+      "commit": "5a4928f651bb627ac5adf334fc6640bb6db5d79a",
+      "tree": "a6835b7eed85d9361c9e1aceb51a7988cbda09a8"
     },
     "protocol": {
       "repository": "https://github.com/syscoin/zksync-protocol",
-      "commit": "0c1e920de67d8ffcfd6d33c59b578ad147e95319",
-      "tree": "799a84d8132f1e1b6e4a3f766dbe7c05cdff45af"
+      "commit": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+      "tree": "600c9220a99ac2b83504c3de4913828f8cf360e9"
     },
     "bellman_cuda": {
       "repository": "https://github.com/matter-labs/era-bellman-cuda.git",

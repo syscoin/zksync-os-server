@@ -33,7 +33,8 @@ jobs:
           cd "$work/worker"
           jq -e --slurpfile release "$manifest" '
             .airbender == $release[0].v2_prover.airbender and
-            .protocol == $release[0].v2_prover.protocol
+            .protocol == $release[0].v2_prover.protocol and
+            .bellman_cuda == $release[0].v2_prover.bellman_cuda
           ' patches/v2-proving-sources.json
           jq -er '.v2_prover | [.app_bin_sha256 + "  multiblock_batch.bin",
             .app_text_sha256 + "  multiblock_batch.text"][]' "$manifest" | sha256sum --check --strict
@@ -46,6 +47,33 @@ jobs:
             run --locked --release -p zksync_os_snark_prover --no-default-features --example syscoin_v2_identity -- \
             --app-bin "$PWD/multiblock_batch.bin" --app-text "$PWD/multiblock_batch.text" \
             --trusted-setup "$work/setup.key" --keys "$work/keys" | tee "$work/keygen.log"
+          python3 - "$manifest" "$work/keygen.log" <<'PYTHON'
+          import json, re, sys
+          from pathlib import Path
+          release = json.loads(Path(sys.argv[1]).read_text())["v2_prover"]
+          log = Path(sys.argv[2]).read_text()
+          decoder = json.JSONDecoder()
+          identities = []
+          for start in re.finditer(r"^\{", log, re.MULTILINE):
+              try:
+                  value, _ = decoder.raw_decode(log, start.start())
+              except json.JSONDecodeError:
+                  continue
+              if isinstance(value, dict) and "program_commitment" in value:
+                  identities.append(value)
+          if len(identities) != 1:
+              raise SystemExit("expected one generated application identity")
+          observed = identities[0]
+          required = {
+              "program_commitment": release["program_commitment"],
+              "domain_log": release["plonk_domain_log2"],
+              "security_bits": 100,
+              "app_bin_sha256": release["app_bin_sha256"],
+              "app_text_sha256": release["app_text_sha256"],
+          }
+          if any(observed.get(k) != v for k, v in required.items()):
+              raise SystemExit("generated key configuration differs from the registered guest")
+          PYTHON
           key_sha=$(jq -er '.paths["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"].sha256' "$manifest")
           echo "$key_sha  $work/keys/snark_vk.json" | sha256sum --check --strict
           vk=$(jq -er '.verification_key_hash' "$manifest")

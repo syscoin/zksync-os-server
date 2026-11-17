@@ -23,6 +23,7 @@ defaults:
     shell: bash
 
 env:
+  HISTORICAL_SERVER_COMMIT: 563d577caee23fa377923280dfa333be6fc6f430
   ZKSYNC_OS_REPOSITORY: https://github.com/matter-labs/zksync-os.git
   ZKSYNC_OS_BASE_COMMIT: 69bc430549e88f9264066d14f2001707572c5d33
   ZKSYNC_OS_BASE_TREE: 233b36e77843e460ee9da3e344ee227fa8cce04a
@@ -149,6 +150,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Enforce manual approval phrase and environment policy
@@ -682,6 +684,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Create isolated lane workspace
@@ -1019,6 +1022,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Create isolated control workspace
@@ -1184,6 +1188,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Download keygen A
@@ -1793,7 +1798,7 @@ jobs:
 
           jq -n \
             --arg schema "syscoin-v32-v8-security100-keygen-v5" \
-            --arg server_revision "${GITHUB_SHA}" \
+            --arg server_revision "${HISTORICAL_SERVER_COMMIT}" \
             --arg zksync_os_base "${ZKSYNC_OS_BASE_COMMIT}" \
             --arg zksync_os_patched_tree "${ZKSYNC_OS_PATCHED_TREE}" \
             --arg gateway_target "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" \
