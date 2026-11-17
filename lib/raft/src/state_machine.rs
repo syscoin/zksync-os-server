@@ -122,7 +122,7 @@ impl RaftStateMachineTrait<RaftTypeConfig> for RaftStateMachineStore {
                     // SYSCOIN: Publish before apply returns, so waiting for OpenRaft's applied
                     // frontier also waits for this count. The state machine is the only writer.
                     self.forwarded_records
-                        .fetch_update(Ordering::Release, Ordering::Relaxed, |count| {
+                        .try_update(Ordering::Release, Ordering::Relaxed, |count| {
                             count.checked_add(1)
                         })
                         .map_err(|_| {

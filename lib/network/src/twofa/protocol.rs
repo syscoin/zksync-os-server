@@ -103,7 +103,7 @@ impl Zks2faPeerHandle {
         let (request_revision_tx, _) = watch::channel(0);
         // SYSCOIN: Exact-generation identity must never wrap and alias a process-lifetime lane.
         let lane_id = NEXT_ZKS_2FA_LANE_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |lane_id| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |lane_id| {
                 lane_id.checked_add(1)
             })
             .expect("zks_2fa lane generation exhausted");

@@ -107,7 +107,7 @@ impl FilterRegistry {
     // SYSCOIN: Reserve atomically before allocation rather than checking a concurrent map's len.
     fn reserve(&self) -> Result<FilterReservation, EthFilterError> {
         self.retained
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |retained| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |retained| {
                 (retained < self.max_active_filters.get() as usize).then_some(retained + 1)
             })
             .map_err(|_| EthFilterError::FilterCapacityReached {

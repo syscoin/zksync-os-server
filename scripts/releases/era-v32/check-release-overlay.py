@@ -11,10 +11,10 @@ import tempfile
 
 BASE = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 SOURCE = "eba365c69d357027165f373642bd1979cf5e0c4b"
-CANDIDATE = "11d41dae8b711eb293fbed9cbf3a125502e253a4"
+CANDIDATE = "49364d13c27e277144c78790c1402ac143eee500"
 SOURCE_PATCH_SHA = "af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7"
 SOURCE_APPLICATOR_SHA = "967a01bfb0b70ebc4f1c79acdf53ba546aa0f61d4bee586f13104fdb456e8efb"
-OVERLAY_SHA = "d4ed045e955a3c63784ecd9afe39f92141b4ad3fcd00a74451998b73d6f0a6c9"
+OVERLAY_SHA = "84c5c368bba9ab9e22cda266698b7acf6006c285735da87e440401c0c9564efa"
 PATHS = {
     "AllContractsHashes.json",
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",

@@ -13,9 +13,9 @@ import tempfile
 
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
-CHECKER_SHA = "c30b829d26994942cc3721635b7997c5189c855e24f5f481e80d24523a388c52"
-MANIFEST_SHA = "756b6056519a547bd5486737fcec0b9fbdbb58dbdffc8c872fe858838e4cb8b1"
-VK = "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153"
+CHECKER_SHA = "f0a05b6567a6a24c5cbbddc68d7f2e1e93c5ea627d5b48e9b04789734b60b8ad"
+MANIFEST_SHA = "b8b95e1f58f5237c477a0f582c1695c86cee8ffa2860779a2e5092f129ca9efc"
+VK = "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
         "sha256": "c0a1cdeafb595ef1503d73f33949b977edb61bf55df7e49724c90e72ff90e731"},
@@ -27,9 +27,9 @@ PREIMAGES = {
 }
 APP_SOURCES = {
     "lib/types/src/protocol/proving_version.rs":
-        "b1396be72c197077e4167686399caeee73f40d4f020be9da01bad48919574a63",
+        "7a564a0b8baff0ea20702294f84f8f2eeb0a3826fc7422a82b20292416636fb7",
     "node/bin/src/prover_api/fri_proof_verifier.rs":
-        "1ec3df17b7e4c3e89e53a9e8829415e75ad06894e22072eba7288c0681dc8077",
+        "b60518126a8dfbda16fa4eeeb31d1d0460b3dcf4e3a1aee66f1f958a6af5dd00",
 }
 # SYSCOIN: This is source-controlled release data, never an operator flag or
 # writable sidecar. It certifies the packaged fixture, not whether the exact

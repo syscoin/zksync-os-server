@@ -228,11 +228,14 @@ async fn dump_v8_two_batch_prover_inputs() -> anyhow::Result<()> {
     export_native_batches(2).await
 }
 
+#[tokio::test]
+#[ignore = "opt-in witness export for range-merge performance measurements"]
+async fn dump_v8_eight_batch_prover_inputs() -> anyhow::Result<()> {
+    export_native_batches(8).await
+}
+
 async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
-    ensure!(
-        matches!(batch_count, 1 | 2),
-        "unsupported smoke batch count"
-    );
+    ensure!(batch_count > 0, "native batch range must be nonempty");
     let config_path = PathBuf::from(
         std::env::var("V8_PROVER_INPUT_CONFIG")
             .context("set V8_PROVER_INPUT_CONFIG to an external absolute config path")?,
@@ -329,8 +332,10 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
             "context": {
                 "purpose": if batch_count == 1 {
                     "single-SetSLChainId genuine proof smoke; not representative throughput"
-                } else {
+                } else if batch_count == 2 {
                     "two contiguous real native batches (SetSLChainId then empty block); aggregation smoke, not representative throughput"
+                } else {
+                    "contiguous native batches for measuring range merge cost"
                 },
                 "release_attestation": false,
                 "config_sha256": config_hash,
@@ -402,11 +407,15 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
             output_dir.display()
         );
     }
-    if batch_count == 2 {
+    if batch_count > 1 {
         let manifest = json!({
             "schema_version": 1,
             "release_attestation": false,
-            "purpose": "two contiguous native batches for real FRI aggregation smoke",
+            "purpose": if batch_count == 2 {
+                "two contiguous native batches for real FRI aggregation smoke"
+            } else {
+                "contiguous native batches for measuring range merge cost"
+            },
             "config_sha256": config_hash,
             "batches": sequence,
             "expected_combined_public_input_hash": keccak256(&public_input_bytes),

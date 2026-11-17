@@ -1,10 +1,16 @@
 # Generated Era sources and separate canonical fixture certification
 
-## V8 reserved proof word
+## Airbender V2 for the retained v32 testnet guest
 
-The current release source tree is `eba365c69d357027165f373642bd1979cf5e0c4b` and the generated tree is `11d41dae8b711eb293fbed9cbf3a125502e253a4`. The production dual verifier requires the carried-hash header word to be zero. Its PLONK verifier uses the existing V8 guest key. The Linux EVM and EraVM builds reproduced 278 inventory rows, with three changes covering the dual verifier, testnet subclass and embedding Gateway deployer. All 40 router tests passed, including both single-batch reserved-word cases. An isolated Prague EVM accepted the retained two-batch V8 proof and rejected a nonzero reserved word with `NonZeroCarriedHash()`. Live Gateway and root settlement remain pending. [Contract PR](https://github.com/syscoin/era-contracts/pull/20)
+The server applies its Syscoin source patch to upstream Era commit `8fb7c29a4e3174335c6480b23f57822e054f9d5f`. The reviewed source tree is `eba365c69d357027165f373642bd1979cf5e0c4b`. Its generated Security100 verification key and contract overlay produce tree `49364d13c27e277144c78790c1402ac143eee500` and registered VK hash `0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97`. Both EVM and EraVM production profiles built on Linux. The inventory checker reproduced all 278 rows. Only the generated PLONK verifier and its embedding Gateway deployer differ from the reserved-word release. All 40 router tests passed. [Generated contracts](https://github.com/syscoin/era-contracts/pull/21)
 
-## Canonical query-bit candidate: offline proof and EVM qualification
+The release manifest binds the guest images, worker source, recursive verifier sources, log22 setup, Solidity and raw VK. The manual V2 key-generation workflow checks each identity before comparing its output. The prospective OS patch in server PR #382 changes the guest and requires its own keys. Mainnet signing domains and deployment addresses require separate qualification. [Worker](https://github.com/syscoin/zksync-airbender-prover/pull/27) · [OS candidate](https://github.com/syscoin/zksync-os-server/pull/382)
+
+## Historical V8 reserved proof word
+
+This revision's source tree is `eba365c69d357027165f373642bd1979cf5e0c4b` and the generated tree is `11d41dae8b711eb293fbed9cbf3a125502e253a4`. The production dual verifier requires the carried-hash header word to be zero. Its PLONK verifier uses the existing V8 guest key. The Linux EVM and EraVM builds reproduced 278 inventory rows, with three changes covering the dual verifier, testnet subclass and embedding Gateway deployer. All 40 router tests passed, including both single-batch reserved-word cases. An isolated Prague EVM accepted the retained two-batch V8 proof and rejected a nonzero reserved word with `NonZeroCarriedHash()`. Live Gateway and root settlement remain pending. [Contract PR](https://github.com/syscoin/era-contracts/pull/20)
+
+## Historical canonical query-bit candidate and offline EVM qualification
 
 The candidate key-generation source pins common crypto
 `5eafa1f914519d88a13c577a9e8cc5c7db1dfc77` (tree

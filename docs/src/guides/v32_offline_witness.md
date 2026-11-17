@@ -95,3 +95,5 @@ input as `Keccak256(batch_1_public_input || batch_2_public_input)` using the two
 hashes. A separate real carried-chain combiner must verify both FRI proofs and its combined
 proof before that proof is passed to the SNARK wrapper with auxiliary-parameter checks enabled.
 Do not substitute two GPU-preset runs of the same batch for two contiguous batch statements.
+
+For a merge scaling comparison, run `dump_v8_eight_batch_prover_inputs` with a fresh output directory. The first block sets the settlement chain ID. The following seven blocks execute against the state produced by their predecessor. Use the ordered statement in `sequence.json` to check the eight-batch proof. This workload measures how merge time changes with range length. Transaction-heavy per-batch proving needs a separate workload.

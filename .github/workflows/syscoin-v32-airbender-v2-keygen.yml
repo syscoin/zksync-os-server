@@ -1,0 +1,52 @@
+name: Reproduce the Syscoin v32 Airbender V2 key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: [self-hosted, linux, x64, syscoin-keygen]
+    environment: syscoin-v32-v8-keygen
+    timeout-minutes: 1440
+    steps:
+      - name: Check out the server release
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Reproduce the registered app-bound key
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d "${RUNNER_TEMP}/v32-v2-keygen.XXXXXX")
+          manifest="$GITHUB_WORKSPACE/scripts/releases/era-v32/generated-verifier-manifest.json"
+          worker_commit=$(jq -er '.v2_prover.worker_commit | select(test("^[a-f0-9]{40}$"))' "$manifest")
+          worker_tree=$(jq -er '.v2_prover.worker_tree | select(test("^[a-f0-9]{40}$"))' "$manifest")
+          git init -q "$work/worker"
+          git -C "$work/worker" fetch --depth 1 https://github.com/syscoin/zksync-airbender-prover.git "$worker_commit"
+          git -C "$work/worker" checkout --detach FETCH_HEAD
+          test "$(git -C "$work/worker" rev-parse HEAD)" = "$worker_commit"
+          test "$(git -C "$work/worker" rev-parse 'HEAD^{tree}')" = "$worker_tree"
+          cd "$work/worker"
+          jq -e --slurpfile release "$manifest" '
+            .airbender == $release[0].v2_prover.airbender and
+            .protocol == $release[0].v2_prover.protocol
+          ' patches/v2-proving-sources.json
+          jq -er '.v2_prover | [.app_bin_sha256 + "  multiblock_batch.bin",
+            .app_text_sha256 + "  multiblock_batch.text"][]' "$manifest" | sha256sum --check --strict
+          curl --proto '=https' --fail --show-error --silent --retry 3 \
+            'https://storage.googleapis.com/matterlabs-setup-keys-us/setup-keys/setup_2%5E22.key?generation=1682086004975644' \
+            --output "$work/setup.key"
+          echo "f004b339bc9e05d81f87a82095e19984c2555826a5459e651b8b893aa5422ae5  $work/setup.key" | sha256sum --check --strict
+          export CARGO_TARGET_DIR="$work/target" RUST_MIN_STACK=268435456
+          scripts/cargo-with-patched-airbender.sh --cpu reproduce-v32-v2 -- \
+            run --locked --release -p zksync_os_snark_prover --no-default-features --example syscoin_v2_identity -- \
+            --app-bin "$PWD/multiblock_batch.bin" --app-text "$PWD/multiblock_batch.text" \
+            --trusted-setup "$work/setup.key" --keys "$work/keys" | tee "$work/keygen.log"
+          key_sha=$(jq -er '.paths["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"].sha256' "$manifest")
+          echo "$key_sha  $work/keys/snark_vk.json" | sha256sum --check --strict
+          vk=$(jq -er '.verification_key_hash' "$manifest")
+          grep -Fx "$(jq -nc --arg hash "$vk" '{app_bound_vk_hash:$hash}')" "$work/keygen.log"

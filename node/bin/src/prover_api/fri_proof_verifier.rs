@@ -241,15 +241,11 @@ fn check_public_input(
 mod v8_verifier {
     use execution_utils::setups::{
         CompiledCircuitsSet, binary_u8_to_u32, get_unified_circuit_artifact_for_machine_type,
-        pad_bytecode_bytes_for_proving, pad_bytecode_for_proving,
+        pad_bytecode_for_proving,
     };
-    use execution_utils::unified_circuit::{
-        compute_unified_setup_for_machine_configuration, verify_proof_in_unified_layer,
-    };
-    use execution_utils::unrolled::{
-        UnrolledProgramProof, UnrolledProgramSetup, compute_setup_for_machine_configuration,
-    };
-    use execution_utils::verifier_binaries::recursion_artifact;
+    use execution_utils::unified_circuit::verify_proof_in_unified_layer;
+    use execution_utils::unrolled::{UnrolledProgramProof, UnrolledProgramSetup};
+    use execution_utils::verifier_binaries::{recursion_artifact, recursion_setup};
     use execution_utils::{RecursionArtifact, RecursionLayer};
     use riscv_transpiler::cycle::IWithoutByteAccessIsaConfigWithDelegation;
     use verifier_common::SecurityModel;
@@ -273,12 +269,11 @@ mod v8_verifier {
         3765215681,
     ];
     pub(super) const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [
-        4282637157, 1689531537, 3603061345, 846260096, 709872171, 3329938977, 3855288541,
-        1473390965,
+        84413938, 3995000497, 3553705882, 423231651, 3210519057, 1543137115, 700562094, 4069119977,
     ];
 
     pub(super) struct UnifiedLevelData {
-        setup: UnrolledProgramSetup,
+        setup: &'static UnrolledProgramSetup,
         layouts: CompiledCircuitsSet,
         /// Expected recursion chain hash (final registers `[8..16]`) of an honest V8 proof:
         /// `begin(app) -> continue(unrolled recursion) -> continue(unified recursion)`,
@@ -286,39 +281,21 @@ mod v8_verifier {
         pub(super) expected_chain: [u32; 8],
     }
 
-    fn padded_bytes(bytes: &[u8]) -> Vec<u8> {
-        let mut padded = bytes.to_vec();
-        pad_bytecode_bytes_for_proving(&mut padded);
-        padded
-    }
-
-    /// The unified-layer setup, circuit layouts and expected recursion chain are derived from
-    /// the embedded recursion programs once and cached.
+    /// V2 ships the fixed recursion setups alongside their verifier binaries. The release
+    /// reproduces these snapshots from the binaries before pinning the app-specific chain.
     pub(super) fn unified_level_data() -> &'static UnifiedLevelData {
         static DATA: std::sync::OnceLock<UnifiedLevelData> = std::sync::OnceLock::new();
         DATA.get_or_init(|| {
             let unified_bin =
                 recursion_artifact(SECURITY, RecursionLayer::Unified, RecursionArtifact::Bin);
-            let unified_text =
-                recursion_artifact(SECURITY, RecursionLayer::Unified, RecursionArtifact::Txt);
-            let setup = compute_unified_setup_for_machine_configuration::<
-                IWithoutByteAccessIsaConfigWithDelegation,
-            >(&padded_bytes(unified_bin), &padded_bytes(unified_text));
+            let setup = recursion_setup(SECURITY, RecursionLayer::Unified);
             let mut padded_bin_u32 = binary_u8_to_u32(unified_bin);
             pad_bytecode_for_proving(&mut padded_bin_u32);
             let layouts = get_unified_circuit_artifact_for_machine_type::<
                 IWithoutByteAccessIsaConfigWithDelegation,
             >(&padded_bin_u32);
 
-            let unrolled_bin =
-                recursion_artifact(SECURITY, RecursionLayer::Unrolled, RecursionArtifact::Bin);
-            let unrolled_text =
-                recursion_artifact(SECURITY, RecursionLayer::Unrolled, RecursionArtifact::Txt);
-            let unrolled_setup = compute_setup_for_machine_configuration::<
-                IWithoutByteAccessIsaConfigWithDelegation,
-            >(
-                &padded_bytes(unrolled_bin), &padded_bytes(unrolled_text)
-            );
+            let unrolled_setup = recursion_setup(SECURITY, RecursionLayer::Unrolled);
 
             let (base_chain, base_preimage) =
                 UnrolledProgramSetup::begin_recursion_chain(&V8_APP_END_PARAMS);
@@ -367,7 +344,7 @@ mod v8_verifier {
     /// values.
     pub(super) fn verify(proof: &UnrolledProgramProof) -> Result<[u32; 16], ()> {
         let data = unified_level_data();
-        verify_proof_in_unified_layer(proof, &data.setup, &data.layouts, false, SECURITY)
+        verify_proof_in_unified_layer(proof, data.setup, &data.layouts, false, SECURITY)
     }
 }
 
@@ -513,6 +490,7 @@ mod tests {
     #[test]
     #[ignore = "needs a fresh V8 proof and its authenticated batch statement"]
     fn v8_current_proof_passes_server_boundary_and_rejects_wrong_batch() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         use sha2::{Digest, Sha256};
 
         let path = std::env::var("V8_PROOF_ARTIFACT_JSON")
@@ -521,27 +499,38 @@ mod tests {
             .expect("set V8_PROOF_ARTIFACT_SHA256 to its authenticated SHA-256");
         let bytes = std::fs::read(path).expect("cannot read proof artifact");
         assert_eq!(format!("{:x}", Sha256::digest(&bytes)), expected_sha);
-        let artifact: serde_json::Value =
+        let mut artifact: serde_json::Value =
             serde_json::from_slice(&bytes).expect("invalid proof artifact JSON");
-        let proof: execution_utils::unrolled::UnrolledProgramProof =
-            serde_json::from_value(artifact["proof"].clone()).expect("invalid proof field");
+        let batch_number = artifact["batch_number"]
+            .as_u64()
+            .or_else(|| artifact["batch_id"].as_u64())
+            .expect("proof artifact must identify its batch");
+        let mut encoded = match artifact["proof"].take() {
+            serde_json::Value::String(packet) => STANDARD
+                .decode(packet)
+                .expect("invalid worker proof packet"),
+            value => {
+                let proof: execution_utils::unrolled::UnrolledProgramProof =
+                    serde_json::from_value(value).expect("invalid CLI proof field");
+                bincode::serde::encode_to_vec(&proof, bincode::config::standard())
+                    .expect("cannot encode native proof bytes")
+            }
+        };
         let expected_input: alloy::primitives::B256 =
             std::env::var("V8_PROOF_EXPECTED_PUBLIC_INPUT_HASH")
                 .expect("set the independently authenticated batch public-input hash")
                 .parse()
                 .expect("invalid expected batch public-input hash");
         let expected = super::hash_as_register_values(expected_input);
-        let mut encoded = bincode::serde::encode_to_vec(&proof, bincode::config::standard())
-            .expect("cannot encode native proof bytes");
         let decoded = super::decode_canonical_real_fri_proof(&encoded)
             .expect("fresh proof failed canonical byte decoding");
-        super::verify_fri_proof(expected, &decoded, 20)
+        super::verify_fri_proof(expected, &decoded, batch_number)
             .expect("fresh proof failed the server shape, chain or batch-input boundary");
 
         let mut wrong_batch = expected;
         wrong_batch[0] ^= 1;
         assert!(matches!(
-            super::verify_fri_proof(wrong_batch, &decoded, 20),
+            super::verify_fri_proof(wrong_batch, &decoded, batch_number),
             Err(crate::prover_api::fri_job_manager::SubmitError::FriProofVerificationError { .. })
         ));
         encoded.push(0xaa);

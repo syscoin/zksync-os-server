@@ -543,3 +543,7 @@ receive its own guarded audit after the reviewed dependency fix lands on main.
 ## v32 router source review on November 17
 
 The reserved-word guard changes the Solidity router, its tests and the derived contract inventory. The server applicator, release checks and keygen workflow pin the resulting trees. Comparing the release to server v0.24.4 found identical Rust source, Cargo manifests, lockfile, toolchain, compiler options and native library settings. The contract materializer invokes the same build tools and refreshes their approved input identities. No new caller reaches the scoped crypto-bigint or libz-sys APIs through these changes.
+
+## Airbender V2 host dependency review on November 17
+
+The v32 host moves its verifier, cached recursion setup and RISC-V transpiler to the Syscoin V2 source pin. The compiler is nightly-2026-08-09. Comparing the locks to the reserved-word release found no package identity changes outside Airbender. In the all-feature Linux metadata the only direct dependent of crypto-bigint 0.5.5 is elliptic-curve 0.13.8, using generic-array, rand_core and zeroize. The only direct dependent of libz-sys 1.1.22 is librocksdb-sys 0.17.3+10.4.2, with static linkage. The build dependency stays cc 1.2.62. Neither changed host verification routine adds an ECDSA signing or generic bigint arithmetic call. The new generated Solidity and key identity enter through the existing contract applicator. These changes preserve the previously reviewed advisory scopes.

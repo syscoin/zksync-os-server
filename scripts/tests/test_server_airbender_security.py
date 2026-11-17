@@ -2,6 +2,7 @@
 """No-build regressions for the server's Cargo pin and prebuilt stamp."""
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,8 +13,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 FORK = "https://github.com/syscoin/zksync-airbender"
-COMMIT = "b91eeaecc4d1b9a42ea6843432bb3e014899b303"
-TREE = "ce3d73c3901e0aada9dfca1319eea8a1e5fddbb5"
+COMMIT = "5cff603b014108adf172ad933add11edb5f54ffb"
+TREE = "7a79407297344618c4568b36393259d5984981ba"
 SOURCE = f"git+{FORK}?rev={COMMIT}#{COMMIT}"
 LEGACY = (
     "git+https://github.com/matter-labs/zksync-airbender"
@@ -30,6 +31,14 @@ class ServerAirbenderPinTests(unittest.TestCase):
             self.assertEqual(deps[name]["git"], FORK)
             self.assertEqual(deps[name]["rev"], COMMIT)
             self.assertNotIn("tag", deps[name])
+        self.assertEqual(
+            manifest["patch"]["https://github.com/matter-labs/zksync-airbender"]["riscv_transpiler"],
+            {"git": FORK, "rev": COMMIT},
+        )
+        self.assertEqual(
+            [row["source"] for row in lock["package"] if row["name"] == "riscv_transpiler"],
+            [SOURCE],
+        )
         sources = {row.get("source") for row in lock["package"]
                    if "zksync-airbender" in row.get("source", "")}
         self.assertEqual(sources, {SOURCE, LEGACY})
@@ -61,9 +70,10 @@ class ServerAirbenderPinTests(unittest.TestCase):
         )
 
     def test_fork_tree_is_recorded_for_keygen(self):
-        workflow = (ROOT / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
-        self.assertIn(f"AIRBENDER_COMMIT: {COMMIT}", workflow)
-        self.assertIn(f"AIRBENDER_TREE: {TREE}", workflow)
+        release = json.loads((ROOT / "scripts/releases/era-v32/generated-verifier-manifest.json").read_text())
+        self.assertEqual(release["v2_prover"]["airbender"], {"repository": FORK, "commit": COMMIT, "tree": TREE})
+        workflow = (ROOT / ".github/workflows/syscoin-v32-airbender-v2-keygen.yml").read_text()
+        self.assertIn(".airbender == $release[0].v2_prover.airbender", workflow)
         self.assertIn("rev-parse 'HEAD^{tree}'", workflow)
 
 
