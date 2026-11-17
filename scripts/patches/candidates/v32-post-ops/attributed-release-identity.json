@@ -1,0 +1,38 @@
+{
+  "schema": "syscoin-v32-attributed-release-guest-v1",
+  "source": {
+    "repository": "https://github.com/syscoin/zksync-os",
+    "commit": "df6ec95ab3fb7c291b8d99f422b26f0013d5ff07",
+    "tree": "8c42bef28b5be792bc2b0438531dc7ab1a862547",
+    "upstream_commit": "69bc430549e88f9264066d14f2001707572c5d33",
+    "delta_paths": 72,
+    "surviving_rust_toml_shell_paths": 64,
+    "required_attribution": "SYSCOIN:",
+    "attributed_paths": 64,
+    "flattened_patch_bytes": 293780,
+    "flattened_patch_sha256": "507647ccfe33d1de6fc9cb4cddad3acfeeeb160140fd684accea68f267b16412",
+    "flattened_patch_options": [
+      "--binary",
+      "--full-index",
+      "--unified=0"
+    ]
+  },
+  "guest": {
+    "clean_container_builds_on_this_tree": 1,
+    "container_image_id": "sha256:6923f84aa5d3e737118bf821c47fbcd8af0f373dbc39f90f7670b100b2567842",
+    "rust_toolchain": "nightly-2026-02-10",
+    "platform_cli_commit": "72cce091dbaa13a9ce1f4a8df2bd90baede03cfe",
+    "build_command": "cargo airbender build --app-name multiblock_batch --release --reproducible --workspace-root .. -- --features proving,production,multiblock-batch -j 2",
+    "workspace_cargo_lock_sha256": "3c8f598d8752d41603b640865854647e25da7d34bafbdd3c8f13c430ca456c91",
+    "guest_cargo_lock_sha256": "d6863d99a9e876ef55b7abf69f520567cab51668a91374c96c3ce5891a140610",
+    "bin_sha256": "9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d",
+    "text_sha256": "4648aea720d7acb9317d90047b2640f85baacf15bfdfe340c21c03dc3984f932",
+    "elf_sha256": "91942d6668c880ce1264f7e8a14844370d8b855862394301f22d60258b5fdbff"
+  },
+  "previous_reproducible_builds": {
+    "record": "reproducible-identity.json",
+    "record_sha256": "6691a9e7dcd63255bad01e577981229a344d626252fc832c6facb199275c0a68",
+    "same_bin_text_and_elf": true,
+    "matching_program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66"
+  }
+}
