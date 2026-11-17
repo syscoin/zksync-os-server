@@ -1,11 +1,103 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 44ea91fd0eb218b598973adfc676f48439085137..18c7390cafb68a72915585d09782ab02aaf76597 100644
+index 44ea91fd0eb218b598973adfc676f48439085137..fc5db748345593e76f13be4eaa67171b44012411 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -2195,0 +2196 @@ dependencies = [
+@@ -1794 +1794 @@ name = "aws-lc-rs"
+-version = "1.17.0"
++version = "1.19.0"
+@@ -1796 +1796 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
++checksum = "048006790404103c488e6c5616b3e7e702a71292aadda08e8f7698a9e0d2eb53"
+@@ -1804 +1804 @@ name = "aws-lc-sys"
+-version = "0.41.0"
++version = "0.47.0"
+@@ -1806 +1806 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
++checksum = "8bfbe32ac36b3c428696ce315464181bc4029d689fd58e3f2a4e58c252242f52"
+@@ -1811,0 +1812 @@ dependencies = [
++ "pkg-config",
+@@ -2195,0 +2197 @@ dependencies = [
 + "sha2 0.10.9",
-@@ -5826,0 +5828 @@ dependencies = [
+@@ -3417 +3419 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -4297 +4299 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -5826,0 +5829 @@ dependencies = [
 + "sha2 0.10.9",
+@@ -6398 +6401 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -7250 +7253 @@ name = "rustix"
+-version = "1.1.4"
++version = "1.1.6"
+@@ -7252 +7255 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
++checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
+@@ -7258 +7261 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -7263 +7266 @@ name = "rustls"
+-version = "0.23.40"
++version = "0.23.46"
+@@ -7265 +7268 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
++checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+@@ -7317 +7320 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -7328 +7331 @@ name = "rustls-webpki"
+-version = "0.103.13"
++version = "0.103.16"
+@@ -7330 +7333 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
++checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
+@@ -8172 +8175 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -8300 +8303 @@ name = "tokio"
+-version = "1.52.3"
++version = "1.53.3"
+@@ -8302 +8305 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
++checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+@@ -8484 +8487 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -8939 +8942 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -9262 +9265 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -9267 +9270 @@ name = "webpki-roots"
+-version = "1.0.7"
++version = "1.0.10"
+@@ -9269 +9272 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
++checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
+@@ -9302 +9305 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -9864 +9867 @@ name = "zstd"
+-version = "0.13.3"
++version = "0.13.4"
+@@ -9866 +9869 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
++checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
+@@ -9873 +9876 @@ name = "zstd-safe"
+-version = "7.2.4"
++version = "7.4.0"
+@@ -9875 +9878 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
++checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
+@@ -9882 +9885 @@ name = "zstd-sys"
+-version = "2.0.16+zstd.1.5.7"
++version = "2.1.2+zstd.1.5.7"
+@@ -9884 +9887 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
++checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs b/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
 index dd55949e395569c32c605e3fefa8a603dd3c1aca..3c3d291ae13ff710260fad34d41a0f8a5beb4064 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
@@ -685,21 +777,26 @@ index 096ad0281d25cbad392aae70429c61286160da42..4714d53ff23c7f855e9da0b6a522661c
 +    }
 +}
 diff --git a/basic_bootloader/src/bootloader/constants.rs b/basic_bootloader/src/bootloader/constants.rs
-index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..ee471a4fd4ae2a91e07582a2ae795dd0f73fdefd 100644
+index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..cfbf3f246f827c0a16ff8f2a92db46b6b0aeedb0 100644
 --- a/basic_bootloader/src/bootloader/constants.rs
 +++ b/basic_bootloader/src/bootloader/constants.rs
-@@ -5 +5,2 @@ use basic_system::system_functions::keccak256::keccak256_native_cost_for_rounds_
+@@ -4,2 +4,6 @@ use basic_system::cost_constants::{
+-use basic_system::system_functions::keccak256::keccak256_native_cost_for_rounds_u64;
 -use basic_system::system_implementation::flat_storage_model::cost_constants::COLD_NEW_STORAGE_WRITE_EXTRA_NATIVE_COST;
++use basic_system::system_functions::keccak256::{
++    keccak256_native_cost_for_rounds_u64, keccak256_native_cost_u64,
++};
++use zk_ee::common_structs::logs_storage::L2_TO_L1_LOG_TREE_HEIGHT;
 +// SYSCOIN: Gas-tank resource bounds use the same canonical storage-model cost constants as the
 +// system mutation path they constrain.
-@@ -8 +9,2 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
+@@ -8 +12,2 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
 -    COLD_EXISTING_STORAGE_READ_NATIVE_COST, COLD_NEW_STORAGE_READ_NATIVE_COST,
 +    COLD_EXISTING_STORAGE_READ_NATIVE_COST, COLD_EXISTING_STORAGE_WRITE_EXTRA_NATIVE_COST,
 +    COLD_NEW_STORAGE_READ_NATIVE_COST, COLD_NEW_STORAGE_WRITE_EXTRA_NATIVE_COST,
-@@ -11 +13 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
+@@ -11 +16 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
 -    WARM_STORAGE_READ_NATIVE_COST,
 +    WARM_STORAGE_READ_NATIVE_COST, WARM_STORAGE_WRITE_EXTRA_NATIVE_COST,
-@@ -275,0 +278,56 @@ pub const L2_TX_INTRINSIC_PUBDATA: u64 =
+@@ -275,0 +281,56 @@ pub const L2_TX_INTRINSIC_PUBDATA: u64 =
 +// SYSCOIN: worst-case pubdata for zkSYS gas-tank fee payment: three
 +// storage-slot diffs (sender credit, coinbase credit, total credits), each
 +// priced as a 32-byte key plus a 34-byte uncompressed value update, matching
@@ -756,7 +853,32 @@ index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..ee471a4fd4ae2a91e07582a2ae795dd0
 +            + SYSCOIN_GAS_TANK_PROBE_COMPUTATIONAL_NATIVE_COST
 +);
 +
-@@ -380 +438,11 @@ mod tests {
+@@ -369,8 +430,16 @@ pub const BLOCK_INTRINSIC_PUBDATA_BYTES: u64 =
+-/// Intrinsic per-block native overhead, applied to block-limit enforcement
+-/// from block start. Covers fixed pre-tx-loop system work: the EIP-2935
+-/// historical block hash write, the direct L2ChainAssetHandler prewarm, and
+-/// the rolled-back, non-zero L2AssetTracker notification that admits mandatory
+-/// L1-finalization preimages. Conservatively charge each synthetic call as one
+-/// cold AssetTracker notification.
+-pub const BLOCK_INTRINSIC_NATIVE: u64 =
+-    EIP_2935_INTRINSIC_NATIVE + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST;
++// The proving post-op reads the shared tree height, its dynamic root and the
++// settlement chain ID with local FORMAL_INFINITE resources. A slot can be new.
++const BATCH_CONTEXT_NATIVE_COST: u64 = 3
++    * (WARM_STORAGE_READ_NATIVE_COST + COLD_NEW_STORAGE_READ_NATIVE_COST)
++    + keccak256_native_cost_u64(32);
++
++// Each published log pays for its leaf and one internal hash. Padding the
++// rightmost subtree to the fixed tree height can still need H - 1 hashes.
++const LOG_TREE_FINALIZATION_NATIVE_COST: u64 =
++    (L2_TO_L1_LOG_TREE_HEIGHT as u64 - 1) * keccak256_native_cost_u64(64);
++
++/// Native work reserved before selecting transactions for the block.
++pub const BLOCK_INTRINSIC_NATIVE: u64 = EIP_2935_INTRINSIC_NATIVE
++    + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST
++    + BATCH_CONTEXT_NATIVE_COST
++    + LOG_TREE_FINALIZATION_NATIVE_COST;
+@@ -380 +449,34 @@ mod tests {
 -    use super::{L2_TX_AUTHORIZATION_MAX_RLP_BYTES, L2_TX_INTRINSIC_PUBDATA_PER_AUTHORIZATION};
 +    use super::{
 +        COLD_EXISTING_STORAGE_READ_NATIVE_COST, COLD_EXISTING_STORAGE_WRITE_EXTRA_NATIVE_COST,
@@ -769,7 +891,30 @@ index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..ee471a4fd4ae2a91e07582a2ae795dd0
 +        SYSCOIN_NATIVE_FEE_INTRINSIC_COMPUTATIONAL_NATIVE_COST, WARM_STORAGE_READ_NATIVE_COST,
 +        WARM_STORAGE_WRITE_EXTRA_NATIVE_COST,
 +    };
-@@ -412,0 +481,28 @@ mod tests {
++
++    #[test]
++    fn block_native_reserve_covers_mandatory_v32_work() {
++        use super::*;
++        let max_residual = (1..=1usize << L2_TO_L1_LOG_TREE_HEIGHT)
++            .map(|leaves| {
++                let internal: usize = (1..=L2_TO_L1_LOG_TREE_HEIGHT)
++                    .map(|level| leaves.div_ceil(1usize << level))
++                    .sum();
++                internal.saturating_sub(leaves) as u64
++            })
++            .max()
++            .unwrap();
++        assert_eq!(max_residual, L2_TO_L1_LOG_TREE_HEIGHT as u64 - 1);
++        assert_eq!(
++            BLOCK_INTRINSIC_NATIVE,
++            EIP_2935_INTRINSIC_NATIVE
++                + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST
++                + 3 * (WARM_STORAGE_READ_NATIVE_COST + COLD_NEW_STORAGE_READ_NATIVE_COST)
++                + keccak256_native_cost_u64(32)
++                + max_residual * keccak256_native_cost_u64(64)
++        );
++    }
+@@ -412,0 +515,28 @@ mod tests {
 +
 +    // SYSCOIN: Stage P followed by D must select exactly base - N + T.
 +    #[test]
@@ -1677,6 +1822,17 @@ index 64511cfce0c1abdd930be91a986d40edbbac2120..bf68f285276b8a3fac2d0572bb203925
 +// SYSCOIN: conservative native charge for the portable verifier.
 +pub const SLH_DSA_SHA2_128_24_VERIFY_NATIVE_COST: u64 =
 +    native_with_delegations!(4_300_000, 650_000, 0);
+diff --git a/basic_system/src/system_functions/keccak256.rs b/basic_system/src/system_functions/keccak256.rs
+index f0b231ed1a4b612ea4cf68c3a377a8306d777fe0..c1047241cbc1d6f58458aa63484eea7c8378ed06 100644
+--- a/basic_system/src/system_functions/keccak256.rs
++++ b/basic_system/src/system_functions/keccak256.rs
+@@ -31,3 +31,3 @@ impl<R: Resources> SystemFunction<R, Keccak256Errors> for Keccak256Impl {
+-pub fn keccak256_native_cost_u64(len: usize) -> u64 {
+-    // +1 accounts for keccak padding which always adds at least one byte.
+-    let rounds = core::cmp::max(1, len.saturating_add(1).div_ceil(KECCAK256_CHUNK_SIZE));
++pub const fn keccak256_native_cost_u64(len: usize) -> u64 {
++    // SYSCOIN: Keep the v32 post-op reserve aligned with Keccak’s mandatory padding byte.
++    let rounds = len.saturating_add(1).div_ceil(KECCAK256_CHUNK_SIZE);
 diff --git a/basic_system/src/system_functions/mod.rs b/basic_system/src/system_functions/mod.rs
 index 87760c5c12d5c8176a7461d5dcaaeda476a6cd31..8acc963b764bf395f8c262886ae2e1f9d86235da 100644
 --- a/basic_system/src/system_functions/mod.rs
@@ -4198,6 +4354,22 @@ index e379a78c775904ef875a1ef77c64f3f71831d56d..39e107e1ca61ca8bf1ea4c4b62e37746
 +    // SYSCOIN: Include 0x101 only in builds that compile the downstream verifier hook.
 +    #[cfg(feature = "slh_dsa_precompile")]
 +    SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW,
+diff --git a/evm_interpreter/src/utils.rs b/evm_interpreter/src/utils.rs
+index 00f919127dd4ad736206d0b81d24b7106ccfd387..61e09604cabc165c5c1fa6d17f0f89079eb3ccfd 100644
+--- a/evm_interpreter/src/utils.rs
++++ b/evm_interpreter/src/utils.rs
+@@ -24 +24,4 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
+-        src.try_to_usize().ok_or(error_to_set)
++        // SYSCOIN: Heap growth and its native charge must follow the proving guest's address width.
++        src.try_to_u32()
++            .map(|value| value as usize)
++            .ok_or(error_to_set)
+@@ -31,4 +34 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
+-    /// narrowing done by [`Self::cast_to_usize`]. A `usize` narrowing accepts
+-    /// different lengths on the 64-bit forward host and on the 32-bit proving
+-    /// target. A charge after the narrowing therefore makes the two
+-    /// executions spend different resources for the same input.
++    /// narrowing to the guest address width done by [`Self::cast_to_usize`].
 diff --git a/forward_system/Cargo.toml b/forward_system/Cargo.toml
 index 6e077247a3b6363c50d062cd7215e391d7ffc673..7b704e99ec6dc48af0e5b9828b7789ef61cb3fa1 100644
 --- a/forward_system/Cargo.toml
@@ -4459,6 +4631,37 @@ index 435b7bf39689122d27577a35f7e02ab5550e060a..f24473bdc9c607bb33a3672cb31affe8
 +        oracle: &mut impl IOOracle,
 +    ) -> Result<(), SystemError>;
 +
+diff --git a/supporting_crates/u256/src/conversions.rs b/supporting_crates/u256/src/conversions.rs
+index 1895f72b21cc80e44ca94e48a3a827082f6e26ad..0927b1e065f2287ef26a6ee3eaba96c250515089 100644
+--- a/supporting_crates/u256/src/conversions.rs
++++ b/supporting_crates/u256/src/conversions.rs
+@@ -42,0 +43,6 @@ macro_rules! impl_conversions {
++            // SYSCOIN: Native execution uses the same 32-bit address limit as the proving guest.
++            #[inline(always)]
++            pub fn try_to_u32(&self) -> Option<u32> {
++                self.try_to_u64()
++                    .and_then(|value| u32::try_from(value).ok())
++            }
+@@ -81,0 +88,19 @@ pub(crate) use impl_conversions;
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    fn u32_conversion_matches_the_guest_address_width() {
++        for (limbs, expected) in [
++            ([0, 0, 0, 0], Some(0)),
++            ([u32::MAX as u64, 0, 0, 0], Some(u32::MAX)),
++            ([1u64 << 32, 0, 0, 0], None),
++            ([0, 1, 0, 0], None),
++        ] {
++            assert_eq!(crate::naive::U256::from_limbs(limbs).try_to_u32(), expected);
++            assert_eq!(
++                crate::risc_v::U256::from_limbs(limbs).try_to_u32(),
++                expected
++            );
++        }
++    }
++}
 diff --git a/system_hooks/Cargo.toml b/system_hooks/Cargo.toml
 index 352dca6685ff2b735277d7a61fdfd84ab8e0b4dd..c25afd666613698b6f4de2f6e43a77410a4a19d3 100644
 --- a/system_hooks/Cargo.toml
@@ -5871,3 +6074,23 @@ index 35e955f93eeecffa07e7d3dae25a49a8cf189b67..8e4e69b6b3a777ca508fb088b9fb0aef
 +++ b/zksync_os/Cargo.lock
 @@ -529,0 +530 @@ dependencies = [
 + "sha2",
+diff --git a/zksync_os/reproduce/reproduce.sh b/zksync_os/reproduce/reproduce.sh
+index 6fc0436e6eb3bf1ebb62d27dfb7b9b1713ad0641..c89f781f982430eac62e5152dadb4ac8d40bc900 100755
+--- a/zksync_os/reproduce/reproduce.sh
++++ b/zksync_os/reproduce/reproduce.sh
+@@ -9,7 +9,8 @@ REPO_ROOT="$(dirname "$ZKSYNC_OS_DIR")"
+-# `cargo airbender build --reproducible` passes `--locked` to cargo, so both
+-# the workspace root and the guest crate need a Cargo.lock present.
+-# The workspace root Cargo.lock is gitignored, so we generate it here.
+-# The guest zksync_os/Cargo.lock is committed and used as-is.
+-#
+-# NOTE: the toolchain version must match rust-toolchain.toml.
+-cargo +nightly-2026-02-10 generate-lockfile --manifest-path "$REPO_ROOT/Cargo.toml"
++# SYSCOIN: We review both lockfiles. Resolving the host graph again here would
++# discard its release pins before the reproducible guest build starts.
++for lockfile in "$REPO_ROOT/Cargo.lock" "$ZKSYNC_OS_DIR/Cargo.lock"; do
++    if [[ ! -s "$lockfile" ]]; then
++        echo "Missing pinned Cargo lockfile $lockfile" >&2
++        exit 1
++    fi
++done

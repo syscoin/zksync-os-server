@@ -50,7 +50,8 @@ PUBLISHED_EDGE_SOURCE_SHA256 = (
 PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
-PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
+HISTORICAL_KEYGEN_ZKSYNC_OS_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
+PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "8c42bef28b5be792bc2b0438531dc7ab1a862547"
 PUBLISHED_ERA_PATCHED_TREE = "eba365c69d357027165f373642bd1979cf5e0c4b"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
@@ -6379,8 +6380,9 @@ gl_checkpoint_assert_fingerprint_matches
             / "fri_proof_verifier.rs"
         ).read_text(encoding="utf-8")
 
+        self.assertIn(HISTORICAL_KEYGEN_ZKSYNC_OS_TREE, workflow)
+        self.assertIn(PUBLISHED_ZKSYNC_OS_PATCHED_TREE, verifier)
         for source in (workflow, verifier):
-            self.assertIn(PUBLISHED_ZKSYNC_OS_PATCHED_TREE, source)
             self.assertNotIn("5117d5dac6dbd34b93fef54e04d0b41c", source)
             self.assertNotIn("1279059325", source)
             self.assertNotIn("220972078", source)
@@ -6408,17 +6410,17 @@ gl_checkpoint_assert_fingerprint_matches
         )
 
         self.assertIn(
-            'const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";',
+            'const V8_APP_BIN_MD5: &str = "22af69bc5729c261f3043fd0e5f1870a";',
             verifier,
         )
         for name, expected in (
             ("V8_APP_END_PARAMS", [
-                3009942935, 2266051515, 747570558, 2762947172,
-                1354863053, 3205993576, 4096623771, 3765215681,
+                839576545, 3543917221, 2899651412, 806767598,
+                3089479141, 4060592819, 839382617, 2072453320,
             ]),
             ("V8_SECURITY100_EXPECTED_CHAIN", [
-                84413938, 3995000497, 3553705882, 423231651,
-                3210519057, 1543137115, 700562094, 4069119977,
+                3210469728, 3427495935, 857477333, 2439585292,
+                1600315163, 3763909344, 4003237832, 3361999974,
             ]),
         ):
             values = re.search(
@@ -6575,18 +6577,18 @@ gl_checkpoint_assert_fingerprint_matches
         for expected in (
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
-            'EXPECTED_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"',
-            'EXPECTED_PATCH_SIZE="282818"',
-            'EXPECTED_PATCH_SHA256="0af88710e0275ce3dc49928a264e93639f945c85ab79600e12a41306731053d7"',
-            'EXPECTED_PATCH_PATH_COUNT="68"',
-            'EXPECTED_PATCH_PATHS_SHA256="7bf4667f179a5fc3b769b8ed51e193812d3f29b7dad4971552ac8ecbac9d4de5"',
+            'EXPECTED_PATCHED_TREE="8c42bef28b5be792bc2b0438531dc7ab1a862547"',
+            'EXPECTED_PATCH_SIZE="293780"',
+            'EXPECTED_PATCH_SHA256="507647ccfe33d1de6fc9cb4cddad3acfeeeb160140fd684accea68f267b16412"',
+            'EXPECTED_PATCH_PATH_COUNT="72"',
+            'EXPECTED_PATCH_PATHS_SHA256="3bc9bf4c9f80c2c1aea6dd488cc16397cb32bdf026d2c4af5813ec02b0a25edb"',
         ):
             self.assertIn(expected, applicator)
         workspace_helper = (
             REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"',
+            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="8c42bef28b5be792bc2b0438531dc7ab1a862547"',
             workspace_helper,
         )
         self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
@@ -6617,21 +6619,10 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertNotIn("callable_oracles/src/blob_data_id", patch)
         self.assertIn("host advice is neither", patch)
 
-    def test_os_keygen_workflow_attests_current_source_inputs(self) -> None:
-        helper_path = (
-            REPO_ROOT / "scripts" / "apply-zksync-os-syscoin-v0.4.0-patch.sh"
-        )
-        patch_path = (
-            REPO_ROOT
-            / "scripts"
-            / "patches"
-            / "zksync-os-syscoin-v0.4.0.patch"
-        )
+    def test_historical_keygen_workflow_attests_its_pinned_source_inputs(self) -> None:
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
         ).read_text(encoding="utf-8")
-        helper = helper_path.read_bytes()
-        patch = patch_path.read_bytes()
         gateway_identity_path = (
             REPO_ROOT / "local-chains" / "v32.0" / "gateway-identity.v1.json"
         )
@@ -6644,12 +6635,12 @@ gl_checkpoint_assert_fingerprint_matches
         offline_identity_data = json.loads(offline_identity)
 
         for expected in (
-            f'ZKSYNC_OS_PATCHED_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
-            f'ZKSYNC_OS_PATCH_SIZE: "{len(patch)}"',
-            f"ZKSYNC_OS_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            f'ZKSYNC_OS_HELPER_SIZE: "{len(helper)}"',
-            f"ZKSYNC_OS_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
-            f'APP_IDENTITY_SOURCE_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
+            f'ZKSYNC_OS_PATCHED_TREE: {HISTORICAL_KEYGEN_ZKSYNC_OS_TREE}',
+            'ZKSYNC_OS_PATCH_SIZE: "282818"',
+            "ZKSYNC_OS_PATCH_SHA256: 0af88710e0275ce3dc49928a264e93639f945c85ab79600e12a41306731053d7",
+            'ZKSYNC_OS_HELPER_SIZE: "7323"',
+            "ZKSYNC_OS_HELPER_SHA256: f42847b54c331998605e20f32a80134f7c52dd6a525405d97feb6ecf22c25d21",
+            f'APP_IDENTITY_SOURCE_TREE: {HISTORICAL_KEYGEN_ZKSYNC_OS_TREE}',
             f'SYSCOIN_EDGE_DA_COMMIT_TARGET: "{PUBLISHED_PATCH_TARGET}"',
             f'SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE: "{PUBLISHED_PATCH_TARGET_RUNTIME_SIZE}"',
             f'SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH: "{PUBLISHED_PATCH_TARGET_RUNTIME_HASH}"',
@@ -6706,7 +6697,7 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertIs(offline_identity_data["independent_create2_calculation_matches_helper"], True)
         self.assertEqual(
             offline_identity_data["source_bindings"]["zksync_os_patched_tree"],
-            PUBLISHED_ZKSYNC_OS_PATCHED_TREE,
+            HISTORICAL_KEYGEN_ZKSYNC_OS_TREE,
         )
         # The retained real-proof provenance predates the priority observation getters.
         # Current deployment identity still requires a new full CTM derivation.
@@ -8161,8 +8152,6 @@ class EraAttestationStaticTests(unittest.TestCase):
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
         ).read_text(encoding="utf-8")
-        helper = helper_path.read_bytes()
-        patch = patch_path.read_bytes()
 
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',

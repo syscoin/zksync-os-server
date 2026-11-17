@@ -258,18 +258,19 @@ mod v8_verifier {
     /// SYSCOIN: Reproduced guest identity; independently derived end parameters and
     /// Security100 continuation must agree with the registered app-bound key.
     #[allow(dead_code)] // The keygen workflow checks this source identity in the generated file.
-    pub(super) const V8_APP_IDENTITY_SOURCE_TREE: &str = "6935489bdbc7b1ed31e608677d1b2418b10691b5";
+    pub(super) const V8_APP_IDENTITY_SOURCE_TREE: &str = "8c42bef28b5be792bc2b0438531dc7ab1a862547";
     #[allow(dead_code)] // The keygen workflow checks this guest identity in the generated file.
-    pub(super) const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";
+    pub(super) const V8_APP_BIN_MD5: &str = "22af69bc5729c261f3043fd0e5f1870a";
 
     /// `end_params` is derived from the app binary alone. The Security100 chain continues those
     /// params through the pinned unrolled and unified recursion artifacts.
     pub(super) const V8_APP_END_PARAMS: [u32; 8] = [
-        3009942935, 2266051515, 747570558, 2762947172, 1354863053, 3205993576, 4096623771,
-        3765215681,
+        839576545, 3543917221, 2899651412, 806767598,
+        3089479141, 4060592819, 839382617, 2072453320,
     ];
     pub(super) const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [
-        84413938, 3995000497, 3553705882, 423231651, 3210519057, 1543137115, 700562094, 4069119977,
+        3210469728, 3427495935, 857477333, 2439585292,
+        1600315163, 3763909344, 4003237832, 3361999974,
     ];
 
     pub(super) struct UnifiedLevelData {

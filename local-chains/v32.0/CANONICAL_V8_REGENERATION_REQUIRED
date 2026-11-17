@@ -21,7 +21,7 @@ The former 0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19 deployment-specific V7 pin
 was materialized only through Anvil state overrides in the V32 fixture and is retired here.
 
 The reviewed guest source target is tree
-6935489bdbc7b1ed31e608677d1b2418b10691b5. The reproduced app, end parameters,
+8c42bef28b5be792bc2b0438531dc7ab1a862547. The reproduced app, end parameters,
 Security100 chain and app-bound verification key are now registered in the server.
 The zero values retained in the production keygen workflow and its production
 identity gate are deliberate release sentinels, not the current server identity.
