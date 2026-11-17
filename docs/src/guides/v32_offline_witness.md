@@ -97,3 +97,31 @@ proof before that proof is passed to the SNARK wrapper with auxiliary-parameter 
 Do not substitute two GPU-preset runs of the same batch for two contiguous batch statements.
 
 For a merge scaling comparison, run `dump_v8_eight_batch_prover_inputs` with a fresh output directory. The first block sets the settlement chain ID. The following seven blocks execute against the state produced by their predecessor. Use the ordered statement in `sequence.json` to check the eight-batch proof. This workload measures how merge time changes with range length. Transaction-heavy per-batch proving needs a separate workload.
+
+
+## Signed transfer workload
+
+`dump_v8_transfer_batch_prover_inputs` executes the settlement-ID transaction in batch 1 and 16 EIP-1559 transfers to distinct accounts in batch 2. The sender signs with a public, deterministic test key. Use a fresh offline genesis that preallocates native currency to its address. Each transfer must execute successfully before the exporter writes the second witness.
+
+Use a disposable checkout of the same Era contract revision as the seed genesis. Set `ERA_CHECKOUT`, `SERVER_CHECKOUT`, `SEED_GENESIS` and `FUNDED_GENESIS` to absolute paths, with `FUNDED_GENESIS` pointing to a new file. The example uses the pinned Era genesis library to verify the input root and compute the new root. The server independently reconstructs it when generating the witness.
+
+```sh
+mkdir -p "$ERA_CHECKOUT/tools/zksync-os-genesis-gen/examples"
+cp "$SERVER_CHECKOUT/scripts/bench/prepare_transfer_genesis.rs" \
+  "$ERA_CHECKOUT/tools/zksync-os-genesis-gen/examples/prepare_transfer_genesis.rs"
+cargo +nightly-2026-01-22 run --locked \
+  --manifest-path "$ERA_CHECKOUT/tools/zksync-os-genesis-gen/Cargo.toml" \
+  --example prepare_transfer_genesis -- "$SEED_GENESIS" \
+  0x1a642f0e3c3af545e7acbd38b07251b3990914f1 "$FUNDED_GENESIS"
+```
+
+Set the export config’s `genesis_path` and `genesis_sha256` to the funded file and its SHA-256. Use a fresh output directory, hash the new config, and run the selector below with the environment from the one-batch export.
+
+```sh
+scripts/cargo-with-patched-zksync-os.sh v32-transfer-benchmark -- \
+  test --locked -p zksync_os_batch_verification --lib \
+  verifier::tests::witness_export::dump_v8_transfer_batch_prover_inputs -- \
+  --ignored --exact --nocapture
+```
+
+For the November 17 test, the two native batch statements combined to `0x6f6b4625f357eb88b0cbfd747ea30ad685a5f115a1bb82900ce5631c856b2f5b`. The transfer batch used 336,000 gas. This workload measures EOA transfers. It exercises different parts of the guest than contract calls and interop messages.
