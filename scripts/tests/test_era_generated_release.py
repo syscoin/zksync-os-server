@@ -157,6 +157,41 @@ class ActivationTests(unittest.TestCase):
 
 
 class BundleAndLauncherTests(unittest.TestCase):
+    def test_airbender_v2_contract_and_worker_bind_the_same_range(self):
+        import tomllib
+
+        module, manifest = M.load_bundle()
+        generation = manifest["contract_generation_provenance"]
+        evidence = manifest["proof_qualification"]
+        prover = manifest["v2_prover"]
+        receipt_file = ROOT / evidence["evm_receipt_path"]
+        self.assertEqual(sha(receipt_file.read_bytes()), evidence["evm_receipt_sha256"])
+        receipt = json.loads(receipt_file.read_text())
+        self.assertEqual(generation["candidate_tree"], module.CANDIDATE)
+        self.assertEqual(generation["unchanged_inventory_rows"], 276)
+        self.assertEqual(set(generation["changed_inventory_rows"]), module.ROWS)
+        self.assertEqual(prover["plonk_domain_log2"], 22)
+        self.assertEqual(prover["plonk_public_inputs"], 1)
+        self.assertEqual(prover["soundness_profile"], "Security100")
+        self.assertEqual(prover["program_commitment"], evidence["program_commitment"])
+        self.assertEqual(generation["verification_key_hash"], M.VK)
+        self.assertEqual(receipt["vk_hash"], M.VK)
+        self.assertEqual(receipt["batch_ids"], evidence["input_batch_range"])
+        self.assertEqual(receipt["genuine_calldata_sha256"], evidence["genuine_serialized_calldata_sha256"])
+        self.assertEqual(receipt["plonk_proof_words"], 44)
+        self.assertEqual(receipt["reserved_word_check"]["selector"], "0x31967fc6")
+        self.assertEqual(receipt["runtime_sha256"], generation["tested_runtime_sha256"])
+        self.assertTrue(receipt["dual_router_accepted"])
+        self.assertTrue(receipt["generated_plonk_accepted"])
+        self.assertFalse(receipt["testnet_verifier"])
+        self.assertFalse(generation["live_gateway_or_root_verified"])
+        raw_key = manifest["paths"]["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"]
+        self.assertEqual(raw_key["sha256"], evidence["raw_vk_sha256"]["snark_vk.json"])
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        verifier_sources = {p["source"] for p in lock["package"] if p["name"] == "unified_reduced_machine_verifier"}
+        self.assertEqual({f'git+{prover["airbender"]["repository"]}?rev={prover["airbender"]["commit"]}'
+                      f'#{prover["airbender"]["commit"]}'}, verifier_sources)
+
     def test_reserved_word_candidate_pins_verified_router_bytecode(self):
         module, manifest = M.load_bundle()
         generation = manifest["historical_pre_airbender_v2_contract_generation_provenance"]
