@@ -2,11 +2,11 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "0cb850a5c77436f17b49e747a1117dac5ee90888",
-  "candidate_tree": "39aba041f59da6733f1562f2dee74ef39fc0c024",
-  "source_patch_sha256": "bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df",
-  "source_applicator_sha256": "eaa60f4652bd279637e21a08611f72ed673ed94d1ebd74fbe77472b31336efc8",
-  "overlay_sha256": "d7eead029a5d8ef71a3f63093f6792064bcefed757f14891f5b933210af79e55",
+  "reviewed_source_tree": "b7df93e478b31479c95928b6fd2cc8a8aeed8c87",
+  "candidate_tree": "35e4dad23e0844780fe2b66f9691e7f7df338a04",
+  "source_patch_sha256": "ad3b447b170104a3125342b774c6aeea6c04e742f6dbf5df52ed5dbb0421b445",
+  "source_applicator_sha256": "5faa2df9aeb9de66db991ada6aeec90eb52ef98e75e105d829919c3ed663e2ca",
+  "overlay_sha256": "d4ed045e955a3c63784ecd9afe39f92141b4ad3fcd00a74451998b73d6f0a6c9",
   "overlay_size": 120678,
   "verification_key_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
   "inventory_rows": 278,
@@ -17,7 +17,7 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "6642cde552fa4b3391a122b92399a7d16c1b46c939143977d7959c8206b18cd4"
+      "sha256": "4adf91d30f8ecad641d581a06d6dabb7a319a4917c5240be51b2f95958aed0e3"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
@@ -40,6 +40,40 @@
   "genesis_sha256": "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95",
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
+    "status": "completed_v32_reserved_word_router_inventory_and_replay",
+    "candidate_tree": "35e4dad23e0844780fe2b66f9691e7f7df338a04",
+    "previous_candidate_tree": "39aba041f59da6733f1562f2dee74ef39fc0c024",
+    "reviewed_source_tree": "b7df93e478b31479c95928b6fd2cc8a8aeed8c87",
+    "contracts_commit": "20e09ddc598129dc86b18ffae825f1bb3ad7af15",
+    "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+    "verification_key_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
+    "normal_l1_evm_and_eravm_build_passed": true,
+    "full_contract_hash_recomputation_passed": true,
+    "contract_hash_check_passed": true,
+    "inventory_rows": 278,
+    "unchanged_inventory_rows": 275,
+    "changed_inventory_rows": [
+      "l1-contracts/GatewayCTMDeployerVerifiersZKsyncOS",
+      "l1-contracts/ZKsyncOSDualVerifier",
+      "l1-contracts/ZKsyncOSTestnetVerifier"
+    ],
+    "router_tests_passed": 39,
+    "router_tests_failed": 0,
+    "evm_solc_version": "0.8.28+commit.7893614a",
+    "evm_version": "prague",
+    "optimizer_runs": 9999999,
+    "zksolc_version": "1.5.11",
+    "era_solc_version": "0.8.28-1.0.1",
+    "release_proof_calldata_sha256": "df7f4ad40c97582c9740b3dfaaa214634dff206deea6ffd7c6e5a71fdac57961",
+    "tested_runtime_sha256": {
+      "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+      "plonk": "39af68a895598186366e445e0804406cccd73a67c5f63257d0b5fa0805debe92"
+    },
+    "isolated_evm_two_batch_proof_accepted": true,
+    "nonzero_reserved_word_error_selector": "0x31967fc6",
+    "live_gateway_or_root_verified": false
+  },
+  "historical_pre_reserved_word_contract_generation_provenance": {
     "status": "completed_canonical_query_normal_profile_incremental_inventory",
     "candidate_tree": "39aba041f59da6733f1562f2dee74ef39fc0c024",
     "crypto_commit": "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77",

@@ -1,5 +1,9 @@
 # Generated Era sources and separate canonical fixture certification
 
+## V8 reserved proof word
+
+The current release source tree is `b7df93e478b31479c95928b6fd2cc8a8aeed8c87` and the generated tree is `35e4dad23e0844780fe2b66f9691e7f7df338a04`. The production dual verifier requires the carried-hash header word to be zero. Its PLONK verifier uses the existing V8 guest key. The Linux EVM and EraVM builds reproduced 278 inventory rows, with three changes covering the dual verifier, testnet subclass and embedding Gateway deployer. All 39 router tests passed. An isolated Prague EVM accepted the retained two-batch V8 proof and rejected a nonzero reserved word with `NonZeroCarriedHash()`. Live Gateway and root settlement remain pending. [Contract PR](https://github.com/syscoin/era-contracts/pull/20)
+
 ## Canonical query-bit candidate: offline proof and EVM qualification
 
 The candidate key-generation source pins common crypto

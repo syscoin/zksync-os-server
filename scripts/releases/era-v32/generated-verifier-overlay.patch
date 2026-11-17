@@ -1,18 +1,18 @@
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index fb2eda832e152bb64af87d5d2ef514c5261c28b9..fc7cc903e6605247b67cc42f01e0f1d837c068fa 100644
+index 6f879bf3dc077f100ed6d45cbc856432185d0c0f..f26d08546273dfcecc6f1671cf55f0f132a4cdeb 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -1244 +1244 @@
--    "zkBytecodeHash": "0x01000089527c6142ad3fdb9921cba03b6a3f069bff32f6a7212e84f78f126c62",
-+    "zkBytecodeHash": "0x01000089adbff5a5efe6885f4a5142f33c16f96b4516aa6ef1dadcf8efa8d346",
+-    "zkBytecodeHash": "0x01000089dcf0fdb8f4b5f969b7e5891a17b5afe449262f6b470f09b39ff99fae",
++    "zkBytecodeHash": "0x0100008964bd1ce042b8d88cc498679e4073f1196c2617feb91ed06377f01f0b",
 @@ -1246 +1246 @@
--    "evmBytecodeHash": "0x1d3e7416de833d89cec36b590b39db303e9f1f88df6db08f179b3bbd0d3eb55f",
-+    "evmBytecodeHash": "0x7d94363f3f7dc06818e4c38a266c923f3030e273c0e52dc5d2bd398d415049f3",
+-    "evmBytecodeHash": "0x2dac176b838f025bd79815a76317cbb6cb01efae0d78def29c5b9b6652fcf329",
++    "evmBytecodeHash": "0x84da0aaf6a6e0256041a347540782bfaba25284f6d98a5f4dabce16027c7a320",
 @@ -1248,2 +1248,2 @@
--    "evmDeployedBytecodeHash": "0xcbe0b15e7e23b1280ee64351247a578c930118c2d1b694c3decb9f43562a5227",
--    "evmDeployedBytecodeBlakeHash": "0xfa335cb72a18b3bf8d16623e64063d76340ead1053dbc6b19bcd8044b0d2089f",
-+    "evmDeployedBytecodeHash": "0xa54e9d247d0c7c2ca87cf1da16c07e00d7673794eae38c1ea1d77d371586dc64",
-+    "evmDeployedBytecodeBlakeHash": "0xa083bf9186ad3d2452b4e064511dd235ef436f33de4a5e5abb2d88848dfa92ea",
+-    "evmDeployedBytecodeHash": "0xf779bc626ee41a3212f744db1463f9b3372ac82c8a8b2845aca3963637184b06",
+-    "evmDeployedBytecodeBlakeHash": "0xdd4fcd17c6fbeebf23274f2c0d324dc4ab347dec5413c2a068e144d425335636",
++    "evmDeployedBytecodeHash": "0x6be72feccc80aa93fdf25b1da90d74d3e61877fb5f0190119c521a11578140d1",
++    "evmDeployedBytecodeBlakeHash": "0xc1d66fa879da0ab026d3f87c525522340a9ff1209167c2f3f67349c0542da8b7",
 @@ -2344 +2344 @@
 -    "zkBytecodeHash": "0x01000dbb95b8ace87a9bb8e257f8933d47fa92d2ad47942faf7ee12de3be4e13",
 +    "zkBytecodeHash": "0x01000dbd7beccae40ff56c467210b98daee5e81eef4338b160fd516a44412905",

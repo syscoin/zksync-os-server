@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1497553"
-EXPECTED_PATCH_SHA256="bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df"
+EXPECTED_PATCH_SIZE="1500959"
+EXPECTED_PATCH_SHA256="ad3b447b170104a3125342b774c6aeea6c04e742f6dbf5df52ed5dbb0421b445"
 EXPECTED_PATCH_PATH_COUNT="87"
 EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="0cb850a5c77436f17b49e747a1117dac5ee90888"
+EXPECTED_PATCHED_TREE="b7df93e478b31479c95928b6fd2cc8a8aeed8c87"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -441,7 +441,7 @@ verify_semantics() {
     ": uint256(keccak256(abi.encodePacked(_publicInputs)));"
   require_text \
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol" \
-    "keccak256(abi.encodePacked(initialHash, _publicInputs))"
+    "revert NonZeroCarriedHash();"
 
   # The fake-prover lane is explicit and cannot be deployed for either supported production
   # root L1, including when its constructor executes on the distinct Gateway chain ID.

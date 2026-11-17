@@ -6,7 +6,7 @@ index 7e1d9037d1af2b602eea82ae24fa9be43257d8b7..71702e655fcca420358e6bc76b63af47
 +# SYSCOIN: track the exact V32 compact Edge-DA relay deployment manifest.
 +!l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd182658c7022ea47a09af2e1771a077e3a..4e67bcb162ec794438574d1fd07b88994536bcc3 100644
+index a0200fd182658c7022ea47a09af2e1771a077e3a..6f879bf3dc077f100ed6d45cbc856432185d0c0f 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
@@ -294,15 +294,15 @@ index a0200fd182658c7022ea47a09af2e1771a077e3a..4e67bcb162ec794438574d1fd07b8899
 +    "evmDeployedBytecodeBlakeHash": "0x17f49383764318dbf39f0fe0109fea3da0ea191a947c3df9ae2300a9d466a0c6",
 @@ -1244 +1244 @@
 -    "zkBytecodeHash": "0x01000087bd675f0cab8355c874cc00fcf5ee155254495b7e00f119a2a38ada07",
-+    "zkBytecodeHash": "0x01000089527c6142ad3fdb9921cba03b6a3f069bff32f6a7212e84f78f126c62",
++    "zkBytecodeHash": "0x01000089dcf0fdb8f4b5f969b7e5891a17b5afe449262f6b470f09b39ff99fae",
 @@ -1246 +1246 @@
 -    "evmBytecodeHash": "0x7096556f70a08ece2ba6437bddf44ce8d50b60bc7679cc2aa4974f086277d520",
-+    "evmBytecodeHash": "0x1d3e7416de833d89cec36b590b39db303e9f1f88df6db08f179b3bbd0d3eb55f",
++    "evmBytecodeHash": "0x2dac176b838f025bd79815a76317cbb6cb01efae0d78def29c5b9b6652fcf329",
 @@ -1248,2 +1248,2 @@
 -    "evmDeployedBytecodeHash": "0x8d91e6533f338c0ef59c07a39904bfb9ade7a534443f2c2ae7127ecc3ff09f9f",
 -    "evmDeployedBytecodeBlakeHash": "0x6ba0b5b817c1036a93909264bf1205e28914c1f76e81a6609469952a3d097e79",
-+    "evmDeployedBytecodeHash": "0xcbe0b15e7e23b1280ee64351247a578c930118c2d1b694c3decb9f43562a5227",
-+    "evmDeployedBytecodeBlakeHash": "0xfa335cb72a18b3bf8d16623e64063d76340ead1053dbc6b19bcd8044b0d2089f",
++    "evmDeployedBytecodeHash": "0xf779bc626ee41a3212f744db1463f9b3372ac82c8a8b2845aca3963637184b06",
++    "evmDeployedBytecodeBlakeHash": "0xdd4fcd17c6fbeebf23274f2c0d324dc4ab347dec5413c2a068e144d425335636",
 @@ -1254 +1254 @@
 -    "zkBytecodeHash": "0x010001792edba01924bb18b72c0dc537805774bc424e6e84664675ee7ae04f31",
 +    "zkBytecodeHash": "0x01000179dc7018e703ae6d263b32ecc271293c09d1e33c8c431ddc5a55cd0929",
@@ -900,17 +900,15 @@ index a0200fd182658c7022ea47a09af2e1771a077e3a..4e67bcb162ec794438574d1fd07b8899
 +    "evmDeployedBytecodeBlakeHash": "0x2f0ca039754e41c036f9650cee3b57a4cea6eb55f53bb78d793e3578926be4aa",
 @@ -2284 +2304 @@
 -    "zkBytecodeHash": "0x010001a7986c28318cfe12aa1c2c8841ac32e7101761bdfab6b9e3d98cd45aba",
-+    "zkBytecodeHash": "0x010001b7f286d41d11df31eae55022103e9c4446418453d35018a220d8cd8277",
++    "zkBytecodeHash": "0x010001a7d6435f6926ea76c2ce815bc11ae90848e5020ec9cfacc2938102bc40",
 @@ -2286 +2306 @@
 -    "evmBytecodeHash": "0x05894962f7824abd0d7b8f6859b56f155c52e1a10d1b8eb5d79a70e7b70f8b45",
-+    "evmBytecodeHash": "0xbba82478aa452fd811df1a52fe4df74752fb7f3b3d76a6ef860cf65e324cae40",
-@@ -2288,3 +2308,3 @@
++    "evmBytecodeHash": "0x15b23a29ea0d81e2923d3899569a6fe8dde7635fed85d5c826c031097e636be2",
+@@ -2288,2 +2308,2 @@
 -    "evmDeployedBytecodeHash": "0x941bdd6faf502f10fd0ab982a468325596f0d5b30aa0b3946d7b7929c04d8322",
 -    "evmDeployedBytecodeBlakeHash": "0x3608323233c28d95a5ff43ca5ca82a6342629b894f09c5ae57540e9257ff5a55",
--    "evmDeployedBytecodeLength": 4615
-+    "evmDeployedBytecodeHash": "0x055c865d8491b35060dcfbed541c1d383b4fec5d6e316e13e4223bd001915b53",
-+    "evmDeployedBytecodeBlakeHash": "0x2d269d74927233bd9e02ae465edd416aea63ac3b88945ac1c196e34a59e65e46",
-+    "evmDeployedBytecodeLength": 4650
++    "evmDeployedBytecodeHash": "0x210e9b2d63e26ef221e0f96cb5198aacf7412045913543c1cf22da94d35211d1",
++    "evmDeployedBytecodeBlakeHash": "0x1dcf7aac6f29dcac4ba95f1c8ac2b9534abbcaa73170c63c54b3f45e7eb3230d",
 @@ -2294 +2314 @@
 -    "zkBytecodeHash": "0x01000567a46996730ff088fe4e7bab7d23599259a03b2afe19b22751464b3c37",
 +    "zkBytecodeHash": "0x010005676742b27e296ad8f831e07776cd0f91537acc8621b3527f2c3ca7c868",
@@ -924,17 +922,17 @@ index a0200fd182658c7022ea47a09af2e1771a077e3a..4e67bcb162ec794438574d1fd07b8899
 +    "evmDeployedBytecodeBlakeHash": "0x3fe228bbaf4448b70a1a9da4ccf83d486a44da504580fdbf31bd5bf588518c7f",
 @@ -2304 +2324 @@
 -    "zkBytecodeHash": "0x010001cda9ae6717824365af9964e228b644d2952028683f75e1cdbb7ee023e7",
-+    "zkBytecodeHash": "0x010001e1d8e0a46811718897140dfb15ae22934d290bd740cd299900eef6b402",
++    "zkBytecodeHash": "0x010001c75b930ac6a5615517ed245c2c41ca25f8b73d87594b0a3cceda6ae886",
 @@ -2306 +2326 @@
 -    "evmBytecodeHash": "0x68f40791f112756d3ff75bc8601346cecf11adb4fbfb5b2fc4a0706e1f8f65ba",
-+    "evmBytecodeHash": "0xadd2cdaf3b078c806acfd3fdb73aecb12138b050d620f551b2d907f7af886e61",
++    "evmBytecodeHash": "0x3c1c0292ed84901f408c9ea845b1967cfecc3d1942a7304ceae2ebb647261191",
 @@ -2308,3 +2328,3 @@
 -    "evmDeployedBytecodeHash": "0x80cf5f060527e68ffe6f86da38ffd313fc670cc480635deb5a624a06b54e4a41",
 -    "evmDeployedBytecodeBlakeHash": "0x9779b0568cd099b8659e51e64a781053903e3dd30b3f62f3b0ef25691f1f519c",
 -    "evmDeployedBytecodeLength": 4838
-+    "evmDeployedBytecodeHash": "0xc558d01e2212b46ede008777379b7d25a1787b651b2f41b42162f30728e645af",
-+    "evmDeployedBytecodeBlakeHash": "0xdebc86a337120c510da32e5f6fa16bd3c7ab681cab088a55c898267085d89f8c",
-+    "evmDeployedBytecodeLength": 4855
++    "evmDeployedBytecodeHash": "0x2667566d4baef9bd13b645d6d37b3dc4305d4c13b9dbcd5d40fe7154710f7c08",
++    "evmDeployedBytecodeBlakeHash": "0x345ebd28604718805d02231ecb9a3aa7d35f8057163f0e2c691399752ae45fef",
++    "evmDeployedBytecodeLength": 4820
 @@ -2384 +2404 @@
 -    "evmBytecodeHash": "0x4a4cf3a269d54351feedae1711b6e3a50402b4e74a1a85e21a74b510b2a1e52e",
 +    "evmBytecodeHash": "0xd2d00cdfe2726ccb8acd44a2c0e9a15f97a8e4e55277045e6adb48464e07e35d",
@@ -2129,7 +2127,7 @@ index 0000000000000000000000000000000000000000..6c320e5f0e9ba53c7da5f1dbe290b642
 +    }
 +}
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
-index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574ace8a982 100644
+index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..e4baf39dcd64b13549b1c08d9db505e31a07e805 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 @@ -8,0 +9,2 @@ import {
@@ -2137,33 +2135,36 @@ index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574
 +    AddressHasNoCode,
 @@ -14 +15,0 @@ import {
 -    AddressAlreadySet,
-@@ -24,2 +25,2 @@ import {Ownable2Step} from "@openzeppelin/contracts-v4/access/Ownable2Step.sol";
+@@ -20,0 +22,2 @@ import {Ownable2Step} from "@openzeppelin/contracts-v4/access/Ownable2Step.sol";
++error NonZeroCarriedHash();
++
+@@ -24,2 +27,2 @@ import {Ownable2Step} from "@openzeppelin/contracts-v4/access/Ownable2Step.sol";
 -/// @notice This contract wraps ZKsync OS specific verifiers and routes zk-SNARK proof verification
 -/// to the verifier based on the provided proof type.
 +/// @notice SYSCOIN: This contract preserves the pinned upstream dual-verifier deployment surface while routing
 +/// zk-SNARK proof verification exclusively to the canonical ZKsync OS PLONK verifier.
-@@ -32 +33 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -32 +35 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -    // @notice This is proof-skipping verifier (mock), it's only checking the correctness of the public inputs.
 +    /// @dev Proof-skipping verifier type, supported only by the explicit testnet subclass.
-@@ -34,0 +36,3 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -34,0 +38,3 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 +    // SYSCOIN: fresh v0.4 deployments use the V8 proof-header version, not upstream's provisional slot.
 +    uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;
 +
-@@ -35,0 +40,2 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -35,0 +42,2 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 +    /// @dev SYSCOIN: retained for exact pinned-upstream artifact, deployment, and introspection
 +    /// compatibility. No production proof type routes to this dormant verifier.
-@@ -38,0 +45 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -38,0 +47 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 +    /// @dev SYSCOIN: only canonical slot 8 may be populated or owner-rotated.
-@@ -41 +48,4 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -41 +50,4 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -    /// @param _fflonkVerifier The address of the FFLONK verifier contract.
 +    /// @notice Emitted when governance atomically rotates the active PLONK verifier.
 +    event VerifierReplaced(uint32 indexed version, address indexed oldVerifier, address indexed newVerifier);
 +
 +    /// @param _fflonkVerifier The dormant, pinned-upstream FFLONK verifier contract.
-@@ -43 +53 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -43 +55 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -    /// @param _initialOwner The address of the initial owner of this contract.
 +    /// @param _initialOwner The initial owner governing verifier-version rotation.
-@@ -45,2 +55,7 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -45,2 +57,7 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -        fflonkVerifiers[0] = _fflonkVerifier;
 -        plonkVerifiers[0] = _plonkVerifier;
 +        // SYSCOIN: fail closed at deployment; both advertised implementations must be contracts,
@@ -2173,7 +2174,7 @@ index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574
 +        require(_initialOwner != address(0), ZeroAddress());
 +        fflonkVerifiers[CANONICAL_ZKSYNC_OS_VERIFIER_VERSION] = _fflonkVerifier;
 +        plonkVerifiers[CANONICAL_ZKSYNC_OS_VERIFIER_VERSION] = _plonkVerifier;
-@@ -50,20 +65,11 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -50,20 +67,11 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -    /// @notice Adds new verifiers for the specified version.
 -    /// @param version The version number for the verifiers.
 -    /// @param _fflonkVerifier The address of the FFLONK verifier contract.
@@ -2205,27 +2206,27 @@ index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574
 +        address oldVerifier = address(plonkVerifiers[version]);
 +        plonkVerifiers[version] = newPlonkVerifier;
 +        emit VerifierReplaced(version, oldVerifier, address(newPlonkVerifier));
-@@ -76,2 +82,3 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -76,2 +84,3 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -    ///     - 2 indicates the ZKsync OS Plonk verifier should be used.
 -    ///     - 3 indicates the mock verifier (skipping proof verification) should be used.
 +    ///     - 2 indicates the sole canonical ZKsync OS PLONK verifier.
 +    ///     - 3 delegates to `mockVerify`, which production rejects and only the testnet subclass overrides.
 +    ///     - Every other type is rejected.
-@@ -94,0 +102,5 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -94,0 +104,5 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 +        // SYSCOIN: only the server's canonical V8 proof header (0x802/0x803) may select a verifier.
 +        if (verifierVersion != CANONICAL_ZKSYNC_OS_VERIFIER_VERSION) {
 +            revert UnknownVerifierVersion();
 +        }
 +
-@@ -114,3 +126 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -114,3 +128 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -        }
 -        // If the verifier type is unknown, revert with an error.
 -        else {
 +        } else {
-@@ -121 +131 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -121 +133 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -    /// @dev Verifies the correctness of public input, doesn't check the validity of proof itself.
 +    /// @dev Production fails closed; the explicit testnet subclass overrides this for fake proving.
-@@ -125,0 +136,7 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -125,0 +138,7 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 +    /// @notice Reports whether this wrapper deliberately accepts fake/type-3 proofs.
 +    /// @dev SYSCOIN: the server uses this explicit marker to bind prover mode to the deployed verifier.
 +    // solhint-disable-next-line func-name-mixedcase
@@ -2233,19 +2234,19 @@ index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574
 +        return false;
 +    }
 +
-@@ -127 +144 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -127 +146 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -    /// @dev Used for backward compatibility with older Verifier implementation. Returns PLONK verification key hash.
 +    /// @dev Returns the sole canonical V8 PLONK verification key hash.
-@@ -129 +146 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -129 +148 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 -        return plonkVerifiers[0].verificationKeyHash();
 +        return plonkVerifiers[CANONICAL_ZKSYNC_OS_VERIFIER_VERSION].verificationKeyHash();
-@@ -137,0 +155,5 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -137,0 +157,5 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 +        // SYSCOIN: key-hash introspection must use the same canonical V8 selector as verification.
 +        if (verifierVersion != CANONICAL_ZKSYNC_OS_VERIFIER_VERSION) {
 +            revert UnknownVerifierVersion();
 +        }
 +
-@@ -155,0 +178,8 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+@@ -155,0 +180,8 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
 +    /// @dev SYSCOIN: shared constructor/rotation validation avoids advertising EOAs as verifiers.
 +    function _requireContract(address _verifier) private view {
 +        require(_verifier != address(0), ZeroAddress());
@@ -2254,6 +2255,21 @@ index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574
 +        }
 +    }
 +
+@@ -177,7 +209,5 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+-        if (initialHash == 0) {
+-            result = _publicInputs.length == 1
+-                ? _publicInputs[0]
+-                : uint256(keccak256(abi.encodePacked(_publicInputs)));
+-        } else {
+-            // Partial ranges: the carried hash is the first element of the concatenation.
+-            result = uint256(keccak256(abi.encodePacked(initialHash, _publicInputs)));
++        // The carried hash (`_proof[1]`) is a pre-V8 OhBender concept; the V8 unified layer
++        // has no continuation input, so no proof for a non-zero carry can exist. The wire
++        // slot is kept as reserved, must-be-zero.
++        if (initialHash != 0) {
++            revert NonZeroCarriedHash();
+@@ -184,0 +215 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
++        result = _publicInputs.length == 1 ? _publicInputs[0] : uint256(keccak256(abi.encodePacked(_publicInputs)));
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 index 5813db4c4d0cd494ccad3cc757b2b1a5765556a5..83f11bd02e5fc2ab3395f0b38d710b4e809f3d9c 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
@@ -5900,10 +5916,12 @@ index 0000000000000000000000000000000000000000..e29f756454421fc073a29f9bccc327e7
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a9580543716257b 100644
+index 23d9ea906769199415fdba37714e5f43b22ee1f2..4ac87961c974fd62d074ce13fe314c5dfa34712f 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-@@ -6,0 +7 @@ import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncO
+@@ -6 +6,2 @@ import {Test} from "forge-std/Test.sol";
+-import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol";
++import {NonZeroCarriedHash, ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol";
 +import {ZKsyncOSTestnetVerifier} from "contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol";
 @@ -9 +10,7 @@ import {IVerifierV2} from "contracts/state-transition/chain-interfaces/IVerifier
 -import {EmptyProofLength, MockVerifierNotSupported, UnknownVerifierType} from "contracts/common/L1ContractErrors.sol";
@@ -5940,20 +5958,20 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 @@ -56,0 +65,2 @@ contract ZKsyncOSDualVerifierTest is Test {
 +    uint256 internal constant SYSCOIN_TESTNET_L1_CHAIN_ID = 5700;
 +    uint256 internal constant SYSCOIN_GATEWAY_CHAIN_ID = 57001;
-@@ -71,2 +81,8 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -71,2 +81,3 @@ contract ZKsyncOSDualVerifierTest is Test {
 -    function test_constructor_setsFflonkVerifierAtVersion0() public view {
 -        assertEq(address(verifier.fflonkVerifiers(0)), address(fflonkVerifier));
 +    function test_constructor_leavesUnusedVersion0Empty() public view {
 +        assertEq(address(verifier.fflonkVerifiers(0)), address(0));
 +        assertEq(address(verifier.plonkVerifiers(0)), address(0));
-+    }
-+
+@@ -75,2 +86,30 @@ contract ZKsyncOSDualVerifierTest is Test {
+-    function test_constructor_setsPlonkVerifiersAtVersion0() public view {
+-        assertEq(address(verifier.plonkVerifiers(0)), address(plonkVerifier));
 +    function test_constructor_setsBothVerifiersAtCanonicalVersion8() public view {
 +        assertEq(address(verifier.fflonkVerifiers(8)), address(fflonkVerifier));
 +        assertEq(address(verifier.plonkVerifiers(8)), address(plonkVerifier));
-@@ -75,2 +91,25 @@ contract ZKsyncOSDualVerifierTest is Test {
--    function test_constructor_setsPlonkVerifiersAtVersion0() public view {
--        assertEq(address(verifier.plonkVerifiers(0)), address(plonkVerifier));
++    }
++
 +    function test_constructor_revertsForZeroFflonkVerifier() public {
 +        vm.expectRevert(ZeroAddress.selector);
 +        new ZKsyncOSDualVerifier(IVerifierV2(address(0)), IVerifier(address(plonkVerifier)), owner);
@@ -5995,7 +6013,7 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 +        );
 +        assertTrue(testnetVerifier.IS_TESTNET_VERIFIER());
 +    }
-@@ -89,2 +134,10 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -89,2 +134,21 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        vm.prank(owner);
 -        verifier.addVerifier(1, IVerifierV2(address(newFflonk)), IVerifier(address(newPlonk)));
 +    function test_testnetVerifierConstructor_revertsOnSyscoinMainnetExecutionChain() public {
@@ -6008,9 +6026,7 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 +            SYSCOIN_TESTNET_L1_CHAIN_ID
 +        );
 +    }
-@@ -92,2 +145,9 @@ contract ZKsyncOSDualVerifierTest is Test {
--        assertEq(address(verifier.fflonkVerifiers(1)), address(newFflonk));
--        assertEq(address(verifier.plonkVerifiers(1)), address(newPlonk));
++
 +    function test_testnetVerifierConstructor_revertsOnEthereumMainnetExecutionChain() public {
 +        vm.chainId(MAINNET_CHAIN_ID);
 +        vm.expectRevert();
@@ -6020,10 +6036,10 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 +            owner,
 +            SYSCOIN_TESTNET_L1_CHAIN_ID
 +        );
-@@ -96,3 +156,11 @@ contract ZKsyncOSDualVerifierTest is Test {
--    function test_addVerifier_revertsIfNotOwner() public {
--        MockFflonkVerifierOS newFflonk = new MockFflonkVerifierOS();
--        MockPlonkVerifierOS newPlonk = new MockPlonkVerifierOS();
++    }
+@@ -92,2 +156,10 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        assertEq(address(verifier.fflonkVerifiers(1)), address(newFflonk));
+-        assertEq(address(verifier.plonkVerifiers(1)), address(newPlonk));
 +    // SYSCOIN: Gateway execution must not conceal a production ultimate L1 from the mock-verifier guard.
 +    function test_testnetVerifierConstructor_revertsForSyscoinMainnetRootOnGateway() public {
 +        vm.chainId(SYSCOIN_GATEWAY_CHAIN_ID);
@@ -6034,11 +6050,10 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 +            owner,
 +            SYSCOIN_MAINNET_CHAIN_ID
 +        );
-+    }
-@@ -100,3 +168,15 @@ contract ZKsyncOSDualVerifierTest is Test {
--        vm.prank(makeAddr("notOwner"));
--        vm.expectRevert("Ownable: caller is not the owner");
--        verifier.addVerifier(1, IVerifierV2(address(newFflonk)), IVerifier(address(newPlonk)));
+@@ -96,3 +168,10 @@ contract ZKsyncOSDualVerifierTest is Test {
+-    function test_addVerifier_revertsIfNotOwner() public {
+-        MockFflonkVerifierOS newFflonk = new MockFflonkVerifierOS();
+-        MockPlonkVerifierOS newPlonk = new MockPlonkVerifierOS();
 +    function test_testnetVerifierConstructor_revertsForEthereumMainnetRootOnGateway() public {
 +        vm.chainId(SYSCOIN_GATEWAY_CHAIN_ID);
 +        vm.expectRevert();
@@ -6049,7 +6064,10 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 +            MAINNET_CHAIN_ID
 +        );
 +    }
-+
+@@ -100,3 +179,4 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        vm.prank(makeAddr("notOwner"));
+-        vm.expectRevert("Ownable: caller is not the owner");
+-        verifier.addVerifier(1, IVerifierV2(address(newFflonk)), IVerifier(address(newPlonk)));
 +    function test_testnetVerifierConstructor_revertsForZeroRootChain() public {
 +        vm.chainId(SYSCOIN_GATEWAY_CHAIN_ID);
 +        vm.expectRevert();
@@ -6073,18 +6091,18 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 -        // First add a verifier
 -        MockFflonkVerifierOS newFflonk = new MockFflonkVerifierOS();
 +    function test_replaceVerifier_ownerCanAtomicallyRotateCanonicalPlonk() public {
-@@ -113 +202 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -113 +202,8 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        verifier.addVerifier(1, IVerifierV2(address(newFflonk)), IVerifier(address(newPlonk)));
 +        verifier.replaceVerifier(8, IVerifier(address(newPlonk)));
-@@ -115 +204,9 @@ contract ZKsyncOSDualVerifierTest is Test {
--        // Then remove it
++
 +        assertEq(address(verifier.fflonkVerifiers(8)), address(fflonkVerifier));
 +        assertEq(address(verifier.plonkVerifiers(8)), address(newPlonk));
 +    }
 +
 +    function test_replaceVerifier_emitsRotationEvent() public {
 +        MockPlonkVerifierOS newPlonk = new MockPlonkVerifierOS();
-+
+@@ -115 +211,2 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        // Then remove it
 +        vm.expectEmit(true, true, true, true, address(verifier));
 +        emit VerifierReplaced(8, address(plonkVerifier), address(newPlonk));
 @@ -117 +214,5 @@ contract ZKsyncOSDualVerifierTest is Test {
@@ -6208,23 +6226,71 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 +    function test_verificationKeyHash_dormantFflonkTypeIsNotRoutable() public {
 +        vm.expectRevert(UnknownVerifierType.selector);
 +        verifier.verificationKeyHash(uint256(1) | (uint256(8) << 8));
-@@ -278,4 +414 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -270,2 +406,2 @@ contract ZKsyncOSDualVerifierTest is Test {
+-    function test_computeZKsyncOSHash_withNonZeroInitialHash() public view {
+-        uint256 initialHash = 12345;
++    function testFuzz_verify_revertsOnNonZeroCarriedHash(uint256 carriedHash) public {
++        vm.assume(carriedHash != 0);
+@@ -273,4 +409,3 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        publicInputs[0] = 100;
+-        publicInputs[1] = 200;
+-
+-        uint256 result = verifier.computeZKsyncOSHash(initialHash, publicInputs);
++        uint256[] memory proof = new uint256[](3);
++        proof[0] = ZKSYNC_OS_PLONK_VERIFICATION_TYPE | (8 << 8);
++        proof[1] = carriedHash;
+@@ -278,6 +413,2 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        // Manually compute expected hash
 -        uint256 expected = initialHash;
 -        expected = uint256(keccak256(abi.encodePacked(expected, publicInputs[0]))) >> 32;
 -        expected = uint256(keccak256(abi.encodePacked(expected, publicInputs[1]))) >> 32;
-+        uint256 expected = uint256(keccak256(abi.encodePacked(initialHash, publicInputs))) >> 32;
-@@ -294,3 +427 @@ contract ZKsyncOSDualVerifierTest is Test {
+-
+-        assertEq(result, expected);
++        vm.expectRevert(NonZeroCarriedHash.selector);
++        verifier.verify(publicInputs, proof);
+@@ -294,15 +425 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        // When initial hash is 0, it takes the first public input as the starting hash
 -        uint256 expected = publicInputs[0];
 -        expected = uint256(keccak256(abi.encodePacked(expected, publicInputs[1]))) >> 32;
+-
+-        assertEq(result, expected);
+-    }
+-
+-    function test_computeZKsyncOSHash_singleInput() public view {
+-        uint256 initialHash = 12345;
+-        uint256[] memory publicInputs = new uint256[](1);
+-        publicInputs[0] = 100;
+-
+-        uint256 result = verifier.computeZKsyncOSHash(initialHash, publicInputs);
+-
+-        uint256 expected = uint256(keccak256(abi.encodePacked(initialHash, publicInputs[0]))) >> 32;
 +        uint256 expected = uint256(keccak256(abi.encodePacked(publicInputs))) >> 32;
-@@ -320,2 +451,2 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -320,2 +437,2 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        // When initial is 0 and there's only one input, result is that input
 -        assertEq(result, publicInputs[0]);
 +        // Truncation is applied once even for a single-batch range.
 +        assertEq(result, publicInputs[0] >> 32);
-@@ -349 +480 @@ contract ZKsyncOSDualVerifierTest is Test {
+@@ -326,11 +443,5 @@ contract ZKsyncOSDualVerifierTest is Test {
+-    function testFuzz_computeZKsyncOSHash_deterministicResults(
+-        uint256 initialHash,
+-        uint256 input1,
+-        uint256 input2
+-    ) public view {
+-        uint256[] memory publicInputs = new uint256[](2);
+-        publicInputs[0] = input1;
+-        publicInputs[1] = input2;
+-
+-        uint256 result1 = verifier.computeZKsyncOSHash(initialHash, publicInputs);
+-        uint256 result2 = verifier.computeZKsyncOSHash(initialHash, publicInputs);
++    function testFuzz_computeZKsyncOSHash_hashesThreeInputsOnce(uint256 a, uint256 b, uint256 c) public view {
++        uint256[] memory publicInputs = new uint256[](3);
++        publicInputs[0] = a;
++        publicInputs[1] = b;
++        publicInputs[2] = c;
+@@ -338 +449 @@ contract ZKsyncOSDualVerifierTest is Test {
+-        assertEq(result1, result2);
++        assertEq(verifier.computeZKsyncOSHash(0, publicInputs), uint256(keccak256(abi.encodePacked(a, b, c))) >> 32);
+@@ -349 +460 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        proof[0] = verifierType; // type in lower 8 bits, version 0
 +        proof[0] = verifierType | (8 << 8); // type in lower 8 bits, canonical version 8
 diff --git a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol b/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
