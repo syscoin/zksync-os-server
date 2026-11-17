@@ -87,6 +87,10 @@ The released worker's sampled card occupancy peaked at 22,594 MiB during the ran
 
 The same V2 process repeated the two-batch range in 69.551 s. The smaller PLONK domain cut final-stage proving time by 86.5%. RISC wrapping now accounts for most of the warm range latency. In these samples the whole-worker peak board occupancy persisted. The server's normal byte decoder and app-bound verifier accepted both exact V2 packets against their independently derived batch statements, and rejected incorrect public input and trailing data. The native CLI boundary tests also passed. The fresh range SNARK was accepted by both normal compiled settlement contracts. [EVM receipt](syscoin-v32-airbender-v2-router-replay-2026-11-17.json)
 
+### Pinned host buffers in the FRI worker
+
+The default uses 256 host buffers per job and 128 per GPU, each 64 MiB. With 192 per job and 96 per GPU, pinned host memory fell from 24 to 18 GiB. The one-GPU FRI process peaked at 46.19 GiB RSS with the default and 40.20 GiB with the smaller pool. Cold setup took 49.065 s and 45.176 s respectively. Proving the same minimal batch took 7.160 s and 7.293 s, a 1.86% increase in this pair. The proof and its statement verified in both runs. Both used the normal 28 GiB device arena and eight replay threads. The smaller host pool is an opt-in setting pending larger concurrent workloads.
+
 ### Range scaling on the GPU
 
 For two independently verified FRI leaves, the GPU performed one merge pass in 1.162 s and one shrink pass in 0.676 s. Eight contiguous leaves required 3.353 s for the merge and 1.823, 1.119, 0.873 and 0.677 s for four shrink passes. The measured GPU proving passes totaled 1.838 s and 7.845 s respectively. Both workloads reached 20.6171875 GiB of live device allocations. Both sampled board high-water marks were 22,558 MiB. Independent native verification of the eight-batch output matched the exact ordered statement `0x0355137bde7b49d57aebbb5d36eed84834413ce60acbdd1e20e970923eba765c` and the registered recursion chain.
@@ -98,6 +102,8 @@ On the identical two genuine input proofs, the CPU backend on 32 physical cores 
 ### 8 GiB worker limit
 
 With 8,588,361,728 device bytes available on the RTX 5090, the V2 SNARK worker reserved 7,980,711,936 bytes and failed in RISC setup before accepting a job. One request required 35,713 blocks of 262,144 bytes, or 8.719 GiB, before other live buffers. The request comes from sorting and scanning the RISC circuit’s 585,105,408 copy-permutation cells. The live index, result and scratch buffers alone require about 15.26 GiB in this implementation. CPU merging alone leaves this independent wrapper allocation in place. [Boojum CUDA workspace calculation](https://github.com/syscoin/zksync-protocol/blob/3c3472d93611bafcdadf928829cc3fb357c6b156/crypto-gpu/crates/boojum-cuda/src/ops_complex.rs#L554-L579) · [Shivini setup allocation](https://github.com/syscoin/zksync-protocol/blob/3c3472d93611bafcdadf928829cc3fb357c6b156/crypto-gpu/crates/shivini/src/cs/setup.rs#L275-L287) The experiment limited available memory on the same card. An actual 8 GiB model could have different timings.
+
+The CLI independently verified the CPU-combined result. Feeding that result directly to the GPU RISC wrapper under the same memory cap failed in the same permutation-column setup allocation after 152.40 s. The call stack identified the request before compression or final PLONK. This isolates the device limit from the combiner.
 
 ### Streaming FRI verifier queries
 
