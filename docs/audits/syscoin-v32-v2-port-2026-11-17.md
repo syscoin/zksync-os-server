@@ -2,6 +2,10 @@
 
 This record follows the pre-launch testnet candidate. The comparison release is Syscoin server v0.24.4 (`d22deb8a`) and prover v0.9.1 (`b607b5cc`). The public proving bases are Airbender V2 `0decdcdb` and the protocol monorepo `2a2ecb3b`. Syscoin’s Airbender `main` fast-forwarded to the exact upstream commit in [PR #5](https://github.com/syscoin/zksync-airbender/pull/5). The circuit port now targets that branch directly. The server owns the patches for both Matter Labs OS v0.4.0 (`69bc4305`) and Era contracts (`8fb7c29a`). The v32 guest, ordered batch statement, and edge → Gateway → NEVM route are the integration targets.
 
+## Settlement identity and cutover
+
+The running v32 release and the proposed V2 port both use numeric verifier slot 8. The server maps this slot to one app-bound key. The deployed dual router has one PLONK target for that slot, and governance can rotate it. Existing in-flight proofs belong to the old key. For the current testnet, drain and execute outstanding ranges at a recorded common boundary before switching the server, workers and Gateway/root verifier registrations. A fresh network can start directly with its final guest identity. The current EVM receipt covers the retained testnet guest with the proposed production-mode router on isolated Anvil. A new OS guest, alternate streaming verifier or mainnet address/domain configuration has its own commitment and verification key. [Server registry](../../lib/types/src/protocol/proving_version.rs) · [Dual router](https://github.com/syscoin/era-contracts/blob/e504774cea21f7638b14d31067aec4cc0bc7787e/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol#L61-L77)
+
 ## Changes first made in this port
 
 | Change | Reason and observed result | Review |
