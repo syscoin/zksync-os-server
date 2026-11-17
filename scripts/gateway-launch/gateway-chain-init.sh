@@ -13,6 +13,7 @@ gl_require L1_NETWORK
 export PROTOCOL_VERSION
 gl_validate_l1_network_pair
 gl_normalize_canonical_deployment_inputs
+gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}"
 gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
 gl_ensure_zkstack_cli_release_current

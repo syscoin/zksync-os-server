@@ -23,6 +23,9 @@ gl_validate_zkstack_chain_name "${EDGE_CHAIN_NAME}" EDGE_CHAIN_NAME
 export PROTOCOL_VERSION
 gl_validate_l1_network_pair
 gl_normalize_canonical_deployment_inputs
+if [ "${RESUME_POST_ADMIN}" != true ]; then
+  gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${EDGE_CHAIN_ID:-}"
+fi
 gl_reject_no_proofs_on_mainnet
 gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
