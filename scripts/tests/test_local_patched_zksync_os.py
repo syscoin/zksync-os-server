@@ -6353,11 +6353,15 @@ gl_checkpoint_assert_fingerprint_matches
     def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
         manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        self.assertIn('rev = "b91eeaecc4d1b9a42ea6843432bb3e014899b303"', manifest)
+        release = json.loads(
+            (REPO_ROOT / "scripts/releases/era-v32/generated-verifier-manifest.json").read_text()
+        )
+        commit = release["v2_prover"]["airbender"]["commit"]
+        self.assertIn(f'rev = "{commit}"', manifest)
         self.assertIn('git = "https://github.com/syscoin/zksync-airbender"', manifest)
         self.assertNotIn('tag = "v0.6.0-rc.1"', manifest)
         self.assertIn(
-            "?rev=b91eeaecc4d1b9a42ea6843432bb3e014899b303#b91eeaecc4d1b9a42ea6843432bb3e014899b303",
+            f"?rev={commit}#{commit}",
             lock,
         )
         self.assertNotIn("?tag=v0.6.0-rc.1", lock)
@@ -6413,8 +6417,8 @@ gl_checkpoint_assert_fingerprint_matches
                 1354863053, 3205993576, 4096623771, 3765215681,
             ]),
             ("V8_SECURITY100_EXPECTED_CHAIN", [
-                4282637157, 1689531537, 3603061345, 846260096,
-                709872171, 3329938977, 3855288541, 1473390965,
+                84413938, 3995000497, 3553705882, 423231651,
+                3210519057, 1543137115, 700562094, 4069119977,
             ]),
         ):
             values = re.search(

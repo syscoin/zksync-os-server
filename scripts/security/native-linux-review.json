@@ -5,7 +5,7 @@
   "target": "x86_64-unknown-linux-gnu",
   "rustc_commit": "771916f9028e7fe56d2685f2c4f698de5d7d6a45",
   "lock_sha256": "61630e2918869c29e0721dc82c0148045f279a4a62bc9720be0fa5685ddc5248",
-  "source_sha256": "e4f675de31463c9880ecde5f61a6208b791a0edba122c97eafde38e2a719e96c",
+  "source_sha256": "74ff7f10448a7577b94812104cb8ec251ee662b947008f87320dcbfedd46c545",
   "graph_sha256": "cff60fc0c61b8166b7c0396028410b0cb9049e59919b6a74c3c2bb292e275477",
   "packages": {
     "cc": {
