@@ -1,6 +1,6 @@
 # Syscoin v32 port to public Airbender V2
 
-This record follows the pre-launch testnet candidate. The comparison release is Syscoin server v0.24.4 (`d22deb8a`) and prover v0.9.1 (`b607b5cc`). The public proving bases are Airbender V2 `0decdcdb` and the protocol monorepo `2a2ecb3b`. The server owns the patches for both Matter Labs OS v0.4.0 (`69bc4305`) and Era contracts (`8fb7c29a`). The v32 guest, ordered batch statement, and edge → Gateway → NEVM route are the integration targets.
+This record follows the pre-launch testnet candidate. The comparison release is Syscoin server v0.24.4 (`d22deb8a`) and prover v0.9.1 (`b607b5cc`). The public proving bases are Airbender V2 `0decdcdb` and the protocol monorepo `2a2ecb3b`. Syscoin’s Airbender `main` fast-forwarded to the exact upstream commit in [PR #5](https://github.com/syscoin/zksync-airbender/pull/5). The circuit port now targets that branch directly. The server owns the patches for both Matter Labs OS v0.4.0 (`69bc4305`) and Era contracts (`8fb7c29a`). The v32 guest, ordered batch statement, and edge → Gateway → NEVM route are the integration targets.
 
 ## Changes first made in this port
 
@@ -10,11 +10,12 @@ This record follows the pre-launch testnet candidate. The comparison release is 
 | Propagate verifier thread panics and failures from concurrent recursive binary builds. | The old checks could report success after a verifier thread panicked or a child build failed. These changes improve the reliability of qualification. | [Thread results](https://github.com/syscoin/zksync-airbender/commit/e18e08617) · [Build results](https://github.com/syscoin/zksync-airbender/commit/46068ebbe) |
 | Generate the recursive wrapper's runtime layout JSON and inline constraints from the same pinned circuit. | The public wrapper's checked-in runtime layout differed from its Airbender source. The regenerated candidate JSON matches the pinned native layout field by field. | [Generator and generated artifact](https://github.com/syscoin/zksync-protocol/pull/1) |
 | Make the commitment helper's recursion security level explicit. | The earlier helper selected Security80 internally. The candidate can independently derive the base and final Security100 commitments for the Syscoin guest. | [Commitment helper](https://github.com/syscoin/zksync-airbender/commit/bbe1b4ea8) |
-| Reject a nonzero reserved word on the native V8 settlement route. | Backport of Matter Labs' v32 correction. The existing VK and PLONK runtime were reproduced. All 40 router tests passed. Single-batch fuzzing checked 256 zero-carry cases for exact truncation and 256 nonzero-carry cases for the exact custom error. Both the Solidity PR and server patch contain the tests. The final router accepted the original two-batch proof and rejected a nonzero reserved word on isolated Anvil. Three of 278 inventory entries changed. | [Solidity review](https://github.com/syscoin/era-contracts/pull/20) · [Server-owned patch and pins](https://github.com/syscoin/zksync-os-server/pull/380) |
+| Reject a nonzero reserved word on the native V8 settlement route. | Backport of Matter Labs' v32 correction. The existing VK and PLONK runtime were reproduced. All 40 router tests passed. Single-batch fuzzing checked 256 zero-carry cases for exact truncation and 256 nonzero-carry cases for the exact custom error. Both the Solidity PR and server patch contain the tests. The final router accepted the original two-batch proof and rejected a nonzero reserved word on isolated Anvil. Three of 278 inventory entries changed. Slither 0.11.3 ran 56 configured detectors on the patched router and its dependencies and returned zero findings. | [Solidity review](https://github.com/syscoin/era-contracts/pull/20) · [Server-owned patch and pins](https://github.com/syscoin/zksync-os-server/pull/380) |
 | Stream authenticated FRI queries through one scratch record. | A separate experimental change reduces the number of simultaneously retained query records from 87 to 1 at Security100. In the emitted Security100 RV32 code the largest identified function frame fell from 895,104 to 96,896 bytes for unified recursion and to 98,368 bytes for unrolled recursion. This measures one compiled stack frame. Proof latency, GPU memory and the executed cycle count require separate tests. | [Streaming experiment](https://github.com/syscoin/zksync-airbender/pull/6) |
 | Bind cached RISC setup to the recursion end parameters and pin the Era guest SDK used by the wrapper. | A cache built for another recursion program must be discarded before key generation or proving. | [Wrapper cache check](https://github.com/syscoin/zksync-protocol/pull/1) |
 | Use the full log22 ceremony file for CPU key generation. | Compared all 4,194,304 G1 encodings and both G2 bases byte for byte against the authenticated log25 file. Inputs fell from 2,147,483,920 to 268,435,728 bytes. RSS and key generation time are measured separately. | [Worker implementation](https://github.com/syscoin/zksync-airbender-prover/pull/27) |
 | Update the server's host oracle transpiler for the V2 Rust nightly. | The old transpiler relied on the former return type of `u32::widening_mul`. The server Cargo patch selects the same transpiler as its FRI verifier. The RV32 guest binaries used for the comparison come from the v32 release. | Server native integration |
+| Initialize GPU host scratch and keep pooled host allocations alive through asynchronous CUDA work. | Completed callbacks and copies release their buffers for reuse. Pool pressure can force a stream synchronization. The implementation also corrects a CPU FFT scratch array. These changes affect prover execution and keep the guest artifacts byte-identical. | [GPU and FFT changes](https://github.com/syscoin/zksync-airbender/pull/7) |
 
 ## Existing fixes and optimizations carried forward
 
@@ -31,3 +32,15 @@ This record follows the pre-launch testnet candidate. The comparison release is 
 The Syscoin v32 worker produces per-batch FRI proofs. The range worker merges consecutive FRI proofs, performs RISC wrapping and compression, and produces the final PLONK SNARK. Per-batch proving can be distributed. The final wrap depends on the completed range.
 
 The comparison uses the released worker and the candidate on the same RTX 5090 with the same two contiguous native witnesses, Security100, and matching app-bound keys. Measurements track cold setup, warm FRI, range merge, RISC wrapping, compression, and final PLONK, along with process peak RSS and sampled GPU occupancy. These two minimal batches are a compatibility and latency workload. Sustained production throughput requires a representative transaction mix.
+
+
+| Released v0.9.1 on the RTX 5090 | Observed value |
+| --- | ---: |
+| Startup to first FRI job lease | 104.351 s |
+| First batch from lease to proof submission | 7.647 s |
+| Second batch from lease to proof submission | 4.035 s |
+| FRI worker process maximum resident set | 48,420,920 KiB |
+| FRI card-wide peak at 500 ms intervals, 16 MiB before attach | 29,432 MiB |
+| Device pool reservation reported at SNARK setup | 33,139,720,192 bytes |
+
+The reservation includes memory the allocator can reuse. Its value alone does not establish the GPU memory required by live proving data.
