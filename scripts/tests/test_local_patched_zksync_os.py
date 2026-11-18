@@ -51,7 +51,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
-PUBLISHED_ERA_PATCHED_TREE = "eba365c69d357027165f373642bd1979cf5e0c4b"
+PUBLISHED_ERA_PATCHED_TREE = "67201033b7603ef8ffb229c3bd29a11315b5c31a"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -6572,7 +6572,7 @@ gl_checkpoint_assert_fingerprint_matches
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
             'EXPECTED_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"',
-            'EXPECTED_PATCH_SIZE="282818"',
+            'EXPECTED_PATCH_SIZE="1502374"',
             'EXPECTED_PATCH_SHA256="0af88710e0275ce3dc49928a264e93639f945c85ab79600e12a41306731053d7"',
             'EXPECTED_PATCH_PATH_COUNT="68"',
             'EXPECTED_PATCH_PATHS_SHA256="7bf4667f179a5fc3b769b8ed51e193812d3f29b7dad4971552ac8ecbac9d4de5"',
@@ -7670,8 +7670,8 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1501853"',
-            'EXPECTED_PATCH_SHA256="af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7"',
+            'EXPECTED_PATCH_SIZE="1502374"',
+            'EXPECTED_PATCH_SHA256="d4fe95682a83939a4abe152611743c561a9e46a8e9cb43d87136c5f245c3dfaf"',
             'EXPECTED_PATCH_PATH_COUNT="87"',
             'EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
@@ -7819,7 +7819,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol",
-                "c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77",
+                "d73ab6ed056c8c037e55f5da44d3b54ce01c5444fbc79ed2435145822d827204",
             ),
             (
                 "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol",

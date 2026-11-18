@@ -157,6 +157,25 @@ class ActivationTests(unittest.TestCase):
 
 
 class BundleAndLauncherTests(unittest.TestCase):
+    def test_source_postimage_manifest_rejects_stale_bytes_and_missing_paths(self):
+        module, _ = M.load_bundle()
+        files = {"a.sol": b"new contract", "b.sol": b"retained contract"}
+        rows = [f"{len(raw)} {sha(raw)} {path}" for path, raw in files.items()]
+
+        def manifest(entries):
+            return ("done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n" + "\n".join(entries)
+                    + "\nSYSCOIN_POSTIMAGE_MANIFEST\n").encode()
+
+        module.check_source_postimages(manifest(rows), set(files), files.__getitem__)
+        stale = rows.copy()
+        stale[0] = f"{len(files['a.sol'])} {sha(b'old contract')} a.sol"
+        with self.assertRaisesRegex(ValueError, "source postimage mismatch: a.sol"):
+            module.check_source_postimages(manifest(stale), set(files), files.__getitem__)
+        with self.assertRaisesRegex(ValueError, "path set mismatch"):
+            module.check_source_postimages(manifest(rows[:1]), set(files), files.__getitem__)
+        with self.assertRaisesRegex(ValueError, "unexpected source postimage path"):
+            module.check_source_postimages(manifest(rows + rows[:1]), set(files), files.__getitem__)
+
     def test_reserved_word_candidate_pins_verified_router_bytecode(self):
         module, manifest = M.load_bundle()
         generation = manifest["contract_generation_provenance"]
@@ -255,8 +274,8 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
-        self.assertEqual(module.SOURCE, "eba365c69d357027165f373642bd1979cf5e0c4b")
-        self.assertEqual(module.CANDIDATE, "11d41dae8b711eb293fbed9cbf3a125502e253a4")
+        self.assertEqual(module.SOURCE, "67201033b7603ef8ffb229c3bd29a11315b5c31a")
+        self.assertEqual(module.CANDIDATE, "e3e5360b281da76ceaa52d03cf949c98def0fc61")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
                          "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153")
@@ -477,8 +496,8 @@ class BundleAndLauncherTests(unittest.TestCase):
             ROOT / "scripts/apply-era-contracts-syscoin-patch.sh",
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
-        self.assertEqual(result["source_tree"], "eba365c69d357027165f373642bd1979cf5e0c4b")
-        self.assertEqual(result["candidate_tree"], "11d41dae8b711eb293fbed9cbf3a125502e253a4")
+        self.assertEqual(result["source_tree"], "67201033b7603ef8ffb229c3bd29a11315b5c31a")
+        self.assertEqual(result["candidate_tree"], "e3e5360b281da76ceaa52d03cf949c98def0fc61")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])

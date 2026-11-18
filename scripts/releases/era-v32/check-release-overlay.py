@@ -6,14 +6,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
 BASE = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
-SOURCE = "eba365c69d357027165f373642bd1979cf5e0c4b"
-CANDIDATE = "11d41dae8b711eb293fbed9cbf3a125502e253a4"
-SOURCE_PATCH_SHA = "af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7"
-SOURCE_APPLICATOR_SHA = "967a01bfb0b70ebc4f1c79acdf53ba546aa0f61d4bee586f13104fdb456e8efb"
+SOURCE = "67201033b7603ef8ffb229c3bd29a11315b5c31a"
+CANDIDATE = "e3e5360b281da76ceaa52d03cf949c98def0fc61"
+SOURCE_PATCH_SHA = "d4fe95682a83939a4abe152611743c561a9e46a8e9cb43d87136c5f245c3dfaf"
+SOURCE_APPLICATOR_SHA = "3ba9a94741fec046b0d6261a6f934bb171c44f54f201b25729517eeddf825163"
 OVERLAY_SHA = "d4ed045e955a3c63784ecd9afe39f92141b4ad3fcd00a74451998b73d6f0a6c9"
 PATHS = {
     "AllContractsHashes.json",
@@ -67,9 +68,29 @@ def git(repo, env, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], env=env)
 
 
+def check_source_postimages(applicator, expected_paths, read_source):
+    # Tree identity alone does not prove that the shell applicator accepts that tree.
+    match = re.search(rb"done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n(.*?)\nSYSCOIN_POSTIMAGE_MANIFEST\n",
+                      applicator, re.S)
+    require(match is not None, "source postimage manifest missing")
+    paths = []
+    for line in match[1].decode().splitlines():
+        fields = line.split()
+        require(len(fields) == 3, "invalid source postimage row")
+        size, digest, path = fields
+        require(size.isdecimal() and re.fullmatch(r"[0-9a-f]{64}", digest),
+                "invalid source postimage identity")
+        require(path in expected_paths and path not in paths, "unexpected source postimage path")
+        raw = read_source(path)
+        require(len(raw) == int(size) and hashlib.sha256(raw).hexdigest() == digest,
+                "source postimage mismatch: " + path)
+        paths.append(path)
+    require(paths == sorted(expected_paths), "source postimage path set mismatch")
+
+
 def check_bundle(repo, source_patch, source_applicator, overlay):
     checked_file(source_patch, SOURCE_PATCH_SHA)
-    checked_file(source_applicator, SOURCE_APPLICATOR_SHA)
+    applicator = checked_file(source_applicator, SOURCE_APPLICATOR_SHA)
     checked_file(overlay, OVERLAY_SHA)
     repo = Path(repo)
     require(repo.is_absolute() and repo.resolve() == repo, "repository path must be canonical")
@@ -87,6 +108,9 @@ def check_bundle(repo, source_patch, source_applicator, overlay):
         git(repo, env, "read-tree", BASE)
         git(repo, env, "apply", "--cached", "--unidiff-zero", "--whitespace=error-all", str(source_patch))
         require(git(repo, env, "write-tree").decode().strip() == SOURCE, "reviewed source tree mismatch")
+        source_paths = git(repo, env, "diff-tree", "--no-commit-id", "--name-only", "-r", BASE, SOURCE)
+        check_source_postimages(applicator, set(source_paths.decode().splitlines()),
+                                lambda path: git(repo, env, "show", SOURCE + ":" + path))
         before = json.loads(git(repo, env, "show", SOURCE + ":AllContractsHashes.json"))
         git(repo, env, "apply", "--cached", "--unidiff-zero", "--whitespace=error-all", str(overlay))
         actual = git(repo, env, "write-tree").decode().strip()

@@ -2,10 +2,10 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "eba365c69d357027165f373642bd1979cf5e0c4b",
-  "candidate_tree": "11d41dae8b711eb293fbed9cbf3a125502e253a4",
-  "source_patch_sha256": "af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7",
-  "source_applicator_sha256": "967a01bfb0b70ebc4f1c79acdf53ba546aa0f61d4bee586f13104fdb456e8efb",
+  "reviewed_source_tree": "67201033b7603ef8ffb229c3bd29a11315b5c31a",
+  "candidate_tree": "e3e5360b281da76ceaa52d03cf949c98def0fc61",
+  "source_patch_sha256": "d4fe95682a83939a4abe152611743c561a9e46a8e9cb43d87136c5f245c3dfaf",
+  "source_applicator_sha256": "3ba9a94741fec046b0d6261a6f934bb171c44f54f201b25729517eeddf825163",
   "overlay_sha256": "d4ed045e955a3c63784ecd9afe39f92141b4ad3fcd00a74451998b73d6f0a6c9",
   "overlay_size": 120678,
   "verification_key_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
@@ -41,10 +41,10 @@
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
     "status": "completed_v32_reserved_word_router_inventory_and_replay",
-    "candidate_tree": "11d41dae8b711eb293fbed9cbf3a125502e253a4",
+    "candidate_tree": "e3e5360b281da76ceaa52d03cf949c98def0fc61",
     "previous_candidate_tree": "39aba041f59da6733f1562f2dee74ef39fc0c024",
-    "reviewed_source_tree": "eba365c69d357027165f373642bd1979cf5e0c4b",
-    "contracts_commit": "ff897bc44d7b8c8e34a5921efddd2c6522839849",
+    "reviewed_source_tree": "67201033b7603ef8ffb229c3bd29a11315b5c31a",
+    "contracts_commit": "2bd234820b0ee327e20c4b62794e0052330bcb43",
     "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
     "verification_key_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
     "normal_l1_evm_and_eravm_build_passed": true,
@@ -71,7 +71,15 @@
     },
     "isolated_evm_two_batch_proof_accepted": true,
     "nonzero_reserved_word_error_selector": "0x31967fc6",
-    "live_gateway_or_root_verified": false
+    "live_gateway_or_root_verified": false,
+    "test_only_source_refresh": {
+      "previous_candidate_tree": "11d41dae8b711eb293fbed9cbf3a125502e253a4",
+      "previous_reviewed_source_tree": "eba365c69d357027165f373642bd1979cf5e0c4b",
+      "paths": [
+        "l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol"
+      ],
+      "production_contracts_and_inventory_unchanged": true
+    }
   },
   "historical_pre_reserved_word_contract_generation_provenance": {
     "status": "completed_canonical_query_normal_profile_incremental_inventory",
@@ -125,7 +133,9 @@
     "full_contract_hash_recomputation_passed": true,
     "contract_hash_check_passed": true,
     "inventory_rows": 278,
-    "changed_inventory_rows": ["l1-contracts/AdminFacet"],
+    "changed_inventory_rows": [
+      "l1-contracts/AdminFacet"
+    ],
     "unchanged_inventory_rows": 277,
     "admin_abi_unchanged": true,
     "admin_evm_runtime_bytes": 22482,
@@ -231,7 +241,10 @@
     "genuine_serialized_calldata_sha256": "df7f4ad40c97582c9740b3dfaaa214634dff206deea6ffd7c6e5a71fdac57961",
     "retained_risc_proof_sha256": "ef50b617fe6fbbce664a3ee121a0f197ebd3ec412e56a9f7bdbe5392361998a7",
     "retained_risc_vk_sha256": "52c41727ee5e90d4f140c846bf5f21e30c100f8ab8c8ccced66e4008edb7c2f6",
-    "input_batch_range": {"from": 1, "to": 2},
+    "input_batch_range": {
+      "from": 1,
+      "to": 2
+    },
     "real_proof_verified": true,
     "native_wrapper_stages_verified": 2,
     "independent_cpu_verifications_passed": 2,
@@ -252,7 +265,12 @@
       "source_tree": "ac0a431ca1d4738b07a23bad1e9f7fd4274a0066",
       "archive_sha256": "c3a29c41186bbd05eafa6ff9d5b7084d425640efa7dfe14b8298e791707df9c0",
       "exit_code": 0,
-      "passed_tests": {"protocol_version": 4, "fri": 12, "snark": 54, "total": 70},
+      "passed_tests": {
+        "protocol_version": 4,
+        "fri": 12,
+        "snark": 54,
+        "total": 70
+      },
       "failed_tests": 0,
       "ignored_tests": 0,
       "normal_locked_prepared_sources": true,

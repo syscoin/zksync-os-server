@@ -1582,7 +1582,7 @@ index 8769d8079a410b184643618072c7f9406c61b9ed..fe1aae6697f3059a0ae279247336fca3
 -    DEFAULT_PRIORITY_TX_MAX_GAS_LIMIT
 +    DEFAULT_PUBDATA_PRICING_MODE
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
-index 8cae1a63..52549357 100644
+index 8cae1a6306556e85ba60c590f83dc7afdfe22acf..525493577b11e197bc261e47da0230434e049d55 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 @@ -7,0 +8 @@ import {Diamond} from "../../libraries/Diamond.sol";
@@ -4480,7 +4480,7 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..20fc395c6a98cfeff2c8156fc8bc05da
 +        _commitSyscoinWithEdgeRefs(input, root, abi.encodeWithSelector(SyscoinEdgeDANotAvailable.selector, dataHash));
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
 new file mode 100644
-index 00000000..d9b21b34
+index 0000000000000000000000000000000000000000..d9b21b34d02649b9f5bea38fe2d21bbfb892728e
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/PriorityGasLimit.t.sol
 @@ -0,0 +1,621 @@
@@ -5916,7 +5916,7 @@ index 0000000000000000000000000000000000000000..e29f756454421fc073a29f9bccc327e7
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-index 23d9ea906769199415fdba37714e5f43b22ee1f2..573e54ccbe928371ad25b9a0ece35d36a6a8239b 100644
+index 23d9ea906769199415fdba37714e5f43b22ee1f2..949fca90a539d23d51e8a1b2a748862866fc34f1 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 @@ -6 +6,2 @@ import {Test} from "forge-std/Test.sol";
@@ -6229,8 +6229,8 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..573e54ccbe928371ad25b9a0ece35d36
 @@ -270,2 +406,2 @@ contract ZKsyncOSDualVerifierTest is Test {
 -    function test_computeZKsyncOSHash_withNonZeroInitialHash() public view {
 -        uint256 initialHash = 12345;
-+    function testFuzz_verify_revertsOnNonZeroCarriedHash(uint256 carriedHash) public {
-+        vm.assume(carriedHash != 0);
++    function testFuzz_verify_revertsOnNonZeroCarriedHash(uint256 _carriedHash) public {
++        vm.assume(_carriedHash != 0);
 @@ -273,4 +409,3 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        publicInputs[0] = 100;
 -        publicInputs[1] = 200;
@@ -6238,7 +6238,7 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..573e54ccbe928371ad25b9a0ece35d36
 -        uint256 result = verifier.computeZKsyncOSHash(initialHash, publicInputs);
 +        uint256[] memory proof = new uint256[](3);
 +        proof[0] = ZKSYNC_OS_PLONK_VERIFICATION_TYPE | (8 << 8);
-+        proof[1] = carriedHash;
++        proof[1] = _carriedHash;
 @@ -278,6 +413,2 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        // Manually compute expected hash
 -        uint256 expected = initialHash;
@@ -6256,33 +6256,36 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..573e54ccbe928371ad25b9a0ece35d36
 @@ -301,2 +430 @@ contract ZKsyncOSDualVerifierTest is Test {
 -    function test_computeZKsyncOSHash_singleInput() public view {
 -        uint256 initialHash = 12345;
-+    function testFuzz_computeZKsyncOSHash_singleInputWithZeroInitial(uint256 batchHash) public view {
++    function testFuzz_computeZKsyncOSHash_singleInputWithZeroInitial(uint256 _batchHash) public view {
 @@ -304,5 +432 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        publicInputs[0] = 100;
 -
 -        uint256 result = verifier.computeZKsyncOSHash(initialHash, publicInputs);
 -
 -        uint256 expected = uint256(keccak256(abi.encodePacked(initialHash, publicInputs[0]))) >> 32;
-+        publicInputs[0] = batchHash;
++        publicInputs[0] = _batchHash;
 @@ -310 +434 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        assertEq(result, expected);
-+        assertEq(verifier.computeZKsyncOSHash(0, publicInputs), batchHash >> 32);
-@@ -313,2 +437,2 @@ contract ZKsyncOSDualVerifierTest is Test {
++        assertEq(verifier.computeZKsyncOSHash(0, publicInputs), _batchHash >> 32);
+@@ -313,2 +437,5 @@ contract ZKsyncOSDualVerifierTest is Test {
 -    function test_computeZKsyncOSHash_singleInputWithZeroInitial() public view {
 -        uint256 initialHash = 0;
-+    function testFuzz_computeZKsyncOSHash_singleInputRejectsNonzeroCarry(uint256 carriedHash, uint256 batchHash) public {
-+        vm.assume(carriedHash != 0);
-@@ -316 +440 @@ contract ZKsyncOSDualVerifierTest is Test {
++    function testFuzz_computeZKsyncOSHash_singleInputRejectsNonzeroCarry(
++        uint256 _carriedHash,
++        uint256 _batchHash
++    ) public {
++        vm.assume(_carriedHash != 0);
+@@ -316 +443 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        publicInputs[0] = 100;
-+        publicInputs[0] = batchHash;
-@@ -318,4 +442,2 @@ contract ZKsyncOSDualVerifierTest is Test {
++        publicInputs[0] = _batchHash;
+@@ -318,4 +445,2 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        uint256 result = verifier.computeZKsyncOSHash(initialHash, publicInputs);
 -
 -        // When initial is 0 and there's only one input, result is that input
 -        assertEq(result, publicInputs[0]);
 +        vm.expectRevert(NonZeroCarriedHash.selector);
-+        verifier.computeZKsyncOSHash(carriedHash, publicInputs);
-@@ -326,11 +448,5 @@ contract ZKsyncOSDualVerifierTest is Test {
++        verifier.computeZKsyncOSHash(_carriedHash, publicInputs);
+@@ -326,11 +451,5 @@ contract ZKsyncOSDualVerifierTest is Test {
 -    function testFuzz_computeZKsyncOSHash_deterministicResults(
 -        uint256 initialHash,
 -        uint256 input1,
@@ -6294,17 +6297,22 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..573e54ccbe928371ad25b9a0ece35d36
 -
 -        uint256 result1 = verifier.computeZKsyncOSHash(initialHash, publicInputs);
 -        uint256 result2 = verifier.computeZKsyncOSHash(initialHash, publicInputs);
-+    function testFuzz_computeZKsyncOSHash_hashesThreeInputsOnce(uint256 a, uint256 b, uint256 c) public view {
++    function testFuzz_computeZKsyncOSHash_hashesThreeInputsOnce(uint256 _a, uint256 _b, uint256 _c) public view {
 +        uint256[] memory publicInputs = new uint256[](3);
-+        publicInputs[0] = a;
-+        publicInputs[1] = b;
-+        publicInputs[2] = c;
-@@ -338 +454 @@ contract ZKsyncOSDualVerifierTest is Test {
++        publicInputs[0] = _a;
++        publicInputs[1] = _b;
++        publicInputs[2] = _c;
+@@ -338 +457 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        assertEq(result1, result2);
-+        assertEq(verifier.computeZKsyncOSHash(0, publicInputs), uint256(keccak256(abi.encodePacked(a, b, c))) >> 32);
-@@ -349 +465 @@ contract ZKsyncOSDualVerifierTest is Test {
++        assertEq(verifier.computeZKsyncOSHash(0, publicInputs), uint256(keccak256(abi.encodePacked(_a, _b, _c))) >> 32);
+@@ -341,2 +460,2 @@ contract ZKsyncOSDualVerifierTest is Test {
+-    function testFuzz_verify_revertsOnUnknownType(uint8 verifierType) public {
+-        vm.assume(verifierType != 2 && verifierType != 3);
++    function testFuzz_verify_revertsOnUnknownType(uint8 _verifierType) public {
++        vm.assume(_verifierType != 2 && _verifierType != 3);
+@@ -349 +468 @@ contract ZKsyncOSDualVerifierTest is Test {
 -        proof[0] = verifierType; // type in lower 8 bits, version 0
-+        proof[0] = verifierType | (8 << 8); // type in lower 8 bits, canonical version 8
++        proof[0] = _verifierType | (8 << 8); // type in lower 8 bits, canonical version 8
 diff --git a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol b/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
 index 74ade949075a9889c33a7be8d41e0c531765fb1c..10192452ee643862e7940bc2cfa5bf48bb916966 100644
 --- a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
