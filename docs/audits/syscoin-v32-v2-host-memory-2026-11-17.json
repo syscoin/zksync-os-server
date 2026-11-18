@@ -1,0 +1,299 @@
+{
+  "schema": "syscoin-v32-v2-host-memory-review-v1",
+  "source_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+  "source_sha256": {
+    "gpu_prover/src/execution/cpu_pipeline_model.rs": "c51209195727775efc9c0a9cbe5bbce05e85877a2e37e06f104221ee13ceb336",
+    "gpu_prover/src/execution/cpu_worker.rs": "05b900209cec335e5cdf0f377b36636a3c1f962a9fa459cf235e724862f93f2a",
+    "gpu_prover/src/execution/mod.rs": "0873c639fbe29a913cdb98d4f3014eba33f30cbbf7fb45d6f3c6e06f81ea3e2b",
+    "gpu_prover/src/execution/prover.rs": "6a6772561b0a3966f1759e270876755ec980fd329ddd0b5a44237eacf2e0397f",
+    "gpu_prover/src/execution/simulation_runner.rs": "56183cfaef41dc6e5ef2f5c8d85f47890bffd458dd4652b9cfcfd9a5ca6be38a",
+    "gpu_prover/src/execution/simulator_memory.rs": "e1a0a5ce5479d54cb91994b1d84865a2e316580256a4891dcd2ffa9e1316c86d"
+  },
+  "linux_collector_regression": {
+    "passed": 1,
+    "failed": 0,
+    "elapsed_seconds": 0.49,
+    "log_sha256": "7524631c9755f60729800c119af6919733547ef46cbf64f8a3f663fa5355dee9",
+    "exercises": [
+      "2 MiB mapping alignment",
+      "full 1 GiB guest extent",
+      "normal collection",
+      "repeated cancellation reset",
+      "last address in guest RAM"
+    ]
+  },
+  "cpu_jit_probe": {
+    "passed": true,
+    "threads": 4,
+    "cases": [
+      {
+        "arm": "default",
+        "canonical_records_keccak": "77d5a98c0fbac2f6d2c10e31616a9e9b437e49fa0c92a21c6d0e77e1d7cacd25",
+        "cycles": 32031187,
+        "entry_count": 282607,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 281,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          42229,
+          41935,
+          42219,
+          42021
+        ],
+        "threads": 4,
+        "median_scan_ms": 42.12
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "77d5a98c0fbac2f6d2c10e31616a9e9b437e49fa0c92a21c6d0e77e1d7cacd25",
+        "cycles": 32031187,
+        "entry_count": 282607,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 281,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5972,
+          5994,
+          5806,
+          5859
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.9155
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "2ed2d3008da384cc597862c6aefeb86bc5ece6853e69a6f1926672b77cd5f341",
+        "cycles": 32013920,
+        "entry_count": 85666,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 86,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          41603,
+          41320,
+          41340,
+          41262
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.33
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "2ed2d3008da384cc597862c6aefeb86bc5ece6853e69a6f1926672b77cd5f341",
+        "cycles": 32013920,
+        "entry_count": 85666,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 86,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5753,
+          5540,
+          5403,
+          5322
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.4715
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "7c1757a4989f870d43d3d10228fe170d577a06f0197f7a154d7eadad16e9fbdd",
+        "cycles": 11957098,
+        "entry_count": 246961,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 247,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          42849,
+          41764,
+          41835,
+          41951
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.893
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "7c1757a4989f870d43d3d10228fe170d577a06f0197f7a154d7eadad16e9fbdd",
+        "cycles": 11957098,
+        "entry_count": 246961,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 247,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5755,
+          5648,
+          5668,
+          5730
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.699
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "01dc9673ccb9b6ff85d01ef3e35476e9e147f6124e1a6a79fb8e51be36826d4c",
+        "cycles": 11942196,
+        "entry_count": 51488,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 53,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          42365,
+          41797,
+          41482,
+          41516
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.6565
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "01dc9673ccb9b6ff85d01ef3e35476e9e147f6124e1a6a79fb8e51be36826d4c",
+        "cycles": 11942196,
+        "entry_count": 51488,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 53,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5546,
+          5319,
+          5352,
+          5293
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.3355
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "6a2ef960f29d1dafe872951cd5da9e30f805f33f9661d737bef597f9e43c1ec7",
+        "cycles": 23917963,
+        "entry_count": 247143,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 247,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          41230,
+          41265,
+          41258,
+          41035
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.244
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "6a2ef960f29d1dafe872951cd5da9e30f805f33f9661d737bef597f9e43c1ec7",
+        "cycles": 23917963,
+        "entry_count": 247143,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 247,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5780,
+          5744,
+          5689,
+          5930
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.762
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "ee4c8d6c5bdac61faa3ed29c87cdff42ae6c25b42d23cac2ed867413f52bea63",
+        "cycles": 23888159,
+        "entry_count": 51670,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 53,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          40878,
+          40763,
+          40452,
+          40556
+        ],
+        "threads": 4,
+        "median_scan_ms": 40.6595
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "ee4c8d6c5bdac61faa3ed29c87cdff42ae6c25b42d23cac2ed867413f52bea63",
+        "cycles": 23888159,
+        "entry_count": 51670,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 53,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5568,
+          5449,
+          5764,
+          5417
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.5085
+      }
+    ],
+    "log_sha256": "69f6cb0a6455529d9cc6fafd3df7c77da40a554ae8b3e301f818bc9c09d8a281",
+    "source_sha256": "50c25aee0c78e577601edecc6a10f98034bdfc09adb39cdc6dc03d78e02d0f14",
+    "scope": "Exact three authentic inputs replayed in both verifier versions and both address extents. The smaller extent is diagnostic only."
+  },
+  "gpu_qualification": "pending",
+  "review": {
+    "dma_buffer_ownership": "The simulator image remains CPU-only. Trace and initialization/teardown transfers use separately pinned owned staging allocations.",
+    "normal_reset": "Production collector remains unchanged and clears all observed memory timestamps and values.",
+    "cancelled_reset": "Exclusive anonymous mapping discard restores the complete image and timestamps to zero. A failed discard uses the prior full zero fill.",
+    "virtual_extent": "All existing JitRunnerRam values remain supported and the production default still exposes 1 GiB guest memory.",
+    "default_policy": "Pinned backing remains the default; AIRBENDER_SIMULATOR_MEMORY=demand-paged opts into Linux anonymous mappings."
+  },
+  "airbender_pull_request": "https://github.com/syscoin/zksync-airbender/pull/9",
+  "qualification_policy": "Optional draft; current release pins and default pinned allocation remain unchanged. Runtime measurements pending.",
+  "protocol_host_setup": {
+    "pull_request": "https://github.com/syscoin/zksync-protocol/pull/2",
+    "source_commit": "175fb68cbb47ff6702ace7d104fc66b206da28ba",
+    "review": "RISC and compression assembly placement hints are independently owned. The caller drops spent assembly and moves hints; Shivini drops CPU permutation columns after reading their geometry and reconstructs the device permutation from retained indexes. Circuit construction, keys and transcript are unchanged.",
+    "optimized_linux_cuda_stub_all_target_check": "passed",
+    "check_log_sha256": "cffa2abe6d7fbac70f6e78ea1831debb8a1e1475fff6eaf8d71a6533e3d7cfaf",
+    "cpu_regression": {
+      "test": "compression_synthesis_fits_row_budget",
+      "passed": 1,
+      "failed": 0,
+      "log_sha256": "56a66c7755bf8646c9b152763196f07bbea4d0f0c505a7b41bf575a6e6e4258f"
+    },
+    "gpu_qualification": "pending",
+    "default_policy": "Current release retains parent protocol revision 3c3472d93611bafcdadf928829cc3fb357c6b156."
+  }
+}

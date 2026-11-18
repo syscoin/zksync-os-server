@@ -52,7 +52,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
 )
 HISTORICAL_KEYGEN_ZKSYNC_OS_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "8c42bef28b5be792bc2b0438531dc7ab1a862547"
-PUBLISHED_ERA_PATCHED_TREE = "eba365c69d357027165f373642bd1979cf5e0c4b"
+PUBLISHED_ERA_PATCHED_TREE = "e92f4696ba50b7e20b1eb632df524e6630f81ad8"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -6578,7 +6578,7 @@ gl_checkpoint_assert_fingerprint_matches
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
             'EXPECTED_PATCHED_TREE="8c42bef28b5be792bc2b0438531dc7ab1a862547"',
-            'EXPECTED_PATCH_SIZE="293780"',
+            'EXPECTED_PATCH_SIZE="1524454"',
             'EXPECTED_PATCH_SHA256="507647ccfe33d1de6fc9cb4cddad3acfeeeb160140fd684accea68f267b16412"',
             'EXPECTED_PATCH_PATH_COUNT="72"',
             'EXPECTED_PATCH_PATHS_SHA256="3bc9bf4c9f80c2c1aea6dd488cc16397cb32bdf026d2c4af5813ec02b0a25edb"',
@@ -7665,10 +7665,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1501853"',
-            'EXPECTED_PATCH_SHA256="af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7"',
-            'EXPECTED_PATCH_PATH_COUNT="87"',
-            'EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"',
+            'EXPECTED_PATCH_SIZE="1524454"',
+            'EXPECTED_PATCH_SHA256="fb93e5b883e4ef7c5e9496d4fcdf6b0feafb1d8f7ea659b3c7f668f3cfb9e8a8"',
+            'EXPECTED_PATCH_PATH_COUNT="89"',
+            'EXPECTED_PATCH_PATHS_SHA256="7409a53001df470bee0b90f01d0ff45b876ac00c95a58f9c9248a047bc899221"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -7719,18 +7719,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 87)
+        self.assertEqual(len(patch_paths), 89)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105",
+            "7409a53001df470bee0b90f01d0ff45b876ac00c95a58f9c9248a047bc899221",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 87)
+        self.assertEqual(len(manifest_entries), 89)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
@@ -7814,7 +7814,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol",
-                "c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77",
+                "d73ab6ed056c8c037e55f5da44d3b54ce01c5444fbc79ed2435145822d827204",
             ),
             (
                 "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol",
@@ -8152,13 +8152,15 @@ class EraAttestationStaticTests(unittest.TestCase):
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
         ).read_text(encoding="utf-8")
+        helper = helper_path.read_bytes()
+        patch = patch_path.read_bytes()
 
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "87"',
+            'ERA_PATCH_PATH_COUNT: "89"',
             "ERA_PATCH_PATHS_SHA256: "
-            "5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105",
+            "7409a53001df470bee0b90f01d0ff45b876ac00c95a58f9c9248a047bc899221",
             f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
             "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
             'ERA_GENESIS_SIZE: "557518"',
@@ -9358,7 +9360,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'exec env SHELL="${BASH}" BASH_ENV=/dev/null', launcher_text
         )
         guard = launcher_text.index(
-            'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"'
+            'gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"'
         )
         self.assertLess(guard, launcher_text.index("gl_resolve_gateway_dir planned"))
         self.assertLess(guard, launcher_text.index("gl_acquire_gateway_launch_lock"))
@@ -9375,7 +9377,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                     "bash",
                     "-c",
                     'source "$COMMON"; gl_is_canonical_edge_context || '
-                    'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"',
+                    'gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"',
                 ],
                 check=False,
                 capture_output=True,
@@ -9384,7 +9386,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(
-                "requires canonical edge zksys/57057",
+                "requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)",
                 result.stdout + result.stderr,
             )
             self.assertFalse(Path(env["GATEWAY_DIR"]).exists())

@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1501853"
-EXPECTED_PATCH_SHA256="af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7"
-EXPECTED_PATCH_PATH_COUNT="87"
-EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"
+EXPECTED_PATCH_SIZE="1524454"
+EXPECTED_PATCH_SHA256="fb93e5b883e4ef7c5e9496d4fcdf6b0feafb1d8f7ea659b3c7f668f3cfb9e8a8"
+EXPECTED_PATCH_PATH_COUNT="89"
+EXPECTED_PATCH_PATHS_SHA256="7409a53001df470bee0b90f01d0ff45b876ac00c95a58f9c9248a047bc899221"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="eba365c69d357027165f373642bd1979cf5e0c4b"
+EXPECTED_PATCHED_TREE="e92f4696ba50b7e20b1eb632df524e6630f81ad8"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -166,7 +166,7 @@ verify_postimage_manifest() {
     manifest_paths+="${relative_path}"$'\n'
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
-160049 1b7091768db408bc065f3e95dd43c441d15aca43d9b48b48c099ab004fee07ac AllContractsHashes.json
+160049 c0a1cdeafb595ef1503d73f33949b977edb61bf55df7e49724c90e72ff90e731 AllContractsHashes.json
 557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
@@ -192,7 +192,7 @@ verify_postimage_manifest() {
 4261 ca781b332ae1461d93fd89902f0e59c40f1db6f2846b511533a2e14aecba0c34 l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
 2727 c7f49220b06784bd67d73166fd9fb4e2329d7699d493b4342dfbcabfde683a10 l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
 2303 a7a77cf790b20e91573ab5d5c30458b4aa1dc06f550e211d74e7f4afb448c04f l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
-10526 c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
+10600 d73ab6ed056c8c037e55f5da44d3b54ce01c5444fbc79ed2435145822d827204 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 2210 99b2f630ccb303dc130e6010ae91ab2c462218a4cc813602ed307b9f05b95fe3 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 17587 45ab5b716efaec429ed8adf414e953145b09b8c69203058f444274479b9b2d85 l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol
 6707 2428a3ae1112ab7014cc332f0f087027d474055790e80d2c6d8957d8ce13ec05 l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
@@ -217,6 +217,7 @@ verify_postimage_manifest() {
 15362 3c0bf5e9175a2a83b220c0e8011ccf520e51747e6a91dda17e2b273904269ae5 l1-contracts/src.ts/deploy-test-process.ts
 74313 0cf8c3d4479adc204c4c371aeac7cbcc025154917c062eb92520451319efb092 l1-contracts/src.ts/deploy.ts
 13083 0d974d46232882550f820f931ee80d8fe5b6b3681d7e7e8716ab11ebc3afce52 l1-contracts/src.ts/utils.ts
+15716 b5b92a8b0be48844d86d8ff39ce8ac7c25b4c64a2d54d3e18774d30acedd1f5b l1-contracts/test/foundry/l1/fixtures/ZKsyncOSProofFixtures.sol
 1276 8a4ff3fb4014d7c4d2d3fa6213b755ae554a9546776984281580a3baf09a9a02 l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
 18811 881846d3c06c9c660c8ee451ae5eb95d1fe324b65126a1a848ebe298cb93bf84 l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 39037 d7e6cc427d13b94207ed654b2cf7fd9b2b2670874c2afb0f57c39106c76ccd72 l1-contracts/test/foundry/l1/integration/L1GatewayTests.t.sol
@@ -242,7 +243,8 @@ verify_postimage_manifest() {
 2581 92124a76d6a7c6cce50ddc06dca8140a8bd5d28d49c61020b52bb59ac0969621 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Getters/SyscoinPriorityObservations.t.sol
 4147 72dc6373a6093ea18a8d71522dda3836d66d9b3056660787c00ced1499a24967 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 3454 9cc8e015664c0fe9b5bfca6e12a29120cf611775df6dbbd7d00d45e90dc74ea8 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
-18331 8600ed5a07fa68e2cb180674320406523a98660c0b6f78a538568ef935ec140e l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
+18095 e8211420e3c63eb9d8dda8b7dc2904c7e5da0dda114f7d14de5a803a3f7c4a18 l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
+5254 3f9fb32f0e6c3cb6fd590e8ea7d559ce323fb4a40a6d4db32b75d548efd30924 l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSVerifierProof.t.sol
 4684 57e513f0ecde656c7a75a8509a6021417a927136ce532eee3c203117be67894e l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
 17824 85171d93961f63606c4449f9cfbae0e8341daa942d659513d42ed0018850a758 l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 5070 2bbab9425954d54c8dc0e0f963e4f9befb35eae6a34bcdb8ccb854409526487f l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol

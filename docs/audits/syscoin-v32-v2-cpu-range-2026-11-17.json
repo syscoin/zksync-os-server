@@ -1,0 +1,162 @@
+{
+  "schema": "syscoin-v2-cpu-range-qualification-v1",
+  "worker_commit": "ec790318f00e225cd11283a4d5fb7a521f4670a6",
+  "worker_binary_sha256": "5ec8715ce2208c9dbd8d69252fb73bc73afc74775147f40b2a20221e13338e35",
+  "configuration": {
+    "cpu_cores_allowed": 32,
+    "cuda_visible_devices": "-1",
+    "security_profile": "Security100",
+    "cache_policy": "warm",
+    "trusted_setup_sha256": "f004b339bc9e05d81f87a82095e19984c2555826a5459e651b8b893aa5422ae5",
+    "plonk_domain_log2": 22
+  },
+  "verification_key_hash": "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97",
+  "batch_range": [
+    1,
+    2
+  ],
+  "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+  "startup_to_lease_seconds": 213.43719457788393,
+  "lease_to_submission_seconds": 550.492058577016,
+  "exit_code": 0,
+  "calldata_sha256": "560503d5c0c6518f22024b4c5c93e8d18b45cfbb21666b7370e782341805512a",
+  "raw_snark_sha256": "cb840b9c7210b610342b602eaacdd1ea70987efaf129cb10f9f8862e4a973a15",
+  "worker_submission_sha256": "5bdd9679f0410c174ed22975abf2c6118dcc3012a247e0e34eefa4cdbe756632",
+  "calldata_words": 44,
+  "phase_rss": {
+    "process_max_rss_kib": 134071332,
+    "max_sampled_total_device_mib": 16,
+    "sampled_idle_or_capped_prelaunch_device_mib": 16,
+    "phases": [
+      {
+        "phase": 1,
+        "operation": "setup ready in",
+        "seconds": 116.375,
+        "max_sampled_host_rss_kib": 51299328,
+        "num_rss_samples": 232,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 232
+      },
+      {
+        "phase": 2,
+        "operation": "setup ready in",
+        "seconds": 11.15,
+        "max_sampled_host_rss_kib": 49729556,
+        "num_rss_samples": 22,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 22
+      },
+      {
+        "phase": 3,
+        "operation": "setup ready in",
+        "seconds": 84.308,
+        "max_sampled_host_rss_kib": 53895332,
+        "num_rss_samples": 169,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 169
+      },
+      {
+        "phase": 1,
+        "operation": "setup ready in",
+        "seconds": 0.0,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      },
+      {
+        "phase": 1,
+        "operation": "proving took",
+        "seconds": 202.77,
+        "max_sampled_host_rss_kib": 121876068,
+        "num_rss_samples": 405,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 405
+      },
+      {
+        "phase": 1,
+        "operation": "verification took",
+        "seconds": 0.06,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      },
+      {
+        "phase": 2,
+        "operation": "setup ready in",
+        "seconds": 0.0,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      },
+      {
+        "phase": 2,
+        "operation": "proving took",
+        "seconds": 31.648,
+        "max_sampled_host_rss_kib": 119829312,
+        "num_rss_samples": 63,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 63
+      },
+      {
+        "phase": 2,
+        "operation": "verification took",
+        "seconds": 0.046,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      },
+      {
+        "phase": 3,
+        "operation": "setup ready in",
+        "seconds": 0.0,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      },
+      {
+        "phase": 3,
+        "operation": "proving took",
+        "seconds": 96.091,
+        "max_sampled_host_rss_kib": 134089728,
+        "num_rss_samples": 192,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 192
+      },
+      {
+        "phase": 3,
+        "operation": "verification took",
+        "seconds": 0.009,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      }
+    ],
+    "leases": [
+      {
+        "event": "pick",
+        "index": 0,
+        "seconds": 213.43719457788393
+      },
+      {
+        "event": "submit",
+        "index": 0,
+        "seconds": 763.9292531548999
+      }
+    ]
+  },
+  "evidence_sha256": {
+    "pure-cpu-snark/worker.log": "66cc73f5dcf4c4db90ed1d44827f436deeec2497272b416e8f3c041d602a76e9",
+    "pure-cpu-snark/time.txt": "32084d3426feb140c5fda5098ee48208c0dda80d564b8165b1f3f43460839fbf",
+    "pure-cpu-snark/host.csv": "67dbf93a1c6f555e76664cc0e8412a7bc3965c87d3129987dfad0026f9e3162d",
+    "pure-cpu-snark/gpu.csv": "bf7d7961d4dc3d0f3e5069441ef9a3e06c8d9a04dc83d5a05fafefbdd7f9e1b8",
+    "pure-cpu-native-libraries.txt": "ca30ab7baa6eac62ceab2fe847a7c7552927cc5109d515a331f28423fb07f8b7",
+    "host8-cpu-receipt.json": "03e7f671bb7cf3a0222ca2871861b903c737525f924e3987b79e105d42359ebe"
+  },
+  "scope": "One authentic minimal two-batch CPU-only normal worker range. Prior FRI leaves were generated on GPU. Isolated loopback sequencer protocol. EVM replay recorded separately."
+}

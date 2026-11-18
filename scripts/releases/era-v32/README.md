@@ -344,3 +344,9 @@ and rederive the full CTM configuration, including the new Getters facet address
 and selectors, and recheck the critical timelock/relay identities against those
 artifacts. Production identity qualification and canonical fixture regeneration
 remain outstanding.
+
+## Corrected guest review follow-up
+
+The current source tree is `e92f4696ba50b7e20b1eb632df524e6630f81ad8` and generated tree is `df9f4be32c4dee0f54e35c215441f78961eea0ac`. Both real-proof fixtures and tests are included in the server source patch. The corrected key accepts signed-transfer and minimal-range proofs; altered batch inputs, proof openings, the carried word and a proof for the retained guest are rejected. The eight real-proof regressions and 40 router tests pass against the actual generated verifier. All production Solidity and 278 inventory rows are unchanged by this test-only refresh.
+
+Every source postimage is checked against the reconstructed source tree before the generated overlay is accepted. This catches stale hashes in the shell applicator as well as stale patches. The server bundle is authoritative for deployment; the Era branch is a review mirror.

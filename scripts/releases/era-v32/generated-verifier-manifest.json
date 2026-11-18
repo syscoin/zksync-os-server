@@ -2,10 +2,10 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "eba365c69d357027165f373642bd1979cf5e0c4b",
-  "candidate_tree": "1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42",
-  "source_patch_sha256": "af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7",
-  "source_applicator_sha256": "967a01bfb0b70ebc4f1c79acdf53ba546aa0f61d4bee586f13104fdb456e8efb",
+  "reviewed_source_tree": "e92f4696ba50b7e20b1eb632df524e6630f81ad8",
+  "candidate_tree": "df9f4be32c4dee0f54e35c215441f78961eea0ac",
+  "source_patch_sha256": "fb93e5b883e4ef7c5e9496d4fcdf6b0feafb1d8f7ea659b3c7f668f3cfb9e8a8",
+  "source_applicator_sha256": "4aa1589b9e3a9266cf81479f56dac826ccb15a39b725cd823263ccc0804bece0",
   "overlay_sha256": "5da6f0e6ac0549f3c9e8db37157e08648b870c66b9f7b7d89c2870b051413f3d",
   "overlay_size": 120693,
   "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
@@ -41,10 +41,10 @@
   "independent_host_reproduction": false,
   "contract_generation_provenance": {
     "status": "completed_v2_key_contract_generation_and_isolated_range_replay",
-    "candidate_tree": "1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42",
+    "candidate_tree": "df9f4be32c4dee0f54e35c215441f78961eea0ac",
     "previous_candidate_tree": "49364d13c27e277144c78790c1402ac143eee500",
-    "reviewed_source_tree": "eba365c69d357027165f373642bd1979cf5e0c4b",
-    "contracts_commit": "5a45a53c526a83a537cbd3d749794b2c30cfe686",
+    "reviewed_source_tree": "e92f4696ba50b7e20b1eb632df524e6630f81ad8",
+    "contracts_commit": "9ae7bb06600ab0e4be91b57bf187468918371409",
     "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
     "changed_inventory_rows": [
       "l1-contracts/GatewayCTMDeployerVerifiersZKsyncOS",
@@ -69,7 +69,19 @@
       "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
     },
     "isolated_evm_two_batch_proof_accepted": true,
-    "nonzero_reserved_word_error_selector": "0x31967fc6"
+    "nonzero_reserved_word_error_selector": "0x31967fc6",
+    "test_only_source_refresh": {
+      "previous_candidate_tree": "1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42",
+      "previous_reviewed_source_tree": "eba365c69d357027165f373642bd1979cf5e0c4b",
+      "paths": [
+        "l1-contracts/test/foundry/l1/fixtures/ZKsyncOSProofFixtures.sol",
+        "l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol",
+        "l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSVerifierProof.t.sol"
+      ],
+      "production_contracts_and_inventory_unchanged": true
+    },
+    "real_proof_regression_tests_passed": 8,
+    "real_proof_regression_total_with_router_tests": 48
   },
   "historical_pre_reserved_word_contract_generation_provenance": {
     "status": "completed_canonical_query_normal_profile_incremental_inventory",

@@ -157,6 +157,25 @@ class ActivationTests(unittest.TestCase):
 
 
 class BundleAndLauncherTests(unittest.TestCase):
+    def test_source_postimage_manifest_rejects_stale_bytes_and_missing_paths(self):
+        module, _ = M.load_bundle()
+        files = {"a.sol": b"new contract", "b.sol": b"retained contract"}
+        rows = [f"{len(raw)} {sha(raw)} {path}" for path, raw in files.items()]
+
+        def manifest(entries):
+            return ("done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n" + "\n".join(entries)
+                    + "\nSYSCOIN_POSTIMAGE_MANIFEST\n").encode()
+
+        module.check_source_postimages(manifest(rows), set(files), files.__getitem__)
+        stale = rows.copy()
+        stale[0] = f"{len(files['a.sol'])} {sha(b'old contract')} a.sol"
+        with self.assertRaisesRegex(ValueError, "source postimage mismatch: a.sol"):
+            module.check_source_postimages(manifest(stale), set(files), files.__getitem__)
+        with self.assertRaisesRegex(ValueError, "path set mismatch"):
+            module.check_source_postimages(manifest(rows[:1]), set(files), files.__getitem__)
+        with self.assertRaisesRegex(ValueError, "unexpected source postimage path"):
+            module.check_source_postimages(manifest(rows + rows[:1]), set(files), files.__getitem__)
+
     def test_retained_guest_replay_is_bound_to_its_archived_key(self):
         _, manifest = M.load_bundle()
         current = manifest["v2_prover"]
@@ -183,6 +202,7 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(sha(receipt_file.read_bytes()), evidence["evm_receipt_sha256"])
         receipt = json.loads(receipt_file.read_text())
         self.assertEqual(generation["candidate_tree"], module.CANDIDATE)
+        self.assertEqual(generation["reviewed_source_tree"], module.SOURCE)
         self.assertEqual(generation["unchanged_inventory_rows"], 276)
         self.assertEqual(set(generation["changed_inventory_rows"]), module.ROWS)
         self.assertEqual(prover["plonk_domain_log2"], 22)
@@ -211,7 +231,7 @@ class BundleAndLauncherTests(unittest.TestCase):
         module, manifest = M.load_bundle()
         generation = manifest["historical_pre_airbender_v2_contract_generation_provenance"]
         self.assertEqual(generation["candidate_tree"], manifest["historical_retained_testnet_guest_contract_generation_provenance"]["previous_candidate_tree"])
-        self.assertEqual(generation["reviewed_source_tree"], module.SOURCE)
+        self.assertEqual(generation["reviewed_source_tree"], "eba365c69d357027165f373642bd1979cf5e0c4b")
         self.assertEqual(generation["verification_key_hash"], manifest["historical_pre_airbender_v2_proof_qualification"]["verification_key_hash"])
         self.assertEqual(generation["release_proof_calldata_sha256"],
                          manifest["historical_pre_airbender_v2_proof_qualification"]["genuine_serialized_calldata_sha256"])
@@ -305,8 +325,8 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
-        self.assertEqual(module.SOURCE, "eba365c69d357027165f373642bd1979cf5e0c4b")
-        self.assertEqual(module.CANDIDATE, "1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42")
+        self.assertEqual(module.SOURCE, "e92f4696ba50b7e20b1eb632df524e6630f81ad8")
+        self.assertEqual(module.CANDIDATE, "df9f4be32c4dee0f54e35c215441f78961eea0ac")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
                          "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990")
@@ -527,8 +547,8 @@ class BundleAndLauncherTests(unittest.TestCase):
             ROOT / "scripts/apply-era-contracts-syscoin-patch.sh",
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
-        self.assertEqual(result["source_tree"], "eba365c69d357027165f373642bd1979cf5e0c4b")
-        self.assertEqual(result["candidate_tree"], "1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42")
+        self.assertEqual(result["source_tree"], "e92f4696ba50b7e20b1eb632df524e6630f81ad8")
+        self.assertEqual(result["candidate_tree"], "df9f4be32c4dee0f54e35c215441f78961eea0ac")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])
