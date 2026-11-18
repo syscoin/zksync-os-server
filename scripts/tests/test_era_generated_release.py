@@ -157,6 +157,21 @@ class ActivationTests(unittest.TestCase):
 
 
 class BundleAndLauncherTests(unittest.TestCase):
+    def test_retained_guest_replay_is_bound_to_its_archived_key(self):
+        _, manifest = M.load_bundle()
+        current = manifest["v2_prover"]
+        retained = manifest["historical_retained_testnet_guest_v2_prover"]
+        generation = manifest["historical_retained_testnet_guest_contract_generation_provenance"]
+        evidence = manifest["historical_retained_testnet_guest_proof_qualification"]
+        receipt = ROOT / evidence["evm_receipt_path"]
+        self.assertEqual(sha(receipt.read_bytes()), evidence["evm_receipt_sha256"])
+        self.assertEqual(json.loads(receipt.read_bytes())["vk_hash"], generation["verification_key_hash"])
+        self.assertEqual(evidence["verification_key_hash"], generation["verification_key_hash"])
+        self.assertEqual(evidence["program_commitment"], retained["program_commitment"])
+        self.assertNotEqual(generation["verification_key_hash"], M.VK)
+        self.assertNotEqual(retained["program_commitment"], current["program_commitment"])
+        self.assertNotEqual(retained["app_bin_sha256"], current["app_bin_sha256"])
+
     def test_airbender_v2_contract_and_worker_bind_the_same_range(self):
         import tomllib
 
@@ -195,7 +210,7 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_reserved_word_candidate_pins_verified_router_bytecode(self):
         module, manifest = M.load_bundle()
         generation = manifest["historical_pre_airbender_v2_contract_generation_provenance"]
-        self.assertEqual(generation["candidate_tree"], manifest["contract_generation_provenance"]["previous_candidate_tree"])
+        self.assertEqual(generation["candidate_tree"], manifest["historical_retained_testnet_guest_contract_generation_provenance"]["previous_candidate_tree"])
         self.assertEqual(generation["reviewed_source_tree"], module.SOURCE)
         self.assertEqual(generation["verification_key_hash"], manifest["historical_pre_airbender_v2_proof_qualification"]["verification_key_hash"])
         self.assertEqual(generation["release_proof_calldata_sha256"],
@@ -291,10 +306,10 @@ class BundleAndLauncherTests(unittest.TestCase):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
         self.assertEqual(module.SOURCE, "eba365c69d357027165f373642bd1979cf5e0c4b")
-        self.assertEqual(module.CANDIDATE, "49364d13c27e277144c78790c1402ac143eee500")
+        self.assertEqual(module.CANDIDATE, "1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
-                         "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97")
+                         "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990")
         self.assertEqual(len(manifest["paths"]), 4)
         overlay = (M.BUNDLE / "generated-verifier-overlay.patch").read_bytes()
         self.assertEqual(len(overlay), manifest["overlay_size"])
@@ -308,13 +323,13 @@ class BundleAndLauncherTests(unittest.TestCase):
         module, manifest = M.load_bundle()
         paths = manifest["paths"]
         self.assertEqual(paths["AllContractsHashes.json"], {
-            "size": 160049, "sha256": "7678c313e4665d55b86a958ac79376ec1a881b08c32fd28c98c514aa641115d6"})
+            "size": 160049, "sha256": "62c82391c2859be37633faabebe5e1f8a6bd0992623c32bdd1eaf9cb158ffdc5"})
         for rel in ("l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",
                     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol"):
             self.assertEqual(paths[rel], {
-                "size": 95216, "sha256": "ea9513ddd775709f3baca285cec6952aa672a1489881f86b47f5b503d2dedb61"})
+                "size": 95216, "sha256": "50203c6dee17598bb2acfc27ed8f3fdeb0c9a6ace10ff7779d92ae361bbb7acd"})
         self.assertEqual(paths["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"], {
-            "size": 8081, "sha256": "2340c5d66845ebc6d9bf85cebbfdc199d730d42caf4d2902809319f0a2624146"})
+            "size": 8088, "sha256": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"})
         evidence = manifest["historical_pre_canonical_query_contract_generation_provenance"]
         self.assertEqual(evidence["status"], "completed_gateway_priority_setter_inventory_refresh")
         self.assertEqual(evidence["reviewed_source_tree"],
@@ -452,9 +467,9 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_current_generated_verifier_authenticates_current_app_sources(self):
         self.assertEqual(M.APP_SOURCES, {
             "lib/types/src/protocol/proving_version.rs":
-                "7a564a0b8baff0ea20702294f84f8f2eeb0a3826fc7422a82b20292416636fb7",
+                "0441bd1ead3fc20fc783b48567b8a4311a7688c47125c4a62ca43e500243da31",
             "node/bin/src/prover_api/fri_proof_verifier.rs":
-                "b60518126a8dfbda16fa4eeeb31d1d0460b3dcf4e3a1aee66f1f958a6af5dd00",
+                "8bdbc88baae47bfb549e2347f92b50f59b82ba9ea1a52e81162fc0730459bf1d",
         })
         M.check_app_sources(ROOT)
         with tempfile.TemporaryDirectory() as temporary:
@@ -513,7 +528,7 @@ class BundleAndLauncherTests(unittest.TestCase):
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
         self.assertEqual(result["source_tree"], "eba365c69d357027165f373642bd1979cf5e0c4b")
-        self.assertEqual(result["candidate_tree"], "49364d13c27e277144c78790c1402ac143eee500")
+        self.assertEqual(result["candidate_tree"], "1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])

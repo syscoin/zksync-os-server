@@ -1,6 +1,14 @@
 # Generated Era sources and separate canonical fixture certification
 
-## Airbender V2 for the retained v32 testnet guest
+## Airbender V2 for the corrected v32 testnet guest
+
+The OS host and guest use the official v0.4.0 base with Syscoin patch tree `8c42bef28b5be792bc2b0438531dc7ab1a862547`. The release guest SHA-256 is `9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d`. Its program commitment is `0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66`. CPU key generation and an independent calculation over the serialized PLONK key produced `0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990`. The raw PLONK key has SHA-256 `298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7`. [OS patch and key receipts](https://github.com/syscoin/zksync-os-server/pull/382) · [Worker source](https://github.com/syscoin/zksync-airbender-prover/pull/28)
+
+The Era base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`. The reviewed Syscoin source patch yields tree `eba365c69d357027165f373642bd1979cf5e0c4b`. Applying the matching generated verifier overlay yields tree `1bbc7ce2a523a8a6eb1fa52c26a38a95b3685a42`. Both production compiler profiles built. All 40 router tests passed. Of the 278 recomputed inventory rows, only the PLONK verifier and its embedding Gateway deployer changed. Slot 8 accepts a single app-bound VK. Drain old work before a coordinated change to the verifier, server registry and worker release. [Generated verifier and inventory](https://github.com/syscoin/era-contracts/pull/23)
+
+The exact corrected worker completed a minimal two-batch range and a separate two-batch range containing 16 successful signed EIP-1559 transfers. Native verification checked both ranges against their own ordered batch statements. Both serialized SNARKs passed the generated PLONK verifier and production-mode router on isolated Prague EVM. [Minimal proof](../../../docs/audits/syscoin-v32-corrected-os-v2-router-replay-2026-11-17.json) · [Signed-transfer proof](../../../docs/audits/syscoin-v32-corrected-os-signed-router-replay-2026-11-17.json)
+
+## Historical Airbender V2 for the retained v32 testnet guest
 
 The server applies its Syscoin source patch to upstream Era commit `8fb7c29a4e3174335c6480b23f57822e054f9d5f`. The reviewed source tree is `eba365c69d357027165f373642bd1979cf5e0c4b`. Its generated Security100 verification key and contract overlay produce tree `49364d13c27e277144c78790c1402ac143eee500` and registered VK hash `0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97`. Both EVM and EraVM production profiles built on Linux. The inventory checker reproduced all 278 rows. Only the generated PLONK verifier and its embedding Gateway deployer differ from the reserved-word release. All 40 router tests passed. The fresh two-batch proof passed both the generated verifier and the production dual router on isolated Prague EVM. A nonzero reserved word reverted with the exact contract error. [Replay receipt](../../../docs/audits/syscoin-v32-airbender-v2-router-replay-2026-11-17.json) · [Generated contracts](https://github.com/syscoin/era-contracts/pull/21)
 

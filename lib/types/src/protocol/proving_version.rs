@@ -29,7 +29,7 @@ impl TryFrom<ProtocolSemanticVersion> for ProvingVersion {
 impl ProvingVersion {
     /// The Security100 key binds the v32 guest and public V2 recursion programs to the log22 wrapper.
     const V8_VK_HASH: &'static str =
-        "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97";
+        "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990";
 
     /// Get the verification key hash associated with this execution version.
     pub fn vk_hash(&self) -> &'static str {
@@ -122,9 +122,10 @@ mod tests {
     fn registered_v8_vk_hash_rejects_other_keys() {
         assert_eq!(
             ProvingVersion::V8.vk_hash(),
-            "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97"
+            "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990"
         );
         for other in [
+            "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97",
             "0x62bd64130fba79809f37a652bc7957b87fa847fde30c4444d91fcf876357f144",
             "0x2ac3231439b0ba30b688a78eba0119fdfcf7a8364cf75037606cfb61f92c0b90",
             "0x229a4a5a7715fb19f8a5940e42d9cd53bb85f040bcf0f71c76612450fb8235b1",
