@@ -2337,6 +2337,14 @@ index d9e3ce8aafcb00f4b8de624bbde09ae2c954fb3a..a8ae5eae0f261e37c7a9106ff7244823
 @@ -79 +80 @@ contract L1GenesisUpgrade is IL1GenesisUpgrade, BaseZkSyncUpgradeGenesis, L1Fixe
 -                gasLimit: PRIORITY_TX_MAX_GAS_LIMIT,
 +                gasLimit: UPGRADE_TX_MAX_GAS_LIMIT, // SYSCOIN: Keep the full genesis force-deployment budget.
+diff --git a/l1-contracts/deploy-script-config-template/config-deploy-ctm.toml b/l1-contracts/deploy-script-config-template/config-deploy-ctm.toml
+index bf94a88c560833a46550afabcc59cfec720efb2a..7a5f0a321e911dc8236422d89c4ac913dbfbdaa7 100644
+--- a/l1-contracts/deploy-script-config-template/config-deploy-ctm.toml
++++ b/l1-contracts/deploy-script-config-template/config-deploy-ctm.toml
+@@ -5 +5,2 @@ support_l2_legacy_shared_bridge_test = false
+-is_zk_sync_os = false
++# SYSCOIN: DeployCTM only accepts the ZKsync OS chain type manager.
++is_zk_sync_os = true
 diff --git a/l1-contracts/deploy-scripts/AdminFunctions.s.sol b/l1-contracts/deploy-scripts/AdminFunctions.s.sol
 index 45471632f3edbafe8de99d9de75bf8643cd595f4..67700bccc77b591b551bcd4f2e61ee0dfecec727 100644
 --- a/l1-contracts/deploy-scripts/AdminFunctions.s.sol
@@ -3123,6 +3131,15 @@ index 212ecb26eb5c53bc2add3408f1de20c6ab09c89b..c540f0869d2456a9c0e63067c1d1e0f0
 +            "SyscoinRollupDAManager",
 @@ -180,0 +189 @@ library ContractsBytecodesLib {
 +            // SYSCOIN: pinned-upstream dormant artifact; the V8 wrapper does not route proofs here.
+diff --git a/l1-contracts/package.json b/l1-contracts/package.json
+index b19eb5d3ca25a935428519a5f86ac640f546e747..d9f204a972e3c37d6b478b5f84274bceb2fc12ac 100644
+--- a/l1-contracts/package.json
++++ b/l1-contracts/package.json
+@@ -68,2 +68,2 @@
+-    "test:foundry": "forge test --threads 1 --ffi --match-path 'test/foundry/{l1,zksync-os}/*' --no-match-test 'test_DefaultUpgrade_MainnetFork' --no-match-contract 'ChainRegistrarTest'",
+-    "test:zkfoundry": "forge test --zksync --match-path 'test/foundry/l2/*' --gas-limit 20000000000 --skip 'test/foundry/l1/*' '*/L2BaseToken.sol' '*/Burner.sol' '*/L2GenesisUpgrade.t.sol' '*/V31AcrossRecoveryFork.t.sol'",
++    "test:foundry": "forge test --threads 1 --ffi --match-path 'test/foundry/{l1,zksync-os,l2/unit/GatewayCTMDeployer}/*' --no-match-test 'test_DefaultUpgrade_MainnetFork' --no-match-contract 'ChainRegistrarTest'",
++    "test:zkfoundry": "forge test --zksync --match-path 'test/foundry/l2/*' --gas-limit 20000000000 --skip 'test/foundry/l1/*' '*/l2/unit/GatewayCTMDeployer/*' '*/L2BaseToken.sol' '*/Burner.sol' '*/L2GenesisUpgrade.t.sol' '*/V31AcrossRecoveryFork.t.sol'",
 diff --git a/l1-contracts/script-config/syscoin-edge-da-relay-v1.json b/l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 new file mode 100644
 index 0000000000000000000000000000000000000000..7918b2a110fb7473b3090c5416427257ebcf7996
@@ -3149,7 +3166,7 @@ index 0000000000000000000000000000000000000000..7918b2a110fb7473b3090c5416427257
 +  "expectedAddress": "0x758b06cDA80BDD016F79AFd0df1A984039067A21"
 +}
 diff --git a/l1-contracts/selectors b/l1-contracts/selectors
-index 35a0780488837d99489ba9d69295cc2e8d675568..eed27f374710f9bdf38c31b32fbc395cd76f7247 100644
+index 35a0780488837d99489ba9d69295cc2e8d675568..31d9bdfb8f3d84c9a738aaed7514ca5376aae92b 100644
 --- a/l1-contracts/selectors
 +++ b/l1-contracts/selectors
 @@ -1650,2 +1649,0 @@ CommitterFacet
@@ -3311,20 +3328,26 @@ index 35a0780488837d99489ba9d69295cc2e8d675568..eed27f374710f9bdf38c31b32fbc395c
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
-@@ -14159,2 +14254,0 @@ ZKsyncOSTestnetVerifier
+@@ -14068,0 +14165,2 @@ ZKsyncOSDualVerifier
++| Error    | NonZeroCarriedHash()                      | 0x31967fc6                                                         |
++|----------+-------------------------------------------+--------------------------------------------------------------------|
+@@ -14159,2 +14256,0 @@ ZKsyncOSTestnetVerifier
 -| Function | addVerifier(uint32,address,address)       | 0x80c6c967                                                         |
 -|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14173,2 +14266,0 @@ ZKsyncOSTestnetVerifier
+@@ -14173,2 +14268,0 @@ ZKsyncOSTestnetVerifier
 -| Function | removeVerifier(uint32)                    | 0x58406bf9                                                         |
 -|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14176,0 +14269,2 @@ ZKsyncOSTestnetVerifier
+@@ -14176,0 +14271,2 @@ ZKsyncOSTestnetVerifier
 +| Function | replaceVerifier(uint32,address)           | 0x39c0a35a                                                         |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14189 +14283,3 @@ ZKsyncOSTestnetVerifier
+@@ -14189 +14285,3 @@ ZKsyncOSTestnetVerifier
 -| Error    | AddressAlreadySet(address)                | 0x0dfb42bf                                                         |
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
+@@ -14200,0 +14299,2 @@ ZKsyncOSTestnetVerifier
++| Error    | NonZeroCarriedHash()                      | 0x31967fc6                                                         |
++|----------+-------------------------------------------+--------------------------------------------------------------------|
 diff --git a/l1-contracts/src.ts/constants.ts b/l1-contracts/src.ts/constants.ts
 index adceb890e7fe26e459cfce51a5177335bc03bfc6..b1d6c8b42a277a057a9090f219e6f25df4ded477 100644
 --- a/l1-contracts/src.ts/constants.ts
@@ -3549,6 +3572,16 @@ index 0000000000000000000000000000000000000000..ba964e757c90f1fbb0a8571fa55213d4
 +        fixture.proof[43] = 0x2e21cbfcea58180e8d4cf8c23f8e5629ac468794ffa5ec98d46befbbece55301;
 +    }
 +}
+diff --git a/l1-contracts/test/foundry/l1/integration/AssetRouterTest.t.sol b/l1-contracts/test/foundry/l1/integration/AssetRouterTest.t.sol
+index fec77c5186fc828fd1ea5edc05db2de0b5166683..bf52a1a168de6e5059f75c675bb635d70c52b72b 100644
+--- a/l1-contracts/test/foundry/l1/integration/AssetRouterTest.t.sol
++++ b/l1-contracts/test/foundry/l1/integration/AssetRouterTest.t.sol
+@@ -215,2 +215,3 @@ contract AssetRouterIntegrationTest is L1ContractDeployer, ZKChainDeployer, Toke
+-        assertEq(bridgedToken.name(), "Ether");
+-        assertEq(bridgedToken.symbol(), "ETH");
++        // SYSCOIN: The bridge represents the root's native asset.
++        assertEq(bridgedToken.name(), "Syscoin");
++        assertEq(bridgedToken.symbol(), "SYS");
 diff --git a/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol b/l1-contracts/test/foundry/l1/integration/DeployCTMCapacity.t.sol
 new file mode 100644
 index 0000000000000000000000000000000000000000..59585e1f8bf82634dfdef8bad073d9756792a943
@@ -3803,6 +3836,24 @@ index f68b430d7d06877037578a88bb8252614613d7c2..c1c629f8ad21ec4c6d2f16ce110c4310
 @@ -306 +307 @@ abstract contract SharedL2ContractDeployer is UtilsCallMockerTest, DeployIntegra
 -                l2GasLimit: 72_000_000,
 +                l2GasLimit: PRIORITY_TX_MAX_GAS_LIMIT, // SYSCOIN: Deployment is ordinary priority work.
+diff --git a/l1-contracts/test/foundry/l1/integration/l2-tests-in-l1-context/_SharedL2ContractL1Deployer.sol b/l1-contracts/test/foundry/l1/integration/l2-tests-in-l1-context/_SharedL2ContractL1Deployer.sol
+index e4559243ee656d3bdc257e6fc83cdcc408f8a02b..481f6874e57eccb819ebe059f43dcf87aa7a565e 100644
+--- a/l1-contracts/test/foundry/l1/integration/l2-tests-in-l1-context/_SharedL2ContractL1Deployer.sol
++++ b/l1-contracts/test/foundry/l1/integration/l2-tests-in-l1-context/_SharedL2ContractL1Deployer.sol
+@@ -25 +24,0 @@ import {DeployIntegrationUtils} from "../deploy-scripts/DeployIntegrationUtils.s
+-import {DeployCTML1OrGateway} from "deploy-scripts/ctm/DeployCTML1OrGateway.sol";
+@@ -66,5 +65,2 @@ contract SharedL2ContractL1Deployer is SharedL2ContractDeployer, DeployCTMIntegr
+-        (, string memory verifierName) = DeployCTML1OrGateway.resolveMainVerifier(
+-            config.isZKsyncOS,
+-            config.testnetVerifier
+-        );
+-        ctmAddresses.stateTransition.verifiers.verifier = deploySimpleContract(verifierName, true);
++        // SYSCOIN: The testnet wrapper needs deployed implementations for both verifier slots.
++        deployVerifiers();
+@@ -97 +93,2 @@ contract SharedL2ContractL1Deployer is SharedL2ContractDeployer, DeployCTMIntegr
+-        return super.getChainCreationFacetCuts(stateTransition);
++        // This EVM fixture can read facet artifacts even when the suite runs alone.
++        return DeployIntegrationUtils.getChainCreationFacetCuts(stateTransition);
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 index c621e20e759f413df914499e0ca9f8c6c0f0363d..20fc395c6a98cfeff2c8156fc8bc05da497eec87 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
@@ -5462,8 +5513,31 @@ index 57e1a62a013a96071324deae1897bc264df53ebc..d61e22d61d366b60fe3e80bad86382c9
 +            // SYSCOIN: Default fixtures carry no compact edge references unless a test supplies them explicitly.
 +            edgeDARefsInput: "",
 +            edgeDARefsRoot: bytes32(0),
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BridgeHelper/GetERC20Getters.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BridgeHelper/GetERC20Getters.t.sol
+index abf1433df322686090bc7a4a4dbfffa511c28999..8dbcfa5cf0c0d603514212fa38f1e498dc63b4d9 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BridgeHelper/GetERC20Getters.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BridgeHelper/GetERC20Getters.t.sol
+@@ -33 +33,2 @@ contract GetERC20GettersTest is Test {
+-    function test_ETH_ReturnsEtherEth18() public view {
++    // SYSCOIN: The native-token sentinel maps to the root's native asset metadata.
++    function test_NativeToken_ReturnsSyscoinSys18() public view {
+@@ -38,2 +39,2 @@ contract GetERC20GettersTest is Test {
+-        assertEq(keccak256(nameBytes), keccak256(abi.encode("Ether")), "name");
+-        assertEq(keccak256(symbolBytes), keccak256(abi.encode("ETH")), "symbol");
++        assertEq(keccak256(nameBytes), keccak256(abi.encode("Syscoin")), "name");
++        assertEq(keccak256(symbolBytes), keccak256(abi.encode("SYS")), "symbol");
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BrigeHelper/BridgeHelper.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BrigeHelper/BridgeHelper.t.sol
+index 446e690d8b0474c646a11e1cde22c593c24a7521..17f25bebbe97705ec155b4da8165679610519af4 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BrigeHelper/BridgeHelper.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/Bridges/BrigeHelper/BridgeHelper.t.sol
+@@ -129,2 +129,3 @@ contract BridgeHelperTest is Test {
+-        assertEq(abi.decode(name, (string)), "Ether");
+-        assertEq(abi.decode(symbol, (string)), "ETH");
++        // SYSCOIN: The bridge represents the root's native asset.
++        assertEq(abi.decode(name, (string)), "Syscoin");
++        assertEq(abi.decode(symbol, (string)), "SYS");
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
-index f6532b05c6d0999f82ff1c45a37af538057d7b8a..e3863c35d9997c2bbfa719c227d238ca54d27ee3 100644
+index f6532b05c6d0999f82ff1c45a37af538057d7b8a..b02d240db416e95773fdcd07adad4173431f110f 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 @@ -7,0 +8,11 @@ import {Verifiers} from "contracts/common/StateTransitionTypes.sol";
@@ -5477,7 +5551,7 @@ index f6532b05c6d0999f82ff1c45a37af538057d7b8a..e3863c35d9997c2bbfa719c227d238ca
 +import {IVerifierV2} from "contracts/state-transition/chain-interfaces/IVerifierV2.sol";
 +import {IVerifier} from "contracts/state-transition/chain-interfaces/IVerifier.sol";
 +import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol";
-+import {SyscoinRelayedSLDAValidator} from "contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol";
++import {BytecodeUtils} from "deploy-scripts/utils/bytecode/BytecodeUtils.s.sol";
 @@ -12,0 +24 @@ import {
 +    GatewayVerifiersDeployerConfig,
 @@ -110,0 +123,3 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
@@ -5488,14 +5562,17 @@ index f6532b05c6d0999f82ff1c45a37af538057d7b8a..e3863c35d9997c2bbfa719c227d238ca
 +        // SYSCOIN: exercise constructors under the same chain identity used by Gateway on both networks.
 +        vm.chainId(SYSCOIN_GATEWAY_CHAIN_ID);
 +
-@@ -115,0 +134,3 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
+@@ -115,0 +134,6 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
 +        // SYSCOIN: Mirror the canonical genesis installation that must precede Gateway conversion.
-+        vm.etch(SYSCOIN_EDGE_DA_RELAY_ADDRESS, type(SyscoinRelayedSLDAValidator).runtimeCode);
++        vm.etch(
++            SYSCOIN_EDGE_DA_RELAY_ADDRESS,
++            BytecodeUtils.readDeployedBytecodeL1(true, "SyscoinRelayedSLDAValidator.sol", "SyscoinRelayedSLDAValidator")
++        );
 +        assertEq(SYSCOIN_EDGE_DA_RELAY_ADDRESS.codehash, SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH);
-@@ -122 +143 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
+@@ -122 +146 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
 -            l1ChainId: 1,
 +            l1ChainId: SYSCOIN_TESTNET_L1_CHAIN_ID,
-@@ -198,0 +220,92 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
+@@ -198,0 +223,92 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
 +    /// @notice Proves the production Gateway branch deploys only the governed canonical PLONK route.
 +    function testGatewayVerifierDeployerZKsyncOSProductionRoute() external {
 +        // SYSCOIN: production roots remain valid when the production wrapper is selected.
@@ -5588,13 +5665,34 @@ index f6532b05c6d0999f82ff1c45a37af538057d7b8a..e3863c35d9997c2bbfa719c227d238ca
 +        assertEq(wrapper.pendingOwner(), address(0), "wrapper ownership must be complete");
 +    }
 +
-@@ -224,0 +338,6 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
+@@ -224,0 +341,6 @@ contract GatewayCTMDeployerZKsyncOSTest is Test {
 +        // SYSCOIN: expose both pinned-upstream deployment results; consensus still routes only PLONK.
 +        assertTrue(
 +            results.verifiersResult.verifierFflonk != address(0),
 +            "zkOS FFLONK compatibility artifact must be deployed"
 +        );
 +        assertTrue(results.verifiersResult.verifierPlonk != address(0), "zkOS PLONK must be deployed");
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol b/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
+index cf86562feabab983964f650d8682dcfa6d7b041d..57d8376006835dbc0866b454e4e1fe9bb226a93b 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
+@@ -6 +6 @@ import {Utils} from "../Utils/Utils.sol";
+-import {IExecutor, TOTAL_BLOBS_IN_COMMITMENT} from "contracts/state-transition/chain-interfaces/IExecutor.sol";
++import {IExecutor} from "contracts/state-transition/chain-interfaces/IExecutor.sol";
+@@ -9,0 +10 @@ import {IL1DAValidator, L1DAValidatorOutput} from "contracts/state-transition/ch
++import {SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME} from "contracts/common/SyscoinConfig.sol";
+@@ -97,2 +98,3 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-        bytes32[] memory blobHashes = new bytes32[](TOTAL_BLOBS_IN_COMMITMENT);
+-        bytes32[] memory blobCommitments = new bytes32[](TOTAL_BLOBS_IN_COMMITMENT);
++        // SYSCOIN: Compact edge DA commits to a reference root instead of KZG blob arrays.
++        bytes32[] memory blobHashes = new bytes32[](0);
++        bytes32[] memory blobCommitments = new bytes32[](0);
+@@ -142,0 +145 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
++        info.daCommitmentScheme = SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME;
+@@ -185 +188,2 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-                    c.slChainId
++                    c.slChainId,
++                    c.edgeDARefsRoot
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 new file mode 100644
 index 0000000000000000000000000000000000000000..73743384d3f90e1efdd7df720f109e4e7f563b0e
@@ -6623,6 +6721,16 @@ index 0000000000000000000000000000000000000000..c8d4c9a6df851d3485df68c3ef2ebfed
 +        }
 +    }
 +}
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/upgrades/L1GatewayBase.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/upgrades/L1GatewayBase.t.sol
+index 32eab82509c438fcffccf81047004f95d5fa2c43..40837a459442aa5e6ee37d0c92c0c40087adcbd8 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/upgrades/L1GatewayBase.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/upgrades/L1GatewayBase.t.sol
+@@ -132,2 +132,3 @@ contract L1FixedForceDeploymentsHelperTest is Test {
+-        assertEq(chainData.baseTokenMetadata.name, "Ether");
+-        assertEq(chainData.baseTokenMetadata.symbol, "ETH");
++        // SYSCOIN: The gateway initializes metadata for the root's native asset.
++        assertEq(chainData.baseTokenMetadata.name, "Syscoin");
++        assertEq(chainData.baseTokenMetadata.symbol, "SYS");
 diff --git a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol b/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
 index 74ade949075a9889c33a7be8d41e0c531765fb1c..10192452ee643862e7940bc2cfa5bf48bb916966 100644
 --- a/l1-contracts/test/foundry/l1/upgrades/_SharedBaseUpgrade.t.sol
@@ -6638,6 +6746,18 @@ index 74ade949075a9889c33a7be8d41e0c531765fb1c..10192452ee643862e7940bc2cfa5bf48
 @@ -78 +75 @@ contract BaseUpgrade is Test {
 -            gasLimit: PRIORITY_TX_MAX_GAS_LIMIT,
 +            gasLimit: UPGRADE_TX_MAX_GAS_LIMIT,
+diff --git a/l1-contracts/test/foundry/l2/integration/_SharedL2ContractL2Deployer.sol b/l1-contracts/test/foundry/l2/integration/_SharedL2ContractL2Deployer.sol
+index c7ea7baa15f0153c18081c723d6660cb0e3e8df4..9603818b0c3696cdc4183bb96a9edf5a8af3fa4d 100644
+--- a/l1-contracts/test/foundry/l2/integration/_SharedL2ContractL2Deployer.sol
++++ b/l1-contracts/test/foundry/l2/integration/_SharedL2ContractL2Deployer.sol
+@@ -62,3 +62,4 @@ contract SharedL2ContractL2Deployer is SharedL2ContractDeployer {
+-        chainCreationParams.genesisBatchCommitment = bytes32(
+-            0x1000000000000000000000000000000000000000000000000000000000000000
+-        );
++        // SYSCOIN: The OS chain type manager checks the canonical genesis commitment.
++        chainCreationParams.genesisBatchCommitment = config.isZKsyncOS
++            ? bytes32(uint256(1))
++            : bytes32(0x1000000000000000000000000000000000000000000000000000000000000000);
 diff --git a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 index 4a3d0d54d5802b9005e5d84f5d3147b4cef1a48f..f4778d2710e095fd86da551022451549c4adce10 100644
 --- a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol

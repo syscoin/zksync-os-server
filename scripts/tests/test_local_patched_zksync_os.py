@@ -53,7 +53,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
 HISTORICAL_KEYGEN_ZKSYNC_OS_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
 REGISTERED_GUEST_ZKSYNC_OS_TREE = "8c42bef28b5be792bc2b0438531dc7ab1a862547"
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "517840e73c263575889ff5b73a7eec79d4a03613"
-PUBLISHED_ERA_PATCHED_TREE = "e92f4696ba50b7e20b1eb632df524e6630f81ad8"
+PUBLISHED_ERA_PATCHED_TREE = "5272679a1c09acf82cfc45a2899cca04bb4c745b"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -7700,10 +7700,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1524454"',
-            'EXPECTED_PATCH_SHA256="fb93e5b883e4ef7c5e9496d4fcdf6b0feafb1d8f7ea659b3c7f668f3cfb9e8a8"',
-            'EXPECTED_PATCH_PATH_COUNT="89"',
-            'EXPECTED_PATCH_PATHS_SHA256="7409a53001df470bee0b90f01d0ff45b876ac00c95a58f9c9248a047bc899221"',
+            'EXPECTED_PATCH_SIZE="1534603"',
+            'EXPECTED_PATCH_SHA256="3801dc86c405cc57b20b4463300e5f7deb9122a22cb816b157ed220456033f93"',
+            'EXPECTED_PATCH_PATH_COUNT="98"',
+            'EXPECTED_PATCH_PATHS_SHA256="432f6de4d171e10d6702dfed2452261e87d8ec64b71cd1ec1e9e0013f189b762"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -7754,18 +7754,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 89)
+        self.assertEqual(len(patch_paths), 98)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "7409a53001df470bee0b90f01d0ff45b876ac00c95a58f9c9248a047bc899221",
+            "432f6de4d171e10d6702dfed2452261e87d8ec64b71cd1ec1e9e0013f189b762",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 89)
+        self.assertEqual(len(manifest_entries), 98)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
@@ -7790,8 +7790,8 @@ class EraAttestationStaticTests(unittest.TestCase):
         self.assertEqual(
             manifest["l1-contracts/selectors"],
             (
-                2308748,
-                "28a05b287d08418e1a1cb0d51a0d20d82685e560ef3a5460af3a60d490221207",
+                2309252,
+                "5eca95669a892b625a389245fc44ee12b5b359d7adb17522e41bd184f82e80ec",
             ),
         )
 
@@ -7877,7 +7877,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/selectors",
-                "28a05b287d08418e1a1cb0d51a0d20d82685e560ef3a5460af3a60d490221207",
+                "5eca95669a892b625a389245fc44ee12b5b359d7adb17522e41bd184f82e80ec",
             ),
             (
                 "tools/zksync-os-genesis-gen/src/consts.rs",
