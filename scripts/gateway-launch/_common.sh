@@ -150,19 +150,29 @@ gl_validate_l1_network_pair() {
 # The settlement L1 ID does not enter the signature of an ordinary L2 transaction.
 gl_assert_mainnet_signing_domains() {
   [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] || return 0
-  python3 - "$@" <<'PYTHON'
+  python3 - "${EDGE_CHAIN_NAME:-zksys}" "$@" <<'PYTHON'
 import re
 import sys
 
 used = {57, 5700, 57001, 57057}
-for name, value in zip(("GATEWAY_CHAIN_ID", "EDGE_CHAIN_ID"), sys.argv[1:]):
+for name, value, expected in zip(("GATEWAY_CHAIN_ID", "EDGE_CHAIN_ID"), sys.argv[2:],
+                                 (57570, 5757 if sys.argv[1] == "zksys" else None)):
     if not re.fullmatch(r"[0-9]+", value) or not 0 < int(value) < 2**32:
         raise SystemExit(f"mainnet deployment requires an explicit positive uint32 {name}")
     domain = int(value)
     if domain in used:
         raise SystemExit(f"{name}={domain} collides with a Syscoin signing domain")
+    if expected is not None and domain != expected:
+        raise SystemExit(f"mainnet deployment requires {name}={expected}, got {domain}")
     used.add(domain)
 PYTHON
+}
+
+gl_assert_mainnet_app_gateway_identity() {
+  [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] || return 0
+  gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" || return $?
+  python3 -B "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-release.py" \
+    --check-gateway-chain-id "${GATEWAY_CHAIN_ID}" >/dev/null
 }
 
 # SYSCOIN: Canonical deployments never use the upstream dummy MessageRoot, and
@@ -566,6 +576,7 @@ gl_assert_no_chain_id_override_conflicts() {
 }
 
 gl_l1_broadcast_preflight() {
+  gl_assert_mainnet_app_gateway_identity || return $?
   gl_assert_l1_chain_id_matches_rpc
   gl_assert_no_chain_id_override_conflicts
 }
@@ -4622,7 +4633,8 @@ if not isinstance(value, str) or not value.isdecimal() or not 0 < int(value) < 2
 print(int(value))
 PY
 )" || return $?
-    gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${expected_zksys_id}" || return $?
+    EDGE_CHAIN_NAME=zksys gl_assert_mainnet_signing_domains \
+      "${GATEWAY_CHAIN_ID:-}" "${expected_zksys_id}" || return $?
   fi
   canonical_zksys_id="$(gl_chain_id_from_config zksys "canonical zksys")" || return $?
   [ "${canonical_zksys_id}" = "${expected_zksys_id}" ] ||

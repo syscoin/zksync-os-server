@@ -181,6 +181,7 @@ export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 # edges use the serialized direct helpers and must never bind the global fingerprint.
 gl_is_canonical_edge_context ||
   gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"
+gl_assert_mainnet_app_gateway_identity
 gl_resolve_gateway_dir planned
 gl_acquire_gateway_launch_lock
 # SYSCOIN: The checkpointed launcher targets the canonical fresh V32 lane.

@@ -795,18 +795,18 @@ python3() {
             for gateway_id in (None, "57", "5700", "57001", "057057", "0", "4294967296", "0xdead"):
                 with self.subTest(script=script, gateway_id=gateway_id):
                     self.assert_no_source_dispatch(self.standalone_dispatch(
-                        script, network="mainnet", gateway_id=gateway_id, edge_id="70002"))
-        for edge_id in (None, "057001", "57057", "070001", "0"):
+                        script, network="mainnet", gateway_id=gateway_id, edge_id="5757"))
+        for edge_id in (None, "057001", "57057", "057570", "0"):
             with self.subTest(edge_id=edge_id):
                 self.assert_no_source_dispatch(self.standalone_dispatch(
                     "edge-chain-create-init.sh", network="mainnet",
-                    gateway_id="70001", edge_id=edge_id))
+                    gateway_id="57570", edge_id=edge_id))
 
     def test_standalone_mainnet_real_route_and_mock_guards_remain_intact(self):
         for script in self.STANDALONE_ENTRYPOINTS:
             with self.subTest(script=script, route="real"):
                 real = self.standalone_dispatch(script, "GPU", "FALSE", network="MaInNeT",
-                                                gateway_id="70001", edge_id="70002")
+                                                gateway_id="57570", edge_id="5757")
                 self.assert_dispatch_route(real, script, network="mainnet")
             for mock in ("TRUE", "FALSE"):
                 with self.subTest(script=script, mock=mock):

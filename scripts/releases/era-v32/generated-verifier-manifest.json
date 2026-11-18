@@ -462,6 +462,7 @@
     "os_repository": "https://github.com/syscoin/zksync-os",
     "os_commit": "df6ec95ab3fb7c291b8d99f422b26f0013d5ff07",
     "os_tree": "8c42bef28b5be792bc2b0438531dc7ab1a862547",
+    "gateway_chain_id": 57001,
     "release_guest_receipt": "https://github.com/syscoin/zksync-os-server/blob/6b09eea9f2e2dc44d14b7408cbd01264276034d8/scripts/patches/candidates/v32-post-ops/attributed-release-identity.json",
     "release_guest_receipt_sha256": "b5022988763be8060ad1824b7356a9b70f8be250885468de440a77b5a76969ee"
   },

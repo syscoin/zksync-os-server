@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-import test_local_patched_zksync_os as support
+from scripts.tests import test_local_patched_zksync_os as support
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +19,7 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.env = support.canonical_gateway_fingerprint_env(
             self.root, HOME=str(self.root), L1_NETWORK="mainnet", L1_CHAIN_ID="57",
-            GATEWAY_CHAIN_ID="70001", EDGE_CHAIN_ID="70002", PROVER_MODE="gpu",
+            GATEWAY_CHAIN_ID="57570", EDGE_CHAIN_ID="5757", PROVER_MODE="gpu",
             GATEWAY_PROVER_MODE="gpu", EDGE_PROVER_MODE="gpu",
             SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER="false", PYTHONDONTWRITEBYTECODE="1",
         )
@@ -39,16 +39,16 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
     def initialize(self):
         result = self.run_common("gl_bind_edge_launch_context")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.write_index("gateway", 70001)
-        self.write_index("zksys", 70002)
+        self.write_index("gateway", 57570)
+        self.write_index("zksys", 5757)
         return support.gateway_checkpoint_state_file(self.env)
 
-    def test_actual_launcher_prefix_accepts_distinct_mainnet_domains(self):
+    def test_actual_launcher_prefix_checks_the_approved_mainnet_pair(self):
         source = (LAUNCH / "run-gateway-launch.sh").read_text()
         prefix = source[source.index('case "${L1_PROFILE}" in'):
-                        source.index("gl_resolve_gateway_dir planned")]
+                        source.index("\ngl_assert_mainnet_app_gateway_identity")]
         probe = 'gl_export_foundry_evm_version() { :; }\n' + prefix + '\nprintf "accepted\\n"'
-        for overrides in ({}, {"GATEWAY_CHAIN_ID": "070001", "EDGE_CHAIN_ID": "070002"},
+        for overrides in ({}, {"GATEWAY_CHAIN_ID": "057570", "EDGE_CHAIN_ID": "05757"},
                           {"L1_PROFILE": "tanenbaum", "GATEWAY_CHAIN_ID": None,
                            "EDGE_CHAIN_ID": "57057"}):
             with self.subTest(overrides=overrides):
@@ -57,7 +57,8 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
                 self.assertIn("accepted", result.stdout)
         for overrides in ({"EDGE_CHAIN_NAME": "custom", "EDGE_CHAIN_ID": "70002"},
                           {"GATEWAY_CHAIN_ID": None}, {"EDGE_CHAIN_ID": None},
-                          {"EDGE_CHAIN_ID": "70001"}, {"EDGE_CHAIN_ID": "057057"},
+                          {"EDGE_CHAIN_ID": "57570"}, {"EDGE_CHAIN_ID": "057057"},
+                          {"EDGE_CHAIN_ID": "70002"}, {"GATEWAY_CHAIN_ID": "70001"},
                           {"GATEWAY_CHAIN_ID": "57001"}, {"EDGE_CHAIN_ID": "4294967296"},
                           {"L1_PROFILE": "tanenbaum", "EDGE_CHAIN_ID": "70002"}):
             with self.subTest(overrides=overrides):
@@ -66,6 +67,36 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
                 self.assertNotIn("accepted", result.stdout)
         self.assertFalse(Path(self.env["GATEWAY_DIR"]).exists())
         self.assertFalse((self.root / ".gateway-launch-state").exists())
+
+    def test_mainnet_launcher_stops_before_creating_a_workspace(self):
+        source = (LAUNCH / "run-gateway-launch.sh").read_text()
+        prefix = source[source.index('case "${L1_PROFILE}" in'):
+                        source.index("gl_resolve_gateway_dir planned")]
+        probe = 'gl_export_foundry_evm_version() { :; }\n' + prefix + '\necho reached'
+        result = self.run_common(probe, L1_PROFILE="mainnet")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("this release is bound to 57001", result.stderr)
+        self.assertNotIn("reached", result.stdout)
+        self.assertFalse(Path(self.env["GATEWAY_DIR"]).exists())
+
+    def test_standalone_broadcast_preflight_rejects_before_rpc(self):
+        probe = 'gl_assert_l1_chain_id_matches_rpc() { echo reached; }\ngl_l1_broadcast_preflight'
+        result = self.run_common(probe)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Gateway chain ID 57570 needs a matching guest and V8 key", result.stderr)
+        self.assertNotIn("reached", result.stdout)
+        result = self.run_common(probe, L1_NETWORK="tanenbaum", L1_CHAIN_ID="5700")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("reached", result.stdout)
+
+    def test_registered_gateway_matches_the_selected_app(self):
+        result = subprocess.run(
+            ["python3", "-B", str(ROOT / "scripts/apply-era-contracts-syscoin-release.py"),
+             "--check-gateway-chain-id", "57001"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"gateway_chain_id": 57001})
 
     def test_mainnet_canonical_identity_keeps_exact_fingerprint(self):
         state = self.initialize()
@@ -76,7 +107,7 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 result = self.run_common("gl_bind_edge_launch_context", **overrides)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("fingerprint mismatch", result.stderr)
+                self.assertIn("mainnet deployment requires", result.stderr)
                 self.assertEqual(state.read_bytes(), original)
 
     def test_additional_mainnet_edge_uses_persisted_canonical_id(self):
@@ -92,14 +123,14 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
         result = self.run_common("gl_assert_edge_launch_context", **extra)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(state.read_bytes(), original)
-        for chain_id in ("70002", "70001", "57057"):
+        for chain_id in ("5757", "57570", "57057"):
             result = self.run_common("gl_bind_edge_launch_context",
                                      EDGE_CHAIN_NAME="another", EDGE_CHAIN_ID=chain_id)
             self.assertNotEqual(result.returncode, 0)
         self.write_index("zksys", 70004)
         result = self.run_common("gl_assert_edge_launch_context", **extra)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must be 70002", result.stderr)
+        self.assertIn("must be 5757", result.stderr)
         self.assertEqual(state.read_bytes(), original)
 
     def test_mainnet_canonical_migration_keeps_checkpoint_owner_guard(self):
@@ -117,7 +148,7 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
                 self.assertEqual(result.returncode, expected, result.stderr)
 
     def test_custom_name_never_becomes_canonical(self):
-        for network, root_id, edge_id in (("mainnet", "57", "70002"),
+        for network, root_id, edge_id in (("mainnet", "57", "5757"),
                                           ("tanenbaum", "5700", "57057"),
                                           ("localhost", "31337", "57057")):
             result = self.run_common("! gl_is_canonical_edge_context", EDGE_CHAIN_NAME="custom",

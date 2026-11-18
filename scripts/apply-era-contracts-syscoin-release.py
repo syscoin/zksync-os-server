@@ -14,7 +14,7 @@ import tempfile
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
 CHECKER_SHA = "39f4d92d412a24b0998bbccb538853823a3c32f8e53248854fba565ec130e608"
-MANIFEST_SHA = "498f3d99159e26574b761d7e800af48b8cd8e0ab171460b4bcb66da3ec2f50b9"
+MANIFEST_SHA = "c11ac476c50438ff5526ae08174d4d041e82e920cfbd20a8b188645a381318cb"
 VK = "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
@@ -98,6 +98,22 @@ def file_identity(root, row):
 def check_app_sources(server):
     for rel, sha in APP_SOURCES.items():
         exact(server / rel, sha)
+
+
+def check_gateway_chain_id(requested, server):
+    _, manifest = load_bundle()
+    guest_gateway = manifest["v2_prover"]["gateway_chain_id"]
+    require(type(guest_gateway) is int and 0 < guest_gateway < 2**32,
+            "invalid Gateway chain ID in the release manifest")
+    check_app_sources(server)
+    source = regular(server / "lib/types/src/lib.rs").read_text()
+    matches = re.findall(r"(?m)^pub const SYSCOIN_GATEWAY_CHAIN_ID: u64 = ([0-9_]+);$", source)
+    require(len(matches) == 1 and int(matches[0].replace("_", "")) == guest_gateway,
+            "compiled node Gateway chain ID disagrees with the release manifest")
+    require(requested == guest_gateway,
+            f"Gateway chain ID {requested} needs a matching guest and V8 key; "
+            f"this release is bound to {guest_gateway}")
+    return guest_gateway
 
 
 def check_activation(server):
@@ -295,6 +311,8 @@ def main():
     mode.add_argument("--check-bundle", action="store_true", help="read-only; never launch authorization")
     mode.add_argument("--check-canonical-fixture", action="store_true",
                       help="read-only certification of the separately accepted packaged fixture")
+    mode.add_argument("--check-gateway-chain-id", type=int,
+                      help="check the Gateway ID before funding or broadcasting")
     parser.add_argument("era_root", type=Path, nargs="?")
     args = parser.parse_args()
     try:
@@ -302,6 +320,9 @@ def main():
             require(args.era_root is None, "fixture check does not consume an Era repository")
             result = {"status": "canonical_fixture_checked", "canonical_fixture_authorized": True,
                       "descriptor_sha256": check_activation(SERVER), "target_mutated": False}
+        elif args.check_gateway_chain_id is not None:
+            require(args.era_root is None, "Gateway identity check does not consume an Era repository")
+            result = {"gateway_chain_id": check_gateway_chain_id(args.check_gateway_chain_id, SERVER)}
         else:
             require(args.era_root is not None, "Era repository path is required")
             result = run(args.era_root, args.assert_applied, args.check_bundle)
