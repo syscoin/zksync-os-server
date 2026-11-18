@@ -1,0 +1,105 @@
+{
+  "schema": "syscoin-v32-corrected-testnet-verification-keys-v1",
+  "os_source": "df6ec95ab3fb7c291b8d99f422b26f0013d5ff07",
+  "os_tree": "8c42bef28b5be792bc2b0438531dc7ab1a862547",
+  "worker_commit": "73a92de476527b3c0713a040f42727b460c1350e",
+  "worker_tree": "3d465ceea02cf41aadc9c51dc3779aecd130bdcc",
+  "verified_worker_input_paths": 43,
+  "verified_worker_tooling_paths": 5,
+  "cpu_build_receipt_sha256": "03e7f671bb7cf3a0222ca2871861b903c737525f924e3987b79e105d42359ebe",
+  "worker_identity_executable_sha256": "ae7053659f81016b97284fb2bddcfc5a093c71eaaa643615ef740e05aa916383",
+  "sources": {
+    "airbender": {
+      "commit": "5a4928f651bb627ac5adf334fc6640bb6db5d79a",
+      "tree": "a6835b7eed85d9361c9e1aceb51a7988cbda09a8"
+    },
+    "protocol": {
+      "commit": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+      "tree": "600c9220a99ac2b83504c3de4913828f8cf360e9"
+    },
+    "bellman_cuda": {
+      "commit": "d1fa8670ee84ec3477c6cc1c85a3554cfa5e0206",
+      "tree": "fa1ab78c59f9cdba2fedf4a00813dcf1c4c92d5c"
+    }
+  },
+  "crs_sha256": "f004b339bc9e05d81f87a82095e19984c2555826a5459e651b8b893aa5422ae5",
+  "guest_build_receipt_sha256": "b5022988763be8060ad1824b7356a9b70f8be250885468de440a77b5a76969ee",
+  "guest_replay_receipt_sha256": "6691a9e7dcd63255bad01e577981229a344d626252fc832c6facb199275c0a68",
+  "guest_identity": {
+    "app_bin_sha256": "9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d",
+    "app_text_sha256": "4648aea720d7acb9317d90047b2640f85baacf15bfdfe340c21c03dc3984f932",
+    "domain_log": 22,
+    "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+    "program_commitment_words": [
+      3210469728,
+      3427495935,
+      857477333,
+      2439585292,
+      1600315163,
+      3763909344,
+      4003237832,
+      3361999974
+    ],
+    "security_bits": 100,
+    "unified_end_params": [
+      127830082,
+      234200099,
+      3482646709,
+      3809141483,
+      2686257166,
+      629858516,
+      3373154251,
+      3606817127
+    ]
+  },
+  "public_verification_keys_sha256": {
+    "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+    "compression_vk.json": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+    "snark_vk.json": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"
+  },
+  "app_bound_vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+  "solidity_vk_hash_recomputed": true,
+  "solidity_encoding_words": 41,
+  "cpu_keygen": {
+    "elapsed_h_mm_ss_or_m_ss": "10:02.91",
+    "max_rss_kib": 58726532,
+    "process_group_rss_peak_bytes": 60137275392,
+    "available_bytes_at_start": 189370224640,
+    "cpus": [
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87
+    ],
+    "rayon_threads": 16
+  },
+  "witnesses": {
+    "fixture_chain_id": 57057,
+    "protocol_version": "v32.0",
+    "execution_version": 7,
+    "sequence_sha256": "ad8e34b76c55db8a6d0e0f7801f94a899b77345a7ca6e4f0c6af61e7470e9449",
+    "first_batch": 1,
+    "last_batch": 8,
+    "matching_statements_per_runner": 8
+  }
+}
