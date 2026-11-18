@@ -6578,7 +6578,7 @@ gl_checkpoint_assert_fingerprint_matches
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
             'EXPECTED_PATCHED_TREE="8c42bef28b5be792bc2b0438531dc7ab1a862547"',
-            'EXPECTED_PATCH_SIZE="1524454"',
+            'EXPECTED_PATCH_SIZE="293780"',
             'EXPECTED_PATCH_SHA256="507647ccfe33d1de6fc9cb4cddad3acfeeeb160140fd684accea68f267b16412"',
             'EXPECTED_PATCH_PATH_COUNT="72"',
             'EXPECTED_PATCH_PATHS_SHA256="3bc9bf4c9f80c2c1aea6dd488cc16397cb32bdf026d2c4af5813ec02b0a25edb"',
