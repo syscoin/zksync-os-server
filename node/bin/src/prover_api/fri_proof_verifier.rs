@@ -265,12 +265,11 @@ mod v8_verifier {
     /// `end_params` is derived from the app binary alone. The Security100 chain continues those
     /// params through the pinned unrolled and unified recursion artifacts.
     pub(super) const V8_APP_END_PARAMS: [u32; 8] = [
-        839576545, 3543917221, 2899651412, 806767598,
-        3089479141, 4060592819, 839382617, 2072453320,
+        839576545, 3543917221, 2899651412, 806767598, 3089479141, 4060592819, 839382617, 2072453320,
     ];
     pub(super) const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [
-        3210469728, 3427495935, 857477333, 2439585292,
-        1600315163, 3763909344, 4003237832, 3361999974,
+        3210469728, 3427495935, 857477333, 2439585292, 1600315163, 3763909344, 4003237832,
+        3361999974,
     ];
 
     pub(super) struct UnifiedLevelData {

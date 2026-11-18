@@ -14,7 +14,7 @@ import tempfile
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
 CHECKER_SHA = "39f4d92d412a24b0998bbccb538853823a3c32f8e53248854fba565ec130e608"
-MANIFEST_SHA = "82b16a9affb28f76d68be0e30bd580ed0de956fed069c7a9b9d7f96e53b91039"
+MANIFEST_SHA = "73eac3d397efae48d3673dac4a6175566698911dab8c9ea302f5928884e1ff71"
 VK = "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
@@ -29,7 +29,7 @@ APP_SOURCES = {
     "lib/types/src/protocol/proving_version.rs":
         "0441bd1ead3fc20fc783b48567b8a4311a7688c47125c4a62ca43e500243da31",
     "node/bin/src/prover_api/fri_proof_verifier.rs":
-        "8bdbc88baae47bfb549e2347f92b50f59b82ba9ea1a52e81162fc0730459bf1d",
+        "45ad5f52b2de529ce03a17ae6d116db7f0b35da18a96ad3439ebd9467cf17b11",
 }
 # SYSCOIN: This is source-controlled release data, never an operator flag or
 # writable sidecar. It certifies the packaged fixture, not whether the exact

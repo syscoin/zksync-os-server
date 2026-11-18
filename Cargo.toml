@@ -130,11 +130,11 @@ zk_os_evm_interpreter = { package = "evm_interpreter", git = "https://github.com
 # SYSCOIN: Airbender crates for verifying V8 FRI proofs submitted by external provers. This exact
 # reviewed Syscoin fork commit must match the prover, embedded Security100 recursion programs,
 # and the app-bound commitment recorded with `V8_VK_HASH`; zkOS remains final v0.4.0.
-execution_utils = { git = "https://github.com/syscoin/zksync-airbender", rev = "5a4928f651bb627ac5adf334fc6640bb6db5d79a", features = [
+execution_utils = { git = "https://github.com/syscoin/zksync-airbender", rev = "27c4e9c4358b86ac92c878f44a748f6cbb42650c", features = [
     "verifier_binaries",
 ] }
-riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "5a4928f651bb627ac5adf334fc6640bb6db5d79a" }
-verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "5a4928f651bb627ac5adf334fc6640bb6db5d79a" }
+riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "27c4e9c4358b86ac92c878f44a748f6cbb42650c" }
+verifier_common = { git = "https://github.com/syscoin/zksync-airbender", rev = "27c4e9c4358b86ac92c878f44a748f6cbb42650c" }
 
 # Other dependencies.
 
@@ -325,4 +325,4 @@ codegen-units = 1
 # The v0.4 OS host oracle shares the verifier's RAM and CSR interfaces. Its old
 # transpiler depended on the pre-August nightly signature of u32::widening_mul.
 [patch."https://github.com/matter-labs/zksync-airbender"]
-riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "5a4928f651bb627ac5adf334fc6640bb6db5d79a" }
+riscv_transpiler = { git = "https://github.com/syscoin/zksync-airbender", rev = "27c4e9c4358b86ac92c878f44a748f6cbb42650c" }

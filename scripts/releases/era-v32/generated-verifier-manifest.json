@@ -432,17 +432,17 @@
   },
   "v2_prover": {
     "repository": "https://github.com/syscoin/zksync-airbender-prover",
-    "worker_commit": "2a700666cf1d9e66ae6b8a48826261685df1f1e3",
-    "worker_tree": "88d1975ab086d55e733cd577738d6331b6396ad5",
+    "worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+    "worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
     "airbender": {
       "repository": "https://github.com/syscoin/zksync-airbender",
-      "commit": "5a4928f651bb627ac5adf334fc6640bb6db5d79a",
-      "tree": "a6835b7eed85d9361c9e1aceb51a7988cbda09a8"
+      "commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+      "tree": "f12852dbdb887cf7f14fc315737b6e83ef43d4e3"
     },
     "protocol": {
       "repository": "https://github.com/syscoin/zksync-protocol",
-      "commit": "3c3472d93611bafcdadf928829cc3fb357c6b156",
-      "tree": "600c9220a99ac2b83504c3de4913828f8cf360e9"
+      "commit": "96b3586b33645d86866935f46928328ac52d72a7",
+      "tree": "62de9aba26eac094a5d858954754ff85489667a5"
     },
     "bellman_cuda": {
       "repository": "https://github.com/matter-labs/era-bellman-cuda.git",
@@ -702,5 +702,17 @@
     "release_promoted": false,
     "measured_airbender_commit": "5cff603b014108adf172ad933add11edb5f54ffb",
     "measured_protocol_commit": "0c1e920de67d8ffcfd6d33c59b578ad147e95319"
+  },
+  "native_os_source": {
+    "repository": "https://github.com/syscoin/zksync-os",
+    "commit": "349fd449a73372dd305c0aa3e2cfddab5b8e53c5",
+    "tree": "517840e73c263575889ff5b73a7eec79d4a03613",
+    "patch_path": "scripts/patches/zksync-os-syscoin-v0.4.0.patch",
+    "patch_sha256": "76af99ce8b0e01c854b758b759fb755329751731792314c6b007ba016070ec30",
+    "patch_size": 333992,
+    "patch_path_count": 81,
+    "patch_paths_sha256": "bec1fa3e1f0b5f36bec402aff6f689cc726e900eaa8739bd3b900883b69505ae",
+    "equivalence_receipt": "docs/audits/syscoin-v32-native-os-guest-equivalence-2026-11-18.json",
+    "equivalence_receipt_sha256": "bb7e1f262037d65332e0b1ffcd90ebf61c20b36ad6f9b0f11d0cc92d69793f75"
   }
 }

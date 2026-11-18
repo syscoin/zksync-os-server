@@ -44,7 +44,7 @@ jobs:
           echo "f004b339bc9e05d81f87a82095e19984c2555826a5459e651b8b893aa5422ae5  $work/setup.key" | sha256sum --check --strict
           export CARGO_TARGET_DIR="$work/target" RUST_MIN_STACK=268435456
           scripts/cargo-with-patched-airbender.sh --cpu reproduce-v32-v2 -- \
-            run --locked --release -p zksync_os_snark_prover --no-default-features --example syscoin_v2_identity -- \
+            cargo run --locked --release -p zksync_os_snark_prover --no-default-features --example syscoin_v2_identity -- \
             --app-bin "$PWD/multiblock_batch.bin" --app-text "$PWD/multiblock_batch.text" \
             --trusted-setup "$work/setup.key" --keys "$work/keys" | tee "$work/keygen.log"
           python3 - "$manifest" "$work/keygen.log" <<'PYTHON'

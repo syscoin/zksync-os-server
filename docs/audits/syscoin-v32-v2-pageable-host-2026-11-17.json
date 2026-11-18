@@ -1,0 +1,690 @@
+{
+  "scope": "One same-binary A/B pair on retained guest and the exact same two authentic FRI proofs. Both combined proofs independently CPU-verified against the trusted statement and guest commitment. Optional simulator-memory policy only; no production rollout implied.",
+  "airbender_revision": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+  "worker_revision": "ec790318f00e225cd11283a4d5fb7a521f4670a6",
+  "protocol_revision": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+  "native_binary_sha256": "b50dfc3cd4f80ed0ae9015469b25d0e3bd70ddfd0e68c1283c0528f8f6278a05",
+  "unit_graph_sha256": "02b83cf9ae955cbfd2b253834178a7cdc4ea1cc0c92fff396fecc65cf26af091",
+  "cargo_lock_sha256": "3a5c6393a60e95ecdab13fdf66b8f9b5eb52e6d2d5a5cd8dcaefeb38c20a376b",
+  "inputs_sha256": {
+    "verifier-ab-default-b-fri/proof_0.json": "7354ceebd65368b185d4b2ee79331412fc275c7d08699ae964d9a3938aaafced",
+    "verifier-ab-default-b-fri/proof_1.json": "d8956bcece8cd127cd876f4058af22a886efcf17d1e7d56f7fe0688cf500642d"
+  },
+  "native_policy_confirmation": {
+    "native_child_policy_confirmed": true,
+    "rows": [
+      {
+        "wall_ns": 1794965739995189054,
+        "pid": 303236,
+        "label": "pageable-merge-pinned",
+        "AIRBENDER_SIMULATOR_MEMORY": null,
+        "source": "/proc/PID/environ",
+        "native_executable": "/workspace/syscoin-v2-qualification/pageable-cli-memory"
+      },
+      {
+        "wall_ns": 1794966003016169079,
+        "pid": 303633,
+        "label": "pageable-merge-demand-paged",
+        "AIRBENDER_SIMULATOR_MEMORY": "demand-paged",
+        "source": "/proc/PID/environ",
+        "native_executable": "/workspace/syscoin-v2-qualification/pageable-cli-memory"
+      }
+    ]
+  },
+  "method": "Kernel process HWM is GNU time, separately from sampled current RSS and VmLck. Host/GPU board samples are 500ms; phase windows can miss short peaks. VmLck is the Linux field, not a complete count of CUDA-pinned host bytes. Native allocator current/highwater are distinct from its reserved arena. Cold wall includes unlogged setup; merge_proving_ms sums the two native merge passes.",
+  "arms": {
+    "pinned": {
+      "cold_wall_seconds": 151.87,
+      "kernel_process_peak_rss_kib": 39510504,
+      "kernel_process_peak_rss_gib": 37.680152893066406,
+      "sampled_process_status_kib": {
+        "VmRSS": {
+          "min": 11028,
+          "max": 39528940,
+          "count": 301
+        },
+        "VmHWM": {
+          "min": 11028,
+          "max": 39528940,
+          "count": 301
+        },
+        "VmLck": {
+          "min": 0,
+          "max": 0,
+          "count": 301
+        },
+        "VmPin": {
+          "min": 0,
+          "max": 0,
+          "count": 301
+        },
+        "RssAnon": {
+          "min": 1688,
+          "max": 13672244,
+          "count": 301
+        },
+        "RssFile": {
+          "min": 9340,
+          "max": 115512,
+          "count": 301
+        },
+        "RssShmem": {
+          "min": 0,
+          "max": 27628128,
+          "count": 301
+        }
+      },
+      "fixed_gpu_arena_gib": 21.309,
+      "gpu_allocator_peak_gib": 20.6171875,
+      "board_peak_mib": 22558,
+      "configured_pinned_host_buffer_count": 384,
+      "configured_host_buffer_mib": 64,
+      "configured_pinned_host_arena_gib": 24.0,
+      "merge_proving_ms": 1871,
+      "phases": [
+        {
+          "stage": "before_gpu_host_setup",
+          "duration_ms": 118939,
+          "proof_counts": null,
+          "host_sample_count": 236,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 11028,
+              "max": 10447384,
+              "count": 236
+            },
+            "VmHWM": {
+              "min": 11028,
+              "max": 10945764,
+              "count": 236
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 236
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 236
+            },
+            "RssAnon": {
+              "min": 1688,
+              "max": 10428520,
+              "count": 236
+            },
+            "RssFile": {
+              "min": 9340,
+              "max": 24176,
+              "count": 236
+            },
+            "RssShmem": {
+              "min": 0,
+              "max": 0,
+              "count": 236
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "board_resident_mib": {
+            "min": 16,
+            "max": 16,
+            "count": 238
+          }
+        },
+        {
+          "stage": "gpu_host_setup",
+          "duration_ms": 14857,
+          "proof_counts": null,
+          "host_sample_count": 30,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 5291976,
+              "max": 37218596,
+              "count": 30
+            },
+            "VmHWM": {
+              "min": 10945764,
+              "max": 37218596,
+              "count": 30
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 30
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 30
+            },
+            "RssAnon": {
+              "min": 5242624,
+              "max": 13672244,
+              "count": 30
+            },
+            "RssFile": {
+              "min": 30392,
+              "max": 98540,
+              "count": 30
+            },
+            "RssShmem": {
+              "min": 18960,
+              "max": 25543292,
+              "count": 30
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "board_resident_mib": {
+            "min": 19,
+            "max": 582,
+            "count": 30
+          }
+        },
+        {
+          "stage": "combined pass over 2 proofs",
+          "duration_ms": 1190,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "host_sample_count": 2,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 39519984,
+              "max": 39524128,
+              "count": 2
+            },
+            "VmHWM": {
+              "min": 39519984,
+              "max": 39524128,
+              "count": 2
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 2
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 2
+            },
+            "RssAnon": {
+              "min": 11776920,
+              "max": 11781064,
+              "count": 2
+            },
+            "RssFile": {
+              "min": 114936,
+              "max": 114936,
+              "count": 2
+            },
+            "RssShmem": {
+              "min": 27628128,
+              "max": 27628128,
+              "count": 2
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": 0.92578125,
+            "max": 19.7421875,
+            "count": 48
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": 4.408203125,
+            "max": 20.6171875,
+            "count": 48
+          },
+          "board_resident_mib": {
+            "min": 22414,
+            "max": 22558,
+            "count": 3
+          }
+        },
+        {
+          "stage": "shrink pass 0",
+          "duration_ms": 681,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "host_sample_count": 2,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 39528732,
+              "max": 39528940,
+              "count": 2
+            },
+            "VmHWM": {
+              "min": 39528732,
+              "max": 39528940,
+              "count": 2
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 2
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 2
+            },
+            "RssAnon": {
+              "min": 11785668,
+              "max": 11785876,
+              "count": 2
+            },
+            "RssFile": {
+              "min": 114936,
+              "max": 114936,
+              "count": 2
+            },
+            "RssShmem": {
+              "min": 27628128,
+              "max": 27628128,
+              "count": 2
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": 0.884765625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": 20.6171875,
+            "max": 20.6171875,
+            "count": 36
+          },
+          "board_resident_mib": {
+            "min": 22558,
+            "max": 22558,
+            "count": 1
+          }
+        }
+      ],
+      "collector": [
+        {
+          "batch": 10,
+          "entries": 247143,
+          "duration_ms": 29.693
+        },
+        {
+          "batch": 11,
+          "entries": 246961,
+          "duration_ms": 29.237
+        }
+      ],
+      "proof_counts": {
+        "family_proof_count": 2,
+        "inits_and_teardowns_proof_count": 0,
+        "delegation_proof_count": 1,
+        "delegation_proof_count_by_type": [
+          [
+            1991,
+            1
+          ]
+        ]
+      },
+      "verified_output": {
+        "public_input_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "program_commitment": "0x05080df2ee1edeb1d3d13f9a193a00a3bf5ca2115bfa675b29c1baaef289d7e9",
+        "trusted_sequence_sha256": "7a5632a7f8347be9d6b6a380069cc71f9dc8514057b469b4e3b5d9e23cdbe721"
+      },
+      "raw_proof_sha256": "f95d4d2b88296cf899fe6f424c7694bd9cfd25862706831d1702669ec72b8817",
+      "raw_log_sha256": "eede909df0d9489dbf948818ae2b16b551317b1a295f56eba2f1ab6b259ff329",
+      "time_sha256": "0f0906aedd0c6d0a7ccba6213993c6c9ba9072ea5ec0369f320e3f17cbb07959"
+    },
+    "demand-paged": {
+      "cold_wall_seconds": 146.03,
+      "kernel_process_peak_rss_kib": 33143700,
+      "kernel_process_peak_rss_gib": 31.608295440673828,
+      "sampled_process_status_kib": {
+        "VmRSS": {
+          "min": 11108,
+          "max": 33175936,
+          "count": 290
+        },
+        "VmHWM": {
+          "min": 11108,
+          "max": 33175936,
+          "count": 290
+        },
+        "VmLck": {
+          "min": 0,
+          "max": 0,
+          "count": 290
+        },
+        "VmPin": {
+          "min": 0,
+          "max": 0,
+          "count": 290
+        },
+        "RssAnon": {
+          "min": 1680,
+          "max": 10823792,
+          "count": 290
+        },
+        "RssFile": {
+          "min": 9428,
+          "max": 106980,
+          "count": 290
+        },
+        "RssShmem": {
+          "min": 0,
+          "max": 27628128,
+          "count": 290
+        }
+      },
+      "fixed_gpu_arena_gib": 21.309,
+      "gpu_allocator_peak_gib": 20.6171875,
+      "board_peak_mib": 22546,
+      "configured_pinned_host_buffer_count": 384,
+      "configured_host_buffer_mib": 64,
+      "configured_pinned_host_arena_gib": 24.0,
+      "merge_proving_ms": 1850,
+      "phases": [
+        {
+          "stage": "before_gpu_host_setup",
+          "duration_ms": 118537,
+          "proof_counts": null,
+          "host_sample_count": 236,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 11108,
+              "max": 10842584,
+              "count": 236
+            },
+            "VmHWM": {
+              "min": 11108,
+              "max": 10950532,
+              "count": 236
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 236
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 236
+            },
+            "RssAnon": {
+              "min": 1680,
+              "max": 10823792,
+              "count": 236
+            },
+            "RssFile": {
+              "min": 9428,
+              "max": 24872,
+              "count": 236
+            },
+            "RssShmem": {
+              "min": 0,
+              "max": 0,
+              "count": 236
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "board_resident_mib": {
+            "min": 16,
+            "max": 16,
+            "count": 237
+          }
+        },
+        {
+          "stage": "gpu_host_setup",
+          "duration_ms": 13211,
+          "proof_counts": null,
+          "host_sample_count": 26,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 5254540,
+              "max": 30365596,
+              "count": 26
+            },
+            "VmHWM": {
+              "min": 10950532,
+              "max": 30365596,
+              "count": 26
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 26
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 26
+            },
+            "RssAnon": {
+              "min": 4928156,
+              "max": 7288292,
+              "count": 26
+            },
+            "RssFile": {
+              "min": 98188,
+              "max": 99056,
+              "count": 26
+            },
+            "RssShmem": {
+              "min": 228196,
+              "max": 24982484,
+              "count": 26
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          },
+          "board_resident_mib": {
+            "min": 36,
+            "max": 570,
+            "count": 27
+          }
+        },
+        {
+          "stage": "combined pass over 2 proofs",
+          "duration_ms": 1173,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "host_sample_count": 3,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 33166556,
+              "max": 33175936,
+              "count": 3
+            },
+            "VmHWM": {
+              "min": 33166556,
+              "max": 33175936,
+              "count": 3
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 3
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 3
+            },
+            "RssAnon": {
+              "min": 5431960,
+              "max": 5441340,
+              "count": 3
+            },
+            "RssFile": {
+              "min": 106468,
+              "max": 106468,
+              "count": 3
+            },
+            "RssShmem": {
+              "min": 27628128,
+              "max": 27628128,
+              "count": 3
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": 0.92578125,
+            "max": 19.7421875,
+            "count": 48
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": 4.408203125,
+            "max": 20.6171875,
+            "count": 48
+          },
+          "board_resident_mib": {
+            "min": 22402,
+            "max": 22546,
+            "count": 2
+          }
+        },
+        {
+          "stage": "shrink pass 0",
+          "duration_ms": 677,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "host_sample_count": 1,
+          "host_status_kib": {
+            "VmRSS": {
+              "min": 33171212,
+              "max": 33171212,
+              "count": 1
+            },
+            "VmHWM": {
+              "min": 33171212,
+              "max": 33171212,
+              "count": 1
+            },
+            "VmLck": {
+              "min": 0,
+              "max": 0,
+              "count": 1
+            },
+            "VmPin": {
+              "min": 0,
+              "max": 0,
+              "count": 1
+            },
+            "RssAnon": {
+              "min": 5436616,
+              "max": 5436616,
+              "count": 1
+            },
+            "RssFile": {
+              "min": 106468,
+              "max": 106468,
+              "count": 1
+            },
+            "RssShmem": {
+              "min": 27628128,
+              "max": 27628128,
+              "count": 1
+            }
+          },
+          "allocator_sampled_current_gib": {
+            "min": 0.884765625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_sampled_lifetime_highwater_gib": {
+            "min": 20.6171875,
+            "max": 20.6171875,
+            "count": 36
+          },
+          "board_resident_mib": {
+            "min": 22546,
+            "max": 22546,
+            "count": 1
+          }
+        }
+      ],
+      "collector": [
+        {
+          "batch": 10,
+          "entries": 247143,
+          "duration_ms": 65.442
+        },
+        {
+          "batch": 11,
+          "entries": 246961,
+          "duration_ms": 15.467
+        }
+      ],
+      "proof_counts": {
+        "family_proof_count": 2,
+        "inits_and_teardowns_proof_count": 0,
+        "delegation_proof_count": 1,
+        "delegation_proof_count_by_type": [
+          [
+            1991,
+            1
+          ]
+        ]
+      },
+      "verified_output": {
+        "public_input_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "program_commitment": "0x05080df2ee1edeb1d3d13f9a193a00a3bf5ca2115bfa675b29c1baaef289d7e9",
+        "trusted_sequence_sha256": "7a5632a7f8347be9d6b6a380069cc71f9dc8514057b469b4e3b5d9e23cdbe721"
+      },
+      "raw_proof_sha256": "072f326b61f97a407f52ce8bfc2d5e0b7d05c57c201790965b33b07a37700633",
+      "raw_log_sha256": "136e083be9867d79f887090c8bc94ca76592314501f994c849e0b09487c6855e",
+      "time_sha256": "eb0297c36fd96b3146a70174b91324c6d738bb54d6b724d3544972003f5ac895"
+    }
+  },
+  "delta_demand_minus_pinned": {
+    "cold_wall_seconds": -5.840000000000003,
+    "kernel_process_peak_rss_kib": -6366804,
+    "kernel_process_peak_rss_gib": -6.071857452392578,
+    "merge_proving_ms": -21,
+    "gpu_allocator_peak_gib": 0.0,
+    "board_peak_mib": -12
+  },
+  "sample_sha256": "6e4235a9f61d9b8aa19859acef17c0d212ee36044562449d625b1734753d9c6a"
+}

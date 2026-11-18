@@ -1,0 +1,101 @@
+{
+  "schema": "syscoin-native-os-guest-equivalence-v1",
+  "status": "source equivalence verified; final native server requalification tracked separately",
+  "base": {
+    "commit": "69bc430549e88f9264066d14f2001707572c5d33",
+    "tree": "233b36e77843e460ee9da3e344ee227fa8cce04a"
+  },
+  "guest_provenance": {
+    "commit": "df6ec95ab3fb7c291b8d99f422b26f0013d5ff07",
+    "tree": "8c42bef28b5be792bc2b0438531dc7ab1a862547",
+    "app_bin_sha256": "9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d",
+    "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+    "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990"
+  },
+  "native_os_source": {
+    "commit": "349fd449a73372dd305c0aa3e2cfddab5b8e53c5",
+    "tree": "517840e73c263575889ff5b73a7eec79d4a03613",
+    "patch_path": "scripts/patches/zksync-os-syscoin-v0.4.0.patch",
+    "patch_sha256": "76af99ce8b0e01c854b758b759fb755329751731792314c6b007ba016070ec30",
+    "patch_size": 333992,
+    "patch_path_count": 81,
+    "patch_paths_sha256": "bec1fa3e1f0b5f36bec402aff6f689cc726e900eaa8739bd3b900883b69505ae"
+  },
+  "changed_paths": [
+    ".github/typos.toml",
+    ".github/workflows/deny.yml",
+    "Cargo.lock",
+    "basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs",
+    "deny.toml",
+    "scripts/check-dependency-advisories.py",
+    "scripts/security/dependency-review.json",
+    "scripts/tests/test_dependency_advisories.py",
+    "zksync_os_runner/Cargo.toml",
+    "zksync_os_runner/src/lib.rs",
+    "zksync_os_runner/src/profiling_symbols.rs"
+  ],
+  "unchanged_tracked_paths": {
+    "count": 1171,
+    "sorted_path_mode_type_blob_sha256": "bd2adc598a9ca468dae58501575b0c1db774c0ec2a29f989e73b3ec41a063f17",
+    "description": "Every tracked path outside the eleven listed changes has identical Git mode, type and blob identity. One guest source file was formatted."
+  },
+  "guest_inputs": {
+    "zksync_os/Cargo.toml": {
+      "size": 2215,
+      "sha256": "d20428b707605e04d7b7315f4bcf5b25ce9b75790a104f023db404e1434f9867"
+    },
+    "zksync_os/Cargo.lock": {
+      "size": 63406,
+      "sha256": "d6863d99a9e876ef55b7abf69f520567cab51668a91374c96c3ce5891a140610"
+    },
+    "rust-toolchain.toml": {
+      "size": 91,
+      "sha256": "9e37a6dac5ee85d8e124c69e3d67ba8bcf778a9db7ec422069dfdfcbb4314887"
+    }
+  },
+  "native_consensus_source_sha256": {
+    "basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs": "7db04e9a5cbc0edc4e61dcdb851e88ba1cb16ce974eb76f4bf8e5c108f7ebe56",
+    "basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs": "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188",
+    "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/mod.rs": "cbf166eea82af6c2fc5d0570095630987498dc75bce935cb7b3e05077a8f1863",
+    "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs": "8fff7414159aff9ea8fe8513e57b6cc6f31aa5ae15943066aae224f1dcff3d26",
+    "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/syscoin_commitment_generator.rs": "39be17a6fb165137e175271758514de959c0812e1579275a6f5d4d3a386a421c",
+    "basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs": "929738ac17af40fa260313ed0a8ce09e396ebede3b10f32a3dd7701928078b84",
+    "forward_system/src/run/mod.rs": "b7980e0634eef1808edb4c804de0d598ab7baea7bec2620fc4bc2adf71d88af7"
+  },
+  "root_lock_change": {
+    "package": "zksync_os_runner 0.1.0",
+    "added_edges": [
+      "object",
+      "tempfile"
+    ],
+    "package_versions_sources_checksums_unchanged": true
+  },
+  "guest_graph": {
+    "before_sha256": "0f9bb52f8a2ff9e5299dde4c6bb908133926441679e726b02f25715e4e5b8c17",
+    "after_sha256": "0f9bb52f8a2ff9e5299dde4c6bb908133926441679e726b02f25715e4e5b8c17",
+    "comparison_commit": "16d78260ad5ae62f0dbe6de7262c21001d574a95",
+    "followup_scope": "All manifests and lockfiles match the Linux graph comparison at the indicated commit. A subsequent rustfmt change affected one guest source file."
+  },
+  "limits": [
+    "The final source rebuilt the registered guest byte for byte. Key generation provenance stays with the originally registered guest.",
+    "Source equivalence does not itself certify live Gateway deployment, mainnet signing domains, canonical fixture regeneration, or final native server test completion.",
+    "Dependency dispositions are source, lock, compiler, target, feature and advisory bound. The exposed host signing API is not claimed to have a complete constant-time machine-code proof."
+  ],
+  "guest_rebuild": {
+    "source_commit": "349fd449a73372dd305c0aa3e2cfddab5b8e53c5",
+    "target": "riscv32im-risc0-zkvm-elf",
+    "profile": "release",
+    "build": "Linux Docker reproducible multiblock_batch",
+    "formatted_source_path": "basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs",
+    "app_bin_sha256": "9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d",
+    "app_text_sha256": "4648aea720d7acb9317d90047b2640f85baacf15bfdfe340c21c03dc3984f932",
+    "app_elf_sha256": "91942d6668c880ce1264f7e8a14844370d8b855862394301f22d60258b5fdbff"
+  },
+  "patch_validation": {
+    "actual_base_checkout_application": "passed",
+    "exact_postimage_tree": "517840e73c263575889ff5b73a7eec79d4a03613",
+    "idempotent_second_application": "passed",
+    "caller_index_tree_preserved": "233b36e77843e460ee9da3e344ee227fa8cce04a",
+    "unrelated_postimage_mutation": "rejected with exact tree mismatch"
+  }
+}
