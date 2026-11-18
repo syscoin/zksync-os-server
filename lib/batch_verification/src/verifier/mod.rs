@@ -200,7 +200,9 @@ fn syscoin_da_availability_checks(
 
     let mut availability_checks = commit_data
         .operator_da_input
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .enumerate()
         .map(|(idx, version_hash)| {
             (
@@ -218,7 +220,13 @@ fn syscoin_da_availability_checks(
                 )
             })?;
         for edge_ref in edge_refs {
-            for (idx, version_hash) in edge_ref.blob_version_hashes.chunks_exact(32).enumerate() {
+            for (idx, version_hash) in edge_ref
+                .blob_version_hashes
+                .as_chunks::<32>()
+                .0
+                .iter()
+                .enumerate()
+            {
                 availability_checks.push((
                     alloy::hex::encode(version_hash),
                     format!(

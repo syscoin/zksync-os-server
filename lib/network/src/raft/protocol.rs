@@ -34,6 +34,8 @@ struct PendingRequest {
     response_tx: oneshot::Sender<Result<RaftResponse, String>>,
 }
 
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait RaftRequestHandler: Send + Sync + 'static {
     async fn handle(&self, request: RaftRequest) -> Result<RaftResponse, String>;

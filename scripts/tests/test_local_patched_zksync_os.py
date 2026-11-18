@@ -50,8 +50,10 @@ PUBLISHED_EDGE_SOURCE_SHA256 = (
 PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
-PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
-PUBLISHED_ERA_PATCHED_TREE = "0cb850a5c77436f17b49e747a1117dac5ee90888"
+HISTORICAL_KEYGEN_ZKSYNC_OS_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
+REGISTERED_GUEST_ZKSYNC_OS_TREE = "8c42bef28b5be792bc2b0438531dc7ab1a862547"
+PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "517840e73c263575889ff5b73a7eec79d4a03613"
+PUBLISHED_ERA_PATCHED_TREE = "5272679a1c09acf82cfc45a2899cca04bb4c745b"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -125,7 +127,8 @@ def run_bash_harness(
     command: str,
     env: dict[str, str],
     timeout: float = 5,
-    owned_group_files: tuple[tuple[Path, Path], ...] = (),
+    owned_group_info_files: tuple[Path, ...] = (),
+    timeout_ready_file: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = ["bash", "-c", command]
     process = subprocess.Popen(
@@ -137,31 +140,34 @@ def run_bash_harness(
         start_new_session=True,
     )
     try:
+        if timeout_ready_file is not None:
+            # The timeout exercise starts after the separate group is registered.
+            ready_deadline = time.monotonic() + 5
+            while not timeout_ready_file.is_file() and process.poll() is None:
+                if time.monotonic() >= ready_deadline:
+                    raise subprocess.TimeoutExpired(args, 5)
+                time.sleep(0.01)
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        # A validator deliberately runs in another PGID. Clean it only while a
-        # live test child authenticates that group with a fresh private token.
+        # Bash job control creates a separate PGID inside the harness session.
+        # Kernel session membership still proves ownership if CI pauses the child.
         token = env.get("HARNESS_GROUP_TOKEN", "")
-        for info_name, heartbeat_name in owned_group_files:
+        for info_path in owned_group_info_files:
             try:
-                pid_raw, pgid_raw, child_token, deadline_raw = info_name.read_text(
-                    encoding="utf-8"
-                ).split(":")
-                heartbeat_token, heartbeat_raw = heartbeat_name.read_text(
+                pid_raw, pgid_raw, child_token = info_path.read_text(
                     encoding="utf-8"
                 ).split(":")
                 pid, pgid = int(pid_raw), int(pgid_raw)
-                now_ns = time.monotonic_ns()
-                if not (
+                if (
                     token
-                    and child_token == heartbeat_token == token
-                    and now_ns - int(heartbeat_raw) < 1_000_000_000
-                    and int(deadline_raw) - now_ns > 1_000_000_000
-                    and os.getpgid(pid) == pgid
+                    and child_token == token
+                    and pid > 1
+                    and pgid > 1
                     and pgid != process.pid
+                    and os.getpgid(pid) == pgid
+                    and os.getsid(pid) == process.pid
                 ):
-                    continue
-                os.killpg(pgid, signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)
             except (OSError, OverflowError, UnicodeError, ValueError):
                 pass
         try:
@@ -6353,14 +6359,48 @@ gl_checkpoint_assert_fingerprint_matches
     def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
         manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        self.assertIn('rev = "b91eeaecc4d1b9a42ea6843432bb3e014899b303"', manifest)
+        release = json.loads(
+            (REPO_ROOT / "scripts/releases/era-v32/generated-verifier-manifest.json").read_text()
+        )
+        commit = release["v2_prover"]["airbender"]["commit"]
+        self.assertIn(f'rev = "{commit}"', manifest)
         self.assertIn('git = "https://github.com/syscoin/zksync-airbender"', manifest)
         self.assertNotIn('tag = "v0.6.0-rc.1"', manifest)
         self.assertIn(
-            "?rev=b91eeaecc4d1b9a42ea6843432bb3e014899b303#b91eeaecc4d1b9a42ea6843432bb3e014899b303",
+            f"?rev={commit}#{commit}",
             lock,
         )
         self.assertNotIn("?tag=v0.6.0-rc.1", lock)
+
+    def test_native_os_update_preserves_registered_guest_provenance(self) -> None:
+        receipt = json.loads((REPO_ROOT / "docs/audits/syscoin-v32-native-os-guest-equivalence-2026-11-18.json").read_text())
+        release = json.loads((REPO_ROOT / "scripts/releases/era-v32/generated-verifier-manifest.json").read_text())
+        guest = receipt["guest_provenance"]
+        native = receipt["native_os_source"]
+        for key, value in native.items():
+            self.assertEqual(release["native_os_source"][key], value)
+        receipt_path = release["native_os_source"]["equivalence_receipt"]
+        self.assertEqual(receipt_path, "docs/audits/syscoin-v32-native-os-guest-equivalence-2026-11-18.json")
+        self.assertEqual(
+            hashlib.sha256((REPO_ROOT / receipt_path).read_bytes()).hexdigest(),
+            release["native_os_source"]["equivalence_receipt_sha256"],
+        )
+        self.assertEqual(guest["tree"], REGISTERED_GUEST_ZKSYNC_OS_TREE)
+        self.assertEqual(native["tree"], PUBLISHED_ZKSYNC_OS_PATCHED_TREE)
+        self.assertNotEqual(guest["tree"], native["tree"])
+        self.assertEqual(release["v2_prover"]["os_commit"], guest["commit"])
+        self.assertEqual(release["v2_prover"]["os_tree"], guest["tree"])
+        for key in ("app_bin_sha256", "program_commitment"):
+            self.assertEqual(release["v2_prover"][key], guest[key])
+        self.assertEqual(release["verification_key_hash"], guest["verification_key_hash"])
+        patch = (REPO_ROOT / native["patch_path"]).read_bytes()
+        self.assertEqual(len(patch), native["patch_size"])
+        self.assertEqual(hashlib.sha256(patch).hexdigest(), native["patch_sha256"])
+        build_script = (REPO_ROOT / "lib/multivm/build.rs").read_text()
+        self.assertEqual(len(receipt["native_consensus_source_sha256"]), 7)
+        for path, digest in receipt["native_consensus_source_sha256"].items():
+            self.assertIn(path, build_script)
+            self.assertIn(digest, build_script)
 
     def test_registered_app_identity_and_pending_release_workflow_are_distinct(self) -> None:
         workflow = (
@@ -6375,8 +6415,9 @@ gl_checkpoint_assert_fingerprint_matches
             / "fri_proof_verifier.rs"
         ).read_text(encoding="utf-8")
 
+        self.assertIn(HISTORICAL_KEYGEN_ZKSYNC_OS_TREE, workflow)
+        self.assertIn(REGISTERED_GUEST_ZKSYNC_OS_TREE, verifier)
         for source in (workflow, verifier):
-            self.assertIn(PUBLISHED_ZKSYNC_OS_PATCHED_TREE, source)
             self.assertNotIn("5117d5dac6dbd34b93fef54e04d0b41c", source)
             self.assertNotIn("1279059325", source)
             self.assertNotIn("220972078", source)
@@ -6404,17 +6445,17 @@ gl_checkpoint_assert_fingerprint_matches
         )
 
         self.assertIn(
-            'const V8_APP_BIN_MD5: &str = "1bc285f1bbde995134d483c4e75ee204";',
+            'const V8_APP_BIN_MD5: &str = "22af69bc5729c261f3043fd0e5f1870a";',
             verifier,
         )
         for name, expected in (
             ("V8_APP_END_PARAMS", [
-                3009942935, 2266051515, 747570558, 2762947172,
-                1354863053, 3205993576, 4096623771, 3765215681,
+                839576545, 3543917221, 2899651412, 806767598,
+                3089479141, 4060592819, 839382617, 2072453320,
             ]),
             ("V8_SECURITY100_EXPECTED_CHAIN", [
-                4282637157, 1689531537, 3603061345, 846260096,
-                709872171, 3329938977, 3855288541, 1473390965,
+                3210469728, 3427495935, 857477333, 2439585292,
+                1600315163, 3763909344, 4003237832, 3361999974,
             ]),
         ):
             values = re.search(
@@ -6571,18 +6612,18 @@ gl_checkpoint_assert_fingerprint_matches
         for expected in (
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
-            'EXPECTED_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"',
-            'EXPECTED_PATCH_SIZE="282818"',
-            'EXPECTED_PATCH_SHA256="0af88710e0275ce3dc49928a264e93639f945c85ab79600e12a41306731053d7"',
-            'EXPECTED_PATCH_PATH_COUNT="68"',
-            'EXPECTED_PATCH_PATHS_SHA256="7bf4667f179a5fc3b769b8ed51e193812d3f29b7dad4971552ac8ecbac9d4de5"',
+            'EXPECTED_PATCHED_TREE="517840e73c263575889ff5b73a7eec79d4a03613"',
+            'EXPECTED_PATCH_SIZE="333992"',
+            'EXPECTED_PATCH_SHA256="76af99ce8b0e01c854b758b759fb755329751731792314c6b007ba016070ec30"',
+            'EXPECTED_PATCH_PATH_COUNT="81"',
+            'EXPECTED_PATCH_PATHS_SHA256="bec1fa3e1f0b5f36bec402aff6f689cc726e900eaa8739bd3b900883b69505ae"',
         ):
             self.assertIn(expected, applicator)
         workspace_helper = (
             REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="6935489bdbc7b1ed31e608677d1b2418b10691b5"',
+            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="517840e73c263575889ff5b73a7eec79d4a03613"',
             workspace_helper,
         )
         self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
@@ -6613,21 +6654,10 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertNotIn("callable_oracles/src/blob_data_id", patch)
         self.assertIn("host advice is neither", patch)
 
-    def test_os_keygen_workflow_attests_current_source_inputs(self) -> None:
-        helper_path = (
-            REPO_ROOT / "scripts" / "apply-zksync-os-syscoin-v0.4.0-patch.sh"
-        )
-        patch_path = (
-            REPO_ROOT
-            / "scripts"
-            / "patches"
-            / "zksync-os-syscoin-v0.4.0.patch"
-        )
+    def test_historical_keygen_workflow_attests_its_pinned_source_inputs(self) -> None:
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
         ).read_text(encoding="utf-8")
-        helper = helper_path.read_bytes()
-        patch = patch_path.read_bytes()
         gateway_identity_path = (
             REPO_ROOT / "local-chains" / "v32.0" / "gateway-identity.v1.json"
         )
@@ -6640,12 +6670,12 @@ gl_checkpoint_assert_fingerprint_matches
         offline_identity_data = json.loads(offline_identity)
 
         for expected in (
-            f'ZKSYNC_OS_PATCHED_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
-            f'ZKSYNC_OS_PATCH_SIZE: "{len(patch)}"',
-            f"ZKSYNC_OS_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            f'ZKSYNC_OS_HELPER_SIZE: "{len(helper)}"',
-            f"ZKSYNC_OS_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
-            f'APP_IDENTITY_SOURCE_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
+            f'ZKSYNC_OS_PATCHED_TREE: {HISTORICAL_KEYGEN_ZKSYNC_OS_TREE}',
+            'ZKSYNC_OS_PATCH_SIZE: "282818"',
+            "ZKSYNC_OS_PATCH_SHA256: 0af88710e0275ce3dc49928a264e93639f945c85ab79600e12a41306731053d7",
+            'ZKSYNC_OS_HELPER_SIZE: "7323"',
+            "ZKSYNC_OS_HELPER_SHA256: f42847b54c331998605e20f32a80134f7c52dd6a525405d97feb6ecf22c25d21",
+            f'APP_IDENTITY_SOURCE_TREE: {HISTORICAL_KEYGEN_ZKSYNC_OS_TREE}',
             f'SYSCOIN_EDGE_DA_COMMIT_TARGET: "{PUBLISHED_PATCH_TARGET}"',
             f'SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE: "{PUBLISHED_PATCH_TARGET_RUNTIME_SIZE}"',
             f'SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH: "{PUBLISHED_PATCH_TARGET_RUNTIME_HASH}"',
@@ -6702,7 +6732,7 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertIs(offline_identity_data["independent_create2_calculation_matches_helper"], True)
         self.assertEqual(
             offline_identity_data["source_bindings"]["zksync_os_patched_tree"],
-            PUBLISHED_ZKSYNC_OS_PATCHED_TREE,
+            HISTORICAL_KEYGEN_ZKSYNC_OS_TREE,
         )
         # The retained real-proof provenance predates the priority observation getters.
         # Current deployment identity still requires a new full CTM derivation.
@@ -7670,10 +7700,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1497553"',
-            'EXPECTED_PATCH_SHA256="bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df"',
-            'EXPECTED_PATCH_PATH_COUNT="87"',
-            'EXPECTED_PATCH_PATHS_SHA256="5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105"',
+            'EXPECTED_PATCH_SIZE="1534603"',
+            'EXPECTED_PATCH_SHA256="3801dc86c405cc57b20b4463300e5f7deb9122a22cb816b157ed220456033f93"',
+            'EXPECTED_PATCH_PATH_COUNT="98"',
+            'EXPECTED_PATCH_PATHS_SHA256="432f6de4d171e10d6702dfed2452261e87d8ec64b71cd1ec1e9e0013f189b762"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -7724,18 +7754,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 87)
+        self.assertEqual(len(patch_paths), 98)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105",
+            "432f6de4d171e10d6702dfed2452261e87d8ec64b71cd1ec1e9e0013f189b762",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 87)
+        self.assertEqual(len(manifest_entries), 98)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
@@ -7760,8 +7790,8 @@ class EraAttestationStaticTests(unittest.TestCase):
         self.assertEqual(
             manifest["l1-contracts/selectors"],
             (
-                2308748,
-                "28a05b287d08418e1a1cb0d51a0d20d82685e560ef3a5460af3a60d490221207",
+                2309252,
+                "5eca95669a892b625a389245fc44ee12b5b359d7adb17522e41bd184f82e80ec",
             ),
         )
 
@@ -7819,7 +7849,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol",
-                "c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77",
+                "d73ab6ed056c8c037e55f5da44d3b54ce01c5444fbc79ed2435145822d827204",
             ),
             (
                 "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol",
@@ -7847,7 +7877,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/selectors",
-                "28a05b287d08418e1a1cb0d51a0d20d82685e560ef3a5460af3a60d490221207",
+                "5eca95669a892b625a389245fc44ee12b5b359d7adb17522e41bd184f82e80ec",
             ),
             (
                 "tools/zksync-os-genesis-gen/src/consts.rs",
@@ -8151,30 +8181,32 @@ class EraAttestationStaticTests(unittest.TestCase):
             "enabled",
         )
 
-    def test_era_keygen_workflow_attests_current_source_inputs(self) -> None:
-        helper_path = REPO_ROOT / "scripts" / "apply-era-contracts-syscoin-patch.sh"
-        patch_path = REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
+    def test_historical_era_keygen_attests_its_frozen_checkout(self) -> None:
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
         ).read_text(encoding="utf-8")
-        helper = helper_path.read_bytes()
-        patch = patch_path.read_bytes()
-
+        # The historical workflow reads these files from its immutable checkout.
+        # Keep this test usable in shallow clones that do not contain that commit.
         for expected in (
-            f'ERA_PATCH_SIZE: "{len(patch)}"',
-            f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
+            'HISTORICAL_SERVER_COMMIT: 563d577caee23fa377923280dfa333be6fc6f430',
+            'ERA_REPOSITORY: https://github.com/matter-labs/era-contracts.git',
+            'ERA_BASE_COMMIT: 8fb7c29a4e3174335c6480b23f57822e054f9d5f',
+            'ERA_BASE_TREE: acdd11e5bb7787d9df2306f6a1dc96bf92e67f53',
+            'ERA_NESTED_COMMIT: e554ae64ec150c47d6f17786e7f4aacebc7bf945',
+            'ERA_PATCH_SIZE: "1501853"',
+            'ERA_PATCH_SHA256: af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7',
             'ERA_PATCH_PATH_COUNT: "87"',
-            "ERA_PATCH_PATHS_SHA256: "
-            "5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105",
-            f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
-            "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
+            'ERA_PATCH_PATHS_SHA256: 5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105',
+            'ERA_SOURCE_PATCHED_TREE: eba365c69d357027165f373642bd1979cf5e0c4b',
+            'ERA_HELPER_SIZE: "59171"',
+            'ERA_HELPER_SHA256: 967a01bfb0b70ebc4f1c79acdf53ba546aa0f61d4bee586f13104fdb456e8efb',
+            'ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22',
             'ERA_GENESIS_SIZE: "557518"',
-            f"ERA_GENESIS_SHA256: {PUBLISHED_ERA_GENESIS_SHA256}",
-            f'ERA_GENESIS_ROOT: "{PUBLISHED_ERA_GENESIS_ROOT}"',
+            'ERA_GENESIS_SHA256: 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95',
+            'ERA_GENESIS_ROOT: "0xec4a6d11ed43e56364b38684633718eea0c3c270849ccef03dfcf2721a2b77fb"',
             'ERA_GENESIS_CONTRACT_COUNT: "41"',
+            'ERA_VERIFIER_TOOLCHAIN: nightly-2024-12-01',
             'ERA_CONTRACT_HASH_ENTRY_COUNT: "278"',
-            f'ERA_HELPER_SIZE: "{len(helper)}"',
-            f"ERA_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
             "zksync_os_fflonk_artifact_or_deployer_present: true",
             "zksync_os_fflonk_proof_route_present: false",
             'canonical_genesis_snapshot="${WORK_DIR}/canonical-zksync-os-genesis.json"',
@@ -8198,7 +8230,7 @@ class CanonicalFixtureGateStaticTests(unittest.TestCase):
         marker_text = marker.read_text(encoding="utf-8")
         self.assertIn("DO NOT LAUNCH THIS FIXTURE", marker_text)
         self.assertIn("Execution V7, Proving V8", marker_text)
-        self.assertIn(PUBLISHED_ZKSYNC_OS_PATCHED_TREE, marker_text)
+        self.assertIn(REGISTERED_GUEST_ZKSYNC_OS_TREE, marker_text)
         self.assertIn("zero values retained in the production keygen workflow", marker_text)
         self.assertIn("not the current server identity", marker_text)
         self.assertIn("does not populate or qualify this canonical fixture", marker_text)
@@ -9365,7 +9397,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'exec env SHELL="${BASH}" BASH_ENV=/dev/null', launcher_text
         )
         guard = launcher_text.index(
-            'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"'
+            'gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"'
         )
         self.assertLess(guard, launcher_text.index("gl_resolve_gateway_dir planned"))
         self.assertLess(guard, launcher_text.index("gl_acquire_gateway_launch_lock"))
@@ -9382,7 +9414,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                     "bash",
                     "-c",
                     'source "$COMMON"; gl_is_canonical_edge_context || '
-                    'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"',
+                    'gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"',
                 ],
                 check=False,
                 capture_output=True,
@@ -9391,7 +9423,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(
-                "requires canonical edge zksys/57057",
+                "requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)",
                 result.stdout + result.stderr,
             )
             self.assertFalse(Path(env["GATEWAY_DIR"]).exists())
@@ -9821,18 +9853,16 @@ spawn_ignoring_child() {
 }
 group_member_pid=""
 spawn_group_member() {
-  python3 - "$1" "$2" "$3" "$4" "$HARNESS_GROUP_TOKEN" <<'PY' &
+  python3 - "$1" "$2" "$3" "$HARNESS_GROUP_TOKEN" <<'PY' &
 import os
 import signal
 import sys
 import time
 from pathlib import Path
 
-info_path, ready_path, heartbeat_path, signal_path = map(Path, sys.argv[1:5])
-token = sys.argv[5]
-deadline_ns = time.monotonic_ns() + 30_000_000_000
+info_path, ready_path, signal_path = map(Path, sys.argv[1:4])
+token = sys.argv[4]
 info_tmp = Path(f"{info_path}.tmp")
-heartbeat_tmp = Path(f"{heartbeat_path}.tmp")
 
 def record(signum, _frame):
     if str(signal_path) != "-":
@@ -9840,15 +9870,10 @@ def record(signum, _frame):
 
 signal.signal(signal.SIGINT, record)
 signal.signal(signal.SIGTERM, record)
-info_tmp.write_text(
-    f"{os.getpid()}:{os.getpgrp()}:{token}:{deadline_ns}", encoding="utf-8"
-)
+info_tmp.write_text(f"{os.getpid()}:{os.getpgrp()}:{token}", encoding="utf-8")
 os.replace(info_tmp, info_path)
 ready_path.touch()
-while time.monotonic_ns() < deadline_ns:
-    heartbeat_tmp.write_text(f"{token}:{time.monotonic_ns()}", encoding="utf-8")
-    os.replace(heartbeat_tmp, heartbeat_path)
-    time.sleep(0.05)
+time.sleep(30)
 PY
   group_member_pid=$!
 }
@@ -9856,8 +9881,7 @@ if [ "$TEST_MODE" = timeout_cleanup ]; then
   set -m
   (
     set +m
-    spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" \
-      "$VALIDATOR_HEARTBEAT_FILE" -
+    spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" -
     wait "$group_member_pid"
   ) &
   set +m
@@ -9914,8 +9938,7 @@ if [ "$TEST_MODE" = bounded ]; then
   [ "$setup_rc" -eq 1 ]
   [ ! -e "$SUPERVISOR_RETURNED_FILE" ]
   group_command() {
-    spawn_group_member "$NORMAL_STRAGGLER_FILE" "$NORMAL_READY_FILE" \
-      "$NORMAL_HEARTBEAT_FILE" -
+    spawn_group_member "$NORMAL_STRAGGLER_FILE" "$NORMAL_READY_FILE" -
     while [ ! -f "$NORMAL_READY_FILE" ]; do sleep 0.01; done
     while [ ! -f "$GROUP_OBSERVED_FILE" ]; do sleep 0.01; done
     printf 'group stdout\n'
@@ -9925,7 +9948,7 @@ if [ "$TEST_MODE" = bounded ]; then
   group_rc=0
   (
     while [ ! -f "$NORMAL_READY_FILE" ]; do sleep 0.01; done
-    IFS=: read -r normal_pid normal_pgid _ _ < "$NORMAL_STRAGGLER_FILE"
+    IFS=: read -r normal_pid normal_pgid _ < "$NORMAL_STRAGGLER_FILE"
     actual_pgid="$(python3 -c 'import os,sys; print(os.getpgid(int(sys.argv[1])))' "$normal_pgid")"
     [ "$actual_pgid" = "$normal_pgid" ] && \
       printf 'owned\n' > "$GROUP_OBSERVED_FILE"
@@ -9950,13 +9973,11 @@ start_gateway_for_migration() {
   printf '%s:%s\n' "$GATEWAY_NODE_PID" "$node_pgid" > "$PID_FILE"
 }
 validator_with_ignoring_grandchild() {
-  spawn_group_member "$VALIDATOR_PID_FILE" "$COMMAND_READY_FILE" \
-    "$VALIDATOR_HEARTBEAT_FILE" "$VALIDATOR_SIGNAL_FILE"
+  spawn_group_member "$VALIDATOR_PID_FILE" "$COMMAND_READY_FILE" "$VALIDATOR_SIGNAL_FILE"
   wait "$group_member_pid"
 }
 fatal_validator() {
-  spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" \
-    "$VALIDATOR_HEARTBEAT_FILE" -
+  spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" -
   while [ ! -f "$FATAL_READY_FILE" ]; do sleep 0.01; done
   [ "$TEST_MODE" != fatal_zero ] || exit 0
   gl_die "synthetic validator failure"
@@ -9969,7 +9990,7 @@ if [ "$TEST_MODE" = die ] || [ "$TEST_MODE" = fatal_zero ]; then
 fi
 (
   while [ ! -f "$COMMAND_READY_FILE" ]; do sleep 0.01; done
-  IFS=: read -r _ validator_pgid _ _ < "$VALIDATOR_PID_FILE"
+  IFS=: read -r _ validator_pgid _ < "$VALIDATOR_PID_FILE"
   actual_pgid="$(python3 -c 'import os,sys; print(os.getpgid(int(sys.argv[1])))' "$validator_pgid")"
   [ "$actual_pgid" = "$validator_pgid" ] && \
     printf 'owned\n' > "$GROUP_OBSERVED_FILE"
@@ -10004,14 +10025,12 @@ exit 99
                 HARNESS_GROUP_TOKEN=group_token,
                 FATAL_READY_FILE=str(root / "fatal-ready"),
                 NORMAL_READY_FILE=str(root / "normal-ready"),
-                NORMAL_HEARTBEAT_FILE=str(root / "normal-heartbeat"),
                 NORMAL_STRAGGLER_FILE=str(root / "normal-straggler"),
                 PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                 PID_FILE=str(root / "pid"),
                 READY_FILE=str(root / "ready"),
                 COMMAND_READY_FILE=str(root / "command-ready"),
                 VALIDATOR_PID_FILE=str(root / "validator-pid"),
-                VALIDATOR_HEARTBEAT_FILE=str(root / "validator-heartbeat"),
                 VALIDATOR_SIGNAL_FILE=str(root / "validator-signal"),
                 SIBLING_PID=str(sibling_pid),
                 SUPERVISOR_RETURNED_FILE=str(root / "supervisor-returned"),
@@ -10027,9 +10046,7 @@ exit 99
                     command,
                     test_env(root, "bounded", sibling.pid),
                     timeout=15,
-                    owned_group_files=(
-                        (root / "normal-straggler", root / "normal-heartbeat"),
-                    ),
+                    owned_group_info_files=(root / "normal-straggler",),
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIsNone(sibling.poll())
@@ -10045,15 +10062,16 @@ exit 99
                 assert_process_stopped(normal_pid)
             with tempfile.TemporaryDirectory() as temporary_dir:
                 root = Path(temporary_dir)
-                with self.assertRaises(subprocess.TimeoutExpired):
+                with self.assertRaises(subprocess.TimeoutExpired) as expired:
                     run_bash_harness(
                         command,
                         test_env(root, "timeout_cleanup", sibling.pid),
                         timeout=0.5,
-                        owned_group_files=(
-                            (root / "validator-pid", root / "validator-heartbeat"),
-                        ),
+                        owned_group_info_files=(root / "validator-pid",),
+                        timeout_ready_file=root / "fatal-ready",
                     )
+                self.assertEqual(expired.exception.timeout, 0.5)
+                self.assertIsNone(sibling.poll())
                 timed_out_pid = int(
                     (root / "validator-pid")
                     .read_text(encoding="utf-8")
@@ -10073,9 +10091,7 @@ exit 99
                         command,
                         test_env(root, mode, sibling.pid),
                         timeout=15,
-                        owned_group_files=(
-                            (root / "validator-pid", root / "validator-heartbeat"),
-                        ),
+                        owned_group_info_files=(root / "validator-pid",),
                     )
                     child_pid, child_pgid = map(
                         int, pid_file.read_text(encoding="utf-8").split(":")

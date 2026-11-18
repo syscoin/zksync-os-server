@@ -200,7 +200,9 @@ impl BitcoinDaFinalityGate {
         expected_version_hashes: &[u8],
     ) -> anyhow::Result<()> {
         let expected_hashes: Vec<String> = expected_version_hashes
-            .chunks_exact(32)
+            .as_chunks::<32>()
+            .0
+            .iter()
             .map(hex::encode)
             .collect();
         anyhow::ensure!(
@@ -605,7 +607,7 @@ impl BitcoinDaFinalityGate {
                 .as_ref()
                 .expect("Bitcoin DA client was initialized before use");
             for edge_ref in edge_refs {
-                for version_hash in edge_ref.blob_version_hashes.chunks_exact(32) {
+                for version_hash in edge_ref.blob_version_hashes.as_chunks::<32>().0 {
                     let version_hash = hex::encode(version_hash);
                     self.wait_for_edge_ref_finality(client, &version_hash)
                         .await?;
@@ -658,7 +660,13 @@ impl BitcoinDaFinalityGate {
                 if !(status.finalized
                     && status.finality_policy.as_ref() == Some(&self.current_finality_policy()))
                 {
-                    for hash in info.operator_da_input.chunks_exact(32).map(hex::encode) {
+                    for hash in info
+                        .operator_da_input
+                        .as_chunks::<32>()
+                        .0
+                        .iter()
+                        .map(hex::encode)
+                    {
                         hashes.insert(
                             hash,
                             BlobFinalityWaitContext::OwnBatch {
@@ -679,7 +687,9 @@ impl BitcoinDaFinalityGate {
                 for edge_ref in edge_refs {
                     for hash in edge_ref
                         .blob_version_hashes
-                        .chunks_exact(32)
+                        .as_chunks::<32>()
+                        .0
+                        .iter()
                         .map(hex::encode)
                     {
                         hashes
@@ -755,7 +765,9 @@ impl BitcoinDaFinalityGate {
                     })?;
                 let expected: Vec<String> = info
                     .operator_da_input
-                    .chunks_exact(32)
+                    .as_chunks::<32>()
+                    .0
+                    .iter()
                     .map(hex::encode)
                     .collect();
                 anyhow::ensure!(
@@ -784,7 +796,9 @@ impl BitcoinDaFinalityGate {
                     hashes.extend(
                         edge_ref
                             .blob_version_hashes
-                            .chunks_exact(32)
+                            .as_chunks::<32>()
+                            .0
+                            .iter()
                             .map(hex::encode),
                     );
                 }

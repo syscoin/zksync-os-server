@@ -1,11 +1,158 @@
+diff --git a/.github/typos.toml b/.github/typos.toml
+index 89b607831f156ec8031c6e6d2847d486d06c4b19..7704f43490ef8128b90576a8e0ad85fe07204dc6 100644
+--- a/.github/typos.toml
++++ b/.github/typos.toml
+@@ -17,0 +18,2 @@ nd = "nd"
++# SYSCOIN: Permit the spelling used for ABI messages the host cannot parse.
++unparseable = "unparseable"
+diff --git a/.github/workflows/deny.yml b/.github/workflows/deny.yml
+index 46f04b8ab415d4f9873e1b2a6c02621af046c369..556e65eb921efc93bd5fe6b6f432638f83794187 100644
+--- a/.github/workflows/deny.yml
++++ b/.github/workflows/deny.yml
+@@ -1,2 +0,0 @@
+-# Used in pull requests
+-
+@@ -7,0 +6 @@ jobs:
++    name: ${{ matrix.name }}
+@@ -8,0 +8,8 @@ jobs:
++    strategy:
++      fail-fast: false
++      matrix:
++        include:
++          - scope: workspace
++            name: cargo-deny
++          - scope: guest
++            name: cargo-deny (zksync_os)
+@@ -10,16 +17,9 @@ jobs:
+-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+-    - uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.11
+-      with:
+-        command: check
+-        command-arguments: "--allow unmaintained --hide-inclusion-graph"
+-
+-  cargo-deny-zksync-os:
+-    name: cargo-deny (zksync_os)
+-    runs-on: ubuntu-latest
+-    steps:
+-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+-    - uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.11
+-      with:
+-        command: check
+-        command-arguments: "--allow unmaintained --hide-inclusion-graph"
+-        manifest-path: zksync_os/Cargo.toml
++      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
++      - name: Install the reviewed scanner
++        run: |
++          rustup show active-toolchain
++          cargo install cargo-deny --version 0.20.2 --locked
++      - name: Test the fail-closed review gate
++        run: python3 -m unittest discover -s scripts/tests -p test_dependency_advisories.py
++      - name: Check exact OS dependency scope
++        run: python3 scripts/check-dependency-advisories.py '${{ matrix.scope }}'
 diff --git a/Cargo.lock b/Cargo.lock
-index 44ea91fd0eb218b598973adfc676f48439085137..18c7390cafb68a72915585d09782ab02aaf76597 100644
+index 44ea91fd0eb218b598973adfc676f48439085137..37ae7070c93f8bca181945fef82238ab29f69bf7 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -2195,0 +2196 @@ dependencies = [
+@@ -1794 +1794 @@ name = "aws-lc-rs"
+-version = "1.17.0"
++version = "1.19.0"
+@@ -1796 +1796 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
++checksum = "048006790404103c488e6c5616b3e7e702a71292aadda08e8f7698a9e0d2eb53"
+@@ -1804 +1804 @@ name = "aws-lc-sys"
+-version = "0.41.0"
++version = "0.47.0"
+@@ -1806 +1806 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
++checksum = "8bfbe32ac36b3c428696ce315464181bc4029d689fd58e3f2a4e58c252242f52"
+@@ -1811,0 +1812 @@ dependencies = [
++ "pkg-config",
+@@ -2195,0 +2197 @@ dependencies = [
 + "sha2 0.10.9",
-@@ -5826,0 +5828 @@ dependencies = [
+@@ -3417 +3419 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -4297 +4299 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -5826,0 +5829 @@ dependencies = [
 + "sha2 0.10.9",
+@@ -6398 +6401 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -7250 +7253 @@ name = "rustix"
+-version = "1.1.4"
++version = "1.1.6"
+@@ -7252 +7255 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
++checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
+@@ -7258 +7261 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -7263 +7266 @@ name = "rustls"
+-version = "0.23.40"
++version = "0.23.46"
+@@ -7265 +7268 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
++checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
+@@ -7317 +7320 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -7328 +7331 @@ name = "rustls-webpki"
+-version = "0.103.13"
++version = "0.103.16"
+@@ -7330 +7333 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
++checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
+@@ -8172 +8175 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -8300 +8303 @@ name = "tokio"
+-version = "1.52.3"
++version = "1.53.3"
+@@ -8302 +8305 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
++checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+@@ -8484 +8487 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -8939 +8942 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -9262 +9265 @@ dependencies = [
+- "webpki-roots 1.0.7",
++ "webpki-roots 1.0.10",
+@@ -9267 +9270 @@ name = "webpki-roots"
+-version = "1.0.7"
++version = "1.0.10"
+@@ -9269 +9272 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
++checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
+@@ -9302 +9305 @@ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.52.0",
+@@ -9844,0 +9848 @@ dependencies = [
++ "object",
+@@ -9845,0 +9850 @@ dependencies = [
++ "tempfile",
+@@ -9864 +9869 @@ name = "zstd"
+-version = "0.13.3"
++version = "0.13.4"
+@@ -9866 +9871 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
++checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
+@@ -9873 +9878 @@ name = "zstd-safe"
+-version = "7.2.4"
++version = "7.4.0"
+@@ -9875 +9880 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
++checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
+@@ -9882 +9887 @@ name = "zstd-sys"
+-version = "2.0.16+zstd.1.5.7"
++version = "2.1.2+zstd.1.5.7"
+@@ -9884 +9889 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
++checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs b/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
 index dd55949e395569c32c605e3fefa8a603dd3c1aca..3c3d291ae13ff710260fad34d41a0f8a5beb4064 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
@@ -685,21 +832,26 @@ index 096ad0281d25cbad392aae70429c61286160da42..4714d53ff23c7f855e9da0b6a522661c
 +    }
 +}
 diff --git a/basic_bootloader/src/bootloader/constants.rs b/basic_bootloader/src/bootloader/constants.rs
-index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..ee471a4fd4ae2a91e07582a2ae795dd0f73fdefd 100644
+index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..cfbf3f246f827c0a16ff8f2a92db46b6b0aeedb0 100644
 --- a/basic_bootloader/src/bootloader/constants.rs
 +++ b/basic_bootloader/src/bootloader/constants.rs
-@@ -5 +5,2 @@ use basic_system::system_functions::keccak256::keccak256_native_cost_for_rounds_
+@@ -4,2 +4,6 @@ use basic_system::cost_constants::{
+-use basic_system::system_functions::keccak256::keccak256_native_cost_for_rounds_u64;
 -use basic_system::system_implementation::flat_storage_model::cost_constants::COLD_NEW_STORAGE_WRITE_EXTRA_NATIVE_COST;
++use basic_system::system_functions::keccak256::{
++    keccak256_native_cost_for_rounds_u64, keccak256_native_cost_u64,
++};
++use zk_ee::common_structs::logs_storage::L2_TO_L1_LOG_TREE_HEIGHT;
 +// SYSCOIN: Gas-tank resource bounds use the same canonical storage-model cost constants as the
 +// system mutation path they constrain.
-@@ -8 +9,2 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
+@@ -8 +12,2 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
 -    COLD_EXISTING_STORAGE_READ_NATIVE_COST, COLD_NEW_STORAGE_READ_NATIVE_COST,
 +    COLD_EXISTING_STORAGE_READ_NATIVE_COST, COLD_EXISTING_STORAGE_WRITE_EXTRA_NATIVE_COST,
 +    COLD_NEW_STORAGE_READ_NATIVE_COST, COLD_NEW_STORAGE_WRITE_EXTRA_NATIVE_COST,
-@@ -11 +13 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
+@@ -11 +16 @@ use basic_system::system_implementation::flat_storage_model::cost_constants::{
 -    WARM_STORAGE_READ_NATIVE_COST,
 +    WARM_STORAGE_READ_NATIVE_COST, WARM_STORAGE_WRITE_EXTRA_NATIVE_COST,
-@@ -275,0 +278,56 @@ pub const L2_TX_INTRINSIC_PUBDATA: u64 =
+@@ -275,0 +281,56 @@ pub const L2_TX_INTRINSIC_PUBDATA: u64 =
 +// SYSCOIN: worst-case pubdata for zkSYS gas-tank fee payment: three
 +// storage-slot diffs (sender credit, coinbase credit, total credits), each
 +// priced as a 32-byte key plus a 34-byte uncompressed value update, matching
@@ -756,7 +908,32 @@ index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..ee471a4fd4ae2a91e07582a2ae795dd0
 +            + SYSCOIN_GAS_TANK_PROBE_COMPUTATIONAL_NATIVE_COST
 +);
 +
-@@ -380 +438,11 @@ mod tests {
+@@ -369,8 +430,16 @@ pub const BLOCK_INTRINSIC_PUBDATA_BYTES: u64 =
+-/// Intrinsic per-block native overhead, applied to block-limit enforcement
+-/// from block start. Covers fixed pre-tx-loop system work: the EIP-2935
+-/// historical block hash write, the direct L2ChainAssetHandler prewarm, and
+-/// the rolled-back, non-zero L2AssetTracker notification that admits mandatory
+-/// L1-finalization preimages. Conservatively charge each synthetic call as one
+-/// cold AssetTracker notification.
+-pub const BLOCK_INTRINSIC_NATIVE: u64 =
+-    EIP_2935_INTRINSIC_NATIVE + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST;
++// The proving post-op reads the shared tree height, its dynamic root and the
++// settlement chain ID with local FORMAL_INFINITE resources. A slot can be new.
++const BATCH_CONTEXT_NATIVE_COST: u64 = 3
++    * (WARM_STORAGE_READ_NATIVE_COST + COLD_NEW_STORAGE_READ_NATIVE_COST)
++    + keccak256_native_cost_u64(32);
++
++// Each published log pays for its leaf and one internal hash. Padding the
++// rightmost subtree to the fixed tree height can still need H - 1 hashes.
++const LOG_TREE_FINALIZATION_NATIVE_COST: u64 =
++    (L2_TO_L1_LOG_TREE_HEIGHT as u64 - 1) * keccak256_native_cost_u64(64);
++
++/// Native work reserved before selecting transactions for the block.
++pub const BLOCK_INTRINSIC_NATIVE: u64 = EIP_2935_INTRINSIC_NATIVE
++    + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST
++    + BATCH_CONTEXT_NATIVE_COST
++    + LOG_TREE_FINALIZATION_NATIVE_COST;
+@@ -380 +449,34 @@ mod tests {
 -    use super::{L2_TX_AUTHORIZATION_MAX_RLP_BYTES, L2_TX_INTRINSIC_PUBDATA_PER_AUTHORIZATION};
 +    use super::{
 +        COLD_EXISTING_STORAGE_READ_NATIVE_COST, COLD_EXISTING_STORAGE_WRITE_EXTRA_NATIVE_COST,
@@ -769,7 +946,30 @@ index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..ee471a4fd4ae2a91e07582a2ae795dd0
 +        SYSCOIN_NATIVE_FEE_INTRINSIC_COMPUTATIONAL_NATIVE_COST, WARM_STORAGE_READ_NATIVE_COST,
 +        WARM_STORAGE_WRITE_EXTRA_NATIVE_COST,
 +    };
-@@ -412,0 +481,28 @@ mod tests {
++
++    #[test]
++    fn block_native_reserve_covers_mandatory_v32_work() {
++        use super::*;
++        let max_residual = (1..=1usize << L2_TO_L1_LOG_TREE_HEIGHT)
++            .map(|leaves| {
++                let internal: usize = (1..=L2_TO_L1_LOG_TREE_HEIGHT)
++                    .map(|level| leaves.div_ceil(1usize << level))
++                    .sum();
++                internal.saturating_sub(leaves) as u64
++            })
++            .max()
++            .unwrap();
++        assert_eq!(max_residual, L2_TO_L1_LOG_TREE_HEIGHT as u64 - 1);
++        assert_eq!(
++            BLOCK_INTRINSIC_NATIVE,
++            EIP_2935_INTRINSIC_NATIVE
++                + 2 * L1_TX_ASSET_TRACKER_COLD_NOTIFICATION_NATIVE_COST
++                + 3 * (WARM_STORAGE_READ_NATIVE_COST + COLD_NEW_STORAGE_READ_NATIVE_COST)
++                + keccak256_native_cost_u64(32)
++                + max_residual * keccak256_native_cost_u64(64)
++        );
++    }
+@@ -412,0 +515,28 @@ mod tests {
 +
 +    // SYSCOIN: Stage P followed by D must select exactly base - N + T.
 +    #[test]
@@ -1677,6 +1877,17 @@ index 64511cfce0c1abdd930be91a986d40edbbac2120..bf68f285276b8a3fac2d0572bb203925
 +// SYSCOIN: conservative native charge for the portable verifier.
 +pub const SLH_DSA_SHA2_128_24_VERIFY_NATIVE_COST: u64 =
 +    native_with_delegations!(4_300_000, 650_000, 0);
+diff --git a/basic_system/src/system_functions/keccak256.rs b/basic_system/src/system_functions/keccak256.rs
+index f0b231ed1a4b612ea4cf68c3a377a8306d777fe0..c1047241cbc1d6f58458aa63484eea7c8378ed06 100644
+--- a/basic_system/src/system_functions/keccak256.rs
++++ b/basic_system/src/system_functions/keccak256.rs
+@@ -31,3 +31,3 @@ impl<R: Resources> SystemFunction<R, Keccak256Errors> for Keccak256Impl {
+-pub fn keccak256_native_cost_u64(len: usize) -> u64 {
+-    // +1 accounts for keccak padding which always adds at least one byte.
+-    let rounds = core::cmp::max(1, len.saturating_add(1).div_ceil(KECCAK256_CHUNK_SIZE));
++pub const fn keccak256_native_cost_u64(len: usize) -> u64 {
++    // SYSCOIN: Keep the v32 post-op reserve aligned with Keccak’s mandatory padding byte.
++    let rounds = len.saturating_add(1).div_ceil(KECCAK256_CHUNK_SIZE);
 diff --git a/basic_system/src/system_functions/mod.rs b/basic_system/src/system_functions/mod.rs
 index 87760c5c12d5c8176a7461d5dcaaeda476a6cd31..8acc963b764bf395f8c262886ae2e1f9d86235da 100644
 --- a/basic_system/src/system_functions/mod.rs
@@ -2533,18 +2744,11 @@ index 0000000000000000000000000000000000000000..e0c5019c7a70f02b73c3b07476d9951a
 +    }
 +}
 diff --git a/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs b/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs
-index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601246118a1 100644
+index d88163eef9429f58522c1d5ebc5c263e175d662a..086b3b0fb5281d0f2f501a31639d0c0e779a570e 100644
 --- a/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs
 +++ b/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs
 @@ -7,0 +8 @@ use zk_ee::common_structs::cache_record::CacheRecord;
 +use zk_ee::common_structs::history_counter::HistoryCounter;
-@@ -13 +13,0 @@ use zk_ee::internal_error;
--use zk_ee::oracle::basic_queries::InitialStorageSlotQuery;
-@@ -14,0 +15 @@ use zk_ee::oracle::IOOracle;
-+use zk_ee::oracle::basic_queries::InitialStorageSlotQuery;
-@@ -20 +21 @@ use zk_ee::{
--    system::{errors::system::SystemError, Resources},
-+    system::{Resources, errors::system::SystemError},
 @@ -40,0 +42,5 @@ pub struct StorageElementMetadata {
 +    /// SYSCOIN: Transaction where native cold-read Merkle work was paid. This
 +    /// is deliberately independent from EIP-2929 warmth: bootloader fee-ledger
@@ -2577,31 +2781,6 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601
 +    /// skipped by the special write and is covered by the same
 +    /// warm-storage-write native allowance.
 +    pub(crate) evm_original_override: HistoryCounter<Option<(K, V)>, SF, M, A>,
-@@ -86,12 +115,12 @@ impl<
--        K: 'static + KeyLikeWithBounds,
--        V: Default
--            + Clone
--            + Debug
--            + PartialEq
--            + From<<EthereumIOTypesConfig as SystemIOTypesConfig>::StorageValue>,
--        A: Allocator + Clone,
--        SF: StackFactory<M>,
--        const M: usize,
--        R: Resources,
--        P: StorageAccessPolicy<R, V>,
--    > GenericPubdataAwarePlainStorage<K, V, A, SF, M, R, P>
-+    K: 'static + KeyLikeWithBounds,
-+    V: Default
-+        + Clone
-+        + Debug
-+        + PartialEq
-+        + From<<EthereumIOTypesConfig as SystemIOTypesConfig>::StorageValue>,
-+    A: Allocator + Clone,
-+    SF: StackFactory<M>,
-+    const M: usize,
-+    R: Resources,
-+    P: StorageAccessPolicy<R, V>,
-+> GenericPubdataAwarePlainStorage<K, V, A, SF, M, R, P>
 @@ -101,0 +131,2 @@ impl<
 +            // SYSCOIN: Initialize the lazy per-transaction EVM-original singleton.
 +            evm_original_override: HistoryCounter::new(allocator.clone()),
@@ -2867,7 +3046,7 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601
 +            self.evm_original_override.update(None);
 +        }
 +
-@@ -380,0 +597,830 @@ impl<
+@@ -380,0 +597,822 @@ impl<
 +
 +#[cfg(test)]
 +mod tests {
@@ -2879,7 +3058,7 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601
 +    use crate::system_implementation::flat_storage_model::storage_cache::NewStorageWithAccountPropertiesUnderHash;
 +    use crate::system_implementation::system::EthereumLikeStorageAccessCostModel;
 +    use core::iter::Empty;
-+    use evm_interpreter::{ERGS_PER_GAS, gas_constants::COLD_SLOAD_COST};
++    use evm_interpreter::{gas_constants::COLD_SLOAD_COST, ERGS_PER_GAS};
 +    use std::alloc::Global;
 +    use storage_models::common_structs::StorageCacheModel;
 +    use zk_ee::common_structs::WarmStorageKey;
@@ -3367,18 +3546,16 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601
 +            .unwrap();
 +        let resources_after_first = resources.clone();
 +
-+        assert!(
-+            storage
-+                .apply_fee_ledger_write_impl(
-+                    &key(),
-+                    &value(40),
-+                    &value(30),
-+                    true,
-+                    &mut oracle,
-+                    &mut resources,
-+                )
-+                .is_err()
-+        );
++        assert!(storage
++            .apply_fee_ledger_write_impl(
++                &key(),
++                &value(40),
++                &value(30),
++                true,
++                &mut oracle,
++                &mut resources,
++            )
++            .is_err());
 +        assert_eq!(resources, resources_after_first);
 +        assert_eq!(
 +            *storage.cache.get(&key()).unwrap().current().value(),
@@ -3417,13 +3594,11 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601
 +            *storage.cache.get(&key()).unwrap().current().value(),
 +            value(0)
 +        );
-+        assert!(
-+            storage
-+                .evm_original_override
-+                .value()
-+                .and_then(Option::as_ref)
-+                .is_none()
-+        );
++        assert!(storage
++            .evm_original_override
++            .value()
++            .and_then(Option::as_ref)
++            .is_none());
 +
 +        storage.finish_frame_impl(Some(&snapshot)).unwrap();
 +        assert_eq!(
@@ -3460,18 +3635,16 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601
 +        storage.clear_state_impl(Box::new(key().address)).unwrap();
 +        let resources_after_clear = resources.clone();
 +
-+        assert!(
-+            storage
-+                .apply_fee_ledger_write_impl(
-+                    &key(),
-+                    &value(0),
-+                    &value(30),
-+                    true,
-+                    &mut oracle,
-+                    &mut resources,
-+                )
-+                .is_err()
-+        );
++        assert!(storage
++            .apply_fee_ledger_write_impl(
++                &key(),
++                &value(0),
++                &value(30),
++                true,
++                &mut oracle,
++                &mut resources,
++            )
++            .is_err());
 +        assert_eq!(resources, resources_after_clear);
 +        assert_eq!(
 +            *storage.cache.get(&key()).unwrap().current().value(),
@@ -3680,18 +3853,16 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601
 +        let mut storage = storage_with_initial(100);
 +        let mut oracle = UnusedOracle;
 +        let mut resources = resources();
-+        assert!(
-+            storage
-+                .apply_fee_ledger_write_impl(
-+                    &key(),
-+                    &value(99),
-+                    &value(40),
-+                    true,
-+                    &mut oracle,
-+                    &mut resources,
-+                )
-+                .is_err()
-+        );
++        assert!(storage
++            .apply_fee_ledger_write_impl(
++                &key(),
++                &value(99),
++                &value(40),
++                true,
++                &mut oracle,
++                &mut resources,
++            )
++            .is_err());
 +        let item = storage.cache.get(&key()).unwrap();
 +        assert_eq!(*item.current().value(), value(100));
 +        assert!(storage.evm_original_override.value().is_none());
@@ -4020,6 +4191,24 @@ index d88689b7ed982aa3c5063e9e321e278d5ebef039..d7e7c164db43e61d51dddaab3db17bee
 +    add_pair headline_agg_pairs "(\"all blocks (compact Bitcoin DA)\", \"${base_blob}\", \"head_block_${blk}_blobs.bench\", \"process_block\")"
 +    for sym in $subphase_symbols_compact_da; do
 +      add_pair subphase_pairs "(\"block_${blk} (compact Bitcoin DA)\", \"${base_blob}\", \"head_block_${blk}_blobs.bench\", \"${sym}\")"
+diff --git a/deny.toml b/deny.toml
+index 365b3886153a7eb85dcba2edbb9387abcc5d04b7..c70fadc36f14e3386ba1b6466b519cd7d1129c88 100644
+--- a/deny.toml
++++ b/deny.toml
+@@ -2,10 +2,3 @@
+-ignore = [
+-    # quick-xml < 0.41 memory-exhaustion / quadratic-parse advisories. Pulled in
+-    # only transitively by `inferno` (flamegraph SVG rendering) via the
+-    # git-pinned `riscv_transpiler`, whose `inferno = "^0.12"` in turn pins
+-    # `quick-xml = "^0.39"`, so it cannot be bumped without moving those git
+-    # revs. It is host-side benchmarking/test tooling that never parses
+-    # untrusted XML and is not part of the proving runtime.
+-    "RUSTSEC-2026-0194",
+-    "RUSTSEC-2026-0195",
+-]
++# SYSCOIN: Conditional dispositions live in scripts/security/dependency-review.json and
++# are applied only after the source, target, toolchain and graph checks pass.
++ignore = []
 diff --git a/docs/da_commitment_schemes.md b/docs/da_commitment_schemes.md
 index 8c7e468391dc071673895af3bb4fbe7cda43368b..b79c699f0d69c76ab2dffe743a7e1f9005cbac1c 100644
 --- a/docs/da_commitment_schemes.md
@@ -4198,6 +4387,22 @@ index e379a78c775904ef875a1ef77c64f3f71831d56d..39e107e1ca61ca8bf1ea4c4b62e37746
 +    // SYSCOIN: Include 0x101 only in builds that compile the downstream verifier hook.
 +    #[cfg(feature = "slh_dsa_precompile")]
 +    SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW,
+diff --git a/evm_interpreter/src/utils.rs b/evm_interpreter/src/utils.rs
+index 00f919127dd4ad736206d0b81d24b7106ccfd387..61e09604cabc165c5c1fa6d17f0f89079eb3ccfd 100644
+--- a/evm_interpreter/src/utils.rs
++++ b/evm_interpreter/src/utils.rs
+@@ -24 +24,4 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
+-        src.try_to_usize().ok_or(error_to_set)
++        // SYSCOIN: Heap growth and its native charge must follow the proving guest's address width.
++        src.try_to_u32()
++            .map(|value| value as usize)
++            .ok_or(error_to_set)
+@@ -31,4 +34 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
+-    /// narrowing done by [`Self::cast_to_usize`]. A `usize` narrowing accepts
+-    /// different lengths on the 64-bit forward host and on the 32-bit proving
+-    /// target. A charge after the narrowing therefore makes the two
+-    /// executions spend different resources for the same input.
++    /// narrowing to the guest address width done by [`Self::cast_to_usize`].
 diff --git a/forward_system/Cargo.toml b/forward_system/Cargo.toml
 index 6e077247a3b6363c50d062cd7215e391d7ffc673..7b704e99ec6dc48af0e5b9828b7789ef61cb3fa1 100644
 --- a/forward_system/Cargo.toml
@@ -4403,6 +4608,580 @@ index c2a3212ff449d73f75ccd876dd4de0c9511a5b3c..0001dbed2a45e99a6e5f1f2450881d20
 -production = ["fusaka-bpo-2"]
 +# SYSCOIN: Proof-running binaries expose the same SLH-DSA hook as forward execution.
 +production = ["fusaka-bpo-2", "system_hooks/slh_dsa_precompile"]
+diff --git a/scripts/check-dependency-advisories.py b/scripts/check-dependency-advisories.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d896d67dca3d53444beb66c81d9b606fb665cdc1
+--- /dev/null
++++ b/scripts/check-dependency-advisories.py
+@@ -0,0 +1,299 @@
++#!/usr/bin/env python3
++"""Apply exact-source advisory dispositions to the reviewed OS configurations."""
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import platform
++import re
++import shlex
++import stat
++import subprocess
++import sys
++import tempfile
++import tomllib
++
++ROOT = Path(__file__).resolve().parents[1]
++POLICY_PATH = "scripts/security/dependency-review.json"
++HOST = "x86_64-unknown-linux-gnu"
++SCOPES = {
++    "workspace": ("Cargo.toml", HOST),
++    "guest": ("zksync_os/Cargo.toml", "riscv32im-risc0-zkvm-elf"),
++}
++DATABASE_URL = "https://github.com/RustSec/advisory-db"
++DENY_VERSION = "0.20.2"
++
++
++def source_fingerprint(root):
++    names = set(filter(None, run([
++        "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z",
++    ], root).split("\0")))
++    result = hashlib.sha256()
++    for name in sorted(names):
++        if (name == POLICY_PATH or Path(name).suffix.lower() in {".md", ".pdf"}
++                or "__pycache__" in Path(name).parts):
++            continue
++        path = root / name
++        if not path.is_file() or path.is_symlink():
++            raise ValueError(f"source input is not a regular file: {name}")
++        mode = "executable" if path.stat().st_mode & stat.S_IXUSR else "regular"
++        result.update(name.encode() + b"\0" + mode.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
++    return result.hexdigest()
++
++
++def validate_host(environ, system, machine):
++    if system != "Linux" or machine not in {"x86_64", "AMD64"}:
++        raise ValueError(f"reviewed analysis host is {HOST}")
++    for name in environ:
++        if (name in {"RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET", "RUSTC",
++                     "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTFLAGS"}
++                or name.startswith("CARGO_PROFILE_")
++                or re.fullmatch(r"CARGO_TARGET_.*_(?:RUSTFLAGS|LINKER)", name)):
++            raise ValueError(f"unreviewed compiler override: {name}")
++
++
++def validate_features(metadata):
++    packages = {p["id"]: p for p in metadata["packages"]}
++    for node in metadata["resolve"]["nodes"]:
++        name = packages[node["id"]]["name"]
++        forbidden = {
++            "aws-sigv4": {"sigv4a"},
++            "der": {"bigint"},
++            "crypto-bigint": {"alloc"},
++        }.get(name, set())
++        if forbidden.intersection(node["features"]):
++            raise ValueError(f"unreviewed secret arithmetic features for {name}")
++
++
++def fingerprints(root, scope, metadata):
++    manifest, _ = SCOPES[scope]
++    lock_path = Path(manifest).with_name("Cargo.lock")
++    return {
++        "lock_sha256": digest((root / lock_path).read_bytes()),
++        "source_sha256": source_fingerprint(root),
++        "graph_sha256": graph_fingerprint(metadata, root),
++    }
++
++
++def validate_context(root, policy, scope, metadata, compiler):
++    if policy["schema"] != 1 or policy["host"] != HOST:
++        raise ValueError("unsupported advisory review scope")
++    review = policy["scopes"][scope]
++    manifest, target = SCOPES[scope]
++    if review["target"] != target or review["manifest"] != manifest:
++        raise ValueError("target or manifest differs from the reviewed scope")
++    if f"commit-hash: {policy['rustc_commit']}\n" not in compiler:
++        raise ValueError("compiler differs from the reviewed toolchain")
++    validate_packages(tomllib.loads((root / Path(manifest).with_name("Cargo.lock")).read_text()), review)
++    validate_features(metadata)
++    for key, value in fingerprints(root, scope, metadata).items():
++        if value != review[key]:
++            raise ValueError(f"{scope} {key}: review is stale (actual {value})")
++    return review
++
++
++def digest(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def run(command, root=ROOT):
++    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
++    if result.returncode:
++        raise ValueError(f"{shlex.join(map(str, command))} failed:\n{result.stderr}")
++    return result.stdout
++
++
++def graph_fingerprint(metadata, root):
++    packages = {}
++    for package in metadata["packages"]:
++        source = package["source"]
++        if source is None:
++            try:
++                relative = Path(package["manifest_path"]).relative_to(root).as_posix()
++            except ValueError as error:
++                raise ValueError("unreviewed dependency outside the workspace") from error
++            source = "workspace:" + relative
++        packages[package["id"]] = (package["name"], package["version"], source)
++    nodes = []
++    for node in metadata["resolve"]["nodes"]:
++        dependencies = sorted(
++            (dep["name"], packages[dep["pkg"]],
++             sorted((kind.get("kind") or "normal", kind.get("target") or "")
++                    for kind in dep["dep_kinds"]))
++            for dep in node["deps"]
++        )
++        nodes.append((packages[node["id"]], sorted(node["features"]), dependencies))
++    return digest(json.dumps(sorted(nodes), separators=(",", ":")).encode())
++
++
++def validate_packages(lock, policy):
++    for name, expected in policy["packages"].items():
++        matches = [p for p in lock["package"] if p["name"] == name]
++        if len(matches) != 1 or any(matches[0].get(k) != expected[k]
++                                    for k in ("version", "source", "checksum")):
++            raise ValueError(f"{name}: unreviewed package identity")
++
++
++def validate_advisories(database, policy):
++    for advisory_id, review in policy["advisories"].items():
++        path = database / "crates" / review["package"] / f"{advisory_id}.md"
++        try:
++            actual = digest(path.read_bytes())
++        except OSError as error:
++            raise ValueError(f"{advisory_id}: reviewed advisory is missing") from error
++        if not review["rationale"] or actual != review["sha256"]:
++            raise ValueError(f"{advisory_id}: advisory contents changed; re-review required")
++
++
++def _filter_report(report, policy, scanner, legacy_ignores):
++    settings = report["settings"]
++    if not isinstance(settings["ignore"], list) or not all(isinstance(value, str) for value in settings["ignore"]):
++        raise ValueError("malformed scanner settings")
++    ignored = set(settings["ignore"])
++    if ignored - legacy_ignores or ignored.intersection(policy["advisories"]):
++        raise ValueError("unexpected global advisory ignore")
++    vulnerabilities = report["vulnerabilities"]
++    if scanner == "audit":
++        findings = vulnerabilities["list"]
++        if (not isinstance(findings, list)
++                or type(vulnerabilities["found"]) is not bool
++                or type(vulnerabilities["count"]) is not int
++                or vulnerabilities["count"] != len(findings)
++                or vulnerabilities["found"] != bool(findings)):
++            raise ValueError("inconsistent audit report")
++        findings = list(findings)
++    elif scanner == "deny" and isinstance(vulnerabilities, list):
++        findings = list(vulnerabilities)
++    else:
++        raise ValueError("unexpected scanner report")
++    if not isinstance(findings, list) or not isinstance(report["warnings"], dict):
++        raise ValueError("malformed scanner findings")
++    for kind, warnings in report["warnings"].items():
++        if (kind not in {"unsound", "unmaintained", "notice", "yanked"}
++                or not isinstance(warnings, list)
++                or not all(isinstance(warning, dict) for warning in warnings)):
++            raise ValueError(f"unknown warning category: {kind}")
++        if kind == "unsound":
++            findings.extend(warnings)
++    accepted, remaining = [], []
++    for finding in findings:
++        advisory = finding["advisory"]
++        package = finding["package"]
++        advisory_id = advisory["id"]
++        if advisory_id in ignored:
++            continue
++        review = policy["advisories"].get(advisory_id)
++        expected = policy["packages"].get(package["name"])
++        if review is not None:
++            if (review["package"] != package["name"] or expected is None
++                    or advisory["package"] != package["name"]):
++                raise ValueError(f"{advisory_id}: unexpected package")
++            if any(package.get(k) != expected[k] for k in ("version", "source")):
++                raise ValueError(f"{advisory_id}: unexpected package identity")
++            checksum = package.get("checksum")
++            if checksum != expected["checksum"] and not (scanner == "deny" and checksum is None):
++                raise ValueError(f"{advisory_id}: unexpected package checksum")
++            accepted.append(finding)
++        else:
++            remaining.append(finding)
++    return accepted, remaining
++
++
++def filter_report(report, policy, scanner, legacy_ignores):
++    try:
++        return _filter_report(report, policy, scanner, legacy_ignores)
++    except (KeyError, TypeError, AttributeError) as error:
++        raise ValueError("malformed scanner report") from error
++
++
++def deny_diagnostics(stderr):
++    for line in stderr.splitlines():
++        item = json.loads(line)
++        fields = item["fields"]
++        if (fields.get("level") == "ERROR"
++                or (fields.get("severity") == "error"
++                    and fields.get("code") not in {"vulnerability", "unsound"})):
++            raise ValueError(f"cargo-deny operational error: {fields}")
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("scope", choices=SCOPES)
++    parser.add_argument("--fingerprints", action="store_true",
++                        help="print evidence for review; never update policy or accept findings")
++    args = parser.parse_args()
++    manifest, target = SCOPES[args.scope]
++    metadata = json.loads(run([
++        "cargo", "metadata", "--locked", "--all-features", "--manifest-path", manifest,
++        "--filter-platform", target, "--format-version", "1",
++    ]))
++    if args.fingerprints:
++        print(json.dumps(fingerprints(ROOT, args.scope, metadata), indent=2))
++        return
++    validate_host(os.environ, platform.system(), platform.machine())
++    policy = json.loads((ROOT / POLICY_PATH).read_text())
++    compiler = run(["rustc", "--version", "--verbose"])
++    review = validate_context(ROOT, policy, args.scope, metadata, compiler)
++    base = (ROOT / "deny.toml").read_text()
++    if tomllib.loads(base)["advisories"]["ignore"]:
++        raise ValueError("global advisory ignores are not permitted")
++    if not re.search(rf"\b{re.escape(DENY_VERSION)}\s*$", run(["cargo", "deny", "--version"])):
++        raise ValueError("cargo-deny version differs from the reviewed scanner")
++    output = ROOT / "target/dependency-review" / args.scope
++    output.mkdir(parents=True, exist_ok=True)
++    with tempfile.TemporaryDirectory(prefix="os-dependency-review-") as temporary:
++        temporary = Path(temporary)
++        metadata_path = temporary / "metadata.json"
++        metadata_path.write_text(json.dumps(metadata))
++        config = temporary / "deny.toml"
++        config.write_text(base.replace(
++            "[advisories]\n", f'[advisories]\ndb-path = "{temporary / "databases"}"\n', 1,
++        ))
++        run(["cargo", "deny", "--config", str(config), "fetch", "db"])
++        databases = list((temporary / "databases").glob("*/crates"))
++        if len(databases) != 1:
++            raise ValueError("expected one RustSec advisory database")
++        database = databases[0].parent
++        validate_advisories(database, review)
++        revision = run(["git", "rev-parse", "HEAD"], database).strip()
++        # SYSCOIN: cargo-deny also fetches sources using its manifest. Guest CI has
++        # only fetched the standalone guest graph on a clean runner.
++        common = ["cargo", "deny", "--manifest-path", manifest, "--format", "json", "--metadata-path", str(metadata_path),
++                  "--config", str(config), "--target", target, "--all-features", "--locked", "--offline"]
++        # Source, license and ban errors remain independent of advisory triage.
++        run(common + ["check", "bans", "licenses", "sources", "--allow", "unmaintained"])
++        result = subprocess.run(common + [
++            "check", "advisories", "--allow", "unmaintained", "--audit-compatible-output",
++        ], cwd=ROOT, text=True, capture_output=True)
++        (output / "raw.json").write_text(result.stdout)
++        (output / "stderr.log").write_text(result.stderr)
++        if result.returncode not in {0, 1}:
++            raise ValueError(f"cargo-deny failed with status {result.returncode}: {result.stderr}")
++        deny_diagnostics(result.stderr)
++        accepted, remaining = filter_report(json.loads(result.stdout), review, "deny", set())
++        if result.returncode and not (accepted or remaining):
++            raise ValueError("scanner failed without a vulnerability or unsoundness finding")
++        summary = {
++            "scope": args.scope, "target": target, "advisory_db": revision,
++            **fingerprints(ROOT, args.scope, metadata),
++            "accepted": [{"id": f["advisory"]["id"], "package": f["package"]["name"],
++                          "rationale": review["advisories"][f["advisory"]["id"]]["rationale"]}
++                         for f in accepted],
++            "remaining": remaining,
++        }
++        (output / "review.json").write_text(json.dumps(summary, indent=2) + "\n")
++        if remaining:
++            raise ValueError(f"{len(remaining)} unreviewed vulnerability or unsoundness finding(s)")
++        validate_context(ROOT, policy, args.scope, metadata, compiler)
++        validate_advisories(database, review)
++        print(f"PASS {args.scope}: {len(accepted)} scoped dispositions; no unreviewed findings; RustSec {revision}")
++
++
++if __name__ == "__main__":
++    try:
++        main()
++    except (ValueError, KeyError, TypeError, OSError) as error:
++        print(f"OS dependency review failed: {error}", file=sys.stderr)
++        sys.exit(1)
+diff --git a/scripts/security/dependency-review.json b/scripts/security/dependency-review.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f965148915b67b547c720d3d8d691de225491ce
+--- /dev/null
++++ b/scripts/security/dependency-review.json
+@@ -0,0 +1,116 @@
++{
++  "schema": 1,
++  "reviewed_base_commit": "df6ec95ab3fb7c291b8d99f422b26f0013d5ff07",
++  "host": "x86_64-unknown-linux-gnu",
++  "rustc_commit": "18d13b5332916ffca8eadb9106d54b5b434e9978",
++  "review_notes": {
++    "crypto-bigint": "The OS host API exposes real secret-key signing. The reviewed 0.5.5 Limb::sbb uses widened wrapping subtraction, predating the newer overflowing_sub regression. k256/p256 signing uses custom multiplication/reduction and fixed inversion routines; the reviewed zero-count/division calls process public curve parameters or public recovery data. UintRef and BoxedMontyForm are absent. This is a source- and compiler-bound applicability disposition, NOT a proof of constant-time generated code, a blanket public-input claim, or approval for other consumers/targets.",
++    "ruzstd": "All OS profiling constructors converge on zksync_os_runner. ProfilingSymbols rejects compressed ELF sections by metadata before decoding and gives the upstream profiler only a bounded, private, readonly validated snapshot. Therefore the reachable OS profiling path does not enter the vulnerable decoder, even if the original input path is replaced. The dependency itself remains affected; using it outside this guarded path requires new review.",
++    "quick-xml": "The pinned inferno dependency is used by the OS only to render collected flamegraph lines as SVG; the reviewed OS entrypoint does not accept an XML document for parsing. This narrows the previous global exception to this exact source/graph."
++  },
++  "scopes": {
++    "workspace": {
++      "manifest": "Cargo.toml",
++      "target": "x86_64-unknown-linux-gnu",
++      "lock_sha256": "8fb60104f0040b570740f7078fe0449a6a5d736a2a74578fa36ad2f89cdd731d",
++      "source_sha256": "b4f236ce7952256a80f352777f260fc941029da23cfcdb4a15b18f08dc58f1bb",
++      "graph_sha256": "bb9dcd948be2e782fe969bdda334c0429b01c4f8d597fca9f257985b912c98da",
++      "packages": {
++        "crypto-bigint": {
++          "version": "0.5.5",
++          "source": "registry+https://github.com/rust-lang/crates.io-index",
++          "checksum": "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
++        },
++        "ruzstd": {
++          "version": "0.8.3",
++          "source": "registry+https://github.com/rust-lang/crates.io-index",
++          "checksum": "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
++        },
++        "quick-xml": {
++          "version": "0.39.4",
++          "source": "registry+https://github.com/rust-lang/crates.io-index",
++          "checksum": "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
++        }
++      },
++      "advisories": {
++        "RUSTSEC-2026-0387": {
++          "package": "crypto-bigint",
++          "sha256": "7c9f3f944105638e613e83e97690035198e453d701e56506ee911e1fbfcb46f3",
++          "rationale": "The OS host API exposes real secret-key signing. The reviewed 0.5.5 Limb::sbb uses widened wrapping subtraction, predating the newer overflowing_sub regression. k256/p256 signing uses custom multiplication/reduction and fixed inversion routines; the reviewed zero-count/division calls process public curve parameters or public recovery data. UintRef and BoxedMontyForm are absent. This is a source- and compiler-bound applicability disposition, NOT a proof of constant-time generated code, a blanket public-input claim, or approval for other consumers/targets."
++        },
++        "RUSTSEC-2026-0344": {
++          "package": "ruzstd",
++          "sha256": "f6552fb10f4fd5771f52e2980303f30d85222f908b0a2bf7d5b86a5d6f6715ad",
++          "rationale": "All OS profiling constructors converge on zksync_os_runner. ProfilingSymbols rejects compressed ELF sections by metadata before decoding and gives the upstream profiler only a bounded, private, readonly validated snapshot. Therefore the reachable OS profiling path does not enter the vulnerable decoder, even if the original input path is replaced. The dependency itself remains affected; using it outside this guarded path requires new review."
++        },
++        "RUSTSEC-2026-0194": {
++          "package": "quick-xml",
++          "sha256": "148a2d313b2c3d855a810740af4a5e73f50fa1fad9104d375fd52045ab630877",
++          "rationale": "The pinned inferno dependency is used by the OS only to render collected flamegraph lines as SVG; the reviewed OS entrypoint does not accept an XML document for parsing. This narrows the previous global exception to this exact source/graph."
++        },
++        "RUSTSEC-2026-0195": {
++          "package": "quick-xml",
++          "sha256": "b2cd28ce625a122e3859117f3e68718bbe6c7f60cdb726f9a596b58c326b5370",
++          "rationale": "The pinned inferno dependency is used by the OS only to render collected flamegraph lines as SVG; the reviewed OS entrypoint does not accept an XML document for parsing. This narrows the previous global exception to this exact source/graph."
++        }
++      }
++    },
++    "guest": {
++      "manifest": "zksync_os/Cargo.toml",
++      "target": "riscv32im-risc0-zkvm-elf",
++      "lock_sha256": "d6863d99a9e876ef55b7abf69f520567cab51668a91374c96c3ce5891a140610",
++      "source_sha256": "b4f236ce7952256a80f352777f260fc941029da23cfcdb4a15b18f08dc58f1bb",
++      "graph_sha256": "0f9bb52f8a2ff9e5299dde4c6bb908133926441679e726b02f25715e4e5b8c17",
++      "packages": {
++        "crypto-bigint": {
++          "version": "0.5.5",
++          "source": "registry+https://github.com/rust-lang/crates.io-index",
++          "checksum": "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
++        }
++      },
++      "advisories": {
++        "RUSTSEC-2026-0387": {
++          "package": "crypto-bigint",
++          "sha256": "7c9f3f944105638e613e83e97690035198e453d701e56506ee911e1fbfcb46f3",
++          "rationale": "The OS host API exposes real secret-key signing. The reviewed 0.5.5 Limb::sbb uses widened wrapping subtraction, predating the newer overflowing_sub regression. k256/p256 signing uses custom multiplication/reduction and fixed inversion routines; the reviewed zero-count/division calls process public curve parameters or public recovery data. UintRef and BoxedMontyForm are absent. This is a source- and compiler-bound applicability disposition, NOT a proof of constant-time generated code, a blanket public-input claim, or approval for other consumers/targets."
++        }
++      }
++    }
++  },
++  "guest_preservation": {
++    "baseline_commit": "df6ec95ab3fb7c291b8d99f422b26f0013d5ff07",
++    "guest_lock_sha256": "d6863d99a9e876ef55b7abf69f520567cab51668a91374c96c3ce5891a140610",
++    "resolved_graph_sha256": "0f9bb52f8a2ff9e5299dde4c6bb908133926441679e726b02f25715e4e5b8c17",
++    "guest_source_directories_unchanged": [
++      "zksync_os",
++      "proof_running_system",
++      "basic_bootloader",
++      "basic_system",
++      "forward_system",
++      "zk_ee",
++      "evm_interpreter",
++      "supporting_crates",
++      "api",
++      "oracle_provider",
++      "callable_oracles",
++      "storage_models",
++      "system_hooks",
++      "cycle_marker"
++    ],
++    "new_dependency_edges": [
++      "zksync_os_runner -> object 0.37.3",
++      "zksync_os_runner -> tempfile 3.27.0"
++    ],
++    "dependency_version_or_feature_changes": []
++  },
++  "references": {
++    "advisories": [
++      "https://rustsec.org/advisories/RUSTSEC-2026-0387.html",
++      "https://rustsec.org/advisories/RUSTSEC-2026-0344.html"
++    ],
++    "bigint_subtraction_source": "https://github.com/RustCrypto/crypto-bigint/blob/98f29002552211cbd37dd09d354d1514d84158c4/src/limb/sub.rs",
++    "bigint_subtraction_sha256": "2fe52b63f4876beb4d6fb44f2d04ac62231d66b7071097d592c690ceb4944764",
++    "bigint_newer_regression_fix": "https://github.com/RustCrypto/crypto-bigint/pull/1358",
++    "ruzstd_upstream_fix": "https://github.com/KillingSpark/zstd-rs/commit/d3907c960ca4a1aa44cc38340137c5679dd98f5a"
++  }
++}
+diff --git a/scripts/tests/test_dependency_advisories.py b/scripts/tests/test_dependency_advisories.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f76dabcd3309fbd137332ed05f5243ea28dbf7e
+--- /dev/null
++++ b/scripts/tests/test_dependency_advisories.py
+@@ -0,0 +1,141 @@
++import copy
++import importlib.util
++import json
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++
++MODULE = Path(__file__).resolve().parents[1] / "check-dependency-advisories.py"
++spec = importlib.util.spec_from_file_location("dependency_review", MODULE)
++review = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(review)
++REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
++PACKAGE = {"name": "crypto-bigint", "version": "0.5.5", "source": REGISTRY, "checksum": "a" * 64}
++ADVISORY = "RUSTSEC-2026-0387"
++
++
++def policy():
++    return {
++        "packages": {"crypto-bigint": {k: v for k, v in PACKAGE.items() if k != "name"}},
++        "advisories": {ADVISORY: {"package": "crypto-bigint", "rationale": "exact reviewed operations"}},
++    }
++
++
++def report():
++    return {"settings": {"ignore": []}, "warnings": {}, "vulnerabilities": [
++        {"advisory": {"id": ADVISORY, "package": "crypto-bigint"}, "package": copy.deepcopy(PACKAGE)},
++    ]}
++
++
++class DependencyReviewTests(unittest.TestCase):
++    def test_only_exact_reviewed_finding_is_accepted(self):
++        accepted, remaining = review.filter_report(report(), policy(), "deny", set())
++        self.assertEqual(len(accepted), 1)
++        self.assertEqual(remaining, [])
++
++    def test_unknown_finding_remains_a_failure(self):
++        data = report()
++        data["vulnerabilities"][0]["advisory"]["id"] = "RUSTSEC-2099-0001"
++        accepted, remaining = review.filter_report(data, policy(), "deny", set())
++        self.assertEqual(accepted, [])
++        self.assertEqual(len(remaining), 1)
++
++    def test_version_source_and_checksum_drift_fail(self):
++        for key, value in [("version", "0.5.6"), ("source", "git+unreviewed"), ("checksum", "b" * 64)]:
++            with self.subTest(key=key):
++                data = report()
++                data["vulnerabilities"][0]["package"][key] = value
++                with self.assertRaises(ValueError):
++                    review.filter_report(data, policy(), "deny", set())
++
++    def test_global_ignores_fail(self):
++        data = report()
++        data["settings"]["ignore"] = [ADVISORY]
++        with self.assertRaises(ValueError):
++            review.filter_report(data, policy(), "deny", set())
++
++    def test_unknown_warning_category_fails(self):
++        data = report()
++        data["warnings"] = {"future_unknown_category": []}
++        with self.assertRaises(ValueError):
++            review.filter_report(data, policy(), "deny", set())
++
++    def test_unsound_findings_are_not_discarded_as_warnings(self):
++        data = report()
++        data["warnings"] = {"unsound": data["vulnerabilities"]}
++        data["vulnerabilities"] = []
++        self.assertEqual(len(review.filter_report(data, policy(), "deny", set())[0]), 1)
++
++    def test_scanner_operational_errors_fail(self):
++        diagnostic = {"fields": {"severity": "error", "code": "license-rejected"}}
++        with self.assertRaises(ValueError):
++            review.deny_diagnostics(json.dumps(diagnostic))
++
++    def test_host_and_compiler_overrides_fail(self):
++        review.validate_host({}, "Linux", "x86_64")
++        for env, system, machine in [({}, "Darwin", "arm64"),
++                ({"RUSTFLAGS": "-Ctarget-cpu=native"}, "Linux", "x86_64"),
++                ({"CARGO_BUILD_TARGET": "other"}, "Linux", "x86_64")]:
++            with self.subTest(env=env, system=system):
++                with self.assertRaises(ValueError):
++                    review.validate_host(env, system, machine)
++
++    def test_new_secret_arithmetic_features_fail(self):
++        for name, feature in [("aws-sigv4", "sigv4a"), ("der", "bigint"), ("crypto-bigint", "alloc")]:
++            metadata = {"packages": [{"id": "p", "name": name}],
++                        "resolve": {"nodes": [{"id": "p", "features": [feature]}]}}
++            with self.subTest(name=name):
++                with self.assertRaises(ValueError):
++                    review.validate_features(metadata)
++
++    def test_changed_advisory_text_fails(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            path = root / "crates/crypto-bigint" / f"{ADVISORY}.md"
++            path.parent.mkdir(parents=True)
++            path.write_text("reviewed record")
++            data = policy()
++            data["advisories"][ADVISORY]["sha256"] = review.digest(path.read_bytes())
++            review.validate_advisories(root, data)
++            path.write_text("updated mechanism")
++            with self.assertRaises(ValueError):
++                review.validate_advisories(root, data)
++
++    def test_source_and_untracked_caller_drift_change_fingerprint(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            subprocess.run(["git", "init", "-q", str(root)], check=True)
++            (root / "lib.rs").write_text("original caller")
++            initial = review.source_fingerprint(root)
++            (root / "lib.rs").write_text("new signing call")
++            self.assertNotEqual(initial, review.source_fingerprint(root))
++            (root / "lib.rs").write_text("original caller")
++            (root / "new.rs").write_text("new exposed caller")
++            self.assertNotEqual(initial, review.source_fingerprint(root))
++
++    def test_context_rejects_lock_graph_compiler_or_target_drift(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            subprocess.run(["git", "init", "-q", str(root)], check=True)
++            (root / "Cargo.lock").write_text("[[package]]\n" + "\n".join(
++                f"{key} = {json.dumps(value)}" for key, value in PACKAGE.items()))
++            metadata = {"packages": [{**PACKAGE, "id": "p"}],
++                        "resolve": {"nodes": [{"id": "p", "features": [], "deps": []}]}}
++            scope = {**policy(), "manifest": "Cargo.toml", "target": review.HOST,
++                     **review.fingerprints(root, "workspace", metadata)}
++            data = {"schema": 1, "host": review.HOST, "rustc_commit": "expected",
++                    "scopes": {"workspace": scope}}
++            review.validate_context(root, data, "workspace", metadata, "commit-hash: expected\n")
++            for field in ["lock_sha256", "source_sha256", "graph_sha256", "target"]:
++                changed = copy.deepcopy(data)
++                changed["scopes"]["workspace"][field] = "unreviewed"
++                with self.subTest(field=field):
++                    with self.assertRaises(ValueError):
++                        review.validate_context(root, changed, "workspace", metadata, "commit-hash: expected\n")
++            with self.assertRaises(ValueError):
++                review.validate_context(root, data, "workspace", metadata, "commit-hash: different\n")
++
++
++if __name__ == "__main__":
++    unittest.main()
 diff --git a/storage_models/src/common_structs/traits/storage_cache_model.rs b/storage_models/src/common_structs/traits/storage_cache_model.rs
 index 27a4d98deb794b20a3dae426d5ce9c73a7ee6ad4..80761bb1aa6050ffcdd30ba3db9352ceccb4b1ab 100644
 --- a/storage_models/src/common_structs/traits/storage_cache_model.rs
@@ -4459,6 +5238,37 @@ index 435b7bf39689122d27577a35f7e02ab5550e060a..f24473bdc9c607bb33a3672cb31affe8
 +        oracle: &mut impl IOOracle,
 +    ) -> Result<(), SystemError>;
 +
+diff --git a/supporting_crates/u256/src/conversions.rs b/supporting_crates/u256/src/conversions.rs
+index 1895f72b21cc80e44ca94e48a3a827082f6e26ad..0927b1e065f2287ef26a6ee3eaba96c250515089 100644
+--- a/supporting_crates/u256/src/conversions.rs
++++ b/supporting_crates/u256/src/conversions.rs
+@@ -42,0 +43,6 @@ macro_rules! impl_conversions {
++            // SYSCOIN: Native execution uses the same 32-bit address limit as the proving guest.
++            #[inline(always)]
++            pub fn try_to_u32(&self) -> Option<u32> {
++                self.try_to_u64()
++                    .and_then(|value| u32::try_from(value).ok())
++            }
+@@ -81,0 +88,19 @@ pub(crate) use impl_conversions;
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    fn u32_conversion_matches_the_guest_address_width() {
++        for (limbs, expected) in [
++            ([0, 0, 0, 0], Some(0)),
++            ([u32::MAX as u64, 0, 0, 0], Some(u32::MAX)),
++            ([1u64 << 32, 0, 0, 0], None),
++            ([0, 1, 0, 0], None),
++        ] {
++            assert_eq!(crate::naive::U256::from_limbs(limbs).try_to_u32(), expected);
++            assert_eq!(
++                crate::risc_v::U256::from_limbs(limbs).try_to_u32(),
++                expected
++            );
++        }
++    }
++}
 diff --git a/system_hooks/Cargo.toml b/system_hooks/Cargo.toml
 index 352dca6685ff2b735277d7a61fdfd84ab8e0b4dd..c25afd666613698b6f4de2f6e43a77410a4a19d3 100644
 --- a/system_hooks/Cargo.toml
@@ -5871,3 +6681,226 @@ index 35e955f93eeecffa07e7d3dae25a49a8cf189b67..8e4e69b6b3a777ca508fb088b9fb0aef
 +++ b/zksync_os/Cargo.lock
 @@ -529,0 +530 @@ dependencies = [
 + "sha2",
+diff --git a/zksync_os/reproduce/reproduce.sh b/zksync_os/reproduce/reproduce.sh
+index 6fc0436e6eb3bf1ebb62d27dfb7b9b1713ad0641..c89f781f982430eac62e5152dadb4ac8d40bc900 100755
+--- a/zksync_os/reproduce/reproduce.sh
++++ b/zksync_os/reproduce/reproduce.sh
+@@ -9,7 +9,8 @@ REPO_ROOT="$(dirname "$ZKSYNC_OS_DIR")"
+-# `cargo airbender build --reproducible` passes `--locked` to cargo, so both
+-# the workspace root and the guest crate need a Cargo.lock present.
+-# The workspace root Cargo.lock is gitignored, so we generate it here.
+-# The guest zksync_os/Cargo.lock is committed and used as-is.
+-#
+-# NOTE: the toolchain version must match rust-toolchain.toml.
+-cargo +nightly-2026-02-10 generate-lockfile --manifest-path "$REPO_ROOT/Cargo.toml"
++# SYSCOIN: We review both lockfiles. Resolving the host graph again here would
++# discard its release pins before the reproducible guest build starts.
++for lockfile in "$REPO_ROOT/Cargo.lock" "$ZKSYNC_OS_DIR/Cargo.lock"; do
++    if [[ ! -s "$lockfile" ]]; then
++        echo "Missing pinned Cargo lockfile $lockfile" >&2
++        exit 1
++    fi
++done
+diff --git a/zksync_os_runner/Cargo.toml b/zksync_os_runner/Cargo.toml
+index b3fb663fdc78bbeb8938e075035a77aaffdf37ec..9233e57e6d4dc0f1c08c9cc4c2c73b6e987c084e 100644
+--- a/zksync_os_runner/Cargo.toml
++++ b/zksync_os_runner/Cargo.toml
+@@ -17,0 +18,3 @@ log = { workspace = true }
++# SYSCOIN: Validate symbol metadata before upstream can allocate decompression buffers.
++object = { version = "0.37.3", default-features = false, features = ["read", "std"] }
++tempfile = "3.27.0"
+diff --git a/zksync_os_runner/src/lib.rs b/zksync_os_runner/src/lib.rs
+index 57957b823c1cc6fadc34f0f746d478481a35e624..338edce90975ee0a3a742bae2a7c4c3474b51e17 100644
+--- a/zksync_os_runner/src/lib.rs
++++ b/zksync_os_runner/src/lib.rs
+@@ -9,0 +10,2 @@ use std::path::PathBuf;
++mod profiling_symbols;
++
+@@ -103,0 +106,5 @@ impl Runner {
++        // SYSCOIN: Upstream decompresses before rejecting owned DWARF sections.
++        let profiling_symbols = self.flamegraph.as_ref().map(|_| {
++            profiling_symbols::ProfilingSymbols::prepare(&self.dist_dir.join("app.elf"))
++                .expect("invalid or unsupported profiling symbols")
++        });
+@@ -109 +116 @@ impl Runner {
+-                elf_path: Some(self.dist_dir.join("app.elf")),
++                elf_path: Some(profiling_symbols.as_ref().unwrap().path().to_path_buf()),
+diff --git a/zksync_os_runner/src/profiling_symbols.rs b/zksync_os_runner/src/profiling_symbols.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..dce2fe6dc6a49e0455162ae2d46f1aa942ae3dcc
+--- /dev/null
++++ b/zksync_os_runner/src/profiling_symbols.rs
+@@ -0,0 +1,173 @@
++use object::{BinaryFormat, CompressionFormat, Object, ObjectSection};
++use std::io::{self, Read, Write};
++use std::path::Path;
++use tempfile::NamedTempFile;
++
++// SYSCOIN: Profiling artifacts are local build products; a limit also bounds the initial
++// read before the ELF parser inspects section metadata.
++const MAX_SYMBOL_BYTES: u64 = 256 * 1024 * 1024;
++
++pub(super) struct ProfilingSymbols {
++    file: NamedTempFile,
++}
++
++impl ProfilingSymbols {
++    pub(super) fn prepare(path: &Path) -> io::Result<Self> {
++        let data = read_bounded(path, MAX_SYMBOL_BYTES)?;
++        validate(&data)?;
++
++        // The upstream profiler reopens a path later. Give it a private snapshot
++        // of the bytes we checked, so replacing the input cannot bypass validation.
++        let mut file = NamedTempFile::new()?;
++        file.write_all(&data)?;
++        file.flush()?;
++        let mut permissions = file.as_file().metadata()?.permissions();
++        permissions.set_readonly(true);
++        file.as_file().set_permissions(permissions)?;
++        Ok(Self { file })
++    }
++
++    pub(super) fn path(&self) -> &Path {
++        self.file.path()
++    }
++}
++
++fn invalid(message: impl Into<String>) -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, message.into())
++}
++
++fn read_bounded(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
++    let mut data = Vec::new();
++    std::fs::File::open(path)?
++        .take(limit + 1)
++        .read_to_end(&mut data)?;
++    if data.len() as u64 > limit {
++        return Err(invalid("profiling symbols exceed the size limit"));
++    }
++    Ok(data)
++}
++
++fn validate(data: &[u8]) -> io::Result<()> {
++    let object = object::File::parse(data)
++        .map_err(|error| invalid(format!("invalid profiling symbols: {error}")))?;
++    if object.format() != BinaryFormat::Elf || !object.is_little_endian() {
++        return Err(invalid("profiling symbols must be a little-endian ELF"));
++    }
++    for section in object.sections() {
++        let name = section
++            .name()
++            .map_err(|error| invalid(format!("invalid profiling section name: {error}")))?;
++        // Upstream intends to reject owned/decompressed DWARF, but does so only
++        // after decompression. Inspect metadata without calling that decoder.
++        if name.starts_with(".zdebug_") {
++            return Err(invalid("compressed profiling sections are not supported"));
++        }
++        let compression = section
++            .compressed_file_range()
++            .map_err(|error| invalid(format!("invalid profiling section metadata: {error}")))?;
++        if compression.format != CompressionFormat::None {
++            return Err(invalid("compressed profiling sections are not supported"));
++        }
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn elf(section_name: &str, flags: u64, payload: &[u8]) -> Vec<u8> {
++        let names = format!("\0.shstrtab\0{section_name}\0").into_bytes();
++        let data_offset = 64 + 3 * 64;
++        let payload_offset = data_offset + names.len();
++        let mut data = vec![0; payload_offset + payload.len()];
++        data[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
++        data[16..18].copy_from_slice(&1u16.to_le_bytes());
++        data[18..20].copy_from_slice(&243u16.to_le_bytes());
++        data[20..24].copy_from_slice(&1u32.to_le_bytes());
++        data[40..48].copy_from_slice(&64u64.to_le_bytes());
++        data[52..54].copy_from_slice(&64u16.to_le_bytes());
++        data[58..60].copy_from_slice(&64u16.to_le_bytes());
++        data[60..62].copy_from_slice(&3u16.to_le_bytes());
++        data[62..64].copy_from_slice(&1u16.to_le_bytes());
++        let names_header = 128;
++        data[names_header..names_header + 4].copy_from_slice(&1u32.to_le_bytes());
++        data[names_header + 4..names_header + 8].copy_from_slice(&3u32.to_le_bytes());
++        data[names_header + 24..names_header + 32]
++            .copy_from_slice(&(data_offset as u64).to_le_bytes());
++        data[names_header + 32..names_header + 40]
++            .copy_from_slice(&(names.len() as u64).to_le_bytes());
++        let payload_header = 192;
++        data[payload_header..payload_header + 4].copy_from_slice(&11u32.to_le_bytes());
++        data[payload_header + 4..payload_header + 8].copy_from_slice(&1u32.to_le_bytes());
++        data[payload_header + 8..payload_header + 16].copy_from_slice(&flags.to_le_bytes());
++        data[payload_header + 24..payload_header + 32]
++            .copy_from_slice(&(payload_offset as u64).to_le_bytes());
++        data[payload_header + 32..payload_header + 40]
++            .copy_from_slice(&(payload.len() as u64).to_le_bytes());
++        data[data_offset..payload_offset].copy_from_slice(&names);
++        data[payload_offset..].copy_from_slice(payload);
++        data
++    }
++
++    #[test]
++    fn accepts_uncompressed_symbols() {
++        validate(&elf(".debug_info", 0, &[0; 16])).unwrap();
++    }
++
++    #[test]
++    fn rejects_zlib_and_zstd_before_allocating_declared_output() {
++        for compression in [1u32, 2] {
++            let mut header = [0; 24];
++            header[..4].copy_from_slice(&compression.to_le_bytes());
++            header[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
++            header[16..24].copy_from_slice(&1u64.to_le_bytes());
++            let error = validate(&elf(".debug_info", 0x800, &header)).unwrap_err();
++            assert!(error.to_string().contains("compressed profiling"));
++        }
++    }
++
++    #[test]
++    fn rejects_gnu_compression_without_reading_payload() {
++        let error = validate(&elf(".zdebug_info", 0, b"not a compression header")).unwrap_err();
++        assert!(error.to_string().contains("compressed profiling"));
++    }
++
++    #[test]
++    fn rejects_malformed_compression_metadata() {
++        assert!(validate(&elf(".debug_info", 0x800, &[])).is_err());
++    }
++
++    #[test]
++    fn rejects_invalid_and_wrong_endian_objects() {
++        assert!(validate(b"not an ELF").is_err());
++        let mut bytes = elf(".debug_info", 0, &[]);
++        bytes[5] = 2;
++        assert!(validate(&bytes).is_err());
++    }
++
++    #[test]
++    fn bounds_initial_read() {
++        let mut source = NamedTempFile::new().unwrap();
++        source.write_all(&[0; 17]).unwrap();
++        assert!(read_bounded(source.path(), 16).is_err());
++        assert_eq!(read_bounded(source.path(), 17).unwrap().len(), 17);
++    }
++
++    #[test]
++    fn upstream_receives_validated_snapshot_after_input_replacement() {
++        let mut source = NamedTempFile::new().unwrap();
++        let original = elf(".debug_info", 0, &[0; 16]);
++        source.write_all(&original).unwrap();
++        let prepared = ProfilingSymbols::prepare(source.path()).unwrap();
++        std::fs::write(source.path(), b"replacement").unwrap();
++        assert_eq!(std::fs::read(prepared.path()).unwrap(), original);
++        assert!(prepared
++            .file
++            .as_file()
++            .metadata()
++            .unwrap()
++            .permissions()
++            .readonly());
++    }
++}

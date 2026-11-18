@@ -187,7 +187,7 @@ where
                 .map_err(|dump| {
                     let error = anyhow::anyhow!("{}", dump.error);
                     tracing::info!("Saving dump..");
-                    if let Err(err) = save_dump(self.config.block_dump_path.clone(), dump) {
+                    if let Err(err) = save_dump(self.config.block_dump_path.clone(), *dump) {
                         tracing::error!(?err, "Failed to write block dump");
                     }
                     error

@@ -18,7 +18,7 @@ coordinator address and runtime hash.
 
 The node compares `production_vk_hash` with its
 [compiled V8 identity](../../lib/types/src/protocol/proving_version.rs), currently
-`0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153`,
+`0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990`,
 and separately authenticates the deployed production verifier at startup. The
 [generated source release](../releases/era-v32/README.md) supplies this nonzero
 app-bound candidate identity for the security-patched recursion circuits;

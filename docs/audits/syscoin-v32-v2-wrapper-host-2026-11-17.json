@@ -1,0 +1,113 @@
+{
+  "scope": "One baseline/candidate process pair; each constructs setup then proves the same retained-guest combined proof twice. Native RISC and compression verification and typed equality to trusted keys are required on every arm. Host-only optional wrapper changes; not the corrected-guest release qualification.",
+  "guest": {
+    "label": "retained",
+    "bin_sha256": "0d69bb7bc5207041c737def52d8858bab261b2ccf0afadbf2ceed14aa86d7cf6",
+    "text_sha256": "9d999d91bc7422488c58cf6ca1f7f5041c2972065592ffe98bfcb8220ff0009a",
+    "program_commitment": "0x05080df2ee1edeb1d3d13f9a193a00a3bf5ca2115bfa675b29c1baaef289d7e9",
+    "snark_vk_hash": "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97"
+  },
+  "compilation_unit_count": 648,
+  "normalized_graph_sha256": "23eaa0e7821884b5e28f14eb0163d8cabc929e9bc6228b62accab55e343eb07b",
+  "driver_sha256": "73991473ad268d2050c7067cad05680020c62d085e0e1efaae84cd685c6cbb14",
+  "build_receipt_sha256": "2e6f4f76e573fd5ba370569039595d3595204fdb10d8119fddbb2599089d358b",
+  "input_manifest_sha256": "f45b15326e91cbe423918db16fbfb55e72a0fa45c5ffc86395b8b2dc1e9fd955",
+  "arms": {
+    "default": {
+      "source": {
+        "arm": "default",
+        "worker_revision": "ec790318f00e225cd11283a4d5fb7a521f4670a6",
+        "protocol_revision": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+        "binary_sha256": "20568ee8eeb3c219f2ca36e579ff2ad2620be5b44a1f128bdcf85ac2ff9c22dc",
+        "cargo_lock_sha256": "18ae439094942117467e4c5305f87dea0ad61e07de25c73abb20436249e6609f"
+      },
+      "cold_wall_seconds": 157.54,
+      "kernel_process_peak_rss_kib": 21234548,
+      "kernel_process_peak_rss_gib": 20.250843048095703,
+      "native_measurements": {
+        "compression_setup_ms": 391,
+        "proofs_native_verified": true,
+        "risc_setup_ms": 50352,
+        "timings": [
+          {
+            "compression_prove_and_verify_ms": 1032,
+            "iteration": 1,
+            "risc_prove_and_verify_ms": 48805
+          },
+          {
+            "compression_prove_and_verify_ms": 957,
+            "iteration": 2,
+            "risc_prove_and_verify_ms": 48984
+          }
+        ],
+        "typed_compression_vk_matches": true,
+        "typed_risc_vk_matches": true
+      },
+      "evidence_sha256": {
+        "wrapper-setup-ab-results/default-time.txt": "2aa13936dc54423f2950534ad5d823e7d86756dbe04008bce908ba194047ec86",
+        "wrapper-setup-ab-results/default.log": "8016f9829ffc3ac25265864123c46ce37f7c2dabc9ff87cdbf572776f39a939c",
+        "wrapper-setup-ab-results/default/measurements.json": "a18fe272fe808bcd196d32df2822cf1a1fa943ceb5289dfa5bcb2427ef1c646c",
+        "wrapper-setup-ab-results/default/risc_wrapper_proof.json": "f2a995b39f65ac55f0fb6ad13564087e19ced36953055d6b97f4fed46821b00d",
+        "wrapper-setup-ab-results/default/compression_proof.json": "e7fa5074285e760a8425affa894391835c137d7540ac3ac11ec32096dcb04474"
+      }
+    },
+    "host_move": {
+      "source": {
+        "arm": "host_move",
+        "worker_revision": "ec790318f00e225cd11283a4d5fb7a521f4670a6",
+        "protocol_revision": "175fb68cbb47ff6702ace7d104fc66b206da28ba",
+        "binary_sha256": "bde5382905649b3c67f0f2821cb5a2e8d8dc0c734c5acac6939d97bbcde8ad90",
+        "cargo_lock_sha256": "22e7cd8d7fbe5e6ddfcfcdf278c6a91e1ef386db6e94bccaac37286503ebb613"
+      },
+      "cold_wall_seconds": 159.06,
+      "kernel_process_peak_rss_kib": 14307328,
+      "kernel_process_peak_rss_gib": 13.64453125,
+      "native_measurements": {
+        "compression_setup_ms": 955,
+        "proofs_native_verified": true,
+        "risc_setup_ms": 47930,
+        "timings": [
+          {
+            "compression_prove_and_verify_ms": 1444,
+            "iteration": 1,
+            "risc_prove_and_verify_ms": 50727
+          },
+          {
+            "compression_prove_and_verify_ms": 1443,
+            "iteration": 2,
+            "risc_prove_and_verify_ms": 50437
+          }
+        ],
+        "typed_compression_vk_matches": true,
+        "typed_risc_vk_matches": true
+      },
+      "evidence_sha256": {
+        "wrapper-setup-ab-results/host_move-time.txt": "9041ddbde9b85d3dff5301a30ff4e6c2a49f4046bb5cff7f140bcd439a396f88",
+        "wrapper-setup-ab-results/host_move.log": "fc6ae223aeb2651d90c5a877ce14e1cd32c029e29fddf2acc91f7628102b16a2",
+        "wrapper-setup-ab-results/host_move/measurements.json": "dedff76164d4fc5cff5865ea163eee9cfbc21ee9f4734fb492953b5046dd39c8",
+        "wrapper-setup-ab-results/host_move/risc_wrapper_proof.json": "f2a995b39f65ac55f0fb6ad13564087e19ced36953055d6b97f4fed46821b00d",
+        "wrapper-setup-ab-results/host_move/compression_proof.json": "e7fa5074285e760a8425affa894391835c137d7540ac3ac11ec32096dcb04474"
+      }
+    }
+  },
+  "delta_candidate_minus_baseline": {
+    "cold_wall_seconds": 1.5200000000000102,
+    "kernel_process_peak_rss_kib": -6927220,
+    "kernel_process_peak_rss_gib": -6.606311798095703
+  },
+  "setup_delta_ms": {
+    "risc_setup_ms": -2422,
+    "compression_setup_ms": 564
+  },
+  "proof_round_deltas_ms": [
+    {
+      "risc_prove_and_verify_ms": 1922,
+      "compression_prove_and_verify_ms": 412
+    },
+    {
+      "risc_prove_and_verify_ms": 1453,
+      "compression_prove_and_verify_ms": 486
+    }
+  ],
+  "limits": "Kernel process RSS includes setup and both proof rounds. Two iterations in one process per source are not a statistical performance study. No per-arm GPU VRAM measurement was collected by this host-memory comparison driver."
+}

@@ -13,12 +13,12 @@ import tempfile
 
 SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
-CHECKER_SHA = "cd4bdf971e264c7c397cf422ccdf4ccfc196693ca7e679eccb5b46b334844c53"
-MANIFEST_SHA = "f00baf57ce96c7fdf5606a3b54448f72c400972a7b03fedde7fac21674f55636"
-VK = "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153"
+CHECKER_SHA = "fc4aaf67ef302f72f2111da5b0e05e003da36786df78e5fab676f0a49d1139a7"
+MANIFEST_SHA = "e0ca2e991a4c7777f25e3cb59991681ce5772b7573cb27bb0c9d965f71d9ebe0"
+VK = "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
-        "sha256": "1b7091768db408bc065f3e95dd43c441d15aca43d9b48b48c099ab004fee07ac"},
+        "sha256": "c0a1cdeafb595ef1503d73f33949b977edb61bf55df7e49724c90e72ff90e731"},
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {"size": 95217,
         "sha256": "9926cf03b65cd404dfb1e5b2d6d9b487c60d2ead2d5b7998fcf0e3dd2249bb15"},
     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol": None,
@@ -27,9 +27,9 @@ PREIMAGES = {
 }
 APP_SOURCES = {
     "lib/types/src/protocol/proving_version.rs":
-        "b1396be72c197077e4167686399caeee73f40d4f020be9da01bad48919574a63",
+        "0441bd1ead3fc20fc783b48567b8a4311a7688c47125c4a62ca43e500243da31",
     "node/bin/src/prover_api/fri_proof_verifier.rs":
-        "1ec3df17b7e4c3e89e53a9e8829415e75ad06894e22072eba7288c0681dc8077",
+        "2c32e3ababc5419b35e195f3eaec17993cf5eec8ccef2c151b11bb99040c5682",
 }
 # SYSCOIN: This is source-controlled release data, never an operator flag or
 # writable sidecar. It certifies the packaged fixture, not whether the exact
@@ -98,6 +98,27 @@ def file_identity(root, row):
 def check_app_sources(server):
     for rel, sha in APP_SOURCES.items():
         exact(server / rel, sha)
+
+
+def check_gateway_chain_id(requested, server):
+    _, manifest = load_bundle()
+    guest_gateway = manifest["v2_prover"]["gateway_chain_id"]
+    require(type(guest_gateway) is int and 0 < guest_gateway < 2**32,
+            "invalid Gateway chain ID in the release manifest")
+    check_app_sources(server)
+    os_patch = server / "scripts/patches/zksync-os-syscoin-v0.4.0.patch"
+    exact(os_patch, manifest["native_os_source"]["patch_sha256"])
+    for label, path, prefix in (
+            ("node source", server / "lib/types/src/lib.rs", ""),
+            ("OS patch", os_patch, "+")):
+        pattern = r"(?m)^" + re.escape(prefix) + r"pub const SYSCOIN_GATEWAY_CHAIN_ID: u64 = ([0-9_]+);$"
+        matches = re.findall(pattern, regular(path).read_text())
+        require(len(matches) == 1 and int(matches[0].replace("_", "")) == guest_gateway,
+                f"{label} Gateway chain ID disagrees with the release manifest")
+    require(requested == guest_gateway,
+            f"Gateway chain ID {requested} needs a matching guest and V8 key; "
+            f"this release is bound to {guest_gateway}")
+    return guest_gateway
 
 
 def check_activation(server):
@@ -295,6 +316,8 @@ def main():
     mode.add_argument("--check-bundle", action="store_true", help="read-only; never launch authorization")
     mode.add_argument("--check-canonical-fixture", action="store_true",
                       help="read-only certification of the separately accepted packaged fixture")
+    mode.add_argument("--check-gateway-chain-id", type=int,
+                      help="check the Gateway ID before funding or broadcasting")
     parser.add_argument("era_root", type=Path, nargs="?")
     args = parser.parse_args()
     try:
@@ -302,6 +325,9 @@ def main():
             require(args.era_root is None, "fixture check does not consume an Era repository")
             result = {"status": "canonical_fixture_checked", "canonical_fixture_authorized": True,
                       "descriptor_sha256": check_activation(SERVER), "target_mutated": False}
+        elif args.check_gateway_chain_id is not None:
+            require(args.era_root is None, "Gateway identity check does not consume an Era repository")
+            result = {"gateway_chain_id": check_gateway_chain_id(args.check_gateway_chain_id, SERVER)}
         else:
             require(args.era_root is not None, "Era repository path is required")
             result = run(args.era_root, args.assert_applied, args.check_bundle)

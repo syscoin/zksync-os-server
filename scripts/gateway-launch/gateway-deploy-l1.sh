@@ -17,6 +17,8 @@ gl_validate_l1_network_pair
 gl_reject_no_proofs_on_mainnet
 gl_validate_l1_signer_policy
 gl_normalize_canonical_deployment_inputs
+gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${EDGE_CHAIN_ID:-}"
+gl_assert_mainnet_app_gateway_identity
 # SYSCOIN: Deploy the pinned L1 contracts for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION

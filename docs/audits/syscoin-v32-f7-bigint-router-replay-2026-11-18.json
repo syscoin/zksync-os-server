@@ -1,0 +1,38 @@
+{
+  "workload": "baseline-inputs.tgz",
+  "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+  "plonk": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "block": "3",
+  "proof_sha256": "b537804bc2ea2f1900150a9a4869423dff3f2563481a12b07cd8effc469c62f9",
+  "block_hash": "0x512ab59d31bd9cf570a271e9ece531ca24ebfb372f78b3598924006e25a05bad",
+  "chain_id": 31337,
+  "runtime_sha256": {
+    "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+    "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+  },
+  "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+  "plonk_proof_words": 44,
+  "batch_ids": [
+    1,
+    2
+  ],
+  "batch_input_hashes": [
+    "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+    "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+  ],
+  "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+  "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+  "genuine_calldata_sha256": "4d4da1db2e03e8c0c3e0a49096860b0d1409f419c3541f7658c7ecd8bbc8d874",
+  "generated_plonk_accepted": true,
+  "dual_router_accepted": true,
+  "release": "af5cc586b4dc9f2828f8fa034c5c1a26b7002f8a",
+  "testnet_verifier": false,
+  "reserved_word_check": {
+    "value": 1,
+    "error": "NonZeroCarriedHash()",
+    "selector": "0x31967fc6",
+    "source_receipt": "docs/audits/syscoin-v32-final-worker-router-replay-2026-11-18.json",
+    "source_receipt_sha256": "f0b3462cdd4464f0c65d3083b6ab4d6f6cd7655353ad6be781d99cca47e151a4",
+    "scope": "Historical control for the byte-identical router runtime."
+  }
+}

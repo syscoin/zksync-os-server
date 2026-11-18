@@ -380,6 +380,8 @@ pub(crate) fn parse_archive_object_key(object_key: &str) -> Option<ReplayArchive
 /// SYSCOIN: Implementations must create a fresh session and fail if either the session or an object
 /// in the session already exists. Treating an existing object as success would let another writer
 /// make the local archive gate accept unverified bytes.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ReplayArchiveStorage: Sized + Send + Sync + 'static {
     /// Backend-specific configuration needed to create the storage.
@@ -408,6 +410,8 @@ pub trait ReplayArchiveStorage: Sized + Send + Sync + 'static {
 }
 
 /// Archive for replay records in one writer-owned session.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ReplayArchiver: Send + Sync + 'static {
     /// Appends `replay_record` to this writer's archive session.

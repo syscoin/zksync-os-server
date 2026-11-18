@@ -55,12 +55,16 @@ pub(crate) fn attach(pid: u32, expected_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Path to the `leash` binary built alongside the integration tests.
-///
-/// Cargo only injects `CARGO_BIN_EXE_leash` into the package's test targets, not this
-/// library, so resolve it relative to the running test executable
-/// (`target/<profile>/deps/<test>` → `target/<profile>/leash`).
+/// Nextest and Cargo provide the executable path at runtime for relocated or
+/// hash-nested test artifacts. Older local runners place the binaries together.
 fn leash_bin() -> anyhow::Result<PathBuf> {
+    for key in ["NEXTEST_BIN_EXE_leash", "CARGO_BIN_EXE_leash"] {
+        if let Some(path) = std::env::var_os(key).map(PathBuf::from)
+            && path.is_file()
+        {
+            return Ok(path);
+        }
+    }
     let exe = std::env::current_exe().context("cannot determine current executable")?;
     let exe_dir = exe
         .parent()

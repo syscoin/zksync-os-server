@@ -1,0 +1,113 @@
+{
+  "scope": "Cold CPU-only native CLI FRI proof on one retained minimal batch, independently verified against its trusted statement and retained guest commitment. Not a warmed service latency measurement or a corrected-guest release qualification.",
+  "source_build_receipt_sha256": "7b2ec93bf70f8eb76d0da8714cef0c4dfbb513a3650fd556439ca837f282021a",
+  "sources": {
+    "airbender": {
+      "repository": "https://github.com/syscoin/zksync-airbender",
+      "commit": "5a4928f651bb627ac5adf334fc6640bb6db5d79a",
+      "tree": "a6835b7eed85d9361c9e1aceb51a7988cbda09a8"
+    },
+    "protocol": {
+      "repository": "https://github.com/syscoin/zksync-protocol",
+      "commit": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+      "tree": "600c9220a99ac2b83504c3de4913828f8cf360e9"
+    },
+    "bellman_cuda": {
+      "repository": "https://github.com/matter-labs/era-bellman-cuda.git",
+      "commit": "d1fa8670ee84ec3477c6cc1c85a3554cfa5e0206",
+      "tree": "fa1ab78c59f9cdba2fedf4a00813dcf1c4c92d5c"
+    }
+  },
+  "native_binary_sha256": "4abe0d90b5d66e86af0c06712f3f27437bc4ea4d4b5875d05a971f2b81eeaf34",
+  "guest": {
+    "multiblock_batch.bin": "0d69bb7bc5207041c737def52d8858bab261b2ccf0afadbf2ceed14aa86d7cf6",
+    "multiblock_batch.text": "9d999d91bc7422488c58cf6ca1f7f5041c2972065592ffe98bfcb8220ff0009a"
+  },
+  "trusted_manifest_sha256": "b5014dfe2fbf972d5049bea05e27c172cc36f6bc747862ee7cf11cd6a270f3d5",
+  "verified_output": {
+    "public_hash": "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+    "chain": "0x05080df2ee1edeb1d3d13f9a193a00a3bf5ca2115bfa675b29c1baaef289d7e9",
+    "manifest_sha256": "b5014dfe2fbf972d5049bea05e27c172cc36f6bc747862ee7cf11cd6a270f3d5",
+    "proof_sha256": "b7868ff226881d290b8b7f4d5d61802101c432609779d0de1e6a43158654d69c"
+  },
+  "proof_counts": {
+    "family_proof_count": 2,
+    "inits_and_teardowns_proof_count": 0,
+    "delegation_proof_count": 1,
+    "delegation_proof_count_by_type": [
+      [
+        1991,
+        1
+      ]
+    ]
+  },
+  "cycles": 1355893,
+  "cpu_threads": 32,
+  "cuda_visible_devices": "-1",
+  "cold_prove": {
+    "wall_seconds": 1071.95,
+    "kernel_peak_rss_kib": 94020304,
+    "kernel_peak_rss_gib": 89.66474914550781
+  },
+  "independent_verify": {
+    "wall_seconds": 110.47,
+    "kernel_peak_rss_kib": 10949604,
+    "kernel_peak_rss_gib": 10.44235610961914
+  },
+  "layer_timings_ms_including_precomputation": {
+    "total_ms": 1038278,
+    "base_ms": 420936,
+    "unrolled_recursion_ms": [
+      234291,
+      212450
+    ],
+    "unified_recursion_ms": [
+      97149,
+      73452
+    ]
+  },
+  "logged_circuit_proving_seconds": {
+    "unrolled": [
+      29.796297455,
+      31.299687771,
+      31.469235691,
+      18.201031334,
+      28.169858424,
+      32.504108489,
+      31.052047682,
+      30.47895929,
+      31.947317351,
+      30.643627123,
+      27.75622001,
+      30.943201803,
+      31.664151795,
+      28.809243105
+    ],
+    "unified": [
+      21.196534307,
+      21.271658772,
+      21.410747854,
+      22.406090327,
+      21.457861574
+    ],
+    "delegation": [
+      57.12478159,
+      32.538307883,
+      16.469483992,
+      15.580187046,
+      15.734857176
+    ],
+    "sum": 659.925497844
+  },
+  "timing_caveat": "CLI layer timers include precomputation and trace construction. Precomputation durations are not separately logged. Circuit-proving log totals are component timings, not an exact warmed end-to-end service time.",
+  "native_verification": true,
+  "trusted_public_input_and_guest_binding_match": true,
+  "evidence_sha256": {
+    "pure-cpu-fri/proof.json": "b7868ff226881d290b8b7f4d5d61802101c432609779d0de1e6a43158654d69c",
+    "pure-cpu-fri/native.log": "3c2ae3c4aa80dac92783b24a6ebd8fcb0ec9bdd8619d35d3b2d03853e626ef11",
+    "pure-cpu-fri/time.txt": "339021b5214729d14aef156da01fbfa93c14117febdb131cf026424c345b00d8",
+    "pure-cpu-fri-verify/native.log": "519aa936509a92e5731fb37f555735da995e024c35dd5e626943215396170bd9",
+    "pure-cpu-fri-verify/time.txt": "174f3b9ba3292cd7f7e3901b86931d76a94518814d29f6c88ee01b8e50d793a4",
+    "pure-cpu-fri-verify/output.json": "8ee5a1ae6685d0a1958ad85722cd349011259055d4b5752b79489b169793d20a"
+  }
+}

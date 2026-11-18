@@ -315,7 +315,7 @@ impl HandlerSharedState {
         }
         let token = self
             .next_connection_token
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |token| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |token| {
                 token.checked_add(1)
             })
             .expect("zks connection token exhausted");

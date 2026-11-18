@@ -30,6 +30,8 @@ where
     pub canonized_blocks_for_execution: mpsc::UnboundedSender<ReplayRecord>,
 }
 
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait BlockCanonization: Send + 'static {
     async fn propose(&self, record: ReplayRecord) -> anyhow::Result<()>;

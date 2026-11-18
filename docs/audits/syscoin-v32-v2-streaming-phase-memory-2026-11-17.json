@@ -1,0 +1,1345 @@
+{
+  "method": "Board samples every 500 ms. Allocator current sampled on native stage boundaries, with its cumulative lifetime high-water recorded separately. Native process max RSS covers all four arms. Per-stage RSS sampling started during streaming-a FRI; early uncaptured windows have zero samples. Count vector order is circuit family, init/teardown, delegation.",
+  "conditions": {
+    "default-a-fri": {
+      "fixed_arena_gib": 28.0,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 48442748,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 48553,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 29286,
+          "count": 98
+        },
+        "host_rss_kib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        }
+      },
+      "stages": [
+        {
+          "stage": "batch_1_Base layer",
+          "duration_ms": 2230,
+          "proof_counts": [
+            6,
+            1,
+            3
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.08984375,
+            "max": 25.615234375,
+            "count": 120
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29288,
+            "max": 29432,
+            "count": 4
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 0",
+          "duration_ms": 1817,
+          "proof_counts": [
+            4,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.2236328125,
+            "max": 24.0390625,
+            "count": 84
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 4
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 1",
+          "duration_ms": 1386,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.6923828125,
+            "max": 23.99609375,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 0",
+          "duration_ms": 1097,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.7001953125,
+            "max": 19.4560546875,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29434,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 1",
+          "duration_ms": 687,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.884765625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 1
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_2_Base layer",
+          "duration_ms": 1755,
+          "proof_counts": [
+            6,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.1435546875,
+            "max": 25.609375,
+            "count": 108
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 4
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_2_Unrolled recursion layer 0",
+          "duration_ms": 1420,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.77734375,
+            "max": 24.015625,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 0",
+          "duration_ms": 900,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.701171875,
+            "max": 19.45703125,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 1
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 1",
+          "duration_ms": 676,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.884765625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        }
+      ]
+    },
+    "default-a-merge": {
+      "fixed_arena_gib": 21.309,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 39434944,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 137142,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 22410,
+          "count": 274
+        },
+        "host_rss_kib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        }
+      },
+      "stages": [
+        {
+          "stage": "combined pass over 2 proofs",
+          "duration_ms": 1173,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.92578125,
+            "max": 19.7421875,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22414,
+            "max": 22558,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        },
+        {
+          "stage": "shrink pass 0",
+          "duration_ms": 677,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.884765625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22558,
+            "max": 22558,
+            "count": 1
+          },
+          "host_rss_kib": {
+            "min": null,
+            "max": null,
+            "count": 0
+          }
+        }
+      ]
+    },
+    "streaming-a-fri": {
+      "fixed_arena_gib": 28.0,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 48530128,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 51158,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 29850,
+          "count": 103
+        },
+        "host_rss_kib": {
+          "min": 45145052,
+          "max": 48575616,
+          "count": 14
+        }
+      },
+      "stages": [
+        {
+          "stage": "batch_1_Base layer",
+          "duration_ms": 2224,
+          "proof_counts": [
+            6,
+            1,
+            3
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.08984375,
+            "max": 25.615234375,
+            "count": 120
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29286,
+            "max": 29432,
+            "count": 4
+          },
+          "host_rss_kib": {
+            "min": 47438224,
+            "max": 47445164,
+            "count": 4
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 0",
+          "duration_ms": 1859,
+          "proof_counts": [
+            4,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.220703125,
+            "max": 24.0390625,
+            "count": 84
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 4
+          },
+          "host_rss_kib": {
+            "min": 47548968,
+            "max": 47588152,
+            "count": 4
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 1",
+          "duration_ms": 1384,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.689453125,
+            "max": 23.99609375,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47588972,
+            "max": 47588980,
+            "count": 3
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 0",
+          "duration_ms": 1049,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.986328125,
+            "max": 19.453125,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47635764,
+            "max": 47635768,
+            "count": 2
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 1",
+          "duration_ms": 678,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.8798828125,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 1
+          },
+          "host_rss_kib": {
+            "min": 47635772,
+            "max": 47635772,
+            "count": 1
+          }
+        },
+        {
+          "stage": "batch_2_Base layer",
+          "duration_ms": 1730,
+          "proof_counts": [
+            6,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.1435546875,
+            "max": 25.609375,
+            "count": 108
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47635788,
+            "max": 47635788,
+            "count": 3
+          }
+        },
+        {
+          "stage": "batch_2_Unrolled recursion layer 0",
+          "duration_ms": 1423,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.7744140625,
+            "max": 24.015625,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47635796,
+            "max": 47635804,
+            "count": 3
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 0",
+          "duration_ms": 910,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.697265625,
+            "max": 19.453125,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47635884,
+            "max": 47635888,
+            "count": 2
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 1",
+          "duration_ms": 699,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.8798828125,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47636588,
+            "max": 47636588,
+            "count": 1
+          }
+        }
+      ]
+    },
+    "streaming-a-merge": {
+      "fixed_arena_gib": 21.309,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 39430816,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 136264,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 23048,
+          "count": 273
+        },
+        "host_rss_kib": {
+          "min": 10660,
+          "max": 39360936,
+          "count": 271
+        }
+      },
+      "stages": [
+        {
+          "stage": "combined pass over 2 proofs",
+          "duration_ms": 1169,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.9208984375,
+            "max": 19.7421875,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22414,
+            "max": 22416,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 39444360,
+            "max": 39452464,
+            "count": 3
+          }
+        },
+        {
+          "stage": "shrink pass 0",
+          "duration_ms": 686,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.8798828125,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22558,
+            "max": 22558,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 39452740,
+            "max": 39452740,
+            "count": 1
+          }
+        }
+      ]
+    },
+    "streaming-b-fri": {
+      "fixed_arena_gib": 28.0,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 48445032,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 48450,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 29286,
+          "count": 97
+        },
+        "host_rss_kib": {
+          "min": 979872,
+          "max": 48357624,
+          "count": 96
+        }
+      },
+      "stages": [
+        {
+          "stage": "batch_1_Base layer",
+          "duration_ms": 2242,
+          "proof_counts": [
+            6,
+            1,
+            3
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.08984375,
+            "max": 25.615234375,
+            "count": 120
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29286,
+            "max": 29432,
+            "count": 5
+          },
+          "host_rss_kib": {
+            "min": 47356092,
+            "max": 47367656,
+            "count": 4
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 0",
+          "duration_ms": 1842,
+          "proof_counts": [
+            4,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.220703125,
+            "max": 24.0390625,
+            "count": 84
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47388972,
+            "max": 47509636,
+            "count": 4
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 1",
+          "duration_ms": 1350,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.689453125,
+            "max": 23.99609375,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47510876,
+            "max": 47510884,
+            "count": 3
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 0",
+          "duration_ms": 1036,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.697265625,
+            "max": 19.453125,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47590072,
+            "max": 47590324,
+            "count": 2
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 1",
+          "duration_ms": 709,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.8798828125,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47590332,
+            "max": 47590332,
+            "count": 1
+          }
+        },
+        {
+          "stage": "batch_2_Base layer",
+          "duration_ms": 1792,
+          "proof_counts": [
+            6,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.1435546875,
+            "max": 25.609375,
+            "count": 108
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47590332,
+            "max": 47590340,
+            "count": 4
+          }
+        },
+        {
+          "stage": "batch_2_Unrolled recursion layer 0",
+          "duration_ms": 1436,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.7744140625,
+            "max": 24.015625,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47590608,
+            "max": 47590612,
+            "count": 3
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 0",
+          "duration_ms": 896,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.697265625,
+            "max": 19.453125,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47590628,
+            "max": 47590628,
+            "count": 1
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 1",
+          "duration_ms": 695,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.8798828125,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 1
+          },
+          "host_rss_kib": {
+            "min": 47590628,
+            "max": 47590764,
+            "count": 2
+          }
+        }
+      ]
+    },
+    "streaming-b-merge": {
+      "fixed_arena_gib": 21.309,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 39435836,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 136604,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 22410,
+          "count": 273
+        },
+        "host_rss_kib": {
+          "min": 11092,
+          "max": 39360572,
+          "count": 271
+        }
+      },
+      "stages": [
+        {
+          "stage": "combined pass over 2 proofs",
+          "duration_ms": 1171,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.9208984375,
+            "max": 19.7421875,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22414,
+            "max": 22558,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 39412760,
+            "max": 39452124,
+            "count": 3
+          }
+        },
+        {
+          "stage": "shrink pass 0",
+          "duration_ms": 692,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.880859375,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22558,
+            "max": 22558,
+            "count": 1
+          },
+          "host_rss_kib": {
+            "min": 39452324,
+            "max": 39452324,
+            "count": 1
+          }
+        }
+      ]
+    },
+    "default-b-fri": {
+      "fixed_arena_gib": 28.0,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 48445756,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 48399,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 29286,
+          "count": 97
+        },
+        "host_rss_kib": {
+          "min": 38964,
+          "max": 48491996,
+          "count": 96
+        }
+      },
+      "stages": [
+        {
+          "stage": "batch_1_Base layer",
+          "duration_ms": 2260,
+          "proof_counts": [
+            6,
+            1,
+            3
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.08984375,
+            "max": 25.615234375,
+            "count": 120
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29286,
+            "max": 29432,
+            "count": 5
+          },
+          "host_rss_kib": {
+            "min": 47279812,
+            "max": 47367236,
+            "count": 5
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 0",
+          "duration_ms": 1816,
+          "proof_counts": [
+            4,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.2236328125,
+            "max": 24.0390625,
+            "count": 84
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47504164,
+            "max": 47528612,
+            "count": 4
+          }
+        },
+        {
+          "stage": "batch_1_Unrolled recursion layer 1",
+          "duration_ms": 1403,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.6923828125,
+            "max": 23.99609375,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29432,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47509476,
+            "max": 47509480,
+            "count": 2
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 0",
+          "duration_ms": 1039,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.7001953125,
+            "max": 19.4560546875,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29432,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47528364,
+            "max": 47560812,
+            "count": 2
+          }
+        },
+        {
+          "stage": "batch_1_Unified recursion layer 1",
+          "duration_ms": 681,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.884765625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47560812,
+            "max": 47560820,
+            "count": 2
+          }
+        },
+        {
+          "stage": "batch_2_Base layer",
+          "duration_ms": 1790,
+          "proof_counts": [
+            6,
+            1,
+            2
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.1435546875,
+            "max": 25.609375,
+            "count": 108
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 3
+          },
+          "host_rss_kib": {
+            "min": 47560904,
+            "max": 47560912,
+            "count": 4
+          }
+        },
+        {
+          "stage": "batch_2_Unrolled recursion layer 0",
+          "duration_ms": 1423,
+          "proof_counts": [
+            4,
+            1,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.77734375,
+            "max": 24.015625,
+            "count": 72
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47560976,
+            "max": 47560980,
+            "count": 3
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 0",
+          "duration_ms": 913,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.701171875,
+            "max": 19.45703125,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47560984,
+            "max": 47560984,
+            "count": 1
+          }
+        },
+        {
+          "stage": "batch_2_Unified recursion layer 1",
+          "duration_ms": 687,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.8837890625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 27.0546875,
+          "board_resident_mib": {
+            "min": 29434,
+            "max": 29434,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 47560984,
+            "max": 47560988,
+            "count": 2
+          }
+        }
+      ]
+    },
+    "default-b-merge": {
+      "fixed_arena_gib": 21.309,
+      "pinned_host_buffer_count": 384,
+      "host_buffer_mib": 64,
+      "pinned_host_arena_gib": 24.0,
+      "process_max_rss_kib": 39435060,
+      "cold_setup": {
+        "stage": "cold_setup_and_input_loading",
+        "duration_ms": 135906,
+        "proof_counts": null,
+        "allocator_sampled_current_gib": {
+          "min": null,
+          "max": null,
+          "count": 0
+        },
+        "allocator_lifetime_high_water_last_gib": null,
+        "board_resident_mib": {
+          "min": 16,
+          "max": 22410,
+          "count": 272
+        },
+        "host_rss_kib": {
+          "min": 11236,
+          "max": 39337152,
+          "count": 270
+        }
+      },
+      "stages": [
+        {
+          "stage": "combined pass over 2 proofs",
+          "duration_ms": 1119,
+          "proof_counts": [
+            3,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.92578125,
+            "max": 19.7421875,
+            "count": 48
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22414,
+            "max": 22416,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 39450816,
+            "max": 39455560,
+            "count": 2
+          }
+        },
+        {
+          "stage": "shrink pass 0",
+          "duration_ms": 681,
+          "proof_counts": [
+            2,
+            0,
+            1
+          ],
+          "allocator_sampled_current_gib": {
+            "min": 0.884765625,
+            "max": 19.0478515625,
+            "count": 36
+          },
+          "allocator_lifetime_high_water_last_gib": 20.6171875,
+          "board_resident_mib": {
+            "min": 22558,
+            "max": 22558,
+            "count": 2
+          },
+          "host_rss_kib": {
+            "min": 39459408,
+            "max": 39459408,
+            "count": 1
+          }
+        }
+      ]
+    }
+  }
+}

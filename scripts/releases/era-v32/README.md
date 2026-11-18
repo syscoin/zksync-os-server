@@ -1,6 +1,26 @@
 # Generated Era sources and separate canonical fixture certification
 
-## Canonical query-bit candidate: offline proof and EVM qualification
+## Airbender V2 for the corrected v32 testnet guest
+
+The registered guest was built from the official v0.4.0 base with Syscoin patch tree `8c42bef28b5be792bc2b0438531dc7ab1a862547`. The release guest SHA-256 is `9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d`. Its program commitment is `0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66`. CPU key generation and an independent calculation over the serialized PLONK key produced `0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990`. The raw PLONK key has SHA-256 `298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7`. [OS patch and key receipts](https://github.com/syscoin/zksync-os-server/pull/382) · [Worker source](https://github.com/syscoin/zksync-airbender-prover/pull/28)
+
+The native OS patch now reconstructs commit `349fd449a73372dd305c0aa3e2cfddab5b8e53c5`, tree `517840e73c263575889ff5b73a7eec79d4a03613`. This revision hardens host profiling, scopes dependency advisories and formats one guest source file. A reproducible Linux build matched the registered binary, text and ELF hashes. The manifest records native source separately from the original guest/key provenance. The manual V2 workflow derives keys from the pinned worker guest bytes and checks their hashes; it does not rebuild the guest from this newer host tree. [Source equivalence and patch reconstruction](../../../docs/audits/syscoin-v32-native-os-guest-equivalence-2026-11-18.json)
+
+The Era base is `8fb7c29a4e3174335c6480b23f57822e054f9d5f`. The reviewed Syscoin source patch yields tree `5272679a1c09acf82cfc45a2899cca04bb4c745b`. Applying the matching generated verifier overlay yields tree `6dcc2d41e75b3207bcf81250279cec72d813c86a`. Both production compiler profiles built. All 40 router tests passed. Of the 278 recomputed inventory rows, only the PLONK verifier and its embedding Gateway deployer changed. Slot 8 accepts a single app-bound VK. Drain old work before a coordinated change to the verifier, server registry and worker release. [Generated verifier and inventory](https://github.com/syscoin/era-contracts/pull/23)
+
+The original corrected worker and the final pinned worker each completed a minimal two-batch range and a separate two-batch range containing 16 successful signed EIP-1559 transfers. The final worker repeated both ranges with demand paging. Native verification checked both ranges against their own ordered batch statements. Both serialized SNARKs passed the generated PLONK verifier and production-mode router on isolated Prague EVM. [Final four-run comparison](../../../docs/audits/syscoin-v32-final-worker-comparison-2026-11-18.json) · [Earlier minimal proof](../../../docs/audits/syscoin-v32-corrected-os-v2-router-replay-2026-11-17.json) · [Signed-transfer proof](../../../docs/audits/syscoin-v32-corrected-os-signed-router-replay-2026-11-17.json)
+
+## Historical Airbender V2 for the retained v32 testnet guest
+
+The server applies its Syscoin source patch to upstream Era commit `8fb7c29a4e3174335c6480b23f57822e054f9d5f`. The reviewed source tree is `eba365c69d357027165f373642bd1979cf5e0c4b`. Its generated Security100 verification key and contract overlay produce tree `49364d13c27e277144c78790c1402ac143eee500` and registered VK hash `0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97`. Both EVM and EraVM production profiles built on Linux. The inventory checker reproduced all 278 rows. Only the generated PLONK verifier and its embedding Gateway deployer differ from the reserved-word release. All 40 router tests passed. The fresh two-batch proof passed both the generated verifier and the production dual router on isolated Prague EVM. A nonzero reserved word reverted with the exact contract error. [Replay receipt](../../../docs/audits/syscoin-v32-airbender-v2-router-replay-2026-11-17.json) · [Generated contracts](https://github.com/syscoin/era-contracts/pull/21)
+
+The release manifest binds the guest images, worker source, recursive verifier sources, log22 setup, Solidity and raw VK. The manual V2 key-generation workflow checks each identity before comparing its output. The later OS patch in server PR #382 changed the guest and received the separate corrected keys described above. Mainnet signing domains and deployment addresses require separate qualification. [Worker](https://github.com/syscoin/zksync-airbender-prover/pull/27) · [OS candidate](https://github.com/syscoin/zksync-os-server/pull/382)
+
+## Historical V8 reserved proof word
+
+This revision's source tree is `eba365c69d357027165f373642bd1979cf5e0c4b` and the generated tree is `11d41dae8b711eb293fbed9cbf3a125502e253a4`. The production dual verifier requires the carried-hash header word to be zero. Its PLONK verifier uses the existing V8 guest key. The Linux EVM and EraVM builds reproduced 278 inventory rows, with three changes covering the dual verifier, testnet subclass and embedding Gateway deployer. All 40 router tests passed, including both single-batch reserved-word cases. An isolated Prague EVM accepted the retained two-batch V8 proof and rejected a nonzero reserved word with `NonZeroCarriedHash()`. Live Gateway and root settlement remain pending. [Contract PR](https://github.com/syscoin/era-contracts/pull/20)
+
+## Historical canonical query-bit candidate and offline EVM qualification
 
 The candidate key-generation source pins common crypto
 `5eafa1f914519d88a13c577a9e8cc5c7db1dfc77` (tree
@@ -326,3 +346,11 @@ and rederive the full CTM configuration, including the new Getters facet address
 and selectors, and recheck the critical timelock/relay identities against those
 artifacts. Production identity qualification and canonical fixture regeneration
 remain outstanding.
+
+## Corrected guest review follow-up
+
+The current source tree is `5272679a1c09acf82cfc45a2899cca04bb4c745b` and generated tree is `6dcc2d41e75b3207bcf81250279cec72d813c86a`. Both real-proof fixtures and tests are included in the server source patch. The corrected key accepts signed-transfer and minimal-range proofs; altered batch inputs, proof openings, the carried word and a proof for the retained guest are rejected. The eight real-proof regressions and 40 router tests pass against the actual generated verifier. All production Solidity and 278 inventory rows are unchanged by this test-only refresh.
+
+Every source postimage is checked against the reconstructed source tree before the generated overlay is accepted. This catches stale hashes in the shell applicator as well as stale patches. The server bundle is authoritative for deployment; the Era branch is a review mirror.
+
+The contract fixture refresh deploys both verifier implementations and gets EVM facet selectors from compiled artifacts. All 19 previously blocked L2-in-L1 suites ran in the Linux EVM run, which passed all 2,700 tests. The suite also exercises compact-DA permissionless settlement and the Gateway's exact relay bytecode checks. The generated verifier, registered key, and 278 contract inventory rows match the prior release. Server CI reconstructs the source and generated trees from the pinned upstream commit and checks them against the release manifest. [Contract review](https://github.com/syscoin/era-contracts/pull/23)

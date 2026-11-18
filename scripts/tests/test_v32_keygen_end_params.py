@@ -104,15 +104,14 @@ class EndParamsAssetTests(unittest.TestCase):
 
     def exercise_server_candidate(self, *, reproduce=False, count=2, dirty=None, generated=None):
         """Execute workflow shell with fixture hashes only; no key generation or qualification."""
-        workflow, candidate = self.candidate_block()
-        registered = re.search(
-            r'^  REGISTERED_V8_VK_HASH: "(0x[0-9a-f]{64})"$', workflow, re.M)
-        self.assertIsNotNone(registered)
+        _, candidate = self.candidate_block()
+        release = json.loads((REPO / "scripts/releases/era-v32/generated-verifier-manifest.json").read_text())
+        registered = release["verification_key_hash"]
         original = (REPO / "lib/types/src/protocol/proving_version.rs").read_text()
-        self.assertEqual(original.count(f'"{registered.group(1)}"'), 2)
+        self.assertEqual(original.count(f'"{registered}"'), 2)
         old_hash = '0x' + '11' * 32
         new_hash = '0x' + 'ab' * 32
-        original = original.replace(registered.group(1), old_hash)
+        original = original.replace(registered, old_hash)
         if count == 1:
             original = original.replace(f'"{old_hash}"', f'"{new_hash}"', 1)
         elif count == 3:

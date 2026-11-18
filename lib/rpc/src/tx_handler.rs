@@ -544,7 +544,9 @@ fn compact_edge_da_refs_from_commit_calldata(
 
     Ok(Some(
         operator_da_input
-            .chunks_exact(32)
+            .as_chunks::<32>()
+            .0
+            .iter()
             .map(hex::encode)
             .collect(),
     ))

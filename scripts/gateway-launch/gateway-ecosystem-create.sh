@@ -22,6 +22,7 @@ export L1_NETWORK
 : "${GATEWAY_WALLET_CREATION:=}"
 : "${GATEWAY_WALLET_PATH:=${GATEWAY_DIR}.wallets.yaml}"
 gl_normalize_canonical_deployment_inputs
+gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}"
 gl_reject_no_proofs_on_mainnet
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"

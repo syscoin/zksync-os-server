@@ -157,18 +157,107 @@ class ActivationTests(unittest.TestCase):
 
 
 class BundleAndLauncherTests(unittest.TestCase):
-    def test_canonical_query_candidate_records_only_completed_gates(self):
+    def test_source_postimage_manifest_rejects_stale_bytes_and_missing_paths(self):
+        module, _ = M.load_bundle()
+        files = {"a.sol": b"new contract", "b.sol": b"retained contract"}
+        rows = [f"{len(raw)} {sha(raw)} {path}" for path, raw in files.items()]
+
+        def manifest(entries):
+            return ("done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n" + "\n".join(entries)
+                    + "\nSYSCOIN_POSTIMAGE_MANIFEST\n").encode()
+
+        module.check_source_postimages(manifest(rows), set(files), files.__getitem__)
+        stale = rows.copy()
+        stale[0] = f"{len(files['a.sol'])} {sha(b'old contract')} a.sol"
+        with self.assertRaisesRegex(ValueError, "source postimage mismatch: a.sol"):
+            module.check_source_postimages(manifest(stale), set(files), files.__getitem__)
+        with self.assertRaisesRegex(ValueError, "path set mismatch"):
+            module.check_source_postimages(manifest(rows[:1]), set(files), files.__getitem__)
+        with self.assertRaisesRegex(ValueError, "unexpected source postimage path"):
+            module.check_source_postimages(manifest(rows + rows[:1]), set(files), files.__getitem__)
+
+    def test_retained_guest_replay_is_bound_to_its_archived_key(self):
+        _, manifest = M.load_bundle()
+        current = manifest["v2_prover"]
+        retained = manifest["historical_retained_testnet_guest_v2_prover"]
+        generation = manifest["historical_retained_testnet_guest_contract_generation_provenance"]
+        evidence = manifest["historical_retained_testnet_guest_proof_qualification"]
+        receipt = ROOT / evidence["evm_receipt_path"]
+        self.assertEqual(sha(receipt.read_bytes()), evidence["evm_receipt_sha256"])
+        self.assertEqual(json.loads(receipt.read_bytes())["vk_hash"], generation["verification_key_hash"])
+        self.assertEqual(evidence["verification_key_hash"], generation["verification_key_hash"])
+        self.assertEqual(evidence["program_commitment"], retained["program_commitment"])
+        self.assertNotEqual(generation["verification_key_hash"], M.VK)
+        self.assertNotEqual(retained["program_commitment"], current["program_commitment"])
+        self.assertNotEqual(retained["app_bin_sha256"], current["app_bin_sha256"])
+
+    def test_airbender_v2_contract_and_worker_bind_the_same_range(self):
+        import tomllib
+
         module, manifest = M.load_bundle()
         generation = manifest["contract_generation_provenance"]
         evidence = manifest["proof_qualification"]
+        prover = manifest["v2_prover"]
+        self.assertEqual(evidence["measured_worker_commit"], prover["worker_commit"])
+        self.assertEqual(evidence["measured_worker_tree"], prover["worker_tree"])
+        self.assertEqual(evidence["measured_airbender_commit"], prover["airbender"]["commit"])
+        self.assertEqual(evidence["measured_protocol_commit"], prover["protocol"]["commit"])
+        comparison = ROOT / evidence["comparison_path"]
+        self.assertEqual(sha(comparison.read_bytes()), evidence["comparison_sha256"])
+        receipt_file = ROOT / evidence["evm_receipt_path"]
+        self.assertEqual(sha(receipt_file.read_bytes()), evidence["evm_receipt_sha256"])
+        receipt = json.loads(receipt_file.read_text())
         self.assertEqual(generation["candidate_tree"], module.CANDIDATE)
+        self.assertEqual(generation["reviewed_source_tree"], module.SOURCE)
+        self.assertEqual(generation["unchanged_inventory_rows"], 276)
+        self.assertEqual(set(generation["changed_inventory_rows"]), module.ROWS)
+        self.assertEqual(prover["plonk_domain_log2"], 22)
+        self.assertEqual(prover["plonk_public_inputs"], 1)
+        self.assertEqual(prover["soundness_profile"], "Security100")
+        self.assertEqual(prover["program_commitment"], evidence["program_commitment"])
+        self.assertEqual(generation["verification_key_hash"], M.VK)
+        self.assertEqual(receipt["vk_hash"], M.VK)
+        self.assertEqual(receipt["batch_ids"], evidence["input_batch_range"])
+        self.assertEqual(receipt["genuine_calldata_sha256"], evidence["genuine_serialized_calldata_sha256"])
+        self.assertEqual(receipt["plonk_proof_words"], 44)
+        self.assertEqual(receipt["reserved_word_check"]["selector"], "0x31967fc6")
+        self.assertEqual(receipt["runtime_sha256"], generation["tested_runtime_sha256"])
+        self.assertTrue(receipt["dual_router_accepted"])
+        self.assertTrue(receipt["generated_plonk_accepted"])
+        self.assertFalse(receipt["testnet_verifier"])
+        self.assertFalse(generation["live_gateway_or_root_verified"])
+        raw_key = manifest["paths"]["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"]
+        self.assertEqual(raw_key["sha256"], evidence["raw_vk_sha256"]["snark_vk.json"])
+        lock = tomllib.loads((ROOT / "Cargo.lock").read_text())
+        verifier_sources = {p["source"] for p in lock["package"] if p["name"] == "unified_reduced_machine_verifier"}
+        self.assertEqual({f'git+{prover["airbender"]["repository"]}?rev={prover["airbender"]["commit"]}'
+                      f'#{prover["airbender"]["commit"]}'}, verifier_sources)
+
+    def test_reserved_word_candidate_pins_verified_router_bytecode(self):
+        module, manifest = M.load_bundle()
+        generation = manifest["historical_pre_airbender_v2_contract_generation_provenance"]
+        self.assertEqual(generation["candidate_tree"], manifest["historical_retained_testnet_guest_contract_generation_provenance"]["previous_candidate_tree"])
+        self.assertEqual(generation["reviewed_source_tree"], "eba365c69d357027165f373642bd1979cf5e0c4b")
+        self.assertEqual(generation["verification_key_hash"], manifest["historical_pre_airbender_v2_proof_qualification"]["verification_key_hash"])
+        self.assertEqual(generation["release_proof_calldata_sha256"],
+                         manifest["historical_pre_airbender_v2_proof_qualification"]["genuine_serialized_calldata_sha256"])
+        self.assertEqual(generation["nonzero_reserved_word_error_selector"], "0x31967fc6")
+        self.assertTrue(generation["isolated_evm_two_batch_proof_accepted"])
+        self.assertEqual(generation["unchanged_inventory_rows"], 275)
+        self.assertFalse(generation["live_gateway_or_root_verified"])
+
+    def test_canonical_query_candidate_records_only_completed_gates(self):
+        module, manifest = M.load_bundle()
+        generation = manifest["historical_pre_reserved_word_contract_generation_provenance"]
+        evidence = manifest["historical_pre_airbender_v2_proof_qualification"]
+        self.assertEqual(generation["candidate_tree"], manifest["historical_pre_airbender_v2_contract_generation_provenance"]["previous_candidate_tree"])
         self.assertEqual(generation["previous_candidate_tree"], "d194956535ddeded60829706e9301e9adbe6cb5b")
         self.assertEqual(generation["inventory_rows"], 278)
         self.assertEqual(generation["unchanged_inventory_rows"], 276)
         self.assertEqual(set(generation["changed_inventory_rows"]), module.ROWS)
         self.assertTrue(generation["full_contract_hash_recomputation_passed"])
         self.assertTrue(generation["normal_l1_evm_and_eravm_build_passed"])
-        self.assertEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
+        self.assertEqual(evidence["verification_key_hash"], generation["verification_key_hash"])
         self.assertEqual(evidence["crypto_commit"], "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77")
         self.assertEqual(evidence["crypto_tree"], "c52391d0df82126d27e5c76810e9df85c61875d0")
         self.assertEqual(evidence["native_wrapper_stages_verified"], 2)
@@ -242,11 +331,11 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
-        self.assertEqual(module.SOURCE, "0cb850a5c77436f17b49e747a1117dac5ee90888")
-        self.assertEqual(module.CANDIDATE, "39aba041f59da6733f1562f2dee74ef39fc0c024")
+        self.assertEqual(module.SOURCE, "5272679a1c09acf82cfc45a2899cca04bb4c745b")
+        self.assertEqual(module.CANDIDATE, "6dcc2d41e75b3207bcf81250279cec72d813c86a")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
-                         "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153")
+                         "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990")
         self.assertEqual(len(manifest["paths"]), 4)
         overlay = (M.BUNDLE / "generated-verifier-overlay.patch").read_bytes()
         self.assertEqual(len(overlay), manifest["overlay_size"])
@@ -260,16 +349,17 @@ class BundleAndLauncherTests(unittest.TestCase):
         module, manifest = M.load_bundle()
         paths = manifest["paths"]
         self.assertEqual(paths["AllContractsHashes.json"], {
-            "size": 160049, "sha256": "6642cde552fa4b3391a122b92399a7d16c1b46c939143977d7959c8206b18cd4"})
+            "size": 160049, "sha256": "62c82391c2859be37633faabebe5e1f8a6bd0992623c32bdd1eaf9cb158ffdc5"})
         for rel in ("l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",
                     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol"):
             self.assertEqual(paths[rel], {
-                "size": 95216, "sha256": "a51be347eb47aa8a3bba353c3f452b8990e0b326da2129cff1c7da7c39fac238"})
+                "size": 95216, "sha256": "50203c6dee17598bb2acfc27ed8f3fdeb0c9a6ace10ff7779d92ae361bbb7acd"})
         self.assertEqual(paths["tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"], {
-            "size": 8073, "sha256": "668ee187e12fe8c1639018872c5dd7080a96d02475377a29f42cd308ca5d0da2"})
+            "size": 8088, "sha256": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"})
         evidence = manifest["historical_pre_canonical_query_contract_generation_provenance"]
         self.assertEqual(evidence["status"], "completed_gateway_priority_setter_inventory_refresh")
-        self.assertEqual(evidence["reviewed_source_tree"], module.SOURCE)
+        self.assertEqual(evidence["reviewed_source_tree"],
+                         manifest["historical_pre_reserved_word_contract_generation_provenance"]["reviewed_source_tree"])
         self.assertEqual(evidence["candidate_tree"], "d194956535ddeded60829706e9301e9adbe6cb5b")
         self.assertNotEqual(evidence["verification_key_hash"], manifest["verification_key_hash"])
         self.assertEqual(evidence["inventory_rows"], 278)
@@ -403,9 +493,9 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_current_generated_verifier_authenticates_current_app_sources(self):
         self.assertEqual(M.APP_SOURCES, {
             "lib/types/src/protocol/proving_version.rs":
-                "b1396be72c197077e4167686399caeee73f40d4f020be9da01bad48919574a63",
+                "0441bd1ead3fc20fc783b48567b8a4311a7688c47125c4a62ca43e500243da31",
             "node/bin/src/prover_api/fri_proof_verifier.rs":
-                "1ec3df17b7e4c3e89e53a9e8829415e75ad06894e22072eba7288c0681dc8077",
+                "2c32e3ababc5419b35e195f3eaec17993cf5eec8ccef2c151b11bb99040c5682",
         })
         M.check_app_sources(ROOT)
         with tempfile.TemporaryDirectory() as temporary:
@@ -463,8 +553,8 @@ class BundleAndLauncherTests(unittest.TestCase):
             ROOT / "scripts/apply-era-contracts-syscoin-patch.sh",
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
-        self.assertEqual(result["source_tree"], "0cb850a5c77436f17b49e747a1117dac5ee90888")
-        self.assertEqual(result["candidate_tree"], "39aba041f59da6733f1562f2dee74ef39fc0c024")
+        self.assertEqual(result["source_tree"], "5272679a1c09acf82cfc45a2899cca04bb4c745b")
+        self.assertEqual(result["candidate_tree"], "6dcc2d41e75b3207bcf81250279cec72d813c86a")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])
@@ -534,7 +624,7 @@ class BundleAndLauncherTests(unittest.TestCase):
 
     def standalone_dispatch(self, script, mode="gpu", mock="false", gateway=None,
                             edge=None, network="localhost", chain_id="auto",
-                            normalize_first=False, args=()):
+                            normalize_first=False, args=(), gateway_id=None, edge_id=None):
         launcher_dir = ROOT / "scripts/gateway-launch"
         source = (launcher_dir / script).read_text()
         common_source = 'source "${SCRIPT_DIR}/_common.sh"\n'
@@ -547,7 +637,7 @@ class BundleAndLauncherTests(unittest.TestCase):
             gateway_dir = Path(directory).resolve()
             config = gateway_dir / "chains/zksys/ZkStack.yaml"
             put(config, json.dumps({
-                "name": "zksys", "chain_id": 57057,
+                "name": "zksys", "chain_id": int(edge_id) if edge_id and edge_id.isdecimal() else 57057,
                 "prover_version": "NoProofs" if (edge or mode).lower() == "no-proofs" else "Gpu",
                 "l1_batch_commit_data_generator_mode": "Rollup", "vm_option": "ZKSyncOsVM",
                 "evm_emulator": False,
@@ -570,7 +660,8 @@ class BundleAndLauncherTests(unittest.TestCase):
                        ZKSYS_ISSUER_START_TIME="10000", PYTHONDONTWRITEBYTECODE="1",
                        PYTHONPATH=str(gateway_dir))
             for name, value in (("GATEWAY_PROVER_MODE", gateway), ("EDGE_PROVER_MODE", edge),
-                                ("L1_NETWORK", network)):
+                                ("L1_NETWORK", network), ("GATEWAY_CHAIN_ID", gateway_id),
+                                ("EDGE_CHAIN_ID", edge_id)):
                 if value is not None:
                     env[name] = value
             if chain_id == "auto":
@@ -589,7 +680,7 @@ gl_build_zkstack_cli_release() { printf 'BUILD\n'; }
 gl_acquire_gateway_launch_lock() { printf 'LOCK\n'; }
 gl_non_l1_cast() {
   [ "$*" = 'chain-id --rpc-url http://edge.invalid' ] || return 90
-  printf '57057\n'
+  printf '%s\n' "${EDGE_CHAIN_ID:-57057}"
 }
 bash() {
   case "${1:-}" in
@@ -698,10 +789,24 @@ python3() {
                     result = self.standalone_dispatch(script, network=network, chain_id=chain_id)
                     self.assert_no_source_dispatch(result)
 
+    def test_mainnet_creation_rejects_existing_signing_domains_before_source_setup(self):
+        for script in ("gateway-ecosystem-create.sh", "gateway-chain-init.sh",
+                       "edge-chain-create-init.sh"):
+            for gateway_id in (None, "57", "5700", "57001", "057057", "0", "4294967296", "0xdead"):
+                with self.subTest(script=script, gateway_id=gateway_id):
+                    self.assert_no_source_dispatch(self.standalone_dispatch(
+                        script, network="mainnet", gateway_id=gateway_id, edge_id="5757"))
+        for edge_id in (None, "057001", "57057", "057570", "0"):
+            with self.subTest(edge_id=edge_id):
+                self.assert_no_source_dispatch(self.standalone_dispatch(
+                    "edge-chain-create-init.sh", network="mainnet",
+                    gateway_id="57570", edge_id=edge_id))
+
     def test_standalone_mainnet_real_route_and_mock_guards_remain_intact(self):
         for script in self.STANDALONE_ENTRYPOINTS:
             with self.subTest(script=script, route="real"):
-                real = self.standalone_dispatch(script, "GPU", "FALSE", network="MaInNeT")
+                real = self.standalone_dispatch(script, "GPU", "FALSE", network="MaInNeT",
+                                                gateway_id="57570", edge_id="5757")
                 self.assert_dispatch_route(real, script, network="mainnet")
             for mock in ("TRUE", "FALSE"):
                 with self.subTest(script=script, mock=mock):

@@ -1,0 +1,30 @@
+{
+  "schema": "syscoin-v2-wrapper-guest-key-comparison-v1",
+  "public_keys": {
+    "risc_wrapper_vk.json": {
+      "retained_sha256": "f656835568cdcdb6e617e8b87328e034099795ec91ac020c5ad8f2ca00d69d4c",
+      "corrected_sha256": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+      "changed_top_level_fields": [
+        "setup_merkle_tree_cap"
+      ],
+      "changed_fixed_parameters_fields": []
+    },
+    "compression_vk.json": {
+      "retained_sha256": "25f29a44862e1bfb267119f798a92b345da766243f80aa6303b1e4c36e904056",
+      "corrected_sha256": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+      "changed_top_level_fields": [
+        "setup_merkle_tree_cap"
+      ],
+      "changed_fixed_parameters_fields": []
+    },
+    "snark_vk.json": {
+      "retained_sha256": "2340c5d66845ebc6d9bf85cebbfdc199d730d42caf4d2902809319f0a2624146",
+      "corrected_sha256": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7",
+      "changed_top_level_fields": [
+        "gate_setup_commitments"
+      ]
+    }
+  },
+  "historical_profiles_identical": true,
+  "upstream_fixture_shapes_identical": true
+}

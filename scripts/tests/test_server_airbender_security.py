@@ -2,6 +2,7 @@
 """No-build regressions for the server's Cargo pin and prebuilt stamp."""
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,8 +13,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 FORK = "https://github.com/syscoin/zksync-airbender"
-COMMIT = "b91eeaecc4d1b9a42ea6843432bb3e014899b303"
-TREE = "ce3d73c3901e0aada9dfca1319eea8a1e5fddbb5"
+COMMIT = "5e0cf077116afa7d1b733fa972fedb3b29594870"
+TREE = "5d5e3668eab3358dd5da310afa0079227d030848"
 SOURCE = f"git+{FORK}?rev={COMMIT}#{COMMIT}"
 LEGACY = (
     "git+https://github.com/matter-labs/zksync-airbender"
@@ -30,6 +31,14 @@ class ServerAirbenderPinTests(unittest.TestCase):
             self.assertEqual(deps[name]["git"], FORK)
             self.assertEqual(deps[name]["rev"], COMMIT)
             self.assertNotIn("tag", deps[name])
+        self.assertEqual(
+            manifest["patch"]["https://github.com/matter-labs/zksync-airbender"]["riscv_transpiler"],
+            {"git": FORK, "rev": COMMIT},
+        )
+        self.assertEqual(
+            [row["source"] for row in lock["package"] if row["name"] == "riscv_transpiler"],
+            [SOURCE],
+        )
         sources = {row.get("source") for row in lock["package"]
                    if "zksync-airbender" in row.get("source", "")}
         self.assertEqual(sources, {SOURCE, LEGACY})
@@ -61,13 +70,45 @@ class ServerAirbenderPinTests(unittest.TestCase):
         )
 
     def test_fork_tree_is_recorded_for_keygen(self):
-        workflow = (ROOT / ".github/workflows/syscoin-v32-v8-keygen.yml").read_text()
-        self.assertIn(f"AIRBENDER_COMMIT: {COMMIT}", workflow)
-        self.assertIn(f"AIRBENDER_TREE: {TREE}", workflow)
+        release = json.loads((ROOT / "scripts/releases/era-v32/generated-verifier-manifest.json").read_text())
+        self.assertEqual(release["v2_prover"]["airbender"], {"repository": FORK, "commit": COMMIT, "tree": TREE})
+        workflow = (ROOT / ".github/workflows/syscoin-v32-airbender-v2-keygen.yml").read_text()
+        self.assertIn(".airbender == $release[0].v2_prover.airbender", workflow)
         self.assertIn("rev-parse 'HEAD^{tree}'", workflow)
 
 
 class ShellBoundaryTests(unittest.TestCase):
+    def test_keygen_workflow_forwards_an_executable_and_preserves_arguments(self):
+        workflow = (ROOT / ".github/workflows/syscoin-v32-airbender-v2-keygen.yml").read_text()
+        marker = "scripts/cargo-with-patched-airbender.sh --cpu reproduce-v32-v2 --"
+        self.assertEqual(workflow.count(marker), 1)
+        start = workflow.index(marker)
+        command = workflow[start:workflow.index("\n          python3", start)].split(" | tee ", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="keygen boundary ") as temp:
+            directory = Path(temp).resolve()
+            (directory / "scripts").mkdir()
+            (directory / "bin").mkdir()
+            wrapper = directory / "scripts/cargo-with-patched-airbender.sh"
+            wrapper.write_text('#!/bin/bash\nset -euo pipefail\nshift 3\nexec "$@"\n')
+            wrapper.chmod(0o755)
+            cargo = directory / "bin/cargo"
+            cargo.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$CAPTURE"\n')
+            cargo.chmod(0o755)
+            capture = directory / "cargo-arguments"
+            work = directory / "key material"
+            env = dict(os.environ, PATH=str(directory / "bin"), work=str(work),
+                       CAPTURE=str(capture))
+            result = subprocess.run(["/bin/bash", "-c", "set -euo pipefail\n" + command],
+                                    cwd=directory, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(capture.read_text().splitlines(), [
+                "run", "--locked", "--release", "-p", "zksync_os_snark_prover",
+                "--no-default-features", "--example", "syscoin_v2_identity", "--",
+                "--app-bin", str(directory / "multiblock_batch.bin"),
+                "--app-text", str(directory / "multiblock_batch.text"),
+                "--trusted-setup", str(work / "setup.key"), "--keys", str(work / "keys"),
+            ])
+
     def test_disposable_workspace_graph_is_stable_through_cargo(self):
         helper = ROOT / "scripts/_patched-zksync-os-workspace.sh"
         for cargo_code, mutate_graph in ((0, False), (7, False), (0, True), (7, True)):

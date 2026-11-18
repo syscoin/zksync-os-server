@@ -1,0 +1,37 @@
+{
+  "scope": "Isolated Prague EVM, Syscoin v32 production-mode dual router with app-bound PLONK key",
+  "release": "syscoin/era-contracts@352a929bf118681b6b97d3b55630be472c5082ec",
+  "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+  "chain_id": 31337,
+  "block": 3,
+  "block_hash": "0x34d2cbd54e8593cc048bc9cfd2267171e854f3de266dc3ac3a3883180ba743db",
+  "addresses": {
+    "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+    "plonk": "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+  },
+  "runtime_sha256": {
+    "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+    "plonk": "7b80b9e3407b30ed85491b4933aa542dc3dadef654314cc9ea39e458e56e47df"
+  },
+  "vk_hash": "0x9bb49673b5437ada0c0941bb7f35422456a5c7833dd8292bf17f29fe1e9baa97",
+  "testnet_verifier": false,
+  "batch_ids": [
+    1,
+    2
+  ],
+  "batch_input_hashes": [
+    "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+    "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+  ],
+  "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+  "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+  "plonk_proof_words": 44,
+  "genuine_calldata_sha256": "560503d5c0c6518f22024b4c5c93e8d18b45cfbb21666b7370e782341805512a",
+  "generated_plonk_accepted": true,
+  "dual_router_accepted": true,
+  "reserved_word_check": {
+    "value": 1,
+    "error": "NonZeroCarriedHash()",
+    "selector": "0x31967fc6"
+  }
+}

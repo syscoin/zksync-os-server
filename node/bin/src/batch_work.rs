@@ -199,7 +199,7 @@ impl BatchWorkStorage {
         let byte_len =
             u64::try_from(data.len()).context("batch-work item length does not fit u64")?;
         self.staged_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current
                     .checked_add(byte_len)
                     .filter(|next| *next <= self.max_staged_bytes)

@@ -1,3 +1,6 @@
+// jsonrpsee generates an async-trait server interface and does not forward trait attributes.
+#![allow(clippy::double_must_use)]
+
 use crate::types::{
     BatchStorageProof, BlockMetadata, ImtInclusionProof, L2ToL1LogProof, LogProofTarget,
 };

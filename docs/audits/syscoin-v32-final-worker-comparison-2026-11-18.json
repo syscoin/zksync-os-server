@@ -1,0 +1,589 @@
+{
+  "scope": "One RTX 5090, one warm FRI process and one warm SNARK process per simulator memory policy, two consecutive ranges per process. The signed range contains sixteen successful transfers. Testnet guest and isolated production-mode verifier contracts.",
+  "source_server_admitting_proofs": "a6d55875fa31b4246728d18f300264623edabf52",
+  "benchmark": {
+    "worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+    "sources": {
+      "airbender": {
+        "repository": "https://github.com/syscoin/zksync-airbender",
+        "commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+        "tree": "f12852dbdb887cf7f14fc315737b6e83ef43d4e3"
+      },
+      "protocol": {
+        "repository": "https://github.com/syscoin/zksync-protocol",
+        "commit": "96b3586b33645d86866935f46928328ac52d72a7",
+        "tree": "62de9aba26eac094a5d858954754ff85489667a5"
+      },
+      "bellman_cuda": {
+        "repository": "https://github.com/matter-labs/era-bellman-cuda.git",
+        "commit": "d1fa8670ee84ec3477c6cc1c85a3554cfa5e0206",
+        "tree": "fa1ab78c59f9cdba2fedf4a00813dcf1c4c92d5c"
+      }
+    },
+    "processes": {
+      "pinned_fri": {
+        "native_policy": null,
+        "worker_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
+        "native_pid": 364664,
+        "process_peak_rss_kib": 48535280,
+        "peak_card_used_mib": 29434,
+        "card_sample_interval_ms": 500,
+        "jobs": {
+          "minimal": [
+            {
+              "pick_s": 51.11802397388965,
+              "submit_s": 58.6112363289576,
+              "lease_s": 7.4932123550679535,
+              "submitted_payload_sha256": "d791201cd52051e2aaca582c93db393931b69999d46da94a18e0143336714591"
+            },
+            {
+              "pick_s": 58.63284076983109,
+              "submit_s": 63.5172454288695,
+              "lease_s": 4.88440465903841,
+              "submitted_payload_sha256": "74df46cf8fb0c105810619af5233c4856d81a7e8b95b3fa3519e10300647360c"
+            }
+          ],
+          "signed": [
+            {
+              "pick_s": 63.539217583835125,
+              "submit_s": 70.13802714785561,
+              "lease_s": 6.598809564020485,
+              "submitted_payload_sha256": "7f1fb63bb0481d3453fbf48945f9c5cf442fac9379f5246589602d01734f534a"
+            },
+            {
+              "pick_s": 70.15436450997368,
+              "submit_s": 76.87218825682066,
+              "lease_s": 6.717823746846989,
+              "submitted_payload_sha256": "b2676a44593b23090918d735367d997c57242be64ab2472c7fb545a8d668a4bc"
+            }
+          ]
+        },
+        "proc_samples": 158,
+        "sampled_proc_peak_kib": {
+          "VmRSS": 48582704,
+          "VmHWM": 48582704,
+          "VmLck": 0,
+          "VmPin": 0,
+          "RssAnon": 11219692,
+          "RssFile": 115532,
+          "RssShmem": 37851744
+        },
+        "system_min_available_kib": 137726116
+      },
+      "pinned_snark": {
+        "native_policy": null,
+        "worker_sha256": "7e20622187ac62263fa9fd949cbf750f27e2ebceff414ffc594633bf2fff309b",
+        "native_pid": 364955,
+        "process_peak_rss_kib": 46616620,
+        "peak_card_used_mib": 32144,
+        "card_sample_interval_ms": 500,
+        "jobs": {
+          "minimal": [
+            {
+              "pick_s": 85.11250405805185,
+              "submit_s": 157.7642567239236,
+              "lease_s": 72.65175266587175,
+              "submitted_payload_sha256": "5c27e335f6bf46eaf739fdac9687c516f10a83b24111a3c5b39284028ad027ab",
+              "risc_wrapper": {
+                "wrapper_total_ms": 51922,
+                "host_witness_preparation_ms": 47573,
+                "shivini_setup": "873.875414ms",
+                "shivini_proof": "3.198942362s"
+              },
+              "compression_wrapper": {
+                "wrapper_total_ms": 1380,
+                "host_witness_preparation_ms": 783
+              }
+            }
+          ],
+          "signed": [
+            {
+              "pick_s": 157.81238076998852,
+              "submit_s": 226.02912426902913,
+              "lease_s": 68.2167434990406,
+              "submitted_payload_sha256": "dd4e9c509781fb001a77431eb0be9f3fae5d67d252f42cb020471e98025563bc",
+              "risc_wrapper": {
+                "wrapper_total_ms": 50649,
+                "host_witness_preparation_ms": 46305,
+                "shivini_setup": "889.219172ms",
+                "shivini_proof": "3.178325148s"
+              },
+              "compression_wrapper": {
+                "wrapper_total_ms": 1424,
+                "host_witness_preparation_ms": 823
+              }
+            }
+          ]
+        },
+        "proc_samples": 456,
+        "sampled_proc_peak_kib": {
+          "VmRSS": 46536444,
+          "VmHWM": 46616620,
+          "VmLck": 0,
+          "VmPin": 0,
+          "RssAnon": 17769868,
+          "RssFile": 135104,
+          "RssShmem": 29598304
+        },
+        "system_min_available_kib": 140321220
+      },
+      "demand_fri": {
+        "native_policy": "demand-paged",
+        "worker_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
+        "native_pid": 369919,
+        "process_peak_rss_kib": 42239220,
+        "peak_card_used_mib": 29422,
+        "card_sample_interval_ms": 500,
+        "jobs": {
+          "minimal": [
+            {
+              "pick_s": 49.533746781991795,
+              "submit_s": 56.923803775105625,
+              "lease_s": 7.390056993113831,
+              "submitted_payload_sha256": "029094f19a577dee891d84f2dc7b94c612dc7854326657ff1aa08db93ef68d00"
+            },
+            {
+              "pick_s": 56.940715476172045,
+              "submit_s": 61.807458522031084,
+              "lease_s": 4.866743045859039,
+              "submitted_payload_sha256": "ca260035f4ca23da6639f409fe7531e4b1758ff0a87b1ba5ab9dc9c56d21ecd8"
+            }
+          ],
+          "signed": [
+            {
+              "pick_s": 61.82809950597584,
+              "submit_s": 68.30917467898689,
+              "lease_s": 6.48107517301105,
+              "submitted_payload_sha256": "234ad361d5cabb82bda402b5f52a6b30b20fa9086a1910ccbd9602105913763d"
+            },
+            {
+              "pick_s": 68.33090275316499,
+              "submit_s": 74.87140830303542,
+              "lease_s": 6.540505549870431,
+              "submitted_payload_sha256": "c613bb97d0e264fc391fb2ff9e92204ab5f40c1fb22d30f342e95a196430054d"
+            }
+          ]
+        },
+        "proc_samples": 157,
+        "sampled_proc_peak_kib": {
+          "VmRSS": 42008896,
+          "VmHWM": 42239220,
+          "VmLck": 0,
+          "VmPin": 0,
+          "RssAnon": 4924656,
+          "RssFile": 115280,
+          "RssShmem": 37851744
+        },
+        "system_min_available_kib": 144795432
+      },
+      "demand_snark": {
+        "native_policy": "demand-paged",
+        "worker_sha256": "7e20622187ac62263fa9fd949cbf750f27e2ebceff414ffc594633bf2fff309b",
+        "native_pid": 370547,
+        "process_peak_rss_kib": 44843928,
+        "peak_card_used_mib": 32146,
+        "card_sample_interval_ms": 500,
+        "jobs": {
+          "minimal": [
+            {
+              "pick_s": 83.75078795501031,
+              "submit_s": 156.59815201093443,
+              "lease_s": 72.84736405592412,
+              "submitted_payload_sha256": "199fce1e13aa45e8d53b0820b4d3569e1733d2de799842aa9d87e7c46d576d69",
+              "risc_wrapper": {
+                "wrapper_total_ms": 52197,
+                "host_witness_preparation_ms": 47792,
+                "shivini_setup": "937.17133ms",
+                "shivini_proof": "3.189845512s"
+              },
+              "compression_wrapper": {
+                "wrapper_total_ms": 1418,
+                "host_witness_preparation_ms": 814
+              }
+            }
+          ],
+          "signed": [
+            {
+              "pick_s": 156.64468399691395,
+              "submit_s": 225.96123510203324,
+              "lease_s": 69.31655110511929,
+              "submitted_payload_sha256": "b2ce320fb898adb066a99a3b3d3252c8608f6b74e2f6263625a034d16536233f",
+              "risc_wrapper": {
+                "wrapper_total_ms": 51584,
+                "host_witness_preparation_ms": 47216,
+                "shivini_setup": "910.827302ms",
+                "shivini_proof": "3.179457326s"
+              },
+              "compression_wrapper": {
+                "wrapper_total_ms": 1396,
+                "host_witness_preparation_ms": 793
+              }
+            }
+          ]
+        },
+        "proc_samples": 454,
+        "sampled_proc_peak_kib": {
+          "VmRSS": 44792584,
+          "VmHWM": 44843928,
+          "VmLck": 0,
+          "VmPin": 0,
+          "RssAnon": 16025684,
+          "RssFile": 135524,
+          "RssShmem": 29598304
+        },
+        "system_min_available_kib": 138287168
+      }
+    },
+    "scope": "Each policy starts one FRI worker and one SNARK worker. Each worker processes the minimal range then the signed range. FRI leases one batch at a time, SNARK leases the two-batch range. Peak card usage is aggregate sampled device usage, and kernel peak RSS is for the whole native process."
+  },
+  "ranges": {
+    "pinned_minimal": {
+      "verification": {
+        "status": "completed_two_batch_normal_worker_and_isolated_router_replay",
+        "scope": "Corrected v32 testnet guest using the Security100 profile. Production-mode dual verifier on isolated Prague EVM.",
+        "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+        "measured_worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "measured_worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
+        "measured_airbender_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+        "measured_protocol_commit": "96b3586b33645d86866935f46928328ac52d72a7",
+        "fri_worker_binary_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
+        "worker_gpu_build_receipt_sha256": "b15dfb1448ea96a43711c0d3105da18f8ea050fb128866fb0f6ec254e5c3271f",
+        "input_batch_range": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+          "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+        ],
+        "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+        "native_fri_packet_sha256": [
+          "d791201cd52051e2aaca582c93db393931b69999d46da94a18e0143336714591",
+          "74df46cf8fb0c105810619af5233c4856d81a7e8b95b3fa3519e10300647360c"
+        ],
+        "native_fri_payload_sha256": "b640a12a9a3a1b1104340c509bf8c7538ed0ccb9607c5b4cfaf86133993f97be",
+        "native_fri_verification_sha256": "e7476e36f8d4e54a922434ff53b11a5e19288ba084b5bd5349c776f8f8dfb38f",
+        "native_fri_verified_batches": 2,
+        "native_snark_proof_sha256": "d9ea4942868695c3a82dc1bd2783a21af79cfb690bfc5e99d955b49363c4eb94",
+        "genuine_serialized_calldata_sha256": "06fc1d2a37b811d9bc6e372777a05dddeaa375a2eed7cce2a565d2b0ea87e041",
+        "plonk_proof_words": 44,
+        "raw_vk_sha256": {
+          "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+          "compression_vk.json": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+          "snark_vk.json": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"
+        },
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "nonzero_reserved_word_rejected": true,
+        "live_submission_used": false,
+        "deployment_attested": false,
+        "release_promoted": false
+      },
+      "evm_receipt": {
+        "scope": "Isolated Prague EVM, Syscoin v32 production-mode dual router with app-bound PLONK key",
+        "release": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+        "chain_id": 31337,
+        "block": 3,
+        "block_hash": "0x81c75da0f2ce0c5aa4af2aa272e45d139d5d74319d6fad7c2935431ea07693e8",
+        "addresses": {
+          "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+          "plonk": "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        },
+        "runtime_sha256": {
+          "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+          "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+        },
+        "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "testnet_verifier": false,
+        "batch_ids": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+          "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+        ],
+        "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+        "plonk_proof_words": 44,
+        "genuine_calldata_sha256": "06fc1d2a37b811d9bc6e372777a05dddeaa375a2eed7cce2a565d2b0ea87e041",
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "reserved_word_check": {
+          "value": 1,
+          "error": "NonZeroCarriedHash()",
+          "selector": "0x31967fc6"
+        }
+      },
+      "evm_receipt_sha256": "f0b3462cdd4464f0c65d3083b6ab4d6f6cd7655353ad6be781d99cca47e151a4",
+      "server_admission_verified_batches": [
+        1,
+        2
+      ]
+    },
+    "pinned_signed": {
+      "verification": {
+        "status": "completed_two_batch_normal_worker_and_isolated_router_replay",
+        "scope": "Corrected v32 testnet guest using the Security100 profile. Production-mode dual verifier on isolated Prague EVM.",
+        "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+        "measured_worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "measured_worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
+        "measured_airbender_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+        "measured_protocol_commit": "96b3586b33645d86866935f46928328ac52d72a7",
+        "fri_worker_binary_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
+        "worker_gpu_build_receipt_sha256": "b15dfb1448ea96a43711c0d3105da18f8ea050fb128866fb0f6ec254e5c3271f",
+        "input_batch_range": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0x367ac63ff5ef3e2e4a49ffaebb8b88cdd28e82e6db208d202d63d24144775ad4",
+          "0x7dd2a4a1e763bdf6aa46184a9421cbe67975079e5e2969fd85e44c7caea78e30"
+        ],
+        "combined_hash": "0x6f6b4625f357eb88b0cbfd747ea30ad685a5f115a1bb82900ce5631c856b2f5b",
+        "shifted_public_input": "11733794346000816054825112859868154478983837036874160424714450068252",
+        "native_fri_packet_sha256": [
+          "7f1fb63bb0481d3453fbf48945f9c5cf442fac9379f5246589602d01734f534a",
+          "b2676a44593b23090918d735367d997c57242be64ab2472c7fb545a8d668a4bc"
+        ],
+        "native_fri_payload_sha256": "43828a3f95f40d8c1f86baa19372446137096881c74f527ddcf203d7ccd5574d",
+        "native_fri_verification_sha256": "73d2efbba351be78072eeadfc41ae8220595458836fe0903a3150a932666ec3b",
+        "native_fri_verified_batches": 2,
+        "native_snark_proof_sha256": "fd16b8526b2064f10f4294873e030e82ba664e94ed5e78e472bac4c0e3a02a61",
+        "genuine_serialized_calldata_sha256": "cdbe02e1b88c3653dc48f93dca8402652edf383a71cbba823b9e68c2c889e475",
+        "plonk_proof_words": 44,
+        "raw_vk_sha256": {
+          "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+          "compression_vk.json": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+          "snark_vk.json": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"
+        },
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "nonzero_reserved_word_rejected": true,
+        "live_submission_used": false,
+        "deployment_attested": false,
+        "release_promoted": false
+      },
+      "evm_receipt": {
+        "scope": "Isolated Prague EVM, Syscoin v32 production-mode dual router with app-bound PLONK key",
+        "release": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+        "chain_id": 31337,
+        "block": 3,
+        "block_hash": "0xf806820d8bf5f6a3650b8c54b2dd5173ef4b5f3ec314fa3e31fffec44a1ab148",
+        "addresses": {
+          "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+          "plonk": "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        },
+        "runtime_sha256": {
+          "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+          "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+        },
+        "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "testnet_verifier": false,
+        "batch_ids": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0x367ac63ff5ef3e2e4a49ffaebb8b88cdd28e82e6db208d202d63d24144775ad4",
+          "0x7dd2a4a1e763bdf6aa46184a9421cbe67975079e5e2969fd85e44c7caea78e30"
+        ],
+        "combined_hash": "0x6f6b4625f357eb88b0cbfd747ea30ad685a5f115a1bb82900ce5631c856b2f5b",
+        "shifted_public_input": "11733794346000816054825112859868154478983837036874160424714450068252",
+        "plonk_proof_words": 44,
+        "genuine_calldata_sha256": "cdbe02e1b88c3653dc48f93dca8402652edf383a71cbba823b9e68c2c889e475",
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "reserved_word_check": {
+          "value": 1,
+          "error": "NonZeroCarriedHash()",
+          "selector": "0x31967fc6"
+        }
+      },
+      "evm_receipt_sha256": "052cf55d1de50ceb16d2ce2c21d49147bafb1e7b4d466a80e5f07a5d7decfb33",
+      "server_admission_verified_batches": [
+        1,
+        2
+      ]
+    },
+    "demand_minimal": {
+      "verification": {
+        "status": "completed_two_batch_normal_worker_and_isolated_router_replay",
+        "scope": "Corrected v32 testnet guest using the Security100 profile. Production-mode dual verifier on isolated Prague EVM.",
+        "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+        "measured_worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "measured_worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
+        "measured_airbender_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+        "measured_protocol_commit": "96b3586b33645d86866935f46928328ac52d72a7",
+        "fri_worker_binary_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
+        "worker_gpu_build_receipt_sha256": "b15dfb1448ea96a43711c0d3105da18f8ea050fb128866fb0f6ec254e5c3271f",
+        "input_batch_range": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+          "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+        ],
+        "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+        "native_fri_packet_sha256": [
+          "029094f19a577dee891d84f2dc7b94c612dc7854326657ff1aa08db93ef68d00",
+          "ca260035f4ca23da6639f409fe7531e4b1758ff0a87b1ba5ab9dc9c56d21ecd8"
+        ],
+        "native_fri_payload_sha256": "442780c214274bbc32fd374c431f086f23761019110c1efc5eaf12469e739dc8",
+        "native_fri_verification_sha256": "921dddeb12c31a51d84131aa7545f6b4b9dadecce9fdd231777b654d2b2e82a3",
+        "native_fri_verified_batches": 2,
+        "native_snark_proof_sha256": "abcc4955fb69fb183539accc4aa4f5b2e5dd3675e0ca50ec7ab184b63a3739d4",
+        "genuine_serialized_calldata_sha256": "6c67e73a22a485f0bfe7821894e4ba6c7879c56c25e54b5a5c3313675bf3415d",
+        "plonk_proof_words": 44,
+        "raw_vk_sha256": {
+          "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+          "compression_vk.json": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+          "snark_vk.json": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"
+        },
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "nonzero_reserved_word_rejected": true,
+        "live_submission_used": false,
+        "deployment_attested": false,
+        "release_promoted": false
+      },
+      "evm_receipt": {
+        "scope": "Isolated Prague EVM, Syscoin v32 production-mode dual router with app-bound PLONK key",
+        "release": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+        "chain_id": 31337,
+        "block": 3,
+        "block_hash": "0xc9cb9b2666030eddaf1a3cc9ad2bc8528266397e508c929294908a7068409fc9",
+        "addresses": {
+          "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+          "plonk": "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        },
+        "runtime_sha256": {
+          "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+          "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+        },
+        "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "testnet_verifier": false,
+        "batch_ids": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+          "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+        ],
+        "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+        "plonk_proof_words": 44,
+        "genuine_calldata_sha256": "6c67e73a22a485f0bfe7821894e4ba6c7879c56c25e54b5a5c3313675bf3415d",
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "reserved_word_check": {
+          "value": 1,
+          "error": "NonZeroCarriedHash()",
+          "selector": "0x31967fc6"
+        }
+      },
+      "evm_receipt_sha256": "a82117b0ae4ab572310d12f9d3edf4c2b97fe495abe90ecfad2d39e8913ab444",
+      "server_admission_verified_batches": [
+        1,
+        2
+      ]
+    },
+    "demand_signed": {
+      "verification": {
+        "status": "completed_two_batch_normal_worker_and_isolated_router_replay",
+        "scope": "Corrected v32 testnet guest using the Security100 profile. Production-mode dual verifier on isolated Prague EVM.",
+        "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+        "measured_worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "measured_worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
+        "measured_airbender_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+        "measured_protocol_commit": "96b3586b33645d86866935f46928328ac52d72a7",
+        "fri_worker_binary_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
+        "worker_gpu_build_receipt_sha256": "b15dfb1448ea96a43711c0d3105da18f8ea050fb128866fb0f6ec254e5c3271f",
+        "input_batch_range": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0x367ac63ff5ef3e2e4a49ffaebb8b88cdd28e82e6db208d202d63d24144775ad4",
+          "0x7dd2a4a1e763bdf6aa46184a9421cbe67975079e5e2969fd85e44c7caea78e30"
+        ],
+        "combined_hash": "0x6f6b4625f357eb88b0cbfd747ea30ad685a5f115a1bb82900ce5631c856b2f5b",
+        "shifted_public_input": "11733794346000816054825112859868154478983837036874160424714450068252",
+        "native_fri_packet_sha256": [
+          "234ad361d5cabb82bda402b5f52a6b30b20fa9086a1910ccbd9602105913763d",
+          "c613bb97d0e264fc391fb2ff9e92204ab5f40c1fb22d30f342e95a196430054d"
+        ],
+        "native_fri_payload_sha256": "3a4fb6e3ce7f0b4e0aeb05f50acf0567e3273a9a8b85f7a097f51e98542e54a0",
+        "native_fri_verification_sha256": "63b3d97f486bc698644295af539f2b92f429c88dd91525cb260eb74ff47c0c4e",
+        "native_fri_verified_batches": 2,
+        "native_snark_proof_sha256": "f74e94b6f5417d6d35f6c9ccdbc0570b389f0aea44a90907f701ce1232703f9a",
+        "genuine_serialized_calldata_sha256": "820bd9bda18a0223b3d70b84956e72e4ce0eed4879cf4311024a69a76de761d8",
+        "plonk_proof_words": 44,
+        "raw_vk_sha256": {
+          "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+          "compression_vk.json": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+          "snark_vk.json": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"
+        },
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "nonzero_reserved_word_rejected": true,
+        "live_submission_used": false,
+        "deployment_attested": false,
+        "release_promoted": false
+      },
+      "evm_receipt": {
+        "scope": "Isolated Prague EVM, Syscoin v32 production-mode dual router with app-bound PLONK key",
+        "release": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+        "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+        "chain_id": 31337,
+        "block": 3,
+        "block_hash": "0x8affb4eb835d4f53a58691a9ae12aed135d0b9ea94e0f23cea49a5d82aaa21ce",
+        "addresses": {
+          "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+          "plonk": "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+        },
+        "runtime_sha256": {
+          "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+          "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+        },
+        "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "testnet_verifier": false,
+        "batch_ids": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0x367ac63ff5ef3e2e4a49ffaebb8b88cdd28e82e6db208d202d63d24144775ad4",
+          "0x7dd2a4a1e763bdf6aa46184a9421cbe67975079e5e2969fd85e44c7caea78e30"
+        ],
+        "combined_hash": "0x6f6b4625f357eb88b0cbfd747ea30ad685a5f115a1bb82900ce5631c856b2f5b",
+        "shifted_public_input": "11733794346000816054825112859868154478983837036874160424714450068252",
+        "plonk_proof_words": 44,
+        "genuine_calldata_sha256": "820bd9bda18a0223b3d70b84956e72e4ce0eed4879cf4311024a69a76de761d8",
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true,
+        "reserved_word_check": {
+          "value": 1,
+          "error": "NonZeroCarriedHash()",
+          "selector": "0x31967fc6"
+        }
+      },
+      "evm_receipt_sha256": "b18ba1e0ca43a75ce10ff736f1f502f8f8853e31967177d93c83044fb1800007",
+      "server_admission_verified_batches": [
+        1,
+        2
+      ]
+    }
+  }
+}

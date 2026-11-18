@@ -1,4 +1,4 @@
-name: Syscoin V32 ExecV7 ProvingV8 Security100 keygen
+name: Syscoin v32 pre-Airbender-V2 Security100 keygen
 
 # SYSCOIN: This is a manual, non-deploying app-bound key-generation check. Configure the
 # `syscoin-v32-v8-keygen` environment with required reviewers and the environment
@@ -23,6 +23,7 @@ defaults:
     shell: bash
 
 env:
+  HISTORICAL_SERVER_COMMIT: 563d577caee23fa377923280dfa333be6fc6f430
   ZKSYNC_OS_REPOSITORY: https://github.com/matter-labs/zksync-os.git
   ZKSYNC_OS_BASE_COMMIT: 69bc430549e88f9264066d14f2001707572c5d33
   ZKSYNC_OS_BASE_TREE: 233b36e77843e460ee9da3e344ee227fa8cce04a
@@ -111,13 +112,13 @@ env:
   ERA_BASE_COMMIT: 8fb7c29a4e3174335c6480b23f57822e054f9d5f
   ERA_BASE_TREE: acdd11e5bb7787d9df2306f6a1dc96bf92e67f53
   ERA_NESTED_COMMIT: e554ae64ec150c47d6f17786e7f4aacebc7bf945
-  ERA_PATCH_SIZE: "1497553"
-  ERA_PATCH_SHA256: bf56f92ef487759fafa91efd7941323d8abf851b6445db94a172c3451671f8df
+  ERA_PATCH_SIZE: "1501853"
+  ERA_PATCH_SHA256: af1d900c08ad8051f6053aec0e298aa8a8c8f18283b88c6d46babe87ef32daa7
   ERA_PATCH_PATH_COUNT: "87"
   ERA_PATCH_PATHS_SHA256: 5e966d2ec8ed12c93e0b6d429543698c1937bfb8502bba1563f28d46a7c51105
-  ERA_SOURCE_PATCHED_TREE: 0cb850a5c77436f17b49e747a1117dac5ee90888
-  ERA_HELPER_SIZE: "59198"
-  ERA_HELPER_SHA256: eaa60f4652bd279637e21a08611f72ed673ed94d1ebd74fbe77472b31336efc8
+  ERA_SOURCE_PATCHED_TREE: eba365c69d357027165f373642bd1979cf5e0c4b
+  ERA_HELPER_SIZE: "59171"
+  ERA_HELPER_SHA256: 967a01bfb0b70ebc4f1c79acdf53ba546aa0f61d4bee586f13104fdb456e8efb
   ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22
   ERA_GENESIS_SIZE: "557518"
   ERA_GENESIS_SHA256: 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95
@@ -149,6 +150,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Enforce manual approval phrase and environment policy
@@ -682,6 +684,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Create isolated lane workspace
@@ -1019,6 +1022,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Create isolated control workspace
@@ -1184,6 +1188,7 @@ jobs:
       - name: Checkout key-generation source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ env.HISTORICAL_SERVER_COMMIT }}
           persist-credentials: false
 
       - name: Download keygen A
@@ -1793,7 +1798,7 @@ jobs:
 
           jq -n \
             --arg schema "syscoin-v32-v8-security100-keygen-v5" \
-            --arg server_revision "${GITHUB_SHA}" \
+            --arg server_revision "${HISTORICAL_SERVER_COMMIT}" \
             --arg zksync_os_base "${ZKSYNC_OS_BASE_COMMIT}" \
             --arg zksync_os_patched_tree "${ZKSYNC_OS_PATCHED_TREE}" \
             --arg gateway_target "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" \

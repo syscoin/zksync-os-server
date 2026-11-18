@@ -63,6 +63,8 @@ impl fmt::Display for APIToken {
 }
 
 /// Trait that defines the interface for a client connecting with an external API to get prices.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait PriceApiClient: Sync + Send + fmt::Debug + 'static {
     /// Returns the "USD<->token base unit" ratio for the input token address.

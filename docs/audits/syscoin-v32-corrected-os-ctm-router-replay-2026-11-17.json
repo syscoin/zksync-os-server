@@ -1,0 +1,37 @@
+{
+  "scope": "Isolated Prague EVM, Syscoin v32 production-mode dual router with app-bound PLONK key",
+  "release": "Syscoin corrected v32 guest normal GPU worker, via Forge DeployL1CoreContracts and DeployCTM",
+  "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+  "chain_id": 31337,
+  "block": 111,
+  "block_hash": "0xb5224362115acf87564829c6191e6d4842808a1b4b64f7d26aa408cd751a0d43",
+  "addresses": {
+    "router": "0x0F3a33dfAD6b32fcA87908CDc3B75a1864191182",
+    "plonk": "0xb3e55C7C023C51A912502934B44De1bdD1f980fa"
+  },
+  "runtime_sha256": {
+    "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+    "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+  },
+  "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+  "testnet_verifier": false,
+  "batch_ids": [
+    1,
+    2
+  ],
+  "batch_input_hashes": [
+    "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+    "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+  ],
+  "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+  "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+  "plonk_proof_words": 44,
+  "genuine_calldata_sha256": "17ffe67e40b4012d6b3eee2e381bd4af1d6e7c7b0fe024f5c9c384d89a536037",
+  "generated_plonk_accepted": true,
+  "dual_router_accepted": true,
+  "reserved_word_check": {
+    "value": 1,
+    "error": "NonZeroCarriedHash()",
+    "selector": "0x31967fc6"
+  }
+}

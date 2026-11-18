@@ -1834,7 +1834,8 @@ work and bind recovery to one verifier mode. -->
 | `PROVER_MODE` | `gpu` (default) or `no-proofs`; do not change it across a restart that retains chain and proof-recovery state |
 | `SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER` | Explicit upgrade-script opt-in for retaining the zkOS type-3 mock wrapper; defaults to `false` and must never be set for production |
 | `PROTOCOL_VERSION` | Default `v32.0` |
-| `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id used by ecosystem and node config generation |
+| `GATEWAY_CHAIN_ID` | Gateway chain ID. Mainnet requires `57570`. |
+| `EDGE_CHAIN_ID` | Edge chain ID. The canonical mainnet zkSYS edge requires `5757`. |
 | `ZKSYS_L2_CREATE2_DEPLOYER` | Deterministic L2 CREATE2 deployer for canonical zkSYS; defaults to `0x4e59b44847b379578588920cA78FbF26c0B4956C` |
 | `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet and whenever `ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE=true`; initial token role admin and default owner of deterministic zkSYS `ProxyAdmin` contracts; also used during L1 launch to derive deterministic zkSYS L2 addresses and the v32 `zk_token_asset_id` for canonical L2 zkSYS |
 | `ZKSYS_L2_PROXY_ADMIN_SALT` | Optional bytes32 salt for the deterministic zkSYS `ProxyAdmin` deployment |

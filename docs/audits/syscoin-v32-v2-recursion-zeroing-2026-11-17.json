@@ -1,0 +1,43 @@
+{
+  "schema": "syscoin-recursion-zeroing-codegen-v1",
+  "old_air_commit": "b91eeaecc4d1b9a42ea6843432bb3e014899b303",
+  "final_air_commit": "5a4928f651bb627ac5adf334fc6640bb6db5d79a",
+  "old_unified_100_text_sha256": "0c9e041574e579bb6503c6a976da639cf8dbb6e04d3d95f50d5d188ac1ac2e0b",
+  "final_unified_100_text_sha256": "c9ef9dd7c618f0e4e24e39be5d888440029b0985214eb47ed569a6c21c6366cd",
+  "old_disassembly_sha256": "f9f40b9cc4aacb5fc5ca6589060aa9e8181a857d1c616b3817c24f85c62a0a6e",
+  "final_disassembly_sha256": "d292ec39c9f9b943167ad000d32227d01832aca203495273aa06ab05a7808bc1",
+  "disassembler": "llvm-objdump from nightly-2026-02-10-aarch64-apple-darwin llvm-tools",
+  "procedure": "Reinsert checked-in .text into checked-in ELF at VMA 0; disassemble. No build or source mutation.",
+  "stop_target_family_proofs_100_bits": 2,
+  "unified_chunk_cycles": 8388607,
+  "stop_target_and_chunk_size_unchanged": true,
+  "old_memset_direct_call_sites": 10,
+  "final_memset_direct_call_sites": 100,
+  "old_memset_direct_call_sites_with_512_byte_immediate": 0,
+  "final_memset_direct_call_sites_with_512_byte_immediate": 8,
+  "final_paired_512_byte_clear_call_pcs": [
+    [
+      "0xb8e78",
+      "0xb8e88"
+    ],
+    [
+      "0xb933c",
+      "0xb934c"
+    ],
+    [
+      "0xb9928",
+      "0xb9938"
+    ],
+    [
+      "0xb9e4c",
+      "0xb9e5c"
+    ]
+  ],
+  "final_memset_pc": "0x12d6dc",
+  "aligned_512_byte_clear_loop_instructions_per_pair": 768,
+  "optimization_candidate": "Replace worst-case two initialized 32-element quartic FRI scratch arrays with an initialized in-place fold or correctly sized initialized buffers. Preserve initialization safety and every leaf/index/folding check.",
+  "limits": "Static instruction count excludes call/setup and counts loop iterations only. No dynamic attribution to the extra first-unified recursion pass. The 100 static call sites are not a dynamic per-proof count. A change needs replay equivalence, rejection tests, full proof/key regeneration and new qualifications. Current release is unchanged.",
+  "assembly_excerpt": "   b8e6c:      \taddi\ta0, s0, -0x238\n   b8e70:      \tli\ta2, 0x200\n   b8e74:      \tli\ta1, 0x0\n   b8e78:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b8e7c:      \taddi\ta0, sp, 0xb8\n   b8e80:      \tli\ta2, 0x200\n   b8e84:      \tli\ta1, 0x0\n   b8e88:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b8e8c:      \tj\t0xb8ea0 <.text+0xb8ea0>\n   b8e90:      \tsw\tzero, 0x34(sp)\n   b8e94:      \tli\ts1, 0x1\n   b8e98:      \tlw\ta0, 0x28(sp)\n   b932c:      \tsw\ta0, 0x54(sp)\n   b9330:      \taddi\ta0, sp, 0xb8\n   b9334:      \tli\ta2, 0x200\n   b9338:      \tli\ta1, 0x0\n   b933c:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b9340:      \taddi\ta0, s0, -0x238\n   b9344:      \tli\ta2, 0x200\n   b9348:      \tli\ta1, 0x0\n   b934c:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b9350:      \taddi\ta1, sp, 0x38\n   b9354:      \tj\t0xb9368 <.text+0xb9368>\n   b9358:      \tlw\ta2, 0x2c(sp)\n   b991c:      \taddi\ta0, s0, -0x238\n   b9920:      \tli\ta2, 0x200\n   b9924:      \tli\ta1, 0x0\n   b9928:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b992c:      \taddi\ta0, sp, 0xb8\n   b9930:      \tli\ta2, 0x200\n   b9934:      \tli\ta1, 0x0\n   b9938:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b993c:      \taddi\ta1, sp, 0x38\n   b9940:      \tj\t0xb9954 <.text+0xb9954>\n   b9944:      \tlw\ta2, 0x2c(sp)\n   b9948:      \tmv\ts1, a2\n   b9e40:      \taddi\ta0, sp, 0xb8\n   b9e44:      \tli\ta2, 0x200\n   b9e48:      \tli\ta1, 0x0\n   b9e4c:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b9e50:      \taddi\ta0, s0, -0x238\n   b9e54:      \tli\ta2, 0x200\n   b9e58:      \tli\ta1, 0x0\n   b9e5c:      \tjal\t0x12d6dc <.text+0x12d6dc>\n   b9e60:      \tli\ta2, 0x0\n   b9e64:      \taddi\ta3, sp, 0x38\n   b9e68:      \tj\t0xb9e7c <.text+0xb9e7c>\n   b9e6c:      \tlw\ta1, 0x2c(sp)\n  12d6dc:      \taddi\tsp, sp, -0x10\n  12d6e0:      \tsw\tra, 0xc(sp)\n  12d6e4:      \tsw\ts0, 0x8(sp)\n  12d6e8:      \taddi\ts0, sp, 0x10\n  12d6ec:      \tli\ta3, 0x10\n  12d6f0:      \tbltu\ta2, a3, 0x12d764 <.text+0x12d764>\n  12d6f4:      \tneg\ta3, a0\n  12d6f8:      \tandi\ta3, a3, 0x3\n  12d6fc:      \tadd\ta4, a0, a3\n  12d700:      \tbgeu\ta0, a4, 0x12d71c <.text+0x12d71c>\n  12d704:      \tmv\ta5, a3\n  12d708:      \tmv\ta6, a0\n  12d70c:      \taddi\ta5, a5, -0x1\n  12d710:      \tsb\ta1, 0x0(a6)\n  12d714:      \taddi\ta6, a6, 0x1\n  12d718:      \tbnez\ta5, 0x12d70c <.text+0x12d70c>\n  12d71c:      \tsub\ta2, a2, a3\n  12d720:      \tandi\ta3, a2, -0x4\n  12d724:      \tadd\ta3, a4, a3\n  12d728:      \tbgeu\ta4, a3, 0x12d754 <.text+0x12d754>\n  12d72c:      \tzext.b\ta5, a1\n  12d730:      \tslli\ta6, a5, 0x8\n  12d734:      \tslli\ta7, a5, 0x10\n  12d738:      \tslli\tt0, a1, 0x18\n  12d73c:      \tor\ta5, a5, a6\n  12d740:      \tor\ta6, a7, t0\n  12d744:      \tor\ta5, a5, a6\n  12d748:      \tsw\ta5, 0x0(a4)\n  12d74c:      \taddi\ta4, a4, 0x4\n  12d750:      \tbltu\ta4, a3, 0x12d748 <.text+0x12d748>\n  12d754:      \tandi\ta2, a2, 0x3\n  12d758:      \tadd\ta4, a3, a2\n  12d75c:      \tbltu\ta3, a4, 0x12d770 <.text+0x12d770>\n  12d760:      \tj\t0x12d780 <.text+0x12d780>\n  12d764:      \tmv\ta3, a0\n  12d768:      \tadd\ta4, a0, a2\n  12d76c:      \tbgeu\ta0, a4, 0x12d780 <.text+0x12d780>\n  12d770:      \taddi\ta2, a2, -0x1\n  12d774:      \tsb\ta1, 0x0(a3)\n  12d778:      \taddi\ta3, a3, 0x1\n  12d77c:      \tbnez\ta2, 0x12d770 <.text+0x12d770>\n  12d780:      \tlw\tra, 0xc(sp)\n  12d784:      \tlw\ts0, 0x8(sp)\n  12d788:      \taddi\tsp, sp, 0x10\n  12d78c:      \tret\n",
+  "assembly_excerpt_sha256": "248473796b2cab551de2d976edec554fecba07f7e0b48c842b81bd55b1846df0",
+  "first_unified_replay": "Not available in saved worker artifacts; exact dynamic attribution requires new instrumented generation. Deferred until after current release qualification."
+}

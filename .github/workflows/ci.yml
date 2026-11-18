@@ -33,6 +33,17 @@ permissions:
 
 jobs:
 
+  mainnet-launch-identity:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Test the mainnet signing domains and app-bound Gateway preflight
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts.tests.test_mainnet_edge_identity
+
   ############################
   #       Build server       #
   ############################
@@ -106,7 +117,15 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 "${RUNNER_TEMP}/component-policy-python/bin/python" -m unittest scripts.tests.test_v32_component_fixture scripts.tests.test_v32_component_generator -v
 
       - name: Test patched zksync-os workspace tooling
+        env:
+          ERA_GENERATED_RELEASE_TEST_ROOT: ${{ runner.temp }}/era-v32-base
         run: |
+          # SYSCOIN: Verify the generated contract tree against the deployment bundle.
+          era_base_commit="$(jq -er '.base_commit | select(test("^[0-9a-f]{40}$"))' scripts/releases/era-v32/generated-verifier-manifest.json)"
+          git init --quiet "$ERA_GENERATED_RELEASE_TEST_ROOT"
+          git -C "$ERA_GENERATED_RELEASE_TEST_ROOT" fetch --quiet --depth=1 --no-tags https://github.com/matter-labs/era-contracts.git "$era_base_commit"
+          git -C "$ERA_GENERATED_RELEASE_TEST_ROOT" checkout --quiet --detach "$era_base_commit"
+
           # SYSCOIN: Keep protected administrator and smoke regressions in the existing tooling gate.
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest \
             scripts.tests.test_trust_store \
@@ -401,6 +420,7 @@ jobs:
         prover-tests,
         check-wire-version,
         config-tests,
+        mainnet-launch-identity,
       ]
     steps:
       - name: Status

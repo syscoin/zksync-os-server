@@ -1,0 +1,433 @@
+{
+  "schema": "syscoin-v32-v2-host-memory-review-v1",
+  "source_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+  "source_sha256": {
+    "gpu_prover/src/execution/cpu_pipeline_model.rs": "c51209195727775efc9c0a9cbe5bbce05e85877a2e37e06f104221ee13ceb336",
+    "gpu_prover/src/execution/cpu_worker.rs": "05b900209cec335e5cdf0f377b36636a3c1f962a9fa459cf235e724862f93f2a",
+    "gpu_prover/src/execution/mod.rs": "0873c639fbe29a913cdb98d4f3014eba33f30cbbf7fb45d6f3c6e06f81ea3e2b",
+    "gpu_prover/src/execution/prover.rs": "6a6772561b0a3966f1759e270876755ec980fd329ddd0b5a44237eacf2e0397f",
+    "gpu_prover/src/execution/simulation_runner.rs": "56183cfaef41dc6e5ef2f5c8d85f47890bffd458dd4652b9cfcfd9a5ca6be38a",
+    "gpu_prover/src/execution/simulator_memory.rs": "e1a0a5ce5479d54cb91994b1d84865a2e316580256a4891dcd2ffa9e1316c86d"
+  },
+  "linux_collector_regression": {
+    "passed": 1,
+    "failed": 0,
+    "elapsed_seconds": 0.49,
+    "log_sha256": "7524631c9755f60729800c119af6919733547ef46cbf64f8a3f663fa5355dee9",
+    "exercises": [
+      "2 MiB mapping alignment",
+      "full 1 GiB guest extent",
+      "normal collection",
+      "repeated cancellation reset",
+      "last address in guest RAM"
+    ]
+  },
+  "cpu_jit_probe": {
+    "passed": true,
+    "threads": 4,
+    "cases": [
+      {
+        "arm": "default",
+        "canonical_records_keccak": "77d5a98c0fbac2f6d2c10e31616a9e9b437e49fa0c92a21c6d0e77e1d7cacd25",
+        "cycles": 32031187,
+        "entry_count": 282607,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 281,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          42229,
+          41935,
+          42219,
+          42021
+        ],
+        "threads": 4,
+        "median_scan_ms": 42.12
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "77d5a98c0fbac2f6d2c10e31616a9e9b437e49fa0c92a21c6d0e77e1d7cacd25",
+        "cycles": 32031187,
+        "entry_count": 282607,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 281,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5972,
+          5994,
+          5806,
+          5859
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.9155
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "2ed2d3008da384cc597862c6aefeb86bc5ece6853e69a6f1926672b77cd5f341",
+        "cycles": 32013920,
+        "entry_count": 85666,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 86,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          41603,
+          41320,
+          41340,
+          41262
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.33
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "2ed2d3008da384cc597862c6aefeb86bc5ece6853e69a6f1926672b77cd5f341",
+        "cycles": 32013920,
+        "entry_count": 85666,
+        "image": "recursion_in_unrolled_layer_security_100_bits",
+        "max_address_inclusive": 71343631,
+        "oracle_words": 1548360,
+        "pages_4k_touched": 86,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5753,
+          5540,
+          5403,
+          5322
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.4715
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "7c1757a4989f870d43d3d10228fe170d577a06f0197f7a154d7eadad16e9fbdd",
+        "cycles": 11957098,
+        "entry_count": 246961,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 247,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          42849,
+          41764,
+          41835,
+          41951
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.893
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "7c1757a4989f870d43d3d10228fe170d577a06f0197f7a154d7eadad16e9fbdd",
+        "cycles": 11957098,
+        "entry_count": 246961,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 247,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5755,
+          5648,
+          5668,
+          5730
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.699
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "01dc9673ccb9b6ff85d01ef3e35476e9e147f6124e1a6a79fb8e51be36826d4c",
+        "cycles": 11942196,
+        "entry_count": 51488,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 53,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          42365,
+          41797,
+          41482,
+          41516
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.6565
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "01dc9673ccb9b6ff85d01ef3e35476e9e147f6124e1a6a79fb8e51be36826d4c",
+        "cycles": 11942196,
+        "entry_count": 51488,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 555168,
+        "pages_4k_touched": 53,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5546,
+          5319,
+          5352,
+          5293
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.3355
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "6a2ef960f29d1dafe872951cd5da9e30f805f33f9661d737bef597f9e43c1ec7",
+        "cycles": 23917963,
+        "entry_count": 247143,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 247,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          41230,
+          41265,
+          41258,
+          41035
+        ],
+        "threads": 4,
+        "median_scan_ms": 41.244
+      },
+      {
+        "arm": "default",
+        "canonical_records_keccak": "6a2ef960f29d1dafe872951cd5da9e30f805f33f9661d737bef597f9e43c1ec7",
+        "cycles": 23917963,
+        "entry_count": 247143,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 247,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5780,
+          5744,
+          5689,
+          5930
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.762
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "ee4c8d6c5bdac61faa3ed29c87cdff42ae6c25b42d23cac2ed867413f52bea63",
+        "cycles": 23888159,
+        "entry_count": 51670,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 53,
+        "ram_config": "Medium",
+        "ram_holder_bytes": 3221225472,
+        "scan_microseconds": [
+          40878,
+          40763,
+          40452,
+          40556
+        ],
+        "threads": 4,
+        "median_scan_ms": 40.6595
+      },
+      {
+        "arm": "streaming",
+        "canonical_records_keccak": "ee4c8d6c5bdac61faa3ed29c87cdff42ae6c25b42d23cac2ed867413f52bea63",
+        "cycles": 23888159,
+        "entry_count": 51670,
+        "image": "recursion_in_unified_layer_security_100_bits",
+        "max_address_inclusive": 71335055,
+        "oracle_words": 1110338,
+        "pages_4k_touched": 53,
+        "ram_config": "Small",
+        "ram_holder_bytes": 402653184,
+        "scan_microseconds": [
+          5568,
+          5449,
+          5764,
+          5417
+        ],
+        "threads": 4,
+        "median_scan_ms": 5.5085
+      }
+    ],
+    "log_sha256": "69f6cb0a6455529d9cc6fafd3df7c77da40a554ae8b3e301f818bc9c09d8a281",
+    "source_sha256": "50c25aee0c78e577601edecc6a10f98034bdfc09adb39cdc6dc03d78e02d0f14",
+    "scope": "Exact three authentic inputs replayed in both verifier versions and both address extents. The smaller extent is diagnostic only.",
+    "allocation_scope": "The diagnostic replay used the standard native JIT MemoryHolder allocator and prefaulted timestamp pages for timing. It compared verifier versions and Medium/Small extents, not CUDA-pinned against demand-paged production holders."
+  },
+  "gpu_qualification": {
+    "status": "One same-binary pinned versus demand-paged pair completed and independently verified against the trusted ordered statement and retained guest commitment.",
+    "receipt": "syscoin-v32-v2-pageable-host-2026-11-17.json",
+    "receipt_sha256": "2b1ff667e456a69c7134a89576ec9c7638648e11ed92c9265cd572d50b763c21",
+    "airbender_revision": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+    "worker_revision": "ec790318f00e225cd11283a4d5fb7a521f4670a6",
+    "protocol_revision": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+    "native_binary_sha256": "b50dfc3cd4f80ed0ae9015469b25d0e3bd70ddfd0e68c1283c0528f8f6278a05",
+    "native_policy_confirmed": true,
+    "pinned_peak_rss_gib": 37.680152893066406,
+    "demand_paged_peak_rss_gib": 31.608295440673828,
+    "peak_rss_reduction_gib": 6.071857452392578,
+    "pinned_cold_wall_seconds": 151.87,
+    "demand_paged_cold_wall_seconds": 146.03,
+    "pinned_merge_proving_ms": 1871,
+    "demand_paged_merge_proving_ms": 1850,
+    "gpu_allocator_peak_gib_both": 20.6171875,
+    "limitations": "Single pair of one retained-guest workload; no statistical latency improvement established. The complete 1 GiB guest address space remains available and resident backing can grow with pages touched. These are CLI merge measurements, not corrected-worker or whole-SNARK-worker RSS qualification."
+  },
+  "review": {
+    "dma_buffer_ownership": "The simulator image remains CPU-only. Trace and initialization/teardown transfers use separately pinned owned staging allocations.",
+    "normal_reset": "Production collector remains unchanged and clears all observed memory timestamps and values.",
+    "cancelled_reset": "After synchronous JIT return, MADV_DONTNEED discards resident pages over the exclusively owned mapping and restores zero contents without unmapping its address range. A failed discard uses the prior full zero fill.",
+    "virtual_extent": "All existing JitRunnerRam values remain supported and the production default still exposes 1 GiB guest memory.",
+    "default_policy": "Pinned backing remains the default; AIRBENDER_SIMULATOR_MEMORY=demand-paged opts into Linux anonymous mappings."
+  },
+  "airbender_pull_request": "https://github.com/syscoin/zksync-airbender/pull/9",
+  "qualification_policy": "This checkpoint recorded the locked source graph for worker b6f0f066ff37455953ec60da817a1d151fcfbc95. The later corrected worker qualified both memory policies on the same GPU. Pinned allocation remains the default and demand paging remains opt-in.",
+  "protocol_host_setup": {
+    "pull_request": "https://github.com/syscoin/zksync-protocol/pull/2",
+    "source_commit": "175fb68cbb47ff6702ace7d104fc66b206da28ba",
+    "review": "RISC and compression assembly placement hints are independently owned. The caller drops spent assembly and moves hints; Shivini drops CPU permutation columns after reading their geometry and reconstructs the device permutation from retained indexes. Circuit construction, keys and transcript are unchanged.",
+    "optimized_linux_cuda_stub_all_target_check": "passed",
+    "check_log_sha256": "cffa2abe6d7fbac70f6e78ea1831debb8a1e1475fff6eaf8d71a6533e3d7cfaf",
+    "cpu_regression": {
+      "test": "compression_synthesis_fits_row_budget",
+      "passed": 1,
+      "failed": 0,
+      "log_sha256": "56a66c7755bf8646c9b152763196f07bbea4d0f0c505a7b41bf575a6e6e4258f"
+    },
+    "gpu_qualification": {
+      "status": "Completed one retained-guest baseline/candidate process pair, with two RISC and compression proof rounds per process. Every proof verified and both typed VKs matched their trusted values.",
+      "receipt": "syscoin-v32-v2-wrapper-host-2026-11-17.json",
+      "receipt_sha256": "e22d9b40e3021228792e5da27f2e881f35d6edd2ec7ca908b3d47bb432ecd332",
+      "baseline_protocol_revision": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+      "candidate_protocol_revision": "175fb68cbb47ff6702ace7d104fc66b206da28ba",
+      "worker_revision": "ec790318f00e225cd11283a4d5fb7a521f4670a6",
+      "baseline_peak_rss_gib": 20.250843048095703,
+      "candidate_peak_rss_gib": 13.64453125,
+      "peak_rss_reduction_gib": 6.606311798095703,
+      "baseline_cold_wall_seconds": 157.54,
+      "candidate_cold_wall_seconds": 159.06,
+      "limitations": "A setup/proof comparison driver, not the complete normal SNARK worker. One process per revision, two proof rounds each; no statistical latency conclusion. No per-arm GPU memory measurement was collected. Corrected-guest combined-worker qualification remains pending."
+    },
+    "default_policy": "Measured candidate remains subject to final corrected-worker integration qualification; the earlier measured release used parent protocol revision 3c3472d93611bafcdadf928829cc3fb357c6b156.",
+    "ownership_review": {
+      "result": "No new dangling host reference or asynchronous DMA source lifetime found in the changed ownership paths.",
+      "assembly": "get_light_setup constructs Arc-owned polynomial buffers and deep-clones Vec<Vec<Variable/Witness>> maps. Its geometry and finalization hints are owned. The caller releases the assembly before the first GPU upload; the returned data does not borrow it.",
+      "permutation": "Only domain size and column counts are read from copy_permutation_polys. SetupLayout stores scalar counts. Dropping those CPU polynomial Arcs does not affect the owned variable maps from which the device permutation is reconstructed.",
+      "transfers": "CPU index conversion uses joining Rayon scopes. GpuSetup retains copied constants and transformed maps. construct_indexes_from_hint and initialize_from_gpu_setup synchronize the H2D stream after waiting both auxiliary streams, before dropping buffered host callbacks. The early dropped objects are never DMA sources.",
+      "limits": "Focused source review of protocol#2 changed lifetimes, recorded compile/regression checks, and verified real-GPU setup/proof comparisons. It does not independently qualify all pre-existing CUDA error teardown or allocator synchronization.",
+      "source_locations": [
+        "zkos-wrapper/wrapper/src/gpu/risc_wrapper.rs:62-88",
+        "zkos-wrapper/wrapper/src/gpu/compression.rs:60-86",
+        "crypto/crates/boojum/src/cs/implementations/setup.rs:1010-1101",
+        "crypto/crates/boojum/src/cs/implementations/setup.rs:1256-1271",
+        "crypto/crates/boojum/src/cs/implementations/setup.rs:1300-1319",
+        "crypto/crates/boojum/src/cs/implementations/hints/mod.rs:12-20",
+        "crypto-gpu/crates/shivini/src/cs/setup.rs:194-277",
+        "crypto-gpu/crates/shivini/src/data_structures/setup.rs:20-49",
+        "crypto-gpu/crates/shivini/src/data_structures/setup.rs:137-179",
+        "crypto-gpu/crates/shivini/src/data_structures/setup.rs:269-289",
+        "crypto-gpu/crates/shivini/src/primitives/mem.rs:19-82",
+        "crypto/crates/boojum/src/worker/mod.rs:68-75"
+      ]
+    },
+    "pin_alignment_followup": {
+      "commit": "831d0cafca4e33d06c1783a5d0c05ad219088aa1",
+      "tree": "38a000a50c4837bb4003a74da134b684a90cd892",
+      "reason": "Worker Airbender#9 selection conflicted with protocol transitive Airbender#8 pins. The locked graph gate rejected the combined candidate before compilation.",
+      "scope": "Only zkos-wrapper and eravm-airbender-verifier Cargo.toml/Cargo.lock replace the exact Airbender revision; normalizing that substitution reproduces parent files byte for byte.",
+      "benchmark_scope": "The measured setup/proof comparison remains at parent175fb68cbb47ff6702ace7d104fc66b206da28ba. Combined corrected-worker qualification must use the aligned follow-up.",
+      "locked_metadata_validation": "Passed --locked --all-features at both standalone roots with unchanged locks and only selected Air27c4e9: zkos-wrapper363 packages, eravm-airbender-verifier654 packages. Final worker b6 locked all-features graph also passed with561 packages and only selected Air9/protocol831 sources."
+    }
+  },
+  "cancellation_lifecycle_review": {
+    "source_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+    "result": "No new host use-after-free or concurrent reset path found in the focused static review.",
+    "exclusive_owner": "The simulator closure removes the owned holder from Arc<Mutex<Vec<SimulatorMemoryHolder>>>. A second job receives another holder or allocates one. The closure retains both the holder and cache Arc until it returns the holder.",
+    "abort_order": "SimulationRunner::run invokes the JIT synchronously. Cancellation only signals the atomic flag and stops snapshot production. run_simulator resets the holder only after the JIT has returned. A late signal after the decision follows normal complete collection instead; it does not reset concurrently.",
+    "collection_order": "The normal collector partitions disjoint mutable memory/timestamp slices inside rayon in_place_scope. That scope joins before the holder is returned to the shared cache.",
+    "asynchronous_consumers": "Replayers own independent LockedBoxedTraceChunk storage. Initialization/teardown values are copied into owned Vec/Arc staging allocations, and InitsAndTeardownsTransfer retains those DMA sources. No reviewed GPU callback or replayer borrows the simulator mapping.",
+    "limits": "The executed allocator regression tests reset/reuse on the demand-paged holder, not concurrent cancellation stress. The JIT can continue after the abort signal until its synchronous return; cancellation latency is unchanged. Both hardware comparison proofs verified, but this adds no concurrent cancellation stress coverage.",
+    "source_locations": [
+      "gpu_prover/src/execution/prover.rs:754-838",
+      "gpu_prover/src/execution/simulation_runner.rs:211-258",
+      "gpu_prover/src/execution/simulation_runner.rs:261-345",
+      "gpu_prover/src/execution/cpu_worker.rs:77-175",
+      "gpu_prover/src/execution/cpu_worker.rs:180-244",
+      "gpu_prover/src/execution/cpu_worker.rs:254-348",
+      "gpu_prover/src/prover/tracing_data.rs:233-267",
+      "riscv_transpiler/src/jit/impls.rs:1983-1988",
+      "worker/src/lib.rs:468-484"
+    ]
+  },
+  "selected_promotion": {
+    "worker_revision": "b6f0f066ff37455953ec60da817a1d151fcfbc95",
+    "worker_tree": "30fa502ca867f999e49b910e8d6eeb00f345038f",
+    "airbender_revision": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+    "protocol_revision": "831d0cafca4e33d06c1783a5d0c05ad219088aa1",
+    "simulator_default": "pinned",
+    "expected_program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+    "expected_snark_vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+    "status": "aligned_locked_graph_passed_pending_corrected_worker_runtime_qualification"
+  },
+  "next_optimization_candidates": {
+    "status": "source analysis and existing measurements only; no new optimization implemented or performance run",
+    "risc_host_witness_preparation": {
+      "source_commit": "175fb68cbb47ff6702ace7d104fc66b206da28ba",
+      "guest_scope": "retained guest; same two proof rounds as wrapper host-memory comparison",
+      "log_path": "wrapper-setup-ab-results/host_move.log",
+      "log_sha256": "fc6ae223aeb2651d90c5a877ce14e1cd32c029e29fddf2acc91f7628102b16a2",
+      "risc_total_proving_ms": [
+        50595,
+        50305
+      ],
+      "host_witness_preparation_ms": [
+        46079,
+        46125
+      ],
+      "shivini_proof_seconds": [
+        3.193866707,
+        3.181019653
+      ],
+      "source_scope": "zkos-wrapper/wrapper/src/gpu/risc_wrapper.rs timer covers builder creation, tables, circuit synthesis, hint-based padding, assembly conversion and witness extraction before GPU proving; it does not isolate which substep dominates.",
+      "recommendation": "Profile the host preparation substeps before changing the circuit or final PLONK domain. This is a measured latency concentration, not a demonstrated optimization gain."
+    },
+    "domain_thresholds": {
+      "risc_required_rows": 999395,
+      "risc_current_domain": 1048576,
+      "risc_next_domain": 524288,
+      "risc_minimum_rows_to_remove": 475107,
+      "compression_required_rows": 41641,
+      "compression_current_domain": 65536,
+      "compression_next_domain": 32768,
+      "compression_minimum_rows_to_remove": 8873,
+      "limit": "Arithmetic lower bounds only, before any reserved-row, finalization or safety slack requirements. A domain reduction would need separate circuit/key qualification."
+    },
+    "combiner_host_cache_lifetime": {
+      "reviewed_worker_commit": "b6f0f066ff37455953ec60da817a1d151fcfbc95",
+      "airbender_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+      "protocol_commit": "831d0cafca4e33d06c1783a5d0c05ad219088aa1",
+      "confirmed": "The merge CUDA context and arena are per-call. Normal GPU workers retain the combiner host pools and precomputations during RISC, compression and PLONK; the existing release_host_state method is not called by the worker. Wrapper setup caches are host data; STARK device context is released before PLONK and the PLONK device manager is call-local.",
+      "candidate": "Optionally release the combiner host state after a successful merge, retaining unified setup/layouts, and measure next-job rewarm cost against peak RSS savings.",
+      "limit": "No gain measured. This changes host cache lifetime, not the measured 20.617 GiB active merge VRAM or fixed 21.309 GiB arena. Concurrent processes duplicate host caches and must coordinate overlapping GPU phases."
+    }
+  },
+  "final_corrected_worker_comparison": "syscoin-v32-final-worker-comparison-2026-11-18.json"
+}

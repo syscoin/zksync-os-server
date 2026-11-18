@@ -37,6 +37,7 @@ run-gateway-launch.sh --l1 tanenbaum|mainnet [--log PATH]
 
 Required env:
   L1_RPC_URL=http(s)://...  (HTTP(S) only)
+  GATEWAY_CHAIN_ID / EDGE_CHAIN_ID  explicit distinct signing domains on mainnet
 
 Optional env:
   GATEWAY_ARCHIVE_L1_RPC_URL   archive L1 RPC for startup history and settlement proofs (defaults to L1_RPC_URL)
@@ -159,6 +160,7 @@ esac
 gl_reject_no_proofs_on_mainnet
 gl_validate_l1_signer_policy
 gl_normalize_canonical_deployment_inputs
+gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${EDGE_CHAIN_ID:-}"
 
 case "${L1_RPC_URL}" in
 http://* | https://*) ;;
@@ -178,7 +180,8 @@ export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 # SYSCOIN: This checkpoint namespace is the canonical zkSYS launch. Additional
 # edges use the serialized direct helpers and must never bind the global fingerprint.
 gl_is_canonical_edge_context ||
-  gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"
+  gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"
+gl_assert_mainnet_app_gateway_identity
 gl_resolve_gateway_dir planned
 gl_acquire_gateway_launch_lock
 # SYSCOIN: The checkpointed launcher targets the canonical fresh V32 lane.

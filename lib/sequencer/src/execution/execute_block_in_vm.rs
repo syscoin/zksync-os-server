@@ -38,7 +38,7 @@ pub async fn execute_block_in_vm<V: ViewState>(
         Vec<(TxHash, InvalidTransaction)>,
         bool,
     ),
-    BlockDump,
+    Box<BlockDump>,
 > {
     tracing::info!(command = ?command, block_number=command.block_context.block_number, "Executing command");
     latency_tracker.enter_state(SequencerState::InitializingVm);
@@ -185,11 +185,11 @@ pub async fn execute_block_in_vm<V: ViewState>(
                                     revert_output = ?res.output,
                                     "Upgrade transaction reverted"
                                 );
-                                return Err(BlockDump {
+                                return Err(Box::new(BlockDump {
                                     ctx,
                                     txs: all_processed_txs.clone(),
                                     error: format!("upgrade tx {tx_hash} reverted"),
-                                });
+                                }));
                             }
                             if expect_sl_chain_id_tx_after_upgrade {
                                 tracing::info!(
@@ -263,20 +263,20 @@ pub async fn execute_block_in_vm<V: ViewState>(
                                 }
 
                                 return Err(
-                                    BlockDump {
+                                    Box::new(BlockDump {
                                         ctx,
                                         txs: all_processed_txs.clone(),
                                         error: format!("invalid {} tx: {e:?} ({})", tx.tx_type(), tx.hash()),
-                                    }
+                                    })
                                 )
                             }
                             (ZkTxType::System, _) => {
                                 return Err(
-                                    BlockDump {
+                                    Box::new(BlockDump {
                                         ctx,
                                         txs: all_processed_txs.clone(),
                                         error: format!("invalid system tx with type {:?}: {e:?} ({})", tx.as_system_tx_type(), tx.hash()),
-                                    }
+                                    })
                                 )
                             }
                             (
@@ -336,11 +336,11 @@ pub async fn execute_block_in_vm<V: ViewState>(
                             }
                             (ZkTxType::L2(_), InvalidTxPolicy::Abort) => {
                                 return Err(
-                                    BlockDump {
+                                    Box::new(BlockDump {
                                         ctx,
                                         txs: all_processed_txs.clone(),
                                         error: format!("invalid l2 tx: {e:?} ({})", tx.hash()),
-                                    }
+                                    })
                                 )
                             }
                         }
@@ -354,25 +354,25 @@ pub async fn execute_block_in_vm<V: ViewState>(
     match command.seal_policy {
         SealPolicy::Decide(_, _) => {
             if seal_reason == SealReason::TxStreamExhausted {
-                return Err(BlockDump {
+                return Err(Box::new(BlockDump {
                     ctx,
                     txs: all_processed_txs.clone(),
                     error: format!("tx stream was unexpectedly exhausted {}", ctx.block_number),
-                });
+                }));
             }
         }
         SealPolicy::UntilExhausted {
             allowed_to_finish_early,
         } => {
             if !allowed_to_finish_early && seal_reason != SealReason::TxStreamExhausted {
-                return Err(BlockDump {
+                return Err(Box::new(BlockDump {
                     ctx,
                     txs: all_processed_txs.clone(),
                     error: format!(
                         "block was expected to be sealed due to stream exhaustion, but sealed due to {:?} instead, block {}",
                         seal_reason, ctx.block_number
                     ),
-                });
+                }));
             }
         }
     }
@@ -450,11 +450,11 @@ pub async fn execute_block_in_vm<V: ViewState>(
             ctx.block_number,
         );
         tracing::error!(?output, block_number = ctx.block_number, expected = %expected_hash, actual = %block_hash_output, "Block output hash mismatch");
-        return Err(BlockDump {
+        return Err(Box::new(BlockDump {
             ctx,
             txs: all_processed_txs.clone(),
             error,
-        });
+        }));
     }
 
     Ok((

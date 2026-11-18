@@ -1,0 +1,45 @@
+{
+  "scope": "Isolated Prague EVM, Syscoin v32 production-mode dual router with candidate reserved-word guard",
+  "release": "syscoin/zksync-os-server v0.24.4, d22deb8a5ba6ab96296a913d34934d6af27b6909",
+  "upstream_guard": "63b84939eadb3a82b5db4ada94cabf62ba021e1f",
+  "chain_id": 31337,
+  "block": 3,
+  "block_hash": "0x1c5462cc855bf56ffeee770ed7fffcc71e911e96ca287d71e5a03b3b387637ed",
+  "addresses": {
+    "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+    "plonk": "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+  },
+  "runtime_sha256": {
+    "router": "7047040a5023c27eb4867e496a2327587166633e92f8ecf00d3fdf377c08758e",
+    "plonk": "39af68a895598186366e445e0804406cccd73a67c5f63257d0b5fa0805debe92"
+  },
+  "vk_hash": "0x22b4a58c40ab11839bfc79c96957f24711776f3e1992fa3cf14c1c3b898a2153",
+  "testnet_verifier": false,
+  "batch_ids": [
+    1,
+    2
+  ],
+  "batch_input_hashes": [
+    "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+    "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+  ],
+  "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+  "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+  "plonk_proof_words": 44,
+  "genuine_calldata_sha256": "df7f4ad40c97582c9740b3dfaaa214634dff206deea6ffd7c6e5a71fdac57961",
+  "generated_plonk_accepted": true,
+  "dual_router_accepted": true,
+  "reserved_word_check": {
+    "value": 1,
+    "error": "NonZeroCarriedHash()",
+    "selector": "0x31967fc6"
+  },
+  "compiler": {
+    "version": "0.8.28+commit.7893614a",
+    "evm_version": "prague",
+    "optimizer_runs": 9999999
+  },
+  "qualification_date": "2026-11-17",
+  "source_scope": "Temporary release-source copy with the upstream reserved-word check. The compiled PLONK runtime matched the released bytecode.",
+  "environment": "Isolated Anvil on the build server. No Gateway or root settlement transaction."
+}
