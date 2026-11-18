@@ -1,0 +1,295 @@
+{
+  "default_airbender": "d8965007df1bd7f11a5279a10fe36bbfebaaac58",
+  "streaming_airbender": "a141a2990d1a8a7006d50b394e7c62398cf7fd2b",
+  "same_guest_sha256": "0d69bb7bc5207041c737def52d8858bab261b2ccf0afadbf2ceed14aa86d7cf6",
+  "conditions": {
+    "default-a": {
+      "batches": [
+        {
+          "cycles": 1355893,
+          "timings_ms": {
+            "total_ms": 7240,
+            "base_ms": 7240,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 1
+        },
+        {
+          "cycles": 980910,
+          "timings_ms": {
+            "total_ms": 4770,
+            "base_ms": 4770,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 2
+        }
+      ],
+      "fri_memory": {
+        "allocator_live_max_gib": 27.0546875,
+        "board_peak_mib": 29434,
+        "rsstime_kib": 48442748
+      },
+      "merge_core": [
+        {
+          "stage": "combined pass over 2 proofs done in",
+          "ms": 1173
+        },
+        {
+          "stage": "shrink pass 0 done in",
+          "ms": 677
+        }
+      ],
+      "sum_merge_ms": 1850,
+      "merge_memory": {
+        "allocator_live_max_gib": 20.6171875,
+        "board_peak_mib": 22558,
+        "rsstime_kib": 39434944
+      },
+      "verification": {
+        "public_input_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "program_commitment": "0x05080df2ee1edeb1d3d13f9a193a00a3bf5ca2115bfa675b29c1baaef289d7e9",
+        "trusted_sequence_sha256": "7a5632a7f8347be9d6b6a380069cc71f9dc8514057b469b4e3b5d9e23cdbe721"
+      }
+    },
+    "streaming-a": {
+      "batches": [
+        {
+          "cycles": 1355893,
+          "timings_ms": {
+            "total_ms": 7213,
+            "base_ms": 7213,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 1
+        },
+        {
+          "cycles": 980910,
+          "timings_ms": {
+            "total_ms": 4787,
+            "base_ms": 4787,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 2
+        }
+      ],
+      "fri_memory": {
+        "allocator_live_max_gib": 27.0546875,
+        "board_peak_mib": 29850,
+        "rsstime_kib": 48530128
+      },
+      "merge_core": [
+        {
+          "stage": "combined pass over 2 proofs done in",
+          "ms": 1169
+        },
+        {
+          "stage": "shrink pass 0 done in",
+          "ms": 686
+        }
+      ],
+      "sum_merge_ms": 1855,
+      "merge_memory": {
+        "allocator_live_max_gib": 20.6171875,
+        "board_peak_mib": 23048,
+        "rsstime_kib": 39430816
+      },
+      "verification": {
+        "public_input_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "program_commitment": "0x69ba06c1a7ca60828dcb2d6ef3d56805d69660c6219694340a6f3b91ffbb809f",
+        "trusted_sequence_sha256": "7a5632a7f8347be9d6b6a380069cc71f9dc8514057b469b4e3b5d9e23cdbe721"
+      }
+    },
+    "streaming-b": {
+      "batches": [
+        {
+          "cycles": 1355893,
+          "timings_ms": {
+            "total_ms": 7199,
+            "base_ms": 7199,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 1
+        },
+        {
+          "cycles": 980910,
+          "timings_ms": {
+            "total_ms": 4844,
+            "base_ms": 4844,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 2
+        }
+      ],
+      "fri_memory": {
+        "allocator_live_max_gib": 27.0546875,
+        "board_peak_mib": 29434,
+        "rsstime_kib": 48445032
+      },
+      "merge_core": [
+        {
+          "stage": "combined pass over 2 proofs done in",
+          "ms": 1171
+        },
+        {
+          "stage": "shrink pass 0 done in",
+          "ms": 692
+        }
+      ],
+      "sum_merge_ms": 1863,
+      "merge_memory": {
+        "allocator_live_max_gib": 20.6171875,
+        "board_peak_mib": 22558,
+        "rsstime_kib": 39435836
+      },
+      "verification": {
+        "public_input_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "program_commitment": "0x69ba06c1a7ca60828dcb2d6ef3d56805d69660c6219694340a6f3b91ffbb809f",
+        "trusted_sequence_sha256": "7a5632a7f8347be9d6b6a380069cc71f9dc8514057b469b4e3b5d9e23cdbe721"
+      }
+    },
+    "default-b": {
+      "batches": [
+        {
+          "cycles": 1355893,
+          "timings_ms": {
+            "total_ms": 7220,
+            "base_ms": 7220,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 1
+        },
+        {
+          "cycles": 980910,
+          "timings_ms": {
+            "total_ms": 4837,
+            "base_ms": 4837,
+            "unrolled_recursion_ms": [],
+            "unified_recursion_ms": []
+          },
+          "proof_counts": {
+            "family_proof_count": 2,
+            "inits_and_teardowns_proof_count": 0,
+            "delegation_proof_count": 1,
+            "delegation_proof_count_by_type": [
+              [
+                1991,
+                1
+              ]
+            ]
+          },
+          "batch_id": 2
+        }
+      ],
+      "fri_memory": {
+        "allocator_live_max_gib": 27.0546875,
+        "board_peak_mib": 29434,
+        "rsstime_kib": 48445756
+      },
+      "merge_core": [
+        {
+          "stage": "combined pass over 2 proofs done in",
+          "ms": 1119
+        },
+        {
+          "stage": "shrink pass 0 done in",
+          "ms": 681
+        }
+      ],
+      "sum_merge_ms": 1800,
+      "merge_memory": {
+        "allocator_live_max_gib": 20.6171875,
+        "board_peak_mib": 22558,
+        "rsstime_kib": 39435060
+      },
+      "verification": {
+        "public_input_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "program_commitment": "0x05080df2ee1edeb1d3d13f9a193a00a3bf5ca2115bfa675b29c1baaef289d7e9",
+        "trusted_sequence_sha256": "7a5632a7f8347be9d6b6a380069cc71f9dc8514057b469b4e3b5d9e23cdbe721"
+      }
+    }
+  }
+}
