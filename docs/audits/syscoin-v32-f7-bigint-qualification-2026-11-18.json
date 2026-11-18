@@ -1,0 +1,305 @@
+{
+  "scope": "Corrected V32 testnet guest, Security100, normal workers and isolated Prague EVM.",
+  "server_commit": "541dc4154bab0541adac866a98bf43dd5602424e",
+  "server_test_binary_sha256": "e2803497f067c42a8716de0fba09bb275fbccd6a9e19db67782d1db79ddae901",
+  "fragments_verified": 4,
+  "admission_log_sha256": "a164a9c31018935b6a226892a6c54107287d5b3b3abd3745bd56c4e009c5bd5c",
+  "settlement_receipts_sha256": "bb9118fb6364f689878fe7965b3d63c9715dac75bb9f744a50a08b24d0cf76fc",
+  "sources": {
+    "airbender": {
+      "repository": "https://github.com/syscoin/zksync-airbender",
+      "commit": "5e0cf077116afa7d1b733fa972fedb3b29594870",
+      "tree": "5d5e3668eab3358dd5da310afa0079227d030848"
+    },
+    "protocol": {
+      "repository": "https://github.com/syscoin/zksync-protocol",
+      "commit": "86a5d34cabfec4f0f5b7bc7a7e59cb08961299a6",
+      "tree": "eb762c586dfb07eb596b9af4dbe25edb71b1dde6"
+    },
+    "bellman_cuda": {
+      "repository": "https://github.com/matter-labs/era-bellman-cuda.git",
+      "commit": "d1fa8670ee84ec3477c6cc1c85a3554cfa5e0206",
+      "tree": "fa1ab78c59f9cdba2fedf4a00813dcf1c4c92d5c"
+    }
+  },
+  "worker_commit": "af5cc586b4dc9f2828f8fa034c5c1a26b7002f8a",
+  "worker_tree": "30fb836e7fd3f0bd012a23600b10f6a170fd8721",
+  "worker_lock_sha256": "edfb148f44574f893ce5d58d2ffbbd683ba8649afbc1521ed9110d3a283c8e4d",
+  "worker_binary_sha256": {
+    "zksync_os_fri_prover": "fbfe67ac025cf517a57f3417e73c1afed2d8a3e63686c5aa01705e736dd8101f",
+    "zksync_os_snark_prover": "f4a565ecc4203b0ef9e498d88dc346ee45127f0393a8aae3075ae5944dcb820a"
+  },
+  "worker_gpu_build_receipt_sha256": "25066e4b13c3f551a497e71cf49da4f6b9b27c747882ba84dbdc6e1c3aedf4bc",
+  "cpu_verification_keys": {
+    "identity_sha256": "bc8cd9a3fcd6c974e80cf12f78044002d18cbc7a29afc13445d9361d7fa9ebaa",
+    "run_sha256": "cd92cb95d6ebcfc1fd440cab49794aa2f50e006058022e97c0a5d23d4e69bb12",
+    "build_sha256": "33dfc468b05c056ad669f2d13696c2714187e49a9137153506631c502b14feb9",
+    "exit_code": 0,
+    "worker_commit": "af5cc586b4dc9f2828f8fa034c5c1a26b7002f8a",
+    "binary_sha256": "31756b6c3ae316900511f18c95bdda493202cee60890e8a1b38e21ab0356dcd1",
+    "crs_sha256": "f004b339bc9e05d81f87a82095e19984c2555826a5459e651b8b893aa5422ae5",
+    "key_sha256": {
+      "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+      "compression_vk.json": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+      "snark_vk.json": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"
+    }
+  },
+  "metrics_sha256": "5c57e8d28d16007fc7c17505aee45473180c1278d6abda3dbc92e62d9db82db5",
+  "captured_metrics": {
+    "fri": {
+      "cold_baseline_runner_start_to_last_submit_s": 43.717,
+      "warm_transfer_previous_lane_last_submit_to_last_submit_s": 13.449,
+      "jobs": [
+        {
+          "workload": "baseline",
+          "batch": 1,
+          "pick_to_submit_s": 7.19,
+          "wall_since_previous_submit_or_runner_start_s": 38.729
+        },
+        {
+          "workload": "baseline",
+          "batch": 2,
+          "pick_to_submit_s": 4.977,
+          "wall_since_previous_submit_or_runner_start_s": 4.988
+        },
+        {
+          "workload": "transfer",
+          "batch": 1,
+          "pick_to_submit_s": 6.718,
+          "wall_since_previous_submit_or_runner_start_s": 6.729
+        },
+        {
+          "workload": "transfer",
+          "batch": 2,
+          "pick_to_submit_s": 6.706,
+          "wall_since_previous_submit_or_runner_start_s": 6.72
+        }
+      ],
+      "shared_process_peaks": {
+        "worker_max_rss_gib_gnu_time": 46.3,
+        "worker_sampled_max_rss_gib": 46.339,
+        "whole_device_sampled_max_used_vram_gib": 28.743,
+        "sample_interval_ms": 500,
+        "host_samples": 121,
+        "device_samples": 122
+      }
+    },
+    "snark": {
+      "cold_baseline_runner_start_to_last_submit_s": 119.39,
+      "warm_transfer_previous_lane_last_submit_to_last_submit_s": 58.273,
+      "jobs": [
+        {
+          "workload": "baseline",
+          "batch": "1-2",
+          "pick_to_submit_s": 61.337,
+          "wall_since_previous_submit_or_runner_start_s": 119.39
+        },
+        {
+          "workload": "transfer",
+          "batch": "1-2",
+          "pick_to_submit_s": 58.243,
+          "wall_since_previous_submit_or_runner_start_s": 58.273
+        }
+      ],
+      "shared_process_peaks": {
+        "worker_max_rss_gib_gnu_time": 46.833,
+        "worker_sampled_max_rss_gib": 45.772,
+        "whole_device_sampled_max_used_vram_gib": 31.358,
+        "sample_interval_ms": 500,
+        "host_samples": 360,
+        "device_samples": 361
+      }
+    }
+  },
+  "workloads": {
+    "baseline": {
+      "sequence_sha256": "7a5632a7f8347be9d6b6a380069cc71f9dc8514057b469b4e3b5d9e23cdbe721",
+      "snark_packet_sha256": "2539d05672d195c1946530293ee955dbb82c987961fb07146343f8e17037de75",
+      "fri_admission_bindings": [
+        "baseline 1 f3301daebfe1c44b061f12500fe0f2fa0ab7b49190676b7abd00201217a0bf47 0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+        "baseline 2 2829b846db17797e374ddd2ec26bdbc9fc2a8a42bfaf80b950a39afc5aa8038e 0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+      ],
+      "evm": {
+        "workload": "baseline-inputs.tgz",
+        "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+        "plonk": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        "block": "3",
+        "proof_sha256": "b537804bc2ea2f1900150a9a4869423dff3f2563481a12b07cd8effc469c62f9",
+        "block_hash": "0x512ab59d31bd9cf570a271e9ece531ca24ebfb372f78b3598924006e25a05bad",
+        "chain_id": 31337,
+        "runtime_sha256": {
+          "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+          "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+        },
+        "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "plonk_proof_words": 44,
+        "batch_ids": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+          "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+        ],
+        "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+        "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+        "genuine_calldata_sha256": "4d4da1db2e03e8c0c3e0a49096860b0d1409f419c3541f7658c7ecd8bbc8d874",
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true
+      },
+      "fri_worker": {
+        "status_sha256": "e1f09959cea44a5f0f1c1b832c8ea81a67a91a383fd719f91e50cb66e3f2b94a",
+        "events": [
+          {
+            "event": "pick",
+            "index": 0,
+            "seconds": 31.5390148240258
+          },
+          {
+            "event": "submit",
+            "index": 0,
+            "seconds": 38.72911938803736
+          },
+          {
+            "event": "pick",
+            "index": 1,
+            "seconds": 38.73982226703083
+          },
+          {
+            "event": "submit",
+            "index": 1,
+            "seconds": 43.717182910011616
+          }
+        ],
+        "process_elapsed_seconds": 61.754059033992235
+      },
+      "snark_worker": {
+        "status_sha256": "dfaad81384f7fa50a4e6e3ab62d2a9df4cb007df4d943975ab25a688a11e4a33",
+        "events": [
+          {
+            "event": "pick",
+            "index": 0,
+            "seconds": 58.053488503966946
+          },
+          {
+            "event": "submit",
+            "index": 0,
+            "seconds": 119.39039845397929
+          }
+        ],
+        "process_elapsed_seconds": 181.2626051339903
+      }
+    },
+    "transfer": {
+      "sequence_sha256": "36b633e0befccf0979673e4ddbb9f3119d700c90b6091fbe6314b0d47fd3d74b",
+      "snark_packet_sha256": "00354b27f5bfa9de9f277d60c241e388f3db40522c7510e9ddcad12e76624035",
+      "fri_admission_bindings": [
+        "transfer 1 88030ef83fc57a8b5266f195b22956ec970a7badc1a6446e48f7e69b0ffa6ec8 0x367ac63ff5ef3e2e4a49ffaebb8b88cdd28e82e6db208d202d63d24144775ad4",
+        "transfer 2 7fd946f55f71829e06df884c3c917185ae100168cbeac449cac657a4fc308939 0x7dd2a4a1e763bdf6aa46184a9421cbe67975079e5e2969fd85e44c7caea78e30"
+      ],
+      "evm": {
+        "workload": "signed-transfer-inputs.tgz",
+        "router": "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+        "plonk": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        "block": "3",
+        "proof_sha256": "2879289a7a9db2567e4f46a3da6079e7cc83efa71be66293aa3c1003842dfd94",
+        "block_hash": "0x512ab59d31bd9cf570a271e9ece531ca24ebfb372f78b3598924006e25a05bad",
+        "chain_id": 31337,
+        "runtime_sha256": {
+          "router": "c8040b8b913aa6fbfd0834aab0865d865cd792cbc489fa4c47bb029de4664799",
+          "plonk": "4c0ec6ea5cbbc801844ffd049cbd05a543f8f4f1aec5befde196e6c6385f412b"
+        },
+        "vk_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+        "plonk_proof_words": 44,
+        "batch_ids": [
+          1,
+          2
+        ],
+        "batch_input_hashes": [
+          "0x367ac63ff5ef3e2e4a49ffaebb8b88cdd28e82e6db208d202d63d24144775ad4",
+          "0x7dd2a4a1e763bdf6aa46184a9421cbe67975079e5e2969fd85e44c7caea78e30"
+        ],
+        "combined_hash": "0x6f6b4625f357eb88b0cbfd747ea30ad685a5f115a1bb82900ce5631c856b2f5b",
+        "shifted_public_input": "11733794346000816054825112859868154478983837036874160424714450068252",
+        "genuine_calldata_sha256": "dbca904b37d7e6b5a860511f0c763983a428ec0037825a555d82c1a77c5da228",
+        "generated_plonk_accepted": true,
+        "dual_router_accepted": true
+      },
+      "fri_worker": {
+        "status_sha256": "c3689d1c92b6cdc16fcb0e192cd2b3b11ca010465a2fe1905c72db6b2ce99b38",
+        "events": [
+          {
+            "event": "pick",
+            "index": 0,
+            "seconds": 43.72803928802023
+          },
+          {
+            "event": "submit",
+            "index": 0,
+            "seconds": 50.44622862304095
+          },
+          {
+            "event": "pick",
+            "index": 1,
+            "seconds": 50.46023497002898
+          },
+          {
+            "event": "submit",
+            "index": 1,
+            "seconds": 57.16657335899072
+          }
+        ],
+        "process_elapsed_seconds": 61.832416589022614
+      },
+      "snark_worker": {
+        "status_sha256": "9cd752dbe3d254175ea93aa5116442ce82ff4f65ed96b8876357ab183fadb20a",
+        "events": [
+          {
+            "event": "pick",
+            "index": 0,
+            "seconds": 119.42046633694554
+          },
+          {
+            "event": "submit",
+            "index": 0,
+            "seconds": 177.66296690196032
+          }
+        ],
+        "process_elapsed_seconds": 181.35225369496038
+      }
+    }
+  },
+  "capture_file_sha256": {
+    "build-attestation.json": "25066e4b13c3f551a497e71cf49da4f6b9b27c747882ba84dbdc6e1c3aedf4bc",
+    "binaries.sha256": "6392cda97100345d3867cfafea76b8054ec29c8f0d9b022cc0608a56c3001950",
+    "gpu.txt": "708e3daba17cef72c80c6a081e5e79db1d1009b1a10e7d41bc83a04ace074127",
+    "fri-baseline/status.json": "e1f09959cea44a5f0f1c1b832c8ea81a67a91a383fd719f91e50cb66e3f2b94a",
+    "fri-baseline/worker.log": "02e9f351fe9deac9e765c374b1ead702f312a8e4042eb9b55e5b693fb64481c2",
+    "fri-baseline/host.csv": "b25d12b2a62467c8caeaacd3d22594590f73b5f6e5b7d5eb8b69422c1d563f42",
+    "fri-baseline/gpu.csv": "1fcff08076175e2e5cff38336c4d861686b0857c989e96fcb003837aca39c160",
+    "fri-baseline/time.txt": "7fd6cf9527797183e369e3835bbfcbde75b80a1d73a0bc36daa128cf4ca8909e",
+    "fri-baseline/proof-1.json": "f3301daebfe1c44b061f12500fe0f2fa0ab7b49190676b7abd00201217a0bf47",
+    "fri-baseline/proof-2.json": "2829b846db17797e374ddd2ec26bdbc9fc2a8a42bfaf80b950a39afc5aa8038e",
+    "fri-transfer/status.json": "c3689d1c92b6cdc16fcb0e192cd2b3b11ca010465a2fe1905c72db6b2ce99b38",
+    "fri-transfer/worker.log": "02e9f351fe9deac9e765c374b1ead702f312a8e4042eb9b55e5b693fb64481c2",
+    "fri-transfer/host.csv": "b25d12b2a62467c8caeaacd3d22594590f73b5f6e5b7d5eb8b69422c1d563f42",
+    "fri-transfer/gpu.csv": "1fcff08076175e2e5cff38336c4d861686b0857c989e96fcb003837aca39c160",
+    "fri-transfer/time.txt": "7fd6cf9527797183e369e3835bbfcbde75b80a1d73a0bc36daa128cf4ca8909e",
+    "fri-transfer/proof-1.json": "88030ef83fc57a8b5266f195b22956ec970a7badc1a6446e48f7e69b0ffa6ec8",
+    "fri-transfer/proof-2.json": "7fd946f55f71829e06df884c3c917185ae100168cbeac449cac657a4fc308939",
+    "snark-baseline/status.json": "dfaad81384f7fa50a4e6e3ab62d2a9df4cb007df4d943975ab25a688a11e4a33",
+    "snark-baseline/worker.log": "627300ee3dbfd7835d4ada8c7c651888cbdebb7bbe6c3198a5da8d1d54687b56",
+    "snark-baseline/host.csv": "d012f37d86bda210037c84466445a50ba6742f60f9592afaf3c6a26f204d9284",
+    "snark-baseline/gpu.csv": "a67b8ec7af0ecc3cc293e18a21bd20126151b9fff122d2810247fefe29e9a19e",
+    "snark-baseline/time.txt": "ceba30ed20104eac7746488f46b0c13a220cf39fdd1b3eae3bb8d4edde702724",
+    "snark-baseline/proof-1.json": "2539d05672d195c1946530293ee955dbb82c987961fb07146343f8e17037de75",
+    "snark-baseline/snark_proof.json": "0cd116234b0116f4d1f850329a275517677c24525c4bb48f4a429ee5eb5e2560",
+    "snark-transfer/status.json": "9cd752dbe3d254175ea93aa5116442ce82ff4f65ed96b8876357ab183fadb20a",
+    "snark-transfer/worker.log": "627300ee3dbfd7835d4ada8c7c651888cbdebb7bbe6c3198a5da8d1d54687b56",
+    "snark-transfer/host.csv": "d012f37d86bda210037c84466445a50ba6742f60f9592afaf3c6a26f204d9284",
+    "snark-transfer/gpu.csv": "a67b8ec7af0ecc3cc293e18a21bd20126151b9fff122d2810247fefe29e9a19e",
+    "snark-transfer/time.txt": "ceba30ed20104eac7746488f46b0c13a220cf39fdd1b3eae3bb8d4edde702724",
+    "snark-transfer/proof-1.json": "00354b27f5bfa9de9f277d60c241e388f3db40522c7510e9ddcad12e76624035",
+    "snark-transfer/snark_proof.json": "ef147191f30ec8b9abd5ae4190c12420bfa9abdeebdc86a1207da39ef664abbb"
+  }
+}

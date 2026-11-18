@@ -213,16 +213,16 @@
     "scope": "One-host generation from the fresh canonical guest-bound key, native PLONK generator tests, full contract inventory recomputation/check, retained FFLONK reproduction and byte-identical genesis regeneration. No fresh real-proof, EVM proof acceptance, deployment, settlement, fixture activation or independent-host keygen qualification is asserted."
   },
   "proof_qualification": {
-    "status": "completed_two_batch_normal_worker_and_isolated_router_replay",
-    "scope": "Corrected v32 testnet guest using the Security100 profile. Production-mode dual verifier on isolated Prague EVM.",
+    "status": "completed_two_workloads_exact_server_admission_and_isolated_router_replay",
+    "scope": "Corrected V32 testnet guest, Security100, normal workers and isolated Prague EVM.",
     "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
     "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
-    "measured_worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
-    "measured_worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
-    "measured_airbender_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
-    "measured_protocol_commit": "96b3586b33645d86866935f46928328ac52d72a7",
-    "fri_worker_binary_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
-    "worker_gpu_build_receipt_sha256": "b15dfb1448ea96a43711c0d3105da18f8ea050fb128866fb0f6ec254e5c3271f",
+    "measured_worker_commit": "af5cc586b4dc9f2828f8fa034c5c1a26b7002f8a",
+    "measured_worker_tree": "30fb836e7fd3f0bd012a23600b10f6a170fd8721",
+    "measured_airbender_commit": "5e0cf077116afa7d1b733fa972fedb3b29594870",
+    "measured_protocol_commit": "86a5d34cabfec4f0f5b7bc7a7e59cb08961299a6",
+    "fri_worker_binary_sha256": "fbfe67ac025cf517a57f3417e73c1afed2d8a3e63686c5aa01705e736dd8101f",
+    "worker_gpu_build_receipt_sha256": "25066e4b13c3f551a497e71cf49da4f6b9b27c747882ba84dbdc6e1c3aedf4bc",
     "input_batch_range": [
       1,
       2
@@ -234,14 +234,14 @@
     "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
     "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
     "native_fri_packet_sha256": [
-      "d791201cd52051e2aaca582c93db393931b69999d46da94a18e0143336714591",
-      "74df46cf8fb0c105810619af5233c4856d81a7e8b95b3fa3519e10300647360c"
+      "f3301daebfe1c44b061f12500fe0f2fa0ab7b49190676b7abd00201217a0bf47",
+      "2829b846db17797e374ddd2ec26bdbc9fc2a8a42bfaf80b950a39afc5aa8038e"
     ],
-    "native_fri_payload_sha256": "b640a12a9a3a1b1104340c509bf8c7538ed0ccb9607c5b4cfaf86133993f97be",
-    "native_fri_verification_sha256": "e7476e36f8d4e54a922434ff53b11a5e19288ba084b5bd5349c776f8f8dfb38f",
-    "native_fri_verified_batches": 2,
-    "native_snark_proof_sha256": "d9ea4942868695c3a82dc1bd2783a21af79cfb690bfc5e99d955b49363c4eb94",
-    "genuine_serialized_calldata_sha256": "06fc1d2a37b811d9bc6e372777a05dddeaa375a2eed7cce2a565d2b0ea87e041",
+    "native_fri_verification_sha256": "a164a9c31018935b6a226892a6c54107287d5b3b3abd3745bd56c4e009c5bd5c",
+    "native_fri_verified_batches": 4,
+    "native_snark_proof_sha256": "0cd116234b0116f4d1f850329a275517677c24525c4bb48f4a429ee5eb5e2560",
+    "submitted_snark_packet_sha256": "2539d05672d195c1946530293ee955dbb82c987961fb07146343f8e17037de75",
+    "genuine_serialized_calldata_sha256": "4d4da1db2e03e8c0c3e0a49096860b0d1409f419c3541f7658c7ecd8bbc8d874",
     "plonk_proof_words": 44,
     "raw_vk_sha256": {
       "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
@@ -251,13 +251,14 @@
     "generated_plonk_accepted": true,
     "dual_router_accepted": true,
     "nonzero_reserved_word_rejected": true,
+    "reserved_word_source_receipt_sha256": "f0b3462cdd4464f0c65d3083b6ab4d6f6cd7655353ad6be781d99cca47e151a4",
     "live_submission_used": false,
     "deployment_attested": false,
     "release_promoted": false,
-    "evm_receipt_path": "docs/audits/syscoin-v32-final-worker-router-replay-2026-11-18.json",
-    "evm_receipt_sha256": "f0b3462cdd4464f0c65d3083b6ab4d6f6cd7655353ad6be781d99cca47e151a4",
-    "comparison_path": "docs/audits/syscoin-v32-final-worker-comparison-2026-11-18.json",
-    "comparison_sha256": "28c312e7d166149e2c3dec5c59ae3eda80e41718a771f1d529470b07d98171ba"
+    "evm_receipt_path": "docs/audits/syscoin-v32-f7-bigint-router-replay-2026-11-18.json",
+    "evm_receipt_sha256": "a630001005134224e112cb072eb69009e80c4adae926903498582223b16ec29c",
+    "comparison_path": "docs/audits/syscoin-v32-f7-bigint-qualification-2026-11-18.json",
+    "comparison_sha256": "6663c8d1a7b94800344ff3d4d9c856a772756e3e69fe111ce593d53ff93cbf1e"
   },
   "historical_pre_canonical_query_proof_qualification": {
     "status": "completed_offline_minimal_input_native_and_normal_profile_evm_qualification",
@@ -434,17 +435,17 @@
   },
   "v2_prover": {
     "repository": "https://github.com/syscoin/zksync-airbender-prover",
-    "worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
-    "worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
+    "worker_commit": "af5cc586b4dc9f2828f8fa034c5c1a26b7002f8a",
+    "worker_tree": "30fb836e7fd3f0bd012a23600b10f6a170fd8721",
     "airbender": {
       "repository": "https://github.com/syscoin/zksync-airbender",
-      "commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
-      "tree": "f12852dbdb887cf7f14fc315737b6e83ef43d4e3"
+      "commit": "5e0cf077116afa7d1b733fa972fedb3b29594870",
+      "tree": "5d5e3668eab3358dd5da310afa0079227d030848"
     },
     "protocol": {
       "repository": "https://github.com/syscoin/zksync-protocol",
-      "commit": "96b3586b33645d86866935f46928328ac52d72a7",
-      "tree": "62de9aba26eac094a5d858954754ff85489667a5"
+      "commit": "86a5d34cabfec4f0f5b7bc7a7e59cb08961299a6",
+      "tree": "eb762c586dfb07eb596b9af4dbe25edb71b1dde6"
     },
     "bellman_cuda": {
       "repository": "https://github.com/matter-labs/era-bellman-cuda.git",
@@ -762,5 +763,86 @@
     "release_promoted": false,
     "evm_receipt_path": "docs/audits/syscoin-v32-corrected-os-v2-router-replay-2026-11-17.json",
     "evm_receipt_sha256": "44493631493597d4e172a32192ce5e9e35017c00bf663e0b036616c0970522bb"
+  },
+  "historical_pre_f7_bigint_v2_prover": {
+    "repository": "https://github.com/syscoin/zksync-airbender-prover",
+    "worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+    "worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
+    "airbender": {
+      "repository": "https://github.com/syscoin/zksync-airbender",
+      "commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+      "tree": "f12852dbdb887cf7f14fc315737b6e83ef43d4e3"
+    },
+    "protocol": {
+      "repository": "https://github.com/syscoin/zksync-protocol",
+      "commit": "96b3586b33645d86866935f46928328ac52d72a7",
+      "tree": "62de9aba26eac094a5d858954754ff85489667a5"
+    },
+    "bellman_cuda": {
+      "repository": "https://github.com/matter-labs/era-bellman-cuda.git",
+      "commit": "d1fa8670ee84ec3477c6cc1c85a3554cfa5e0206",
+      "tree": "fa1ab78c59f9cdba2fedf4a00813dcf1c4c92d5c"
+    },
+    "app_bin_sha256": "9727a6d5c1301bc0fdb9ef7b46027917aef51c9158a7678dec1287bffb9b3e4d",
+    "app_text_sha256": "4648aea720d7acb9317d90047b2640f85baacf15bfdfe340c21c03dc3984f932",
+    "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+    "soundness_profile": "Security100",
+    "plonk_domain_log2": 22,
+    "plonk_public_inputs": 1,
+    "cpu_crs_sha256": "f004b339bc9e05d81f87a82095e19984c2555826a5459e651b8b893aa5422ae5",
+    "reproduction_workflow": ".github/workflows/syscoin-v32-airbender-v2-keygen.yml",
+    "os_repository": "https://github.com/syscoin/zksync-os",
+    "os_commit": "df6ec95ab3fb7c291b8d99f422b26f0013d5ff07",
+    "os_tree": "8c42bef28b5be792bc2b0438531dc7ab1a862547",
+    "gateway_chain_id": 57001,
+    "release_guest_receipt": "https://github.com/syscoin/zksync-os-server/blob/6b09eea9f2e2dc44d14b7408cbd01264276034d8/scripts/patches/candidates/v32-post-ops/attributed-release-identity.json",
+    "release_guest_receipt_sha256": "b5022988763be8060ad1824b7356a9b70f8be250885468de440a77b5a76969ee"
+  },
+  "historical_pre_f7_bigint_proof_qualification": {
+    "status": "completed_two_batch_normal_worker_and_isolated_router_replay",
+    "scope": "Corrected v32 testnet guest using the Security100 profile. Production-mode dual verifier on isolated Prague EVM.",
+    "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
+    "program_commitment": "0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66",
+    "measured_worker_commit": "2223c7aae24f5090b6830a6ab6ac0e315b3a132d",
+    "measured_worker_tree": "b0e93de7d5504577c3c30af6534443d456196bd5",
+    "measured_airbender_commit": "27c4e9c4358b86ac92c878f44a748f6cbb42650c",
+    "measured_protocol_commit": "96b3586b33645d86866935f46928328ac52d72a7",
+    "fri_worker_binary_sha256": "792f16d4e11c97e933abf3918e8b48c0c9dca89cfa48bdd29dd3fa69b76ecac6",
+    "worker_gpu_build_receipt_sha256": "b15dfb1448ea96a43711c0d3105da18f8ea050fb128866fb0f6ec254e5c3271f",
+    "input_batch_range": [
+      1,
+      2
+    ],
+    "batch_input_hashes": [
+      "0xf24738326ca32c8347c6881f4a7507b45cd47e03abe907a1f121f5484c98a6fe",
+      "0xff1d448a4db7c0641de24cc41d790699500226a46210d85f82b4b5d8099fc076"
+    ],
+    "combined_hash": "0xd9eb74878ed99039b9044192eea668898992c489030032afcf1b9337d36615b7",
+    "shifted_public_input": "22949627940544066989277185638244540262645273572224063564335688684343",
+    "native_fri_packet_sha256": [
+      "d791201cd52051e2aaca582c93db393931b69999d46da94a18e0143336714591",
+      "74df46cf8fb0c105810619af5233c4856d81a7e8b95b3fa3519e10300647360c"
+    ],
+    "native_fri_payload_sha256": "b640a12a9a3a1b1104340c509bf8c7538ed0ccb9607c5b4cfaf86133993f97be",
+    "native_fri_verification_sha256": "e7476e36f8d4e54a922434ff53b11a5e19288ba084b5bd5349c776f8f8dfb38f",
+    "native_fri_verified_batches": 2,
+    "native_snark_proof_sha256": "d9ea4942868695c3a82dc1bd2783a21af79cfb690bfc5e99d955b49363c4eb94",
+    "genuine_serialized_calldata_sha256": "06fc1d2a37b811d9bc6e372777a05dddeaa375a2eed7cce2a565d2b0ea87e041",
+    "plonk_proof_words": 44,
+    "raw_vk_sha256": {
+      "risc_wrapper_vk.json": "a2252d9702d4204b8e8d3cb10eba60e4a40c3ed49aaba48463427dbf4bdc50eb",
+      "compression_vk.json": "f27260b74c095b7e2dd1a0bef870faacbfba48ef07553c8ce4e289b42aeb0c25",
+      "snark_vk.json": "298cd56272f212172ff525f8ec550d63cb212174c3731ea34327483ced76dee7"
+    },
+    "generated_plonk_accepted": true,
+    "dual_router_accepted": true,
+    "nonzero_reserved_word_rejected": true,
+    "live_submission_used": false,
+    "deployment_attested": false,
+    "release_promoted": false,
+    "evm_receipt_path": "docs/audits/syscoin-v32-final-worker-router-replay-2026-11-18.json",
+    "evm_receipt_sha256": "f0b3462cdd4464f0c65d3083b6ab4d6f6cd7655353ad6be781d99cca47e151a4",
+    "comparison_path": "docs/audits/syscoin-v32-final-worker-comparison-2026-11-18.json",
+    "comparison_sha256": "28c312e7d166149e2c3dec5c59ae3eda80e41718a771f1d529470b07d98171ba"
   }
 }

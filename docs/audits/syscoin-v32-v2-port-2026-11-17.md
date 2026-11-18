@@ -4,7 +4,7 @@ This record follows the pre-launch testnet candidate. The comparison release is 
 
 A GitHub API recheck at approximately 2026-11-18 01:36 UTC found the public Airbender and protocol `main` references still at those selected bases; public server `main` remained `e29a2c0a`. This records the checked public references and makes no claim about private development.
 
-The current activation candidate is [server #386](https://github.com/syscoin/zksync-os-server/pull/386), with corrected OS guest commitment `0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66` and V8 PLONK key `0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990`. Their generation, normal-worker proofs and isolated contract replays are complete. The earlier performance comparisons below retain the historical testnet guest; corrected-guest results are identified separately. No live network activation is asserted. [Current generated bundle](../../scripts/releases/era-v32/generated-verifier-manifest.json) · [Corrected-guest replay](syscoin-v32-corrected-os-v2-router-replay-2026-11-17.json)
+The corrected guest and settlement bundle originated in [server #386](https://github.com/syscoin/zksync-os-server/pull/386), with corrected OS guest commitment `0xbf5be160cc4b6fff331c10d591691e0c5f62df1be058b2e0ee9c8fc8c8640c66` and V8 PLONK key `0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990`. Their generation, normal-worker proofs and isolated contract replays are complete. The earlier performance comparisons below retain the historical testnet guest; corrected-guest results are identified separately. No live network activation is asserted. [Current generated bundle](../../scripts/releases/era-v32/generated-verifier-manifest.json) · [Corrected-guest replay](syscoin-v32-corrected-os-v2-router-replay-2026-11-17.json)
 
 ## Settlement identity and cutover
 
@@ -221,12 +221,12 @@ The native OS patch now includes the host profiling and scoped dependency-adviso
 
 Independent review identified invalid Rust initialization in native wrapper verifier outputs and in gadget variable/witness arrays. Protocol `e3cfcb6` and `f807cab` construct valid typed values. The native RISC and Blake checks remain active. The review established a Rust initialization defect. It did not establish that an invalid proof passed.
 
-The selected worker is `2223c7aae24f5090b6830a6ab6ac0e315b3a132d`, with Airbender `27c4e9c4` and protocol `96b3586b`. The wrapper, Boojum and the GPU libraries come from the Syscoin protocol fork. The server applies its OS and Era patches independently. Earlier hardware timings above retain their measured revisions.
+The earlier RTX 5090 comparison used worker `2223c7aae24f5090b6830a6ab6ac0e315b3a132d`, with Airbender `27c4e9c4` and protocol `96b3586b`. The wrapper, Boojum and the GPU libraries come from the Syscoin protocol fork. The server applies its OS and Era patches independently. Earlier hardware timings above retain their measured revisions.
 
 
-### Final worker on the RTX 5090
+### Earlier RTX 5090 policy comparison
 
-The server admitted all eight FRI submissions from four two-batch runs. The generated PLONK verifier and the production-mode dual router both accepted all four SNARKs on isolated Prague EVM. The exported 44 words matched each worker submission. The release manifest binds the default-policy proof and the full comparison to worker `2223c7aa`, protocol `96b3586b` and Airbender `27c4e9c4`. [Timings, sources and all four receipts](syscoin-v32-final-worker-comparison-2026-11-18.json)
+The server admitted all eight FRI submissions from four two-batch runs. The generated PLONK verifier and the production-mode dual router both accepted all four SNARKs on isolated Prague EVM. The exported 44 words matched each worker submission. The recorded default-policy proof and the full comparison bind to worker `2223c7aa`, protocol `96b3586b` and Airbender `27c4e9c4`. [Timings, sources and all four receipts](syscoin-v32-final-worker-comparison-2026-11-18.json)
 
 | Simulator allocation | FRI peak host RSS | SNARK peak host RSS | FRI / SNARK peak board usage | Minimal / signed SNARK lease |
 | --- | ---: | ---: | ---: | ---: |
@@ -236,3 +236,16 @@ The server admitted all eight FRI submissions from four two-batch runs. The gene
 Both arms used the same binaries. Each role processed the minimal workload followed by the signed workload in one warm process. Host figures use the maximum RSS from the process timer. Board usage was sampled every 500 ms and includes reserved memory. Demand paging saved about 6.0 GiB in FRI and 1.7 GiB in the SNARK worker. One pair per policy establishes this result on these inputs. It provides insufficient evidence for a latency advantage or for a change to the default.
 
 The four final runs spent 46.3–47.8 s building the RISC witness on the host and 3.18–3.20 s on the inner GPU proof. Reducing host witness construction time is the clearest next optimization target. The whole SNARK worker still reached about 32 GiB of board usage. Prior 8 GiB testing found an individual RISC setup allocation larger than that budget.
+
+### F7 and crypto-bigint qualification
+
+The release manifest selects worker `af5cc586`, Airbender `5e0cf077`, and protocol `86a5d34c`. This candidate brings the F7 host storage correction into the worker and moves its locked graph to `crypto-bigint 0.7.11` with the advisory exception removed. The server uses the same Airbender revision. The first CPU key-generation run hit the shared Linux builder's memory cap. The isolated rental reproduced the program commitment and all three registered verification-key files byte for byte in 3m 32s, with 56.1 GiB peak RSS. [Worker PR](https://github.com/syscoin/zksync-airbender-prover/pull/30) · [Qualification record](syscoin-v32-f7-bigint-qualification-2026-11-18.json)
+
+The F7 server admitted four fresh FRI packets. The generated PLONK verifier and dual settlement router accepted both fresh two-batch SNARKs on isolated Prague EVM with the pinned production-mode contract bytecode. The reserved-word regression receipt covers the same router bytecode. [Settlement replay](syscoin-v32-f7-bigint-router-replay-2026-11-18.json)
+
+| Stage | Cold baseline | Warm signed transfer | Peak worker RSS | Peak sampled board usage |
+| --- | ---: | ---: | ---: | ---: |
+| FRI | 43.72 s | 13.45 s | 46.30 GiB | 28.74 GiB |
+| SNARK | 119.39 s | 58.27 s | 46.83 GiB | 31.36 GiB |
+
+Each stage used one RTX 5090 worker process for both fixtures under the default policy. The canonical V32 fixture and its GPU integration job remain separate release gates.
