@@ -1,0 +1,144 @@
+{
+  "schema": "syscoin-v2-boojum-stage-estimates-v1",
+  "protocol_commit": "3c3472d93611bafcdadf928829cc3fb357c6b156",
+  "historical_calculator_commit": "5eafa1f914519d88a13c577a9e8cc5c7db1dfc77",
+  "scope": "Per-challenge interactive algebraic estimates under the assumptions of the historical Boojum helper. The query schedule is reported separately. No composed noninteractive soundness analysis is implied.",
+  "configuration": {
+    "risc": {
+      "source_vk_sha256": "f656835568cdcdb6e617e8b87328e034099795ec91ac020c5ad8f2ca00d69d4c",
+      "native_geometry": {
+        "at_z": 1308,
+        "at_z_omega": 1,
+        "at_zero": 102,
+        "cap": 16,
+        "configured_security_bits": 100,
+        "constants": 7,
+        "copy_sigmas": 558,
+        "domain": 1048576,
+        "extra_fri_queries": true,
+        "final_degree": 4,
+        "folding_schedule": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "gp_gate_terms": 468,
+        "lde": 4,
+        "lookup_arguments": 101,
+        "lookup_oracles_at_z": 107,
+        "multiplicities": 1,
+        "new_pow_bits": 0,
+        "partials": 69,
+        "public_inputs": 4,
+        "queries": 60,
+        "quotient_degree": 8,
+        "quotient_terms": 641,
+        "specialized_gate_terms": 0,
+        "total_openings": 1415,
+        "variables": 558,
+        "witnesses": 0
+      },
+      "historical_integer_estimates": {
+        "copy_permutation": 96,
+        "lookup": 99,
+        "quotient_alpha": 113,
+        "deep_z": 99,
+        "deep_poly_alpha": 95,
+        "folding_round": 105
+      },
+      "deep_poly_alpha_bits_with_unrounded_opening_count_and_field_size": 95.533414,
+      "rate_only_query_expression": 120
+    },
+    "compression": {
+      "source_vk_sha256": "25f29a44862e1bfb267119f798a92b345da766243f80aa6303b1e4c36e904056",
+      "native_geometry": {
+        "at_z": 212,
+        "at_z_omega": 1,
+        "at_zero": 0,
+        "cap": 16,
+        "configured_security_bits": 100,
+        "constants": 8,
+        "copy_sigmas": 57,
+        "domain": 65536,
+        "extra_fri_queries": true,
+        "final_degree": 1,
+        "folding_schedule": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          1
+        ],
+        "gp_gate_terms": 271,
+        "lde": 32,
+        "lookup_arguments": 0,
+        "lookup_oracles_at_z": 0,
+        "multiplicities": 0,
+        "new_pow_bits": 0,
+        "partials": 7,
+        "public_inputs": 4,
+        "queries": 24,
+        "quotient_degree": 8,
+        "quotient_terms": 281,
+        "specialized_gate_terms": 1,
+        "total_openings": 217,
+        "variables": 57,
+        "witnesses": 74
+      },
+      "historical_integer_estimates": {
+        "copy_permutation": 104,
+        "lookup": null,
+        "quotient_alpha": 112,
+        "deep_z": 100,
+        "deep_poly_alpha": 99,
+        "folding_round": 109
+      },
+      "deep_poly_alpha_bits_with_unrounded_opening_count_and_field_size": 99.238449,
+      "rate_only_query_expression": 120
+    }
+  },
+  "upstream_fixture": {
+    "compression": {
+      "at_z": 212,
+      "at_z_omega": 1,
+      "at_zero": 0,
+      "changed_fixed_parameters": [
+        "public_inputs_locations"
+      ],
+      "native_verification": true,
+      "proof_config": {
+        "extra_fri_queries": true,
+        "fri_folding_schedule": null,
+        "fri_lde_factor": 32,
+        "merkle_tree_cap_size": 16,
+        "pow_bits": 0,
+        "security_level": 100
+      },
+      "public_inputs": 4,
+      "queries": 24
+    },
+    "risc": {
+      "at_z": 1308,
+      "at_z_omega": 1,
+      "at_zero": 102,
+      "changed_fixed_parameters": [
+        "public_inputs_locations"
+      ],
+      "native_verification": true,
+      "proof_config": {
+        "extra_fri_queries": true,
+        "fri_folding_schedule": null,
+        "fri_lde_factor": 4,
+        "merkle_tree_cap_size": 16,
+        "pow_bits": 0,
+        "security_level": 100
+      },
+      "public_inputs": 4,
+      "queries": 60
+    }
+  }
+}
