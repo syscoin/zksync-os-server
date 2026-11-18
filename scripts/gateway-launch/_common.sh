@@ -149,7 +149,7 @@ gl_validate_l1_network_pair() {
 
 # The settlement L1 ID does not enter the signature of an ordinary L2 transaction.
 gl_assert_mainnet_signing_domains() {
-  [ "${L1_NETWORK:-}" = "mainnet" ] || return 0
+  [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] || return 0
   python3 - "$@" <<'PYTHON'
 import re
 import sys
@@ -4566,13 +4566,22 @@ gl_validate_zkstack_chain_name() {
 }
 
 gl_is_canonical_edge_context() {
-  [ "${EDGE_CHAIN_NAME:-zksys}" = "zksys" ] &&
+  [ "${EDGE_CHAIN_NAME:-zksys}" = "zksys" ] || return 1
+  if [ "$(gl_to_lower "${L1_NETWORK:-}")" = mainnet ]; then
+    [ "${L1_CHAIN_ID:-}" = 57 ] || gl_die "mainnet canonical edge requires L1_CHAIN_ID=57"
+    # Mainnet owns the same checkpoint graph, but must not reuse testnet's
+    # transaction signing domains. The full fingerprint binds the chosen IDs.
+    gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${EDGE_CHAIN_ID:-}" ||
+      gl_die "invalid mainnet canonical edge signing domains"
+  else
     [ "$(gl_effective_edge_chain_id)" = "57057" ]
+  fi
 }
 
 gl_assert_additional_edge_chain_index() {
   local require_existing="${1:?additional-edge index policy required}"
   local edge_name edge_id gateway_name gateway_id expected_gateway_id canonical_zksys_id
+  local expected_zksys_id=57057 state_file
   local chains_dir chain_path chain_name chain_id i found=false
   local -a chain_paths=() seen_ids=() seen_names=()
   case "${require_existing}" in
@@ -4594,15 +4603,36 @@ PY
 )" || return $?
   [ "${gateway_id}" = "${expected_gateway_id}" ] ||
     gl_die "Gateway chain index ID ${gateway_id} differs from fingerprinted ID ${expected_gateway_id}"
+  if [ "$(gl_to_lower "${L1_NETWORK:-}")" = mainnet ]; then
+    gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${edge_id}" || return $?
+    # The callers have validated the protected checkpoint and its global
+    # fingerprint. An additional edge cannot supply the canonical edge's ID.
+    state_file="$(gl_checkpoint_state_file)" || return $?
+    expected_zksys_id="$(python3 - "${state_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+fingerprint = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["fingerprint"]
+if fingerprint.get("edge_chain_name") != "zksys":
+    raise SystemExit("mainnet checkpoint must bind canonical edge zksys")
+value = fingerprint.get("edge_chain_id")
+if not isinstance(value, str) or not value.isdecimal() or not 0 < int(value) < 2**32:
+    raise SystemExit("mainnet checkpoint has invalid canonical edge chain ID")
+print(int(value))
+PY
+)" || return $?
+    gl_assert_mainnet_signing_domains "${GATEWAY_CHAIN_ID:-}" "${expected_zksys_id}" || return $?
+  fi
   canonical_zksys_id="$(gl_chain_id_from_config zksys "canonical zksys")" || return $?
-  [ "${canonical_zksys_id}" = 57057 ] ||
-    gl_die "canonical zksys chain index ID must be 57057, got ${canonical_zksys_id}"
+  [ "${canonical_zksys_id}" = "${expected_zksys_id}" ] ||
+    gl_die "canonical zksys chain index ID must be ${expected_zksys_id}, got ${canonical_zksys_id}"
   # SYSCOIN: The zkstack chain directory is the durable off-chain index for
   # edge identity. Serialize its creation; do not duplicate it in checkpoint state.
   [[ "${edge_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] ||
     gl_die "additional edge name must match [A-Za-z0-9][A-Za-z0-9_-]*"
-  if [ "${edge_name}" = zksys ] || [ "${edge_id}" = 57057 ]; then
-    gl_die "additional edge must not reuse canonical zksys name or chain ID 57057"
+  if [ "${edge_name}" = zksys ] || [ "${edge_id}" = "${expected_zksys_id}" ]; then
+    gl_die "additional edge must not reuse canonical zksys name or chain ID ${expected_zksys_id}"
   fi
   if [ "${edge_name}" = "${gateway_name}" ] || [ "${edge_id}" = "${gateway_id}" ]; then
     gl_die "additional edge must not reuse the Gateway name or chain ID"

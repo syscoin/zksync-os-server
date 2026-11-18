@@ -9365,7 +9365,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'exec env SHELL="${BASH}" BASH_ENV=/dev/null', launcher_text
         )
         guard = launcher_text.index(
-            'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"'
+            'gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"'
         )
         self.assertLess(guard, launcher_text.index("gl_resolve_gateway_dir planned"))
         self.assertLess(guard, launcher_text.index("gl_acquire_gateway_launch_lock"))
@@ -9382,7 +9382,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                     "bash",
                     "-c",
                     'source "$COMMON"; gl_is_canonical_edge_context || '
-                    'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"',
+                    'gl_die "run-gateway-launch.sh requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)"',
                 ],
                 check=False,
                 capture_output=True,
@@ -9391,7 +9391,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(
-                "requires canonical edge zksys/57057",
+                "requires canonical edge zksys (57057 on testnet; explicit distinct signing domains on mainnet)",
                 result.stdout + result.stderr,
             )
             self.assertFalse(Path(env["GATEWAY_DIR"]).exists())
