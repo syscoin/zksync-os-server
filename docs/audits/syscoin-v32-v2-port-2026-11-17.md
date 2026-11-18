@@ -134,6 +134,16 @@ The experimental verifier authenticates each opening against its committed Merkl
 | Unified single-batch verifier | 246,961 → 51,488 | 11,957,098 → 11,942,196 |
 | Unified two-batch combiner | 247,143 → 51,670 | 23,917,963 → 23,888,159 |
 
-The two-batch runs performed 697,648 Blake delegations and consumed 1,110,338 words in both implementations. CPU simulation took 163–170 ms with the default and 157–167 ms with streaming. These runs measure guest RAM and instructions. Device allocator high-water marks and end-to-end proof latency require a separate GPU comparison. Both RV32 binaries rejected the same truncated 555,167-word input at the missing final read. The default contract proposal binds the non-streaming verifier. Adopting the streaming verifier changes the program commitment and requires a separately generated key.
+The two-batch runs performed 697,648 Blake delegations and consumed 1,110,338 words in both implementations. CPU simulation took 163–170 ms with the default and 157–167 ms with streaming. These runs measure guest RAM and instructions. The GPU comparison below measured the prover separately. Both RV32 binaries rejected the same truncated 555,167-word input at the missing final read. The default contract proposal binds the non-streaming verifier. Adopting the streaming verifier changes the program commitment and requires a separately generated key.
 
 The maintained differential test replayed three genuine inputs through both compiled guests. All six complete runs reached their pinned successful halt, consumed every word, and returned the expected 16 registers. Six inputs truncated by one word failed before that halt. For the combined range the test derived the public statement from the two ordered batch statements using a separate Keccak-256 implementation. [Regression test](https://github.com/syscoin/zksync-airbender/blob/b0dd8998e387f1396410d61664025010a461b019/tools/cli/tests/streaming_equivalence.rs) · [Qualification receipt](https://github.com/syscoin/zksync-airbender/blob/b0dd8998e387f1396410d61664025010a461b019/docs/syscoin-v2-streaming-qualification.json)
+
+Four sequential RTX 5090 runs compared the default and streaming guests in both orders on the same two genuine inputs. All four merged proofs verified. The allocator reported exactly 27.0546875 GiB peak live FRI allocations and 20.6171875 GiB peak live merge allocations in every arm. The respective fixed GPU arenas were 28 GiB and 21.31 GiB. The FRI host pool was 24 GiB. In the reverse pair, peak process RSS differed by less than 1 MiB in both workloads. The large guest memory reduction therefore provided no measurable host or GPU headroom on these inputs.
+
+| RTX 5090 proving time | Default runs | Streaming runs |
+| --- | ---: | ---: |
+| First FRI batch | 7.240 / 7.220 s | 7.213 / 7.199 s |
+| Second FRI batch | 4.770 / 4.837 s | 4.787 / 4.844 s |
+| Merge and shrink | 1.850 / 1.800 s | 1.855 / 1.863 s |
+
+Both arms of the reverse pair peaked at 29,434 MiB on the GPU board during FRI and 22,558 MiB during merging. The first streaming run briefly reported 29,850 and 23,048 MiB respectively. The source of the transient is unresolved. Keep the existing registered verifier for v32. [Four verified runs](syscoin-v32-v2-streaming-gpu-2026-11-17.json) · [Phase memory measurements](syscoin-v32-v2-streaming-phase-memory-2026-11-17.json)
