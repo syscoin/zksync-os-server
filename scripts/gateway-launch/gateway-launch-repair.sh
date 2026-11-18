@@ -135,7 +135,7 @@ fi
 # SYSCOIN: Repair owns the single canonical checkpoint graph. Additional edges
 # have independent live state and must never validate or rewrite this journal.
 gl_is_canonical_edge_context ||
-  gl_die "gateway-launch-repair.sh supports only canonical zksys chain 57057"
+  gl_die "gateway-launch-repair.sh requires the canonical zksys chain for this network"
 gl_validate_prover_mode
 install_gateway_migration_cleanup_traps
 if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then

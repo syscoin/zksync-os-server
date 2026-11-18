@@ -106,10 +106,15 @@ def check_gateway_chain_id(requested, server):
     require(type(guest_gateway) is int and 0 < guest_gateway < 2**32,
             "invalid Gateway chain ID in the release manifest")
     check_app_sources(server)
-    source = regular(server / "lib/types/src/lib.rs").read_text()
-    matches = re.findall(r"(?m)^pub const SYSCOIN_GATEWAY_CHAIN_ID: u64 = ([0-9_]+);$", source)
-    require(len(matches) == 1 and int(matches[0].replace("_", "")) == guest_gateway,
-            "compiled node Gateway chain ID disagrees with the release manifest")
+    os_patch = server / "scripts/patches/zksync-os-syscoin-v0.4.0.patch"
+    exact(os_patch, manifest["native_os_source"]["patch_sha256"])
+    for label, path, prefix in (
+            ("node source", server / "lib/types/src/lib.rs", ""),
+            ("OS patch", os_patch, "+")):
+        pattern = r"(?m)^" + re.escape(prefix) + r"pub const SYSCOIN_GATEWAY_CHAIN_ID: u64 = ([0-9_]+);$"
+        matches = re.findall(pattern, regular(path).read_text())
+        require(len(matches) == 1 and int(matches[0].replace("_", "")) == guest_gateway,
+                f"{label} Gateway chain ID disagrees with the release manifest")
     require(requested == guest_gateway,
             f"Gateway chain ID {requested} needs a matching guest and V8 key; "
             f"this release is bound to {guest_gateway}")
