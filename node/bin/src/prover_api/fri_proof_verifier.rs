@@ -350,8 +350,11 @@ mod v8_verifier {
 
 fn hash_as_register_values(hash: B256) -> [u32; 8] {
     hash.0
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("Slice with incorrect length")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(u32::from_le_bytes)
         .collect::<Vec<u32>>()
         .try_into()
         .expect("Hash should be exactly 32 bytes long")

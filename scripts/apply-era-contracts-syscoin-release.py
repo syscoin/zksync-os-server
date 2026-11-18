@@ -29,7 +29,7 @@ APP_SOURCES = {
     "lib/types/src/protocol/proving_version.rs":
         "0441bd1ead3fc20fc783b48567b8a4311a7688c47125c4a62ca43e500243da31",
     "node/bin/src/prover_api/fri_proof_verifier.rs":
-        "45ad5f52b2de529ce03a17ae6d116db7f0b35da18a96ad3439ebd9467cf17b11",
+        "2c32e3ababc5419b35e195f3eaec17993cf5eec8ccef2c151b11bb99040c5682",
 }
 # SYSCOIN: This is source-controlled release data, never an operator flag or
 # writable sidecar. It certifies the packaged fixture, not whether the exact

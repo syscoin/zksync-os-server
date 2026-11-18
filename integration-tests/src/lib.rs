@@ -955,7 +955,6 @@ impl StoppedTester {
             bitcoin_da_mock,
             previous_bound_ports,
             http_port_reservations,
-            config: _,
             ..
         } = self;
         let mut config = config;

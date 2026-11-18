@@ -317,8 +317,11 @@ async fn export_native_batches(batch_count: u64) -> anyhow::Result<()> {
         let registers: Vec<_> = native
             .batch_public_input_hash
             .as_slice()
-            .chunks_exact(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four-byte chunk")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .copied()
+            .map(u32::from_le_bytes)
             .collect();
         let manifest = json!({
             "schema_version": 1,

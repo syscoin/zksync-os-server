@@ -12,6 +12,8 @@ pub struct ReplayArchiveKeyPage {
 /// Read-side access to replay archive objects.
 ///
 /// Implementations should hide backend-specific path parsing and return normalized archive keys.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ReplayArchiveStorageReader {
     /// Lists one page of stored replay archive object keys without fetching payloads.

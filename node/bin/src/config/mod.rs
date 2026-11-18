@@ -99,6 +99,8 @@ pub struct Config {
     pub backpressure_config: BackpressureConfig,
 }
 
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait(?Send)]
 pub trait ConfigValidate {
     fn validate_conditional(&self, root: &Config, errors: &mut Vec<ValidationError>, prefix: &str);

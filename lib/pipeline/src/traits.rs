@@ -10,6 +10,8 @@ use zksync_os_observability::ComponentStateReporter;
 /// is part of batch construction rather than a standalone component.
 ///
 /// Components construct themselves with all needed parameters, then get consumed by `run()`.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait PipelineComponent: Send + 'static {
     /// The type of messages this component receives

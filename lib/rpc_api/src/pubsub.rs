@@ -1,3 +1,6 @@
+// jsonrpsee generates an async-trait server interface and does not forward trait attributes.
+#![allow(clippy::double_must_use)]
+
 // The code in this file was copied from reth with some minor changes. Source:
 // https://github.com/paradigmxyz/reth/blob/fcf58cb5acc2825e7c046f6741e90a8c5dab7847/crates/rpc/rpc-eth-api/src/pubsub.rs
 

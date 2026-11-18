@@ -764,7 +764,9 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         };
 
         let expected_hashes: Vec<String> = expected_version_hashes
-            .chunks_exact(32)
+            .as_chunks::<32>()
+            .0
+            .iter()
             .map(hex::encode)
             .collect();
         anyhow::ensure!(

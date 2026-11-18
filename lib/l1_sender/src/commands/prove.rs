@@ -456,11 +456,14 @@ impl ProofCommand {
                     U256::ZERO,
                 ]
                 .into_iter()
-                .chain(real.proof().chunks_exact(32).map(|chunk| {
-                    let mut word = [0_u8; 32];
-                    word.copy_from_slice(chunk);
-                    U256::from_be_bytes(word)
-                }))
+                .chain(
+                    real.proof()
+                        .as_chunks::<32>()
+                        .0
+                        .iter()
+                        .copied()
+                        .map(U256::from_be_bytes),
+                )
                 .collect()
             }
         };

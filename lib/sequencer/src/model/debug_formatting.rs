@@ -31,7 +31,7 @@ impl<'a> fmt::Debug for PreparedBlockCommand<'a> {
 
 fn fmt_block_context(bc: &BlockContext, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     // Keep the log concise: take refs to the ends and show just those two (as opposed to 256 of them)
-    let block_hashes_ends = format!("{}, {}", &bc.block_hashes.0[0], &bc.block_hashes.0[255]);
+    let block_hashes_ends = format!("{}, {}", bc.block_hashes.0[0], bc.block_hashes.0[255]);
 
     f.debug_struct("BlockContext")
         .field("chain_id", &bc.chain_id)

@@ -477,6 +477,8 @@ pub async fn locate_genesis_upgrade_log(
     Ok((block_number, block_hash))
 }
 
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait GenesisInputSource: Debug + Send + Sync + 'static {
     async fn genesis_input(&self) -> anyhow::Result<GenesisInput>;

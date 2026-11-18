@@ -15,6 +15,8 @@ use zksync_os_provider::NodeProvider;
 /// prefer implementing [`ProcessL1Event`] instead.
 ///
 /// This type is object-safe and can be used as a trait object.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait ProcessRawEvents: Send + Sync + 'static {
     /// The name of this processor, used for metrics and logging.
@@ -90,6 +92,8 @@ where
 /// A typesafe implementation of an L1 event processor.
 /// Defines a single contract and single event type to process,
 /// and expects the event to be already decoded.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait ProcessL1Event {
     const NAME: &'static str;

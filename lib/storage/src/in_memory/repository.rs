@@ -365,11 +365,8 @@ impl TransactionReceiptRepository {
         let mut result = Vec::new();
 
         for tx_hash in tx_hashes {
-            if let Some(data) = self.tx_data.get(tx_hash) {
-                result.push(data.value().clone());
-            } else {
-                return None;
-            }
+            let data = self.tx_data.get(tx_hash)?;
+            result.push(data.value().clone());
         }
 
         Some(result)

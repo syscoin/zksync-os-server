@@ -111,11 +111,11 @@ pub struct RaftNetworkClient {
 }
 
 impl RaftNetworkClient {
-    async fn send_rpc<E: std::error::Error>(
+    async fn send_rpc(
         &self,
         request: RaftRequest,
         timeout_dur: Duration,
-    ) -> Result<RaftResponse, RPCError<PeerId, RaftNode, E>> {
+    ) -> Result<RaftResponse, Unreachable> {
         let rx = self
             .router
             .send_request(self.peer_id, request)
@@ -211,7 +211,7 @@ impl RaftNetwork<RaftTypeConfig> for RaftNetworkClient {
     }
 }
 
-fn rpc_unreachable<E: std::error::Error>(msg: impl ToString) -> RPCError<PeerId, RaftNode, E> {
+fn rpc_unreachable(msg: impl ToString) -> Unreachable {
     let err = std::io::Error::other(msg.to_string());
-    RPCError::Unreachable(Unreachable::new(&err))
+    Unreachable::new(&err)
 }

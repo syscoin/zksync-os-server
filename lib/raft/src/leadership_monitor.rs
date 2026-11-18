@@ -103,10 +103,10 @@ async fn confirm_replay_leader(
     raft: &Raft<RaftTypeConfig>,
     expected_vote: Vote<PeerId>,
     forwarded_records: &AtomicU64,
-) -> Result<ConfirmedReplayLeader, (ProbeFailure, Option<LinearizableErr>)> {
+) -> Result<ConfirmedReplayLeader, (ProbeFailure, Option<Box<LinearizableErr>>)> {
     raft.ensure_linearizable()
         .await
-        .map_err(|error| (classify(&error), Some(error)))?;
+        .map_err(|error| (classify(&error), Some(Box::new(error))))?;
     // SYSCOIN: OpenRaft publishes the restored tail before handling API requests; on a
     // fresh election its read barrier covers the appended noop. Refresh after the probe
     // so same-leader restarts additionally wait for the entire retained tail.
@@ -248,7 +248,7 @@ pub fn spawn_leadership_monitor(
                         note_failure(&mut streak, ProbeFailure::ForwardToLeader, None);
                     }
                     Ok(Err((failure, error))) => {
-                        note_failure(&mut streak, failure, error.as_ref());
+                        note_failure(&mut streak, failure, error.as_deref());
                     }
                     Err(_) => {
                         note_failure(&mut streak, ProbeFailure::Timeout, None);

@@ -24,6 +24,8 @@ pub enum SnarkProofPreflightError {
 
 /// SYSCOIN: Abstract the admission decision so manager tests can prove exact lease disposition
 /// without standing up an RPC server or weakening the production on-chain implementation.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SnarkProofPreflight: Send + Sync {
     async fn verify(
@@ -292,7 +294,7 @@ mod tests {
             result,
             Ok(()),
             "unexpected preflight result; remaining mock responses: {:?}",
-            &*asserter.read_q()
+            *asserter.read_q()
         );
         assert!(asserter.read_q().is_empty(), "all RPC responses consumed");
     }

@@ -1138,7 +1138,7 @@ impl<T: Clone> ProverJobMap<T> {
                 selected_jobs.push(entry.metadata.clone());
             }
         } else {
-            for (_, entry) in jobs.iter_mut() {
+            for entry in jobs.values_mut() {
                 if !self.is_job_eligible(&selected_jobs, entry, now, limit, &mut predicate) {
                     if selected_jobs.is_empty() {
                         // We didn't find any jobs yet - continue looking for the first eligible one

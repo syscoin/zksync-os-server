@@ -46,6 +46,8 @@ impl<T> std::error::Error for PipelineSendError<T> {}
 /// [`STALL_WARNING_INTERVAL`]. The same bounded send remains queued until it
 /// succeeds, the receiver closes, or the component is cancelled. Recording
 /// happens only after a successful send.
+// async-trait adds must_use to a future that already carries the annotation.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SendAndRecordExt<T: HasBlockRangeEnd> {
     async fn send_and_record(
