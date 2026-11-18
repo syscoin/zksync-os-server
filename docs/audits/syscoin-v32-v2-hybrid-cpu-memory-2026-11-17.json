@@ -1,0 +1,104 @@
+{
+  "risc": {
+    "process_max_rss_kib": 118814632,
+    "max_sampled_total_device_mib": 16,
+    "sampled_idle_or_capped_prelaunch_device_mib": 16,
+    "phases": [
+      {
+        "phase": 1,
+        "operation": "setup ready in",
+        "seconds": 111.954,
+        "max_sampled_host_rss_kib": 55550624,
+        "num_rss_samples": 222,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 223
+      },
+      {
+        "phase": 1,
+        "operation": "proving took",
+        "seconds": 198.87,
+        "max_sampled_host_rss_kib": 118825344,
+        "num_rss_samples": 395,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 398
+      },
+      {
+        "phase": 1,
+        "operation": "verification took",
+        "seconds": 0.063,
+        "max_sampled_host_rss_kib": 118139236,
+        "num_rss_samples": 1,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      }
+    ]
+  },
+  "compression": {
+    "process_max_rss_kib": 4570464,
+    "max_sampled_total_device_mib": 16,
+    "sampled_idle_or_capped_prelaunch_device_mib": 16,
+    "phases": [
+      {
+        "phase": 2,
+        "operation": "setup ready in",
+        "seconds": 11.776,
+        "max_sampled_host_rss_kib": 1306576,
+        "num_rss_samples": 24,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 24
+      },
+      {
+        "phase": 2,
+        "operation": "proving took",
+        "seconds": 32.292,
+        "max_sampled_host_rss_kib": 4591508,
+        "num_rss_samples": 64,
+        "max_sampled_total_device_mib": 16,
+        "num_device_samples": 64
+      },
+      {
+        "phase": 2,
+        "operation": "verification took",
+        "seconds": 0.046,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      }
+    ]
+  },
+  "plonk": {
+    "process_max_rss_kib": 5095928,
+    "max_sampled_total_device_mib": 29076,
+    "sampled_idle_or_capped_prelaunch_device_mib": 24012,
+    "phases": [
+      {
+        "phase": 3,
+        "operation": "setup ready in",
+        "seconds": 16.558,
+        "max_sampled_host_rss_kib": 4944408,
+        "num_rss_samples": 33,
+        "max_sampled_total_device_mib": 29074,
+        "num_device_samples": 33
+      },
+      {
+        "phase": 3,
+        "operation": "proving took",
+        "seconds": 13.572,
+        "max_sampled_host_rss_kib": 3042764,
+        "num_rss_samples": 27,
+        "max_sampled_total_device_mib": 29076,
+        "num_device_samples": 27
+      },
+      {
+        "phase": 3,
+        "operation": "verification took",
+        "seconds": 0.012,
+        "max_sampled_host_rss_kib": null,
+        "num_rss_samples": 0,
+        "max_sampled_total_device_mib": null,
+        "num_device_samples": 0
+      }
+    ]
+  }
+}
