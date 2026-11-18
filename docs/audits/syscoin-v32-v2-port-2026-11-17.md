@@ -41,6 +41,23 @@ The Linux lockfile scan also identified three November 17 HTTP parser advisories
 
 The candidate OS patch validates EVM memory operands at the same 32-bit width on the host and RV32. It also adds 808,664 native units to the fixed v32 block reserve for three storage reads, one derived key and finalization of the L2-to-L1 log tree. The server holds this patch separately from the v32 guest used for the proving comparison. Its replacement guest, commitment and settlement VK must be derived together before activation. [OS source](https://github.com/syscoin/zksync-os/pull/1) · [Server-owned candidate patch](https://github.com/syscoin/zksync-os-server/pull/382)
 
+### Generated constraints and single-batch tests
+
+`StaticVerifierCompiledDegree2Constraint` is a public V2 type alias. Syscoin’s CSR-enable correction caused the circuit generator to emit another constraint of that existing type in the unified layout and corresponding quotient code. The separate zero-initialization correction is new in this port and fixes an invalid Rust value construction inherited from both bases. [Upstream type definition](https://github.com/matter-labs/zksync-airbender/blob/0decdcdb515e3db01178bf20aac20c18ea6168e2/cs/src/definitions/constraints.rs#L19) · [Regenerated circuit diff](https://github.com/syscoin/zksync-airbender/commit/6f8aed003fcec5e6a67861243a94cffbbba4b026)
+
+The named `test_computeZKsyncOSHash_singleInput` was replaced in the fork and the server-owned patch. Two Foundry fuzz tests cover the accepted zero header and rejected nonzero header for single-batch proofs, with 256 cases per test. [Current tests](https://github.com/syscoin/era-contracts/blob/e504774cea21f7638b14d31067aec4cc0bc7787e/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol#L430-L444)
+
+## Soundness estimates for the generated wrapper keys
+
+The V2 keygen receipt binds the raw compression VK (SHA-256 `25f29a44862e1bfb267119f798a92b345da766243f80aa6303b1e4c36e904056`) and RISC wrapper VK (`f656835568cdcdb6e617e8b87328e034099795ec91ac020c5ad8f2ca00d69d4c`). I counted the openings from each generated key and its pinned verifier, then decoded the proof vector lengths in both checked-in Security100 fixtures. Each public-input opening contributes separately even when several inputs share a row. [Keygen and proof receipt](../../scripts/releases/era-v32/generated-verifier-manifest.json) · [Pinned opening checks](https://github.com/syscoin/zksync-protocol/blob/3c3472d93611bafcdadf928829cc3fb357c6b156/crypto/crates/boojum/src/cs/implementations/verifier.rs#L1112-L1145) · [Batching challenge powers](https://github.com/syscoin/zksync-protocol/blob/3c3472d93611bafcdadf928829cc3fb357c6b156/crypto/crates/boojum/src/cs/implementations/verifier.rs#L1817-L1840)
+
+| Wrapper | Trace × LDE | Openings at `z` / `z·ω` / `0` / public inputs | Total | FRI queries | Historical batching estimate | Historical DEEP-point estimate |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| RISC | 2²⁰ × 4 | 1,308 / 1 / 102 / 4 | 1,415 | 60 | 95 bits | 99 bits |
+| Compression | 2¹⁶ × 32 | 212 / 1 / 0 / 4 | 217 | 24 | 99 bits | 100 bits |
+
+The historical calculator uses a 128-bit extension-field approximation. For batched openings it subtracts the LDE domain log and the ceiling of the opening-count log. For the DEEP point it subtracts the LDE domain log, the quotient-degree log (3 for both keys), and 4. The query exponents are 60 × 2 and 24 × 5, both 120 under the nominal rate calculation. These are separate soundness terms. The V2 transcript also samples a degree-lift challenge. A current analysis must account for that challenge and compose the errors across stages before quoting an end-to-end security level. Treat Security100 as the selected configuration. The historical estimates leave the 100-bit launch claim unverified. [Historical formulas](https://github.com/matter-labs/zksync-crypto/blob/bf2797e4ca13475bf797aa43e085389cdd6732f9/crates/boojum/src/cs/implementations/security_level_calculator.rs#L241-L264) · [Current query schedule](https://github.com/syscoin/zksync-protocol/blob/3c3472d93611bafcdadf928829cc3fb357c6b156/crypto/crates/boojum/src/cs/implementations/prover.rs#L2328-L2361) · [Security100 fixture proofs](https://github.com/syscoin/zksync-protocol/tree/3c3472d93611bafcdadf928829cc3fb357c6b156/zkos-wrapper/wrapper/testing_data)
+
 ## Proving performance
 
 The Syscoin v32 worker produces per-batch FRI proofs. The range worker merges consecutive FRI proofs, performs RISC wrapping and compression, and produces the final PLONK SNARK. Per-batch proving can be distributed. The final wrap depends on the completed range.
@@ -86,6 +103,8 @@ The released worker's sampled card occupancy peaked at 22,594 MiB during the ran
 | Full SNARK worker board peak | 32,144 MiB | 32,144 MiB |
 
 The same V2 process repeated the two-batch range in 69.551 s. The smaller PLONK domain cut final-stage proving time by 86.5%. RISC wrapping now accounts for most of the warm range latency. In these samples the whole-worker peak board occupancy persisted. The server's normal byte decoder and app-bound verifier accepted both exact V2 packets against their independently derived batch statements, and rejected incorrect public input and trailing data. The native CLI boundary tests also passed. The fresh range SNARK was accepted by both normal compiled settlement contracts. [EVM receipt](syscoin-v32-airbender-v2-router-replay-2026-11-17.json)
+
+A separate, like-for-like sustained worker comparison submitted the same minimal two-batch range twice per process. The released v0.9.1 worker reached its first lease in 221.476 s and submitted the two jobs in 148.463 and 149.710 s. V2 reached its first lease in 86.665 s and submitted in 71.660 and 69.551 s. On the second job, V2 took 53.54% less time, a 2.15× speedup on the measured warm range. Peak process RSS was 83.51 versus 59.71 GiB. Each process peaked at 32,144 MiB on the board.
 
 ### Pinned host buffers in the FRI worker
 
