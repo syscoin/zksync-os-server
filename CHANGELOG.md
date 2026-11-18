@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.24.5](https://github.com/syscoin/zksync-os-server/compare/v0.24.4...v0.24.5) (2026-11-18)
+
+
+### Features
+
+* **prover:** bind corrected v32 guest to its verified V2 key ([b59357e](https://github.com/syscoin/zksync-os-server/commit/b59357e06fe00fab9907759dc97d415ce91f9707))
+* **prover:** port the v32 testnet verifier and generated contracts to Airbender V2 ([81adc39](https://github.com/syscoin/zksync-os-server/commit/81adc395fd6e54355480049104c0bb4546842a0d))
+
+
+### Bug Fixes
+
+* **ci:** restore server checks on the V32 Rust toolchain ([0dcc35d](https://github.com/syscoin/zksync-os-server/commit/0dcc35dce703e2db903392f19f59f5580eb2f25c))
+* **contracts:** pin the reserved-word guard in the v32 release overlay ([4e64344](https://github.com/syscoin/zksync-os-server/commit/4e643441c4def4c439e30bfce93af37232a62e16))
+* **deps:** carry the patched Actix parser into the V2 comparison ([c816d42](https://github.com/syscoin/zksync-os-server/commit/c816d4298a5dcab3435f373b7acb265a8a6d5d90))
+* **deps:** update the v32 Actix HTTP parser ([c97d269](https://github.com/syscoin/zksync-os-server/commit/c97d269cfcf80027a25138bd74056ea7f6f714b5))
+* **launcher:** gate mainnet on the app-bound Gateway identity ([8f0d44c](https://github.com/syscoin/zksync-os-server/commit/8f0d44cde02136c2aa9304f13d9770b06d7d8407))
+* **launcher:** reject reused mainnet chain signing domains ([ba301de](https://github.com/syscoin/zksync-os-server/commit/ba301de325ec4e9781bc64a52abb0a70cd70e9c4))
+* **launcher:** verify the Gateway ID in the pinned OS patch ([1765cbb](https://github.com/syscoin/zksync-os-server/commit/1765cbb4e9032e1279a6a10da0d3f17421d0fb52))
+* **os:** bind the v32 host and prover to the reproduced corrected guest ([9876b3a](https://github.com/syscoin/zksync-os-server/commit/9876b3acd0702fae0d9000d5034cd6332fe7eead))
+* **prover:** pin callback-safe GPU jobs across the V2 release ([6de2cbf](https://github.com/syscoin/zksync-os-server/commit/6de2cbf0224040e91a3d90496b2417223313b89d))
+* **prover:** pin the reviewed V32 Airbender source ([541dc41](https://github.com/syscoin/zksync-os-server/commit/541dc4154bab0541adac866a98bf43dd5602424e))
+* **release:** pin reviewed V32 proving stack and reproduce guest identity ([a6d5587](https://github.com/syscoin/zksync-os-server/commit/a6d55875fa31b4246728d18f300264623edabf52))
+* **release:** pin the qualified V32 F7 and bigint worker ([a67471e](https://github.com/syscoin/zksync-os-server/commit/a67471e6684f2bf43d96d446ebc72bc3eb210be9))
+* **release:** qualify F7 and the bigint migration for Syscoin V32 ([0e65bd5](https://github.com/syscoin/zksync-os-server/commit/0e65bd5dde51ce0bd4074f2d96967d7491e17c33))
+* **release:** validate contract postimages and mainnet identity ([d619e9a](https://github.com/syscoin/zksync-os-server/commit/d619e9a4389a1a5ffca4efbd72e2b2d4fcfbc29c))
+
 ## [0.24.4](https://github.com/syscoin/zksync-os-server/compare/v0.24.3...v0.24.4) (2026-11-16)
 
 
