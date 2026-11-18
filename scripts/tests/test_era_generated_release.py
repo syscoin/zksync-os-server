@@ -198,6 +198,12 @@ class BundleAndLauncherTests(unittest.TestCase):
         generation = manifest["contract_generation_provenance"]
         evidence = manifest["proof_qualification"]
         prover = manifest["v2_prover"]
+        self.assertEqual(evidence["measured_worker_commit"], prover["worker_commit"])
+        self.assertEqual(evidence["measured_worker_tree"], prover["worker_tree"])
+        self.assertEqual(evidence["measured_airbender_commit"], prover["airbender"]["commit"])
+        self.assertEqual(evidence["measured_protocol_commit"], prover["protocol"]["commit"])
+        comparison = ROOT / evidence["comparison_path"]
+        self.assertEqual(sha(comparison.read_bytes()), evidence["comparison_sha256"])
         receipt_file = ROOT / evidence["evm_receipt_path"]
         self.assertEqual(sha(receipt_file.read_bytes()), evidence["evm_receipt_sha256"])
         receipt = json.loads(receipt_file.read_text())

@@ -299,7 +299,7 @@
     "default_policy": "Pinned backing remains the default; AIRBENDER_SIMULATOR_MEMORY=demand-paged opts into Linux anonymous mappings."
   },
   "airbender_pull_request": "https://github.com/syscoin/zksync-airbender/pull/9",
-  "qualification_policy": "Both host-memory changes are selected together for corrected worker b6f0f066ff37455953ec60da817a1d151fcfbc95 after verified retained-guest hardware comparisons and locked source-graph alignment. Corrected-worker runtime qualification remains pending. Pinned simulator allocation remains the default; demand paging is opt-in.",
+  "qualification_policy": "This checkpoint recorded the locked source graph for worker b6f0f066ff37455953ec60da817a1d151fcfbc95. The later corrected worker qualified both memory policies on the same GPU. Pinned allocation remains the default and demand paging remains opt-in.",
   "protocol_host_setup": {
     "pull_request": "https://github.com/syscoin/zksync-protocol/pull/2",
     "source_commit": "175fb68cbb47ff6702ace7d104fc66b206da28ba",
@@ -428,5 +428,6 @@
       "candidate": "Optionally release the combiner host state after a successful merge, retaining unified setup/layouts, and measure next-job rewarm cost against peak RSS savings.",
       "limit": "No gain measured. This changes host cache lifetime, not the measured 20.617 GiB active merge VRAM or fixed 21.309 GiB arena. Concurrent processes duplicate host caches and must coordinate overlapping GPU phases."
     }
-  }
+  },
+  "final_corrected_worker_comparison": "syscoin-v32-final-worker-comparison-2026-11-18.json"
 }
