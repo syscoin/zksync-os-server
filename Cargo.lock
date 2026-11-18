@@ -14975,7 +14975,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_alloy_ext"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "serde",
@@ -15005,7 +15005,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_backpressure"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "futures",
  "reth-tasks",
@@ -15021,7 +15021,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_base_token_adjuster"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15039,7 +15039,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_batch_types"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15061,7 +15061,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_batch_verification"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15098,14 +15098,14 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_batcher_metrics"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "vise",
 ]
 
 [[package]]
 name = "zksync_os_config_validation_macros"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -15114,7 +15114,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_consensus_types"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "openraft",
  "reth-network-peers",
@@ -15123,7 +15123,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_contract_interface"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15141,7 +15141,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_crypto"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "blake2",
@@ -15156,7 +15156,7 @@ checksum = "d9dfbba34ae7617db056b0e3a74a67c9cab1c93457f6b1cfbf7cee3ff34db01e"
 
 [[package]]
 name = "zksync_os_external_price_api"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15178,7 +15178,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_gas_adjuster"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15195,7 +15195,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_generate_deposit"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15207,7 +15207,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_genesis"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15228,7 +15228,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_integration_tests"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15277,7 +15277,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_integration_tests_macros"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -15297,7 +15297,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_internal_config"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15308,7 +15308,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_l1_sender"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15332,7 +15332,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_l1_watcher"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15358,7 +15358,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_mempool"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15397,7 +15397,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_merkle_tree"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15421,7 +15421,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_merkle_tree_api"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15434,14 +15434,14 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_metadata"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "semver 1.0.26",
 ]
 
 [[package]]
 name = "zksync_os_mini_merkle_tree"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "criterion",
@@ -15452,7 +15452,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_multivm"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15469,7 +15469,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_native_pig"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15488,7 +15488,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_network"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -15527,7 +15527,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_observability"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -15556,7 +15556,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_operator_signer"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "alloy-signer",
@@ -15577,7 +15577,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_pipeline"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -15592,7 +15592,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_priority_tree"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15614,7 +15614,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_provider"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15629,7 +15629,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_raft"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15657,7 +15657,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_replay_archive"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "age",
  "age-core",
@@ -15698,7 +15698,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_reth_compat"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "reth-chainspec",
@@ -15714,7 +15714,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_revm_consistency_checker"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15750,7 +15750,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_rocksdb"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "num_cpus",
  "once_cell",
@@ -15763,7 +15763,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_rpc"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15820,7 +15820,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_rpc_api"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -15837,7 +15837,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_sequencer"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15873,7 +15873,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_server"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15970,7 +15970,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_state_full_diffs"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -15988,7 +15988,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_status_server"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -16003,7 +16003,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_storage"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -16027,7 +16027,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_storage_api"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -16057,7 +16057,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_tx_validators"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
@@ -16077,7 +16077,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_types"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -16098,7 +16098,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_os_verify_storage_proof"
-version = "0.24.4"
+version = "0.24.5"
 dependencies = [
  "alloy",
  "anyhow",
