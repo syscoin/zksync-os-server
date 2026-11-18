@@ -127,7 +127,8 @@ def run_bash_harness(
     command: str,
     env: dict[str, str],
     timeout: float = 5,
-    owned_group_files: tuple[tuple[Path, Path], ...] = (),
+    owned_group_info_files: tuple[Path, ...] = (),
+    timeout_ready_file: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = ["bash", "-c", command]
     process = subprocess.Popen(
@@ -139,31 +140,34 @@ def run_bash_harness(
         start_new_session=True,
     )
     try:
+        if timeout_ready_file is not None:
+            # The timeout exercise starts after the separate group is registered.
+            ready_deadline = time.monotonic() + 5
+            while not timeout_ready_file.is_file() and process.poll() is None:
+                if time.monotonic() >= ready_deadline:
+                    raise subprocess.TimeoutExpired(args, 5)
+                time.sleep(0.01)
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        # A validator deliberately runs in another PGID. Clean it only while a
-        # live test child authenticates that group with a fresh private token.
+        # Bash job control creates a separate PGID inside the harness session.
+        # Kernel session membership still proves ownership if CI pauses the child.
         token = env.get("HARNESS_GROUP_TOKEN", "")
-        for info_name, heartbeat_name in owned_group_files:
+        for info_path in owned_group_info_files:
             try:
-                pid_raw, pgid_raw, child_token, deadline_raw = info_name.read_text(
-                    encoding="utf-8"
-                ).split(":")
-                heartbeat_token, heartbeat_raw = heartbeat_name.read_text(
+                pid_raw, pgid_raw, child_token = info_path.read_text(
                     encoding="utf-8"
                 ).split(":")
                 pid, pgid = int(pid_raw), int(pgid_raw)
-                now_ns = time.monotonic_ns()
-                if not (
+                if (
                     token
-                    and child_token == heartbeat_token == token
-                    and now_ns - int(heartbeat_raw) < 1_000_000_000
-                    and int(deadline_raw) - now_ns > 1_000_000_000
-                    and os.getpgid(pid) == pgid
+                    and child_token == token
+                    and pid > 1
+                    and pgid > 1
                     and pgid != process.pid
+                    and os.getpgid(pid) == pgid
+                    and os.getsid(pid) == process.pid
                 ):
-                    continue
-                os.killpg(pgid, signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)
             except (OSError, OverflowError, UnicodeError, ValueError):
                 pass
         try:
@@ -9849,18 +9853,16 @@ spawn_ignoring_child() {
 }
 group_member_pid=""
 spawn_group_member() {
-  python3 - "$1" "$2" "$3" "$4" "$HARNESS_GROUP_TOKEN" <<'PY' &
+  python3 - "$1" "$2" "$3" "$HARNESS_GROUP_TOKEN" <<'PY' &
 import os
 import signal
 import sys
 import time
 from pathlib import Path
 
-info_path, ready_path, heartbeat_path, signal_path = map(Path, sys.argv[1:5])
-token = sys.argv[5]
-deadline_ns = time.monotonic_ns() + 30_000_000_000
+info_path, ready_path, signal_path = map(Path, sys.argv[1:4])
+token = sys.argv[4]
 info_tmp = Path(f"{info_path}.tmp")
-heartbeat_tmp = Path(f"{heartbeat_path}.tmp")
 
 def record(signum, _frame):
     if str(signal_path) != "-":
@@ -9868,15 +9870,10 @@ def record(signum, _frame):
 
 signal.signal(signal.SIGINT, record)
 signal.signal(signal.SIGTERM, record)
-info_tmp.write_text(
-    f"{os.getpid()}:{os.getpgrp()}:{token}:{deadline_ns}", encoding="utf-8"
-)
+info_tmp.write_text(f"{os.getpid()}:{os.getpgrp()}:{token}", encoding="utf-8")
 os.replace(info_tmp, info_path)
 ready_path.touch()
-while time.monotonic_ns() < deadline_ns:
-    heartbeat_tmp.write_text(f"{token}:{time.monotonic_ns()}", encoding="utf-8")
-    os.replace(heartbeat_tmp, heartbeat_path)
-    time.sleep(0.05)
+time.sleep(30)
 PY
   group_member_pid=$!
 }
@@ -9884,8 +9881,7 @@ if [ "$TEST_MODE" = timeout_cleanup ]; then
   set -m
   (
     set +m
-    spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" \
-      "$VALIDATOR_HEARTBEAT_FILE" -
+    spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" -
     wait "$group_member_pid"
   ) &
   set +m
@@ -9942,8 +9938,7 @@ if [ "$TEST_MODE" = bounded ]; then
   [ "$setup_rc" -eq 1 ]
   [ ! -e "$SUPERVISOR_RETURNED_FILE" ]
   group_command() {
-    spawn_group_member "$NORMAL_STRAGGLER_FILE" "$NORMAL_READY_FILE" \
-      "$NORMAL_HEARTBEAT_FILE" -
+    spawn_group_member "$NORMAL_STRAGGLER_FILE" "$NORMAL_READY_FILE" -
     while [ ! -f "$NORMAL_READY_FILE" ]; do sleep 0.01; done
     while [ ! -f "$GROUP_OBSERVED_FILE" ]; do sleep 0.01; done
     printf 'group stdout\n'
@@ -9953,7 +9948,7 @@ if [ "$TEST_MODE" = bounded ]; then
   group_rc=0
   (
     while [ ! -f "$NORMAL_READY_FILE" ]; do sleep 0.01; done
-    IFS=: read -r normal_pid normal_pgid _ _ < "$NORMAL_STRAGGLER_FILE"
+    IFS=: read -r normal_pid normal_pgid _ < "$NORMAL_STRAGGLER_FILE"
     actual_pgid="$(python3 -c 'import os,sys; print(os.getpgid(int(sys.argv[1])))' "$normal_pgid")"
     [ "$actual_pgid" = "$normal_pgid" ] && \
       printf 'owned\n' > "$GROUP_OBSERVED_FILE"
@@ -9978,13 +9973,11 @@ start_gateway_for_migration() {
   printf '%s:%s\n' "$GATEWAY_NODE_PID" "$node_pgid" > "$PID_FILE"
 }
 validator_with_ignoring_grandchild() {
-  spawn_group_member "$VALIDATOR_PID_FILE" "$COMMAND_READY_FILE" \
-    "$VALIDATOR_HEARTBEAT_FILE" "$VALIDATOR_SIGNAL_FILE"
+  spawn_group_member "$VALIDATOR_PID_FILE" "$COMMAND_READY_FILE" "$VALIDATOR_SIGNAL_FILE"
   wait "$group_member_pid"
 }
 fatal_validator() {
-  spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" \
-    "$VALIDATOR_HEARTBEAT_FILE" -
+  spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" -
   while [ ! -f "$FATAL_READY_FILE" ]; do sleep 0.01; done
   [ "$TEST_MODE" != fatal_zero ] || exit 0
   gl_die "synthetic validator failure"
@@ -9997,7 +9990,7 @@ if [ "$TEST_MODE" = die ] || [ "$TEST_MODE" = fatal_zero ]; then
 fi
 (
   while [ ! -f "$COMMAND_READY_FILE" ]; do sleep 0.01; done
-  IFS=: read -r _ validator_pgid _ _ < "$VALIDATOR_PID_FILE"
+  IFS=: read -r _ validator_pgid _ < "$VALIDATOR_PID_FILE"
   actual_pgid="$(python3 -c 'import os,sys; print(os.getpgid(int(sys.argv[1])))' "$validator_pgid")"
   [ "$actual_pgid" = "$validator_pgid" ] && \
     printf 'owned\n' > "$GROUP_OBSERVED_FILE"
@@ -10032,14 +10025,12 @@ exit 99
                 HARNESS_GROUP_TOKEN=group_token,
                 FATAL_READY_FILE=str(root / "fatal-ready"),
                 NORMAL_READY_FILE=str(root / "normal-ready"),
-                NORMAL_HEARTBEAT_FILE=str(root / "normal-heartbeat"),
                 NORMAL_STRAGGLER_FILE=str(root / "normal-straggler"),
                 PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                 PID_FILE=str(root / "pid"),
                 READY_FILE=str(root / "ready"),
                 COMMAND_READY_FILE=str(root / "command-ready"),
                 VALIDATOR_PID_FILE=str(root / "validator-pid"),
-                VALIDATOR_HEARTBEAT_FILE=str(root / "validator-heartbeat"),
                 VALIDATOR_SIGNAL_FILE=str(root / "validator-signal"),
                 SIBLING_PID=str(sibling_pid),
                 SUPERVISOR_RETURNED_FILE=str(root / "supervisor-returned"),
@@ -10055,9 +10046,7 @@ exit 99
                     command,
                     test_env(root, "bounded", sibling.pid),
                     timeout=15,
-                    owned_group_files=(
-                        (root / "normal-straggler", root / "normal-heartbeat"),
-                    ),
+                    owned_group_info_files=(root / "normal-straggler",),
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIsNone(sibling.poll())
@@ -10073,15 +10062,16 @@ exit 99
                 assert_process_stopped(normal_pid)
             with tempfile.TemporaryDirectory() as temporary_dir:
                 root = Path(temporary_dir)
-                with self.assertRaises(subprocess.TimeoutExpired):
+                with self.assertRaises(subprocess.TimeoutExpired) as expired:
                     run_bash_harness(
                         command,
                         test_env(root, "timeout_cleanup", sibling.pid),
                         timeout=0.5,
-                        owned_group_files=(
-                            (root / "validator-pid", root / "validator-heartbeat"),
-                        ),
+                        owned_group_info_files=(root / "validator-pid",),
+                        timeout_ready_file=root / "fatal-ready",
                     )
+                self.assertEqual(expired.exception.timeout, 0.5)
+                self.assertIsNone(sibling.poll())
                 timed_out_pid = int(
                     (root / "validator-pid")
                     .read_text(encoding="utf-8")
@@ -10101,9 +10091,7 @@ exit 99
                         command,
                         test_env(root, mode, sibling.pid),
                         timeout=15,
-                        owned_group_files=(
-                            (root / "validator-pid", root / "validator-heartbeat"),
-                        ),
+                        owned_group_info_files=(root / "validator-pid",),
                     )
                     child_pid, child_pgid = map(
                         int, pid_file.read_text(encoding="utf-8").split(":")
