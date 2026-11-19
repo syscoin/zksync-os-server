@@ -39,6 +39,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
     ///
     /// - `traceTransfers=true`: rejected. ZKsync OS has no transfer-tracing inspector.
     /// - `movePrecompileToAddress`: rejected. Precompile remapping is not supported.
+    /// - `state`: rejected. Use `stateDiff` for sparse storage overrides.
     /// - `blockOverrides.difficulty`: silently ignored. Use `blockOverrides.random`
     ///   (prevrandao) instead.
     /// - `blockOverrides.parentBeaconBlockRoot`: silently ignored.
@@ -150,11 +151,12 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             {
                 return Err(EthCallError::SimulateMovePrecompileNotSupported);
             }
-            let state_overrides = build_state_override_maps(&simulation_view, user_state_overrides);
+            let state_overrides =
+                build_state_override_maps(&simulation_view, user_state_overrides)?;
             let user_overridden_view =
                 OverriddenStateView::new(simulation_view, state_overrides.clone());
             let internal_state_overrides =
-                build_state_override_maps(&user_overridden_view, internal_state_overrides);
+                build_state_override_maps(&user_overridden_view, internal_state_overrides)?;
             let overridden_view =
                 OverriddenStateView::new(user_overridden_view, internal_state_overrides);
             let txs = self.create_simulation_txs(

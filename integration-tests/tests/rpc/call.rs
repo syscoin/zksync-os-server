@@ -1,10 +1,10 @@
 use alloy::consensus::{BlobTransactionSidecar, BlobTransactionSidecarVariant};
 use alloy::eips::BlockId;
-use alloy::primitives::{U256, b256};
+use alloy::primitives::{B256, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::rpc::types::state::{AccountOverride, StateOverride};
-use std::collections::HashMap;
+use serde_json::{Value, json};
 use zksync_os_integration_tests::assert_traits::EthCallAssert;
 use zksync_os_integration_tests::contracts::{EventEmitter, SimpleRevert, TracingSecondary};
 use zksync_os_integration_tests::{CURRENT_TO_L1, Tester, test_multisetup};
@@ -169,41 +169,61 @@ async fn call_revert(tester: Tester) -> anyhow::Result<()> {
 
 #[test_multisetup([CURRENT_TO_L1])]
 async fn call_with_state_overrides(tester: Tester) -> anyhow::Result<()> {
-    // Deploy a dummy contract with storage at slot 0, call it to read the value,
-    // then call again with a state override for slot 0 and expect a different result.
-
-    // Deploy TracingSecondary with `data = 1` stored at slot 0
+    // TracingSecondary stores its constructor argument at slot zero.
     let initial_data = U256::from(1);
     let contract = TracingSecondary::deploy(tester.l2_provider.clone(), initial_data).await?;
-
-    // Build a TransactionRequest for multiply(1) -> returns the storage-backed value
     let tx_req = contract.multiply(U256::from(1)).into_transaction_request();
-
-    // Baseline call without overrides (should return 1)
-    let out = tester.l2_provider.call(tx_req.clone()).await?;
-    let baseline = U256::from_be_slice(&out);
-    assert_eq!(baseline, initial_data);
-
-    // Prepare state override via JSON to match expected types: set slot 0 to 2
+    let slot_override = (B256::ZERO, B256::with_last_byte(2));
     let overrides = StateOverride::from_iter([(
         *contract.address(),
-        AccountOverride {
-            balance: None,
-            nonce: None,
-            code: None,
-            state: Some(HashMap::from_iter([(
-                b256!("0x0000000000000000000000000000000000000000000000000000000000000000"),
-                b256!("0x0000000000000000000000000000000000000000000000000000000000000002"),
-            )])),
-            state_diff: None,
-            move_precompile_to: None,
-        },
+        AccountOverride::default().with_state_diff([slot_override]),
     )]);
 
-    // Call again with the override; expect 2 now
-    let out_overridden = tester.l2_provider.call(tx_req).overrides(overrides).await?;
-    let overridden = U256::from_be_slice(&out_overridden);
-    assert_eq!(overridden, U256::from(2));
+    let out = tester
+        .l2_provider
+        .call(tx_req.clone())
+        .overrides(overrides)
+        .await?;
+    assert_eq!(U256::from_be_slice(&out), U256::from(2));
+
+    for account in [
+        AccountOverride::default().with_state([]),
+        AccountOverride::default().with_state([slot_override]),
+    ] {
+        let overrides = StateOverride::from_iter([(*contract.address(), account)]);
+        let params = json!([tx_req, "latest", overrides]);
+        let trace_params = json!([
+            tx_req,
+            "latest",
+            { "tracer": "callTracer", "stateOverrides": overrides }
+        ]);
+        let simulate_params = json!([{
+            "blockStateCalls": [{ "calls": [tx_req], "stateOverrides": overrides }]
+        }, "latest"]);
+        for (method, params) in [
+            ("eth_call", params.clone()),
+            ("eth_estimateGas", params),
+            ("debug_traceCall", trace_params),
+            ("eth_simulateV1", simulate_params),
+        ] {
+            let err = tester
+                .l2_provider
+                .raw_request::<_, Value>(method.into(), params)
+                .await
+                .expect_err("full storage replacement must be rejected");
+            let response = err
+                .as_error_resp()
+                .unwrap_or_else(|| panic!("expected a JSON-RPC error from {method}, got {err}"));
+            assert_eq!(response.code, -32602, "{method}: {response:?}");
+            assert!(
+                response.message.contains("full storage replacement"),
+                "{method}: {response:?}"
+            );
+        }
+    }
+
+    let out = tester.l2_provider.call(tx_req).await?;
+    assert_eq!(U256::from_be_slice(&out), initial_data);
 
     Ok(())
 }
