@@ -279,10 +279,34 @@ jobs:
           done
 
 
+  canonical-restore-smoke:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Verify the canonical Core/NEVM fixture
+        run: python3 scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture
+
+      - name: Setup runner
+        uses: ./.github/actions/runner-setup
+
+      - name: Restore and start the canonical stack on CPU
+        env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        run: |
+          bash scripts/cargo-with-patched-zksync-os.sh ci-canonical-restore -- \
+            nextest run --locked --release -p zksync_os_integration_tests \
+            --features prover-tests -E 'binary(prover) & test(~canonical_restore_smoke)'
+
   ####################################
   #  Build prover integration tests  #
   ####################################
   build-prover-tests:
+    # The canonical stack must start on CPU before reserving prover runners.
+    needs: canonical-restore-smoke
     runs-on: matterlabs-ci-runner-ultra-performance
     steps:
 
@@ -300,7 +324,7 @@ jobs:
           # This is a special mandatory hack to transfer test binary from one machine to another.
           # We must use a dummy `./` path addition in the workspace path /home/runner/_work
           # to prevent GitHub Actions to replace it to the mapped `/__w` folder in the docker container.
-          # This is required to make sure that the paths to workspace artifacts like l1-state.json.gz
+          # This is required to make sure that the paths to workspace artifacts
           # are correct inside prebuilt binary.
           # This variable overwrites the default relative `./` in the .cargo/config.toml.
           WORKSPACE_DIR: "/opt/./actions-runner/_work/zksync-os-server/zksync-os-server"
@@ -349,15 +373,6 @@ jobs:
           CRS_FILE_URL: https://storage.googleapis.com/matterlabs-setup-keys-europe/setup-keys/setup_compact.key
         run: wget -q --show-progress "${CRS_FILE_URL}"
 
-      - name: Decompress L1 state fixtures
-        run: |
-          for gz_file in local-chains/*/l1-state.json.gz; do
-            json="${gz_file%.gz}"
-            if [ ! -f "$json" ]; then
-              gunzip -k "$gz_file"
-            fi
-          done
-
       # --workspace-remap is mandatory (!)
       # Otherwise, the prebuilt binary will not be able to find its dependencies and fails to execute
       - name: Run prover tests on GPU
@@ -365,7 +380,7 @@ jobs:
           COMPACT_CRS_FILE: ${{ github.workspace }}/setup_compact.key
         run: |
           ulimit -s 300000
-          cargo nextest run -E 'binary(prover)' --no-capture \
+          cargo nextest run -E 'binary(prover) & not test(~canonical_restore_smoke)' --no-capture \
             --archive-file "${PROVER_GPU_TESTS}.tar.zst" \
             --workspace-remap ${GITHUB_WORKSPACE}
 
@@ -416,6 +431,7 @@ jobs:
         build,
         test,
         format-and-lint,
+        canonical-restore-smoke,
         build-prover-tests,
         prover-tests,
         check-wire-version,
