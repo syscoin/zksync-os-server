@@ -3,7 +3,8 @@
 The integration harness supplies an independently trusted descriptor digest, an
 absolute canonical fixture directory, an empty owner-only run directory, and an
 absolute owner-only private config directory. Keep the supervisor's stdin pipe
-open for as long as the restored Core/NEVM pair is needed. Close it after
+open for as long as the restored Core/NEVM pair is needed. Send `mine\n` once
+after authenticating readiness to start paired mining. Close the pipe after
 stopping the in-process Gateway and edge nodes. A zero exit means that the
 supervisor also stopped the Core and NEVM processes cleanly.
 
@@ -49,3 +50,8 @@ ready. Its schema is `syscoin-v32-canonical-restore-ready-v1`. It contains
 Both RPC URLs are numeric IPv4 loopback with unique owned listeners. Keep the
 run directory private. It contains the Core cookie, private configs, daemon
 logs, and disposable state.
+
+After the mining command, each new Core block must advance the native NEVM
+commitment, and SysGeth must expose the immediately preceding commitment at
+its pinned height. This allows the native one-block buffer while ensuring the
+restored settlement chain continues advancing.

@@ -66,11 +66,54 @@ class ActivationTests(unittest.TestCase):
     def test_complete_synthetic_binding(self):
         self.assertEqual(M.check_activation(self.server), self.binding["descriptor_sha256"])
 
+    def test_prover_assets_follow_the_bound_fixture_and_release(self):
+        assets = {
+            "app_bin_sha256": self.server / "app.bin",
+            "combined_prover_sha256": self.server / "combined-prover",
+            "compact_crs_sha256": self.server / "compact.key",
+        }
+        proof = {
+            "schema": "syscoin-v32-canonical-proof-identities-v1",
+            "verification_key_hash": "0x" + "1" * 64,
+            "program_commitment": "0x" + "2" * 64,
+            "worker_commit": "3" * 40,
+        }
+        for field, path in assets.items():
+            proof[field] = put(path, field.encode())["sha256"]
+        identity = put(self.fixture / "proof_identities.json", json.dumps(proof).encode())
+        self.inv["proof_identities"] = identity
+        self.binding["identity_sha256"]["proof_identities"] = identity["sha256"]
+        self.refresh()
+        manifest = {
+            "verification_key_hash": proof["verification_key_hash"],
+            "v2_prover": {name: proof[name] for name in (
+                "program_commitment", "worker_commit", "app_bin_sha256")},
+        }
+        with patch.object(M, "load_bundle", return_value=(None, manifest)):
+            self.assertEqual(M.check_canonical_prover_assets(self.server, assets),
+                             self.binding["descriptor_sha256"])
+            assets["combined_prover_sha256"].write_bytes(b"foreign worker")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                M.check_canonical_prover_assets(self.server, assets)
+            manifest["v2_prover"]["worker_commit"] = "4" * 40
+            with self.assertRaisesRegex(ValueError, "registered application"):
+                M.check_canonical_prover_assets(self.server, assets)
+
     def test_marker_first_even_dangling_symlink(self):
         marker = self.fixture / "CANONICAL_V8_REGENERATION_REQUIRED"
         marker.symlink_to("not-present")
         with patch.object(M, "CANONICAL_BINDING", None), self.assertRaisesRegex(ValueError, "marker"):
             M.check_activation(self.server)
+
+    def test_external_storage_respects_the_source_marker_and_registry(self):
+        external = self.server / "private-fixture"
+        self.fixture.rename(external)
+        self.fixture.mkdir()
+        self.assertEqual(M.check_activation(self.server, external),
+                         self.binding["descriptor_sha256"])
+        (self.fixture / "CANONICAL_V8_REGENERATION_REQUIRED").touch()
+        with self.assertRaisesRegex(ValueError, "marker"):
+            M.check_activation(self.server, external)
 
     def test_removed_marker_does_not_activate_binding(self):
         with patch.object(M, "CANONICAL_BINDING", None), self.assertRaisesRegex(ValueError, "not activated"):

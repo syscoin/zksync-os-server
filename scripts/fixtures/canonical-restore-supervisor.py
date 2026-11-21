@@ -245,14 +245,15 @@ class RpcError(ValueError):
     pass
 
 
-def rpc(child, method, params, auth=None):
+def rpc(child, method, params, auth=None, *, wallet=None):
     require(child.owned(), f"owned {child.name} listener missing")
     connection = http.client.HTTPConnection("127.0.0.1", child.ports[0], timeout=3)
     headers = {"Content-Type": "application/json"}
     if auth is not None:
         headers["Authorization"] = auth
     try:
-        connection.request("POST", "/", json.dumps({"jsonrpc": "1.0" if auth else "2.0",
+        path = "/" if wallet is None else f"/wallet/{wallet}"
+        connection.request("POST", path, json.dumps({"jsonrpc": "1.0" if auth else "2.0",
                                                      "id": 1, "method": method,
                                                      "params": params}), headers)
         response = connection.getresponse()
@@ -322,8 +323,8 @@ def restore_pair(root, run, tools, deployment, boundary, stack):
             "owned Core cookie invalid")
     auth = "Basic " + base64.b64encode(cookie_value).decode()
 
-    def core_rpc(method, *params):
-        return rpc(core, method, params, auth)
+    def core_rpc(method, *params, wallet=None):
+        return rpc(core, method, params, auth, wallet=wallet)
 
     def nevm_rpc(method, *params):
         return rpc(nevm, method, params)
@@ -342,7 +343,7 @@ def restore_pair(root, run, tools, deployment, boundary, stack):
         core_rpc("loadwallet", wallet)
     require(wallet in core_rpc("listwallets"), "private DA wallet did not load")
     latest = verify_pair(core_rpc, nevm_rpc, boundary)
-    return core, nevm, int(latest["timestamp"], 16)
+    return core, nevm, int(latest["timestamp"], 16), core_rpc, nevm_rpc
 
 
 def core_hash(value):
@@ -382,6 +383,19 @@ def verify_pair(core_rpc, nevm_rpc, boundary):
             and core_hash(proof["nevm_blockhash"]) == boundary["nevm_hash"],
             "Core coinbase does not commit to the saved NEVM anchor")
     return latest
+
+
+def mine_verified_block(core_rpc, nevm_rpc, miner, previous):
+    hashes = core_rpc("generatetoaddress", 1, miner)
+    require(type(hashes) is list and len(hashes) == 1, "Core failed to mine one block")
+    height = previous["height"]
+    paired = core_rpc("getnevmblockchaininfo")
+    require(paired["status"] == "online" and paired["height"] == height + 1
+            and core_rpc("getblockcount") == height + 1, "mining diverged from the paired tip")
+    prior = nevm_rpc("eth_getBlockByNumber", hex(height), False)
+    require(prior is not None and prior["hash"] == previous["bestblockhash"],
+            "SysGeth did not commit the preceding native block")
+    return paired
 
 
 def run(args):
@@ -442,8 +456,8 @@ def run(args):
         signal.signal(sig, request_stop)
 
     with ExitStack() as stack:
-        core, nevm, timestamp = restore_pair(args.fixture_dir, args.run_dir, tools, deployment,
-                                             boundary, stack)
+        core, nevm, timestamp, core_rpc, nevm_rpc = restore_pair(
+            args.fixture_dir, args.run_dir, tools, deployment, boundary, stack)
         record = {
             "schema": "syscoin-v32-canonical-restore-ready-v1",
             "descriptor_sha256": args.descriptor_sha256,
@@ -459,11 +473,28 @@ def run(args):
             with temporary.open("x", encoding="utf-8") as out:
                 json.dump(record, out, sort_keys=True)
             temporary.rename(args.run_dir / "ready.json")
+        control = bytearray()
+        previous = miner = None
+        next_block = time.monotonic()
         while not stopping:
             require(core.owned() and nevm.owned(), "owned backend exited after readiness")
             if select.select([sys.stdin], [], [], 0.25)[0]:
-                require(not os.read(sys.stdin.fileno(), 1), "unexpected lifetime pipe data")
-                break
+                incoming = os.read(sys.stdin.fileno(), 16)
+                if not incoming:
+                    require(not control, "incomplete lifetime pipe command")
+                    break
+                control.extend(incoming)
+                require(miner is None and b"mine\n".startswith(control), "invalid lifetime pipe command")
+                if control == b"mine\n":
+                    control.clear()
+                    miner = core_rpc("getnewaddress", "canonical-restore-miner",
+                                     wallet=deployment["core_wallet_name"])
+                    require(isinstance(miner, str) and bool(miner), "invalid Core mining address")
+                    previous = core_rpc("getnevmblockchaininfo")
+                    next_block = time.monotonic() + 1.1
+            if not stopping and miner is not None and time.monotonic() >= next_block:
+                previous = mine_verified_block(core_rpc, nevm_rpc, miner, previous)
+                next_block = time.monotonic() + 1.1
 
 
 def main():

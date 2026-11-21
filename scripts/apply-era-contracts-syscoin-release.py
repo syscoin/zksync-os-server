@@ -121,10 +121,20 @@ def check_gateway_chain_id(requested, server):
     return guest_gateway
 
 
-def check_activation(server):
-    fixture = server / "local-chains/v32.0"
-    marker = fixture / "CANONICAL_V8_REGENERATION_REQUIRED"
-    require(not os.path.lexists(marker), "canonical fixture regeneration marker is present")
+def canonical_fixture_dir(server, fixture=None):
+    source = server / "local-chains/v32.0"
+    marker = "CANONICAL_V8_REGENERATION_REQUIRED"
+    require(not os.path.lexists(source / marker), "canonical fixture regeneration marker is present")
+    if fixture is None:
+        return source
+    require(fixture.is_absolute() and fixture.resolve() == fixture and fixture.is_dir(),
+            "canonical fixture directory must be absolute and contain no symlinks")
+    require(not os.path.lexists(fixture / marker), "canonical fixture regeneration marker is present")
+    return fixture
+
+
+def check_activation(server, fixture=None):
+    fixture = canonical_fixture_dir(server, fixture)
     binding = CANONICAL_BINDING
     require(isinstance(binding, dict), "generated release is not activated: genuine fixture binding absent")
     require(set(binding) == {"descriptor_sha256", "versions_sha256", "identity_sha256"}
@@ -180,6 +190,31 @@ def check_activation(server):
         paths.add(rel)
     check_app_sources(server)
     return binding["descriptor_sha256"]
+
+
+def check_canonical_prover_assets(server, paths, fixture=None):
+    fixture = canonical_fixture_dir(server, fixture)
+    descriptor_sha = check_activation(server, fixture)
+    descriptor = read_json(fixture / "l1-backend.json")
+    identity = descriptor["backend"]["inventory"]["proof_identities"]
+    file_identity(fixture, identity)
+    proof = read_json(fixture / identity["path"])
+    asset_fields = {"app_bin_sha256", "combined_prover_sha256", "compact_crs_sha256"}
+    require(set(proof) == asset_fields | {
+        "schema", "verification_key_hash", "program_commitment", "worker_commit",
+    } and proof["schema"] == "syscoin-v32-canonical-proof-identities-v1",
+            "invalid canonical proof identity record")
+    _, manifest = load_bundle()
+    worker = manifest["v2_prover"]
+    require(proof["verification_key_hash"] == manifest["verification_key_hash"]
+            and all(proof[name] == worker[name] for name in (
+                "program_commitment", "worker_commit", "app_bin_sha256")),
+            "fixture proof identities differ from the registered application")
+    require(set(paths) == asset_fields, "missing canonical prover assets")
+    for name, path in paths.items():
+        require(path, "missing asset path for " + name)
+        exact(Path(path), proof[name])
+    return descriptor_sha
 
 
 def load_bundle():
@@ -316,15 +351,28 @@ def main():
     mode.add_argument("--check-bundle", action="store_true", help="read-only; never launch authorization")
     mode.add_argument("--check-canonical-fixture", action="store_true",
                       help="read-only certification of the separately accepted packaged fixture")
+    mode.add_argument("--check-canonical-prover-assets", action="store_true",
+                      help="verify the registered app, combined worker and compact CRS")
     mode.add_argument("--check-gateway-chain-id", type=int,
                       help="check the Gateway ID before funding or broadcasting")
     parser.add_argument("era_root", type=Path, nargs="?")
     args = parser.parse_args()
     try:
+        fixture_value = os.environ.get("SYSCOIN_V32_CANONICAL_FIXTURE_DIR")
+        fixture = Path(fixture_value) if fixture_value is not None else None
         if args.check_canonical_fixture:
             require(args.era_root is None, "fixture check does not consume an Era repository")
             result = {"status": "canonical_fixture_checked", "canonical_fixture_authorized": True,
-                      "descriptor_sha256": check_activation(SERVER), "target_mutated": False}
+                      "descriptor_sha256": check_activation(SERVER, fixture), "target_mutated": False}
+        elif args.check_canonical_prover_assets:
+            require(args.era_root is None, "prover asset check does not consume an Era repository")
+            paths = {
+                "app_bin_sha256": os.environ.get("SYSCOIN_V8_APP_BIN"),
+                "combined_prover_sha256": os.environ.get("SYSCOIN_V8_PROVER_BIN"),
+                "compact_crs_sha256": os.environ.get("COMPACT_CRS_FILE"),
+            }
+            result = {"status": "canonical_prover_assets_checked",
+                      "descriptor_sha256": check_canonical_prover_assets(SERVER, paths, fixture)}
         elif args.check_gateway_chain_id is not None:
             require(args.era_root is None, "Gateway identity check does not consume an Era repository")
             result = {"gateway_chain_id": check_gateway_chain_id(args.check_gateway_chain_id, SERVER)}

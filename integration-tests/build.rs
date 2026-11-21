@@ -100,6 +100,11 @@ fn decompress_l1_states() {
             continue;
         }
         let version = version.to_str().expect("fixture version must be UTF-8");
+        // Native snapshots are checked by the runtime harness and may be provisioned
+        // outside the checkout. Only Anvil fixtures need a build-time decode.
+        if scope == fixture_backend::FixtureScope::CanonicalSyscoin && version == "v32.0" {
+            continue;
+        }
         let inventory = match scope {
             fixture_backend::FixtureScope::CanonicalSyscoin => {
                 fixture_backend::load_fixture_inventory(
@@ -114,13 +119,6 @@ fn decompress_l1_states() {
             }
         }
         .unwrap_or_else(|e| panic!("invalid fixture {}: {e}", root.display()));
-        if inventory.core_nevm_inventory().is_ok() {
-            // Validation is not extraction: real snapshots are never passed to GzDecoder.
-            println!(
-                "cargo::warning=Core/NEVM inventory validated; runtime restore is unsupported"
-            );
-            continue;
-        }
         let (gz_path, decoded_identity) = inventory
             .anvil_state(&root)
             .unwrap_or_else(|e| panic!("invalid Anvil component fixture: {e}"));

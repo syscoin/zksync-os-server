@@ -308,7 +308,9 @@ jobs:
   build-prover-tests:
     # The canonical stack must start on CPU before reserving prover runners.
     needs: canonical-restore-smoke
-    runs-on: matterlabs-ci-runner-ultra-performance
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: '2'
     steps:
 
       - name: Checkout code
@@ -322,13 +324,6 @@ jobs:
       - name: Build and archive test
         env:
           GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          # This is a special mandatory hack to transfer test binary from one machine to another.
-          # We must use a dummy `./` path addition in the workspace path /home/runner/_work
-          # to prevent GitHub Actions to replace it to the mapped `/__w` folder in the docker container.
-          # This is required to make sure that the paths to workspace artifacts
-          # are correct inside prebuilt binary.
-          # This variable overwrites the default relative `./` in the .cargo/config.toml.
-          WORKSPACE_DIR: "/opt/./actions-runner/_work/zksync-os-server/zksync-os-server"
         run: |
           bash scripts/cargo-with-patched-zksync-os.sh ci-prover-archive -- \
             nextest archive --locked --release -p zksync_os_integration_tests \
@@ -367,23 +362,18 @@ jobs:
         with:
           name: ${{ env.PROVER_GPU_TESTS }}
 
-      - name: Download CRS setup file
-        if: steps.cache-crs.outputs.cache-hit != 'true'
-        env:
-          # Download CRS file from EU storage for GPU runner
-          CRS_FILE_URL: https://storage.googleapis.com/matterlabs-setup-keys-europe/setup-keys/setup_compact.key
-        run: wget -q --show-progress "${CRS_FILE_URL}"
-
       # --workspace-remap is mandatory (!)
       # Otherwise, the prebuilt binary will not be able to find its dependencies and fails to execute
       - name: Run prover tests on GPU
-        env:
-          COMPACT_CRS_FILE: ${{ github.workspace }}/setup_compact.key
         run: |
+          set -euo pipefail
+          python3 scripts/apply-era-contracts-syscoin-release.py --check-canonical-prover-assets
+          export WORKSPACE_DIR="${GITHUB_WORKSPACE}"
           ulimit -s 300000
           cargo nextest run -E 'binary(prover) & not test(~canonical_restore_smoke)' --no-capture \
+            --no-tests fail \
             --archive-file "${PROVER_GPU_TESTS}.tar.zst" \
-            --workspace-remap ${GITHUB_WORKSPACE}
+            --workspace-remap "${GITHUB_WORKSPACE}"
 
   ###############################
   #     Configs smoke test      #
