@@ -1,0 +1,102 @@
+name: V0.24.4 interop idle acceptance
+
+on:
+  push:
+    branches:
+      - codex/ci-v0244-interop-acceptance
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      HOTFIX_SHA: 165c4753f677c179afdc5894dec7084ddcd6a75a
+      CARGO_BUILD_JOBS: '2'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+      GATEWAY_DIR: ${{ runner.temp }}/syscoin-interop-${{ github.run_id }}-${{ github.run_attempt }}
+      EVIDENCE_DIR: ${{ runner.temp }}/interop-acceptance-evidence
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out exact v0.24.4 hotfix
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: 165c4753f677c179afdc5894dec7084ddcd6a75a
+          persist-credentials: false
+
+      - name: Verify source and record fixture identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$HOTFIX_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test -f local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
+          mkdir -p "$EVIDENCE_DIR"
+          {
+            git log -1 --format='source=%H%nsubject=%s'
+            uname -m
+            sha256sum Cargo.lock rust-toolchain.toml \
+              local-chains/anvil-component-only/v32.0/anvil-component.json \
+              scripts/fixtures/v32-component-registration.json
+          } | tee "$EVIDENCE_DIR/identity.txt"
+
+      - name: Set up runner
+        uses: ./.github/actions/runner-setup
+
+      - name: Run interop integration and companion regressions
+        run: |
+          rustc -Vv | tee -a "$EVIDENCE_DIR/identity.txt"
+          anvil --version | tee -a "$EVIDENCE_DIR/identity.txt"
+          cargo nextest --version | tee -a "$EVIDENCE_DIR/identity.txt"
+          filter='test(test_interop_bundle_send) | test(test_interop_l2_to_l1_message_verification) | test(gateway_imports_do_not_arm_timeout_until_other_work_arrives) | test(direct_settlement_and_empty_gateway_blocks_keep_their_timeout) | test(interop_companion_batch_state_is_replay_deterministic) | test(interop_boundaries_seal_bundle_and_exactly_one_successor_block) | test(interop_companion_state_is_replay_deterministic) | test(empty_companion_is_gated_off_for_direct_l1_settlement) | test(empty_companion_waits_for_configured_idle_grace)'
+          printf 'nextest filter: %s\n' "$filter" | tee -a "$EVIDENCE_DIR/identity.txt"
+          bash scripts/cargo-with-patched-zksync-os.sh interop-acceptance -- \
+            nextest run --locked --release --profile default --test-threads 4 \
+            -p zksync_os_server -p zksync_os_sequencer -p zksync_os_integration_tests \
+            --lib --test suite --no-tests fail --success-output final --failure-output final \
+            -E "$filter" 2>&1 | tee "$EVIDENCE_DIR/nextest.log"
+
+      - name: Require every selected test to pass without skipping
+        if: always() && !cancelled()
+        run: |
+          report="$GATEWAY_DIR/.gateway-launch/zksync-os-server/interop-acceptance/target/nextest/default/test-results.xml"
+          cp -- "$report" "$EVIDENCE_DIR/test-results.xml"
+          python3 - "$EVIDENCE_DIR/test-results.xml" <<'PY' | tee "$EVIDENCE_DIR/verified-tests.txt"
+          import sys
+          import xml.etree.ElementTree as ET
+          from collections import Counter
+
+          expected = {
+              "test_interop_bundle_send",
+              "test_interop_l2_to_l1_message_verification",
+              "gateway_imports_do_not_arm_timeout_until_other_work_arrives",
+              "direct_settlement_and_empty_gateway_blocks_keep_their_timeout",
+              "interop_companion_batch_state_is_replay_deterministic",
+              "interop_boundaries_seal_bundle_and_exactly_one_successor_block",
+              "interop_companion_state_is_replay_deterministic",
+              "empty_companion_is_gated_off_for_direct_l1_settlement",
+              "empty_companion_waits_for_configured_idle_grace",
+          }
+          cases = list(ET.parse(sys.argv[1]).iter("testcase"))
+          names = Counter(case.attrib["name"].rsplit("::", 1)[-1] for case in cases)
+          if names != Counter(expected):
+              raise SystemExit(f"Unexpected JUnit case counts: {names!r}")
+          for case in cases:
+              name = case.attrib["name"]
+              if any(case.find(tag) is not None for tag in ("skipped", "failure", "error")):
+                  raise SystemExit(f"Expected test did not pass: {name}")
+              print(f"PASS {case.attrib.get('classname', '')}::{name}")
+          PY
+
+      - name: Upload exact run evidence
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: interop-acceptance-165c4753-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/interop-acceptance-evidence/
+          if-no-files-found: error
+          retention-days: 14
