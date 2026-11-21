@@ -1833,7 +1833,8 @@ pub struct BatcherConfig {
     #[config(default_t = true)]
     pub enabled: bool,
 
-    /// SYSCOIN: Maximum time a batch stays open before being sealed.
+    /// SYSCOIN: Time limit for sealing a batch with settlement work. On a Gateway-settled edge,
+    /// a batch containing only interop root imports waits for other work or an explicit boundary.
     ///
     /// The deadline is computed as `first_block_timestamp + batch_timeout`, where
     /// `first_block_timestamp` is the L2 timestamp of the first block in the batch. Using an
