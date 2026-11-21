@@ -1,4 +1,4 @@
-use crate::batcher::batch_deadline_policy::deadline_from_block_timestamp;
+use crate::batcher::batch_deadline_policy::{BatchDeadlineAnchor, deadline_from_block_timestamp};
 use crate::batcher::bitcoin_da_native_evidence::{NativeDaEvidence, NativeDaEvidenceProvider};
 use crate::batcher::bitcoin_da_publication_queue::{
     BitcoinDaPublicationQueue, NormalPublicationTurn,
@@ -414,11 +414,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         state_reporter: &ComponentStateReporter,
         force_interop_companion: bool,
     ) -> anyhow::Result<Option<BatchForSigning<ProverInput>>> {
-        // Armed once we reach `last_persisted_block`, using the first block's timestamp.
         let mut deadline: Option<Pin<Box<Sleep>>> = None;
-        // Captured from the very first block added to the batch, even during catch-up replay.
-        // This is the stable anchor for the deadline: it does not shift when the server restarts.
-        let mut first_block_timestamp: Option<u64> = None;
+        let mut deadline_anchor = BatchDeadlineAnchor::new(self.pubdata_mode);
 
         let batch_number = prev_batch_info.batch_number + 1;
         let mut blocks = vec![];
@@ -510,21 +507,17 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                                 "Adding block to a pending batch."
                             );
 
-                            // Always record the first block's timestamp as the stable deadline
-                            // anchor. This must happen before the last_persisted_block check so
-                            // that restarts do not shift the reference block forward to the
-                            // catch-up frontier.
-                            let first_block_timestamp = first_block_timestamp
-                                .get_or_insert(block.record.block_context.timestamp);
-
-                            // Arm the timer only once catch-up replay is complete. The deadline
-                            // itself is derived from first_block_timestamp — not from the block
-                            // that trips this condition — so it remains stable across restarts.
+                            // The first block anchors the deadline across restarts. Resource and
+                            // interop boundaries still apply while the timer is disarmed.
                             if deadline.is_none()
-                                && block_number >= self.startup_config.last_persisted_block
+                                && let Some(first_block_timestamp) = deadline_anchor.observe_block(
+                                    block.record.block_context.timestamp,
+                                    &block.record.transactions,
+                                    block_number >= self.startup_config.last_persisted_block,
+                                )
                             {
                                 let (instant, unix_deadline) = deadline_from_block_timestamp(
-                                    *first_block_timestamp,
+                                    first_block_timestamp,
                                     self.batcher_config.batch_timeout,
                                 );
                                 tracing::info!(
