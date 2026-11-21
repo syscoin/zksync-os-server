@@ -100,19 +100,30 @@ async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
     // creation and proving under one deadline, then fail immediately if the combined prover exits
     // unsuccessfully instead of masking an app/VK/CRS/CLI failure behind a multi-hour poll.
     let proving_pipeline = tokio::time::timeout_at(deadline.into(), async {
+        let first_settlement_block = tester
+            .l1_provider()
+            .get_block_number()
+            .await?
+            .checked_add(1)
+            .context("NEVM block number overflow")?;
         let last_proven_batch = tester.prover_tester.last_proven_batch().await?;
-        let target_batch = last_proven_batch
-            .checked_add(2)
-            .expect("test batch number overflow");
-        let mut latest_batch = tester.l2_zk_provider.get_batch_number().await?;
-        while latest_batch < target_batch {
-            latest_batch = seal_probe_batch(&tester).await?;
-        }
+        let latest_batch = tester.l2_zk_provider.get_batch_number().await?;
+        // Restored batches may already have commitments or queued proof work.
+        let first_probe = seal_probe_batch(&tester).await?;
+        anyhow::ensure!(
+            first_probe > latest_batch.max(last_proven_batch),
+            "first probe must land in a new batch beyond the restored frontier"
+        );
+        let target_batch = seal_probe_batch(&tester).await?;
+        anyhow::ensure!(
+            target_batch > first_probe,
+            "second probe must land in a separate newly sealed batch"
+        );
 
         let remaining = deadline.saturating_duration_since(Instant::now());
         tester
             .prover_tester
-            .wait_for_batch_proven_with_timeout(target_batch, remaining)
+            .wait_for_batch_proven_from_block(target_batch, first_settlement_block, remaining)
             .await?;
         Ok::<_, anyhow::Error>(target_batch)
     });

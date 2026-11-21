@@ -299,7 +299,8 @@ jobs:
         run: |
           bash scripts/cargo-with-patched-zksync-os.sh ci-canonical-restore -- \
             nextest run --locked --release -p zksync_os_integration_tests \
-            --features prover-tests -E 'binary(prover) & test(~canonical_restore_smoke)'
+            --features prover-tests -E 'binary(prover) & test(~canonical_restore_smoke)' \
+            --no-tests fail
 
   ####################################
   #  Build prover integration tests  #
