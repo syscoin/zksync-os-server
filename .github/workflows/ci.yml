@@ -7,7 +7,6 @@ on:
      - 'ci/stress/**'
   pull_request:
 
-# Superseded stress runs may still be waiting for a self-hosted prover runner.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/ci/stress/') }}
@@ -21,7 +20,6 @@ env:
   RUST_BACKTRACE: 1
   TEST_RESULTS_XML: 'test-results.xml'
   PROVER_GPU_TESTS: 'prover-gpu-tests'
-  CUDAARCHS: '80;89;90'
   # Stress branches validate the exact branch head with the same 10 iterations as main.
   NEXTEST_ITERATIONS: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/ci/stress/')) && '--stress-count 10' || '' }}
 
@@ -281,33 +279,30 @@ jobs:
 
   canonical-restore-smoke:
     runs-on: ubuntu-24.04
-    env:
-      CARGO_BUILD_JOBS: '2'
+    permissions:
+      contents: read
+      statuses: read
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
-      - name: Verify the canonical Core/NEVM fixture
-        run: python3 scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture
+      - name: Test canonical qualification gate
+        run: python3 -B -m unittest scripts.tests.test_canonical_qualification
 
-      - name: Setup runner
-        uses: ./.github/actions/runner-setup
-
-      - name: Restore and start the canonical stack on CPU
+      # The private fixture and proof assets stay on the owned test infrastructure.
+      - name: Verify owned-host Core/NEVM restore
         env:
-          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-        run: |
-          bash scripts/cargo-with-patched-zksync-os.sh ci-canonical-restore -- \
-            nextest run --locked --release -p zksync_os_integration_tests \
-            --features prover-tests -E 'binary(prover) & test(~canonical_restore_smoke)' \
-            --no-tests fail
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+        run: python3 -I -B .github/scripts/check-canonical-qualification.py cpu
 
   ####################################
   #  Build prover integration tests  #
   ####################################
   build-prover-tests:
-    # The canonical stack must start on CPU before reserving prover runners.
-    needs: canonical-restore-smoke
     runs-on: ubuntu-24.04
     env:
       CARGO_BUILD_JOBS: '2'
@@ -338,42 +333,24 @@ jobs:
           if-no-files-found: error
           retention-days: 1 # delete sooner to not waste storage
 
-  #################################################
-  #  Run prover integration tests on GPU machine  #
-  #################################################
   prover-tests:
-    runs-on: [matterlabs-ci-hetzner-rtx6000-gpu]
-    needs: build-prover-tests
+    runs-on: ubuntu-24.04
+    needs: [canonical-restore-smoke, build-prover-tests]
+    permissions:
+      contents: read
+      statuses: read
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Setup runner
-        uses: ./.github/actions/runner-setup
-
-      - name: Check Nvidia driver version
-        run: |
-          echo $WORKSPACE
-          pwd
-          nvidia-smi
-
-      - name: Download prebuilt tests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ env.PROVER_GPU_TESTS }}
+          fetch-depth: 2
+          persist-credentials: false
 
-      # --workspace-remap is mandatory (!)
-      # Otherwise, the prebuilt binary will not be able to find its dependencies and fails to execute
-      - name: Run prover tests on GPU
-        run: |
-          set -euo pipefail
-          python3 scripts/apply-era-contracts-syscoin-release.py --check-canonical-prover-assets
-          export WORKSPACE_DIR="${GITHUB_WORKSPACE}"
-          ulimit -s 300000
-          cargo nextest run -E 'binary(prover) & not test(~canonical_restore_smoke)' --no-capture \
-            --no-tests fail \
-            --archive-file "${PROVER_GPU_TESTS}.tar.zst" \
-            --workspace-remap "${GITHUB_WORKSPACE}"
+      - name: Verify owned-host CUDA proof and settlement
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+        run: python3 -I -B .github/scripts/check-canonical-qualification.py cuda
 
   ###############################
   #     Configs smoke test      #

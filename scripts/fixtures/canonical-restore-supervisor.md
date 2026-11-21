@@ -55,3 +55,47 @@ After the mining command, each new Core block must advance the native NEVM
 commitment, and SysGeth must expose the immediately preceding commitment at
 its pinned height. This allows the native one-block buffer while ensuring the
 restored settlement chain continues advancing.
+
+## Hosted CI qualification
+
+Run the private lanes from the exact reviewed commit on the owned test
+infrastructure. Supply the fixture and configuration through
+`SYSCOIN_V32_CANONICAL_FIXTURE_DIR` and `SYSCOIN_CANONICAL_PRIVATE_CONFIG_DIR`.
+Check the complete fixture with
+`python3 -B scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture`.
+Run the CPU restore smoke before the CUDA proving lane.
+
+```sh
+bash scripts/cargo-with-patched-zksync-os.sh canonical-restore-smoke -- \
+  nextest run --locked --release -p zksync_os_integration_tests \
+  --features prover-tests -E 'binary(prover) & test(~canonical_restore_smoke)' \
+  --no-tests fail
+
+python3 -B scripts/apply-era-contracts-syscoin-release.py --check-canonical-prover-assets
+bash scripts/cargo-with-patched-zksync-os.sh canonical-settlement-cuda -- \
+  nextest run --locked --release -p zksync_os_integration_tests \
+  --features gpu-prover-tests -E 'binary(prover) & not test(~canonical_restore_smoke)' \
+  --no-tests fail
+```
+
+The CUDA lane uses the pinned worker binary, guest, and compact CRS supplied
+through `SYSCOIN_V8_PROVER_BIN`, `SYSCOIN_V8_APP_BIN`, and `COMPACT_CRS_FILE`.
+Retain the private run evidence for both lanes. After each lane passes, the
+approved operator can attest its success on the exact tested commit in
+`syscoin/zksync-os-server`. Use the commit status context
+`syscoin/v32/canonical-restore-cpu` or `syscoin/v32/canonical-settlement-cuda`
+and the description `v1 tree=<git tree SHA> descriptor=<descriptor SHA-256>`.
+The digest must equal the descriptor verified by the private tests and
+registered by `--check-canonical-fixture-binding`. Publish only these public
+identities. Use the operator's separate, repository-scoped status credential
+outside Actions.
+
+`SYSCOIN_CANONICAL_QUALIFIER_ID` is the approved operator's numeric GitHub
+account ID in the repository's Actions variables. Hosted CI reads the latest
+status from that account for each lane with its own read-only token. The PR
+checkout accepts an exact attestation for the tested merge commit or for a PR
+head with the identical tree. A single two-parent merge pushed to `main` can
+reuse second-parent attestations when its tree is identical. A new tree,
+squash, or rebase requires attestations on the resulting commit. Rerun failed
+CI jobs after both statuses are available. Keep the normal CI build and test
+results in the review.
