@@ -539,3 +539,15 @@ add no advisory exceptions. Preserve the existing crypto-bigint and libz-sys
 dispositions and refresh the source, lock and metadata graph fingerprints
 after checking the resolved feature graph. The generated release head must
 receive its own guarded audit after the reviewed dependency fix lands on main.
+
+## Gateway edge idle batching re-review — 2026-11-21
+
+The batcher classifies transactions already accepted into a canonical block and
+keeps the timeout disarmed for a Gateway edge batch containing only interop root
+imports. The production diff changes scheduling and configuration documentation.
+It adds no native or cryptographic API calls, and the lockfile, dependency
+manifests, toolchain, build flags and linkage are unchanged. The regression uses
+the existing Gateway component fixture and its existing signing and RPC
+interfaces. The crypto-bigint and libz-sys callers remain in their recorded
+scopes. The source fingerprint covers this change; the guarded Linux scanners
+still need to pass on the resulting head.
