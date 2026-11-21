@@ -20,6 +20,7 @@ env:
   RUST_BACKTRACE: 1
   TEST_RESULTS_XML: 'test-results.xml'
   PROVER_GPU_TESTS: 'prover-gpu-tests'
+  CUDAARCHS: '80;89;90'
   # Stress branches validate the exact branch head with the same 10 iterations as main.
   NEXTEST_ITERATIONS: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/ci/stress/')) && '--stress-count 10' || '' }}
 
