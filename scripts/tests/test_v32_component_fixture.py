@@ -254,8 +254,10 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertEqual(smoke.count('python3 scripts/fixtures/verify-v32-component-fixture.py'), 2)
         prover = (ROOT / "integration-tests/tests/prover.rs").read_text()
         self.assertIn('#![cfg(feature = "prover-tests")]', prover)
-        self.assertIn('fake_fri_provers.enabled = false', prover)
-        self.assertIn('fake_snark_provers.enabled = false', prover)
+        self.assertEqual(prover.count('CanonicalTestStack::start().await?'), 2)
+        restored = (ROOT / "integration-tests/src/canonical_restore.rs").read_text()
+        self.assertIn('!config.prover_api_config.fake_fri_provers.enabled', restored)
+        self.assertIn('!config.prover_api_config.fake_snark_provers.enabled', restored)
 
     def test_config_cleanup_waits_for_nodes_before_removing_database(self):
         smoke = (ROOT / ".github/scripts/test-configs.sh").read_text()
