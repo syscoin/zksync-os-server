@@ -11,6 +11,14 @@ use zk_os_basic_system::system_implementation::flat_storage_model::{
 };
 use zksync_os_interface::traits::{PreimageSource, ReadStorage};
 
+#[derive(Debug, thiserror::Error)]
+pub enum StateOverrideError {
+    #[error(
+        "full storage replacement via `state` is unsupported. Use `stateDiff` for sparse overrides"
+    )]
+    FullStateOverrideUnsupported,
+}
+
 /// Trait for providing storage and preimage overrides.
 /// Allows different implementations: owned HashMaps for RPC calls, or shared data for sequencer.
 /// Requires 'static because it's used in types that implement ReadStorage/PreimageSource.
@@ -87,9 +95,12 @@ impl<V: ViewState, O: OverrideProvider> OverriddenStateView<V, O> {
 // Convenience constructors for common cases
 impl<V: ViewState> OverriddenStateView<V, OwnedOverrides> {
     /// Create from RPC StateOverride.
-    pub fn with_state_overrides(inner: V, state_overrides: StateOverride) -> Self {
-        let overrides = build_state_override_maps(&inner, state_overrides);
-        Self::new(inner, overrides)
+    pub fn with_state_overrides(
+        inner: V,
+        state_overrides: StateOverride,
+    ) -> Result<Self, StateOverrideError> {
+        let overrides = build_state_override_maps(&inner, state_overrides)?;
+        Ok(Self::new(inner, overrides))
     }
 
     /// Create with only preimage overrides.
@@ -126,22 +137,18 @@ impl<V: ViewState, O: OverrideProvider> PreimageSource for OverriddenStateView<V
 pub fn build_state_override_maps<V: ViewState>(
     inner: &V,
     state_overrides: StateOverride,
-) -> OwnedOverrides {
+) -> Result<OwnedOverrides, StateOverrideError> {
     let mut storage: HashMap<B256, B256> = HashMap::new();
     let mut preimages: HashMap<B256, Vec<u8>> = HashMap::new();
 
     // `StateOverride` is a map-like structure of Address => AccountOverride
     for (address, account) in state_overrides {
-        // Merge `state` and `state_diff` if present. Latter should take precedence on overlap.
-        if let Some(state) = account.state {
-            for (slot, value) in state {
-                let flat_key = derive_flat_storage_key(
-                    &B160::from_be_bytes(address.into_array()),
-                    &(slot.0.into()),
-                );
-                storage.insert(B256::from(flat_key.as_u8_array()), value);
-            }
+        if account.state.is_some() {
+            // Flat storage reads receive a hash of the address and slot, so this view
+            // cannot zero omitted slots for a specific account.
+            return Err(StateOverrideError::FullStateOverrideUnsupported);
         }
+
         if let Some(state_diff) = account.state_diff {
             for (slot, value_override) in state_diff {
                 let flat_key = derive_flat_storage_key(
@@ -179,7 +186,7 @@ pub fn build_state_override_maps<V: ViewState>(
         }
     }
 
-    OwnedOverrides::new(storage, preimages)
+    Ok(OwnedOverrides::new(storage, preimages))
 }
 
 // SYSCOIN: exposes the account-properties slot key so callers that create internal
@@ -190,4 +197,86 @@ pub fn account_properties_storage_key(address: Address) -> B256 {
         &address_into_special_storage_key(&B160::from_be_bytes(address.into_array())),
     );
     B256::from(key.as_u8_array())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::rpc::types::state::AccountOverride;
+
+    #[derive(Debug, Clone, Default)]
+    struct MockState {
+        storage: HashMap<B256, B256>,
+        preimages: HashMap<B256, Vec<u8>>,
+    }
+
+    impl ReadStorage for MockState {
+        fn read(&mut self, key: B256) -> Option<B256> {
+            self.storage.get(&key).copied()
+        }
+    }
+
+    impl PreimageSource for MockState {
+        fn get_preimage(&mut self, hash: B256) -> Option<Vec<u8>> {
+            self.preimages.get(&hash).cloned()
+        }
+    }
+
+    fn flat_key(address: Address, slot: B256) -> B256 {
+        let flat_key =
+            derive_flat_storage_key(&B160::from_be_bytes(address.into_array()), &(slot.0.into()));
+        B256::from(flat_key.as_u8_array())
+    }
+
+    #[test]
+    fn state_diff_overrides_sparse_slots_and_falls_back_for_others() {
+        let address = Address::from([0x11; 20]);
+        let overridden_slot = B256::from([0x22; 32]);
+        let fallback_slot = B256::from([0x33; 32]);
+        let base_value = B256::from([0x44; 32]);
+        let override_value = B256::from([0x55; 32]);
+        let fallback_value = B256::from([0x66; 32]);
+
+        let state = MockState {
+            storage: HashMap::from([
+                (flat_key(address, overridden_slot), base_value),
+                (flat_key(address, fallback_slot), fallback_value),
+            ]),
+            preimages: HashMap::new(),
+        };
+        let overrides = StateOverride::from_iter([(
+            address,
+            AccountOverride::default().with_state_diff([(overridden_slot, override_value)]),
+        )]);
+
+        let mut view =
+            OverriddenStateView::with_state_overrides(state, overrides).expect("stateDiff works");
+
+        assert_eq!(
+            view.read(flat_key(address, overridden_slot)),
+            Some(override_value)
+        );
+        assert_eq!(
+            view.read(flat_key(address, fallback_slot)),
+            Some(fallback_value)
+        );
+    }
+
+    #[test]
+    fn full_state_override_is_rejected_instead_of_treated_as_sparse_diff() {
+        let address = Address::from([0x11; 20]);
+        let slot = B256::from([0x22; 32]);
+        let value = B256::from([0x55; 32]);
+        for account in [
+            AccountOverride::default().with_state([]),
+            AccountOverride::default().with_state([(slot, value)]),
+        ] {
+            let overrides = StateOverride::from_iter([(address, account)]);
+            let result = OverriddenStateView::with_state_overrides(MockState::default(), overrides);
+            assert!(matches!(
+                result,
+                Err(StateOverrideError::FullStateOverrideUnsupported)
+            ));
+        }
+    }
 }

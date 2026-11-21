@@ -25,7 +25,7 @@ use zksync_os_interface::{
 };
 use zksync_os_storage_api::{
     BlockContext, BlockHashes, RepositoryError, StateError, ViewState,
-    state_override_view::OverriddenStateView,
+    state_override_view::{OverriddenStateView, StateOverrideError},
 };
 use zksync_os_tx_validators::policy_client::{AccessType, PolicyClient, PolicySession};
 use zksync_os_types::ZksyncOsEncode;
@@ -355,7 +355,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         let state_view = OverriddenStateView::with_state_overrides(
             storage_view,
             state_overrides.unwrap_or_default(),
-        );
+        )?;
 
         // SYSCOIN: Isolate concurrent traces and never trust an unsigned sender exemption.
         // Read intent because `eth_call` is read-only.
@@ -406,7 +406,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             Some(overrides) => call_trace_simulate(
                 execution_env.transaction,
                 execution_env.block_context,
-                OverriddenStateView::with_state_overrides(storage_view, overrides),
+                OverriddenStateView::with_state_overrides(storage_view, overrides)?,
                 call_config,
                 CallTracerLimits::from_config(&self.config),
             ),
@@ -449,7 +449,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         let limits = js_tracer::tracer::JsTracerLimits::from_config(&self.config);
         let mut tracer_output = match state_overrides {
             Some(overrides) => {
-                let view = OverriddenStateView::with_state_overrides(storage_view, overrides);
+                let view = OverriddenStateView::with_state_overrides(storage_view, overrides)?;
                 let mut tracer = js_tracer::tracer::JsTracer::new(view.clone(), js_cfg, limits)
                     .map_err(|e| EthCallError::ForwardSubsystemError(anyhow::anyhow!(e)))?;
 
@@ -519,7 +519,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 request,
                 block_context,
                 admission_block_context,
-                OverriddenStateView::with_state_overrides(storage_view, overrides),
+                OverriddenStateView::with_state_overrides(storage_view, overrides)?,
             ),
             None => self.estimate_gas_with_view(
                 request,
@@ -1069,6 +1069,8 @@ pub enum EthCallError {
     Repository(#[from] RepositoryError),
     #[error(transparent)]
     State(#[from] StateError),
+    #[error(transparent)]
+    StateOverride(#[from] StateOverrideError),
 
     /// Error occurred during debug tracing
     #[error("Tracer error: {0:?}")]
