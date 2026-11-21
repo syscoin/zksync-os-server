@@ -54,6 +54,14 @@ impl ProverTester {
     /// Checks batch status by verifying that the proof has been verified on L1.
     /// Returns `true` if batch has been proven and verified on L1, `false` otherwise.
     pub async fn check_batch_status(&self, batch_number: u64) -> anyhow::Result<bool> {
+        self.check_batch_status_from_block(batch_number, 0).await
+    }
+
+    async fn check_batch_status_from_block(
+        &self,
+        batch_number: u64,
+        first_settlement_block: u64,
+    ) -> anyhow::Result<bool> {
         // Try to get bridgehub address from L2, fallback to default
         let bridgehub_address = self.l2_zk_provider.get_bridgehub_contract().await?;
         let chain_id = self.l2_provider.get_chain_id().await?;
@@ -74,12 +82,17 @@ impl ProverTester {
         );
 
         let blocks_verification_signature = keccak256(b"BlocksVerification(uint256,uint256)");
+        let sl_provider = self.gateway_provider.as_ref().unwrap_or(&self.l1_provider);
+        if first_settlement_block != 0
+            && sl_provider.get_block_number().await? < first_settlement_block
+        {
+            return Ok(false);
+        }
         let filter = Filter::new()
             .event_signature(blocks_verification_signature)
             .address(diamond_proxy_address)
-            .from_block(0)
+            .from_block(first_settlement_block)
             .to_block(BlockNumberOrTag::Latest);
-        let sl_provider = self.gateway_provider.as_ref().unwrap_or(&self.l1_provider);
         let logs = sl_provider.get_logs(&filter).await?;
         if logs.is_empty() {
             tracing::info!("no `BlocksVerification` events discovered on L1");
@@ -132,11 +145,23 @@ impl ProverTester {
         batch_number: u64,
         timeout: Duration,
     ) -> anyhow::Result<()> {
+        self.wait_for_batch_proven_from_block(batch_number, 0, timeout)
+            .await
+    }
+
+    pub async fn wait_for_batch_proven_from_block(
+        &self,
+        batch_number: u64,
+        first_settlement_block: u64,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             anyhow::anyhow!("proof wait timeout {timeout:?} exceeds the monotonic clock range")
         })?;
         loop {
-            let status = self.check_batch_status(batch_number).await?;
+            let status = self
+                .check_batch_status_from_block(batch_number, first_settlement_block)
+                .await?;
             if status {
                 return Ok(());
             }

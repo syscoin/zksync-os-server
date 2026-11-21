@@ -277,7 +277,21 @@ impl TestEnvironment {
         .await
     }
 
-    pub async fn launch(mut self, mut config: Config) -> anyhow::Result<Tester> {
+    pub async fn launch(self, config: Config) -> anyhow::Result<Tester> {
+        self.launch_inner(config, true).await
+    }
+
+    /// Exercise the same startup and production verifier checks without attaching a worker.
+    #[cfg(feature = "prover-tests")]
+    pub async fn launch_without_prover(self, config: Config) -> anyhow::Result<Tester> {
+        self.launch_inner(config, false).await
+    }
+
+    async fn launch_inner(
+        mut self,
+        mut config: Config,
+        #[cfg_attr(not(feature = "prover-tests"), allow(unused_variables))] start_prover: bool,
+    ) -> anyhow::Result<Tester> {
         Tester::bind_runtime_config(
             &self.l1,
             self.prepared_runtime.tempdir.as_ref(),
@@ -300,7 +314,7 @@ impl TestEnvironment {
         // SYSCOIN: Launch the external app-bound FRI+SNARK service only when its HTTP API is
         // explicitly enabled. An idle commit-only node also has fake FRI disabled, but must not
         // accidentally spawn a prover against an unbound endpoint.
-        let enable_prover = config.prover_api_config.enabled;
+        let enable_prover = start_prover && config.prover_api_config.enabled;
         let mut tester = Tester::launch_node_inner(
             self.l1,
             config,
@@ -714,7 +728,7 @@ impl Tester {
         }
         config.l1_provider_config.rpc_url = l1.address.clone();
         config.rpc_config.address = "0.0.0.0:0".to_string();
-        config.prover_api_config.address = "0.0.0.0:0".to_string();
+        config.prover_api_config.address = "127.0.0.1:0".to_string();
         config.prover_api_config.proof_storage.path = tempdir.path().join("proof_storage_path");
         config.status_server_config.address = "0.0.0.0:0".to_string();
         config.network_config.address = Ipv4Addr::LOCALHOST;

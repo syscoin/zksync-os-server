@@ -4,10 +4,12 @@ use alloy::network::{ReceiptResponse, TransactionBuilder};
 use alloy::primitives::{Address, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
+use anyhow::Context;
 use std::time::{Duration, Instant};
 use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
 use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, Tester, test_multisetup};
+use zksync_os_server::config::Config;
 
 async fn seal_probe_batch(tester: &Tester) -> anyhow::Result<u64> {
     let receipt = tester
@@ -29,12 +31,12 @@ async fn seal_probe_batch(tester: &Tester) -> anyhow::Result<u64> {
         .await?)
 }
 
-// SYSCOIN: A fresh production deployment proves only the canonical V32/V8 lane; the retired
-// V30 fixture must not silently reintroduce a legacy proving graph into this launch gate.
-#[test_multisetup([CURRENT_TO_L1])]
-async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
-    // Test that the prover can aggregate and settle the minimum production range.
+async fn configure_prover_test(env: &TestEnvironment) -> anyhow::Result<Config> {
     let mut config = env.default_config().await?;
+    anyhow::ensure!(
+        config.batcher_config.bitcoin_da_rpc_url.is_some(),
+        "canonical prover tests require the restored Syscoin Core DA endpoint"
+    );
     // SYSCOIN: Production V32 proving is a single app-bound real FRI+SNARK lane; opt into the
     // external prover API explicitly instead of constructing the prohibited real/fake hybrid.
     config.prover_api_config.enabled = true;
@@ -50,6 +52,33 @@ async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
     config.prover_api_config.fri_job_timeout = Duration::from_secs(48 * 3600);
     config.prover_api_config.snark_job_timeout = Duration::from_secs(48 * 3600);
     config.batcher_config.batch_timeout = Duration::from_millis(100);
+    Ok(config)
+}
+
+#[test_multisetup([CURRENT_TO_L1])]
+async fn canonical_restore_smoke(env: TestEnvironment) -> anyhow::Result<()> {
+    let config = configure_prover_test(&env).await?;
+    let tester = env.launch_without_prover(config).await?;
+    let probe = tokio::time::timeout(Duration::from_secs(60), async {
+        anyhow::ensure!(
+            tester.l1_provider().get_chain_id().await? == 31337
+                && tester.l2_provider.get_chain_id().await? == 57001,
+            "canonical smoke requires Gateway 57001 settling on NEVM 31337"
+        );
+        seal_probe_batch(&tester).await?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    tester.shutdown().await?;
+    probe.context("canonical CPU startup probe timed out")?
+}
+
+// SYSCOIN: A fresh production deployment proves only the canonical V32/V8 lane; the retired
+// V30 fixture must not silently reintroduce a legacy proving graph into this launch gate.
+#[test_multisetup([CURRENT_TO_L1])]
+async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
+    // Test that the prover can aggregate and settle the minimum production range.
+    let config = configure_prover_test(&env).await?;
     let mut tester = env.launch(config).await?;
     let mut prover_service_task = tester
         .take_prover_service_task()
@@ -71,19 +100,30 @@ async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
     // creation and proving under one deadline, then fail immediately if the combined prover exits
     // unsuccessfully instead of masking an app/VK/CRS/CLI failure behind a multi-hour poll.
     let proving_pipeline = tokio::time::timeout_at(deadline.into(), async {
+        let first_settlement_block = tester
+            .l1_provider()
+            .get_block_number()
+            .await?
+            .checked_add(1)
+            .context("NEVM block number overflow")?;
         let last_proven_batch = tester.prover_tester.last_proven_batch().await?;
-        let target_batch = last_proven_batch
-            .checked_add(2)
-            .expect("test batch number overflow");
-        let mut latest_batch = tester.l2_zk_provider.get_batch_number().await?;
-        while latest_batch < target_batch {
-            latest_batch = seal_probe_batch(&tester).await?;
-        }
+        let latest_batch = tester.l2_zk_provider.get_batch_number().await?;
+        // Restored batches may already have commitments or queued proof work.
+        let first_probe = seal_probe_batch(&tester).await?;
+        anyhow::ensure!(
+            first_probe > latest_batch.max(last_proven_batch),
+            "first probe must land in a new batch beyond the restored frontier"
+        );
+        let target_batch = seal_probe_batch(&tester).await?;
+        anyhow::ensure!(
+            target_batch > first_probe,
+            "second probe must land in a separate newly sealed batch"
+        );
 
         let remaining = deadline.saturating_duration_since(Instant::now());
         tester
             .prover_tester
-            .wait_for_batch_proven_with_timeout(target_batch, remaining)
+            .wait_for_batch_proven_from_block(target_batch, first_settlement_block, remaining)
             .await?;
         Ok::<_, anyhow::Error>(target_batch)
     });
