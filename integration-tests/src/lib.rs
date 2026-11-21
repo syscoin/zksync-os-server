@@ -1648,7 +1648,7 @@ fn spawn_prover_child(
     tester: &Tester,
     sequencer_urls: &[String],
     iterations: Option<usize>,
-    launcher: Option<&std::path::Path>,
+    launcher: Option<(&std::path::Path, String)>,
 ) -> anyhow::Result<tokio::process::Child> {
     let protocol_version = tester.chain_layout.protocol_version();
     assert_eq!(protocol_version, PROTOCOL_VERSION_V32_0);
@@ -1668,14 +1668,20 @@ fn spawn_prover_child(
     let path = std::env::var("SYSCOIN_V8_PROVER_BIN")
         .context("SYSCOIN_V8_PROVER_BIN must point to the app-bound Syscoin V8 prover")?;
 
-    let executable = launcher.unwrap_or_else(|| std::path::Path::new(&path));
+    let executable = launcher.as_ref().map_or_else(
+        || std::path::Path::new(&path),
+        |(executable, _)| *executable,
+    );
     let mut command = tokio::process::Command::new(executable);
-    if let Some(launcher_path) = launcher {
+    if let Some((launcher_path, proof_scope)) = launcher {
         anyhow::ensure!(
             launcher_path.is_absolute() && launcher_path.is_file(),
             "SYSCOIN_V8_PROVER_LAUNCHER must name an absolute operator-provisioned file"
         );
-        command.arg(&path).stdin(std::process::Stdio::piped());
+        command
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .env("SYSCOIN_V8_CANONICAL_PROOF_SCOPE", proof_scope);
     }
     if let Some(iterations) = iterations {
         command.arg("--iterations").arg(iterations.to_string());

@@ -100,7 +100,7 @@ async fn prove_fresh_gateway_batches(
         .checked_add(proving_timeout)
         .context("SYSCOIN_V8_PROVING_TIMEOUT_SECS exceeds the monotonic clock range")?;
     // Probe batches must postdate both the local and on-chain proof frontiers restored from disk.
-    let (first_settlement_block, baseline, first_probe, second_probe) =
+    let (first_settlement_block, unproven_from, baseline, first_probe, second_probe) =
         tokio::time::timeout_at(deadline.into(), async {
             let first_settlement_block = tester
                 .l1_provider()
@@ -108,11 +108,15 @@ async fn prove_fresh_gateway_batches(
                 .await?
                 .checked_add(1)
                 .context("NEVM block number overflow")?;
+            let proved_before = tester.prover_tester.last_proven_batch().await?;
+            let unproven_from = proved_before
+                .checked_add(1)
+                .context("batch number overflow")?;
             let baseline = tester
                 .l2_zk_provider
                 .get_batch_number()
                 .await?
-                .max(tester.prover_tester.last_proven_batch().await?);
+                .max(proved_before);
             let first_probe = seal_probe_batch(tester).await?;
             ensure!(
                 first_probe.sealed_through_batch > baseline,
@@ -124,12 +128,21 @@ async fn prove_fresh_gateway_batches(
                     && second_probe.sealed_through_batch > first_probe.sealed_through_batch,
                 "second probe was not in a new Gateway batch"
             );
-            Ok::<_, anyhow::Error>((first_settlement_block, baseline, first_probe, second_probe))
+            Ok::<_, anyhow::Error>((
+                first_settlement_block,
+                unproven_from,
+                baseline,
+                first_probe,
+                second_probe,
+            ))
         })
         .await
         .context("timed out sealing fresh canonical Gateway batches")??;
-    let mut worker = stack.start_gateway_worker()?;
     let target_batch = second_probe.sealed_through_batch;
+    let probe_batches = [first_probe.sealed_through_batch, target_batch];
+    let mut worker =
+        stack.start_gateway_worker(unproven_from, probe_batches, first_settlement_block)?;
+    let external_worker = worker.stdin.is_some();
 
     let proving = tokio::time::timeout_at(deadline.into(), async {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -149,6 +162,12 @@ async fn prove_fresh_gateway_batches(
             first_batch > baseline && second_batch > first_batch && second_batch <= target_batch,
             "the submitted proof did not cover two distinct fresh probe batches"
         );
+        if external_worker {
+            ensure!(
+                [first_batch, second_batch] == probe_batches,
+                "settled probe batches differ from the external worker's reviewed window"
+            );
+        }
         Ok::<_, anyhow::Error>(())
     });
     tokio::pin!(proving);
@@ -173,7 +192,7 @@ async fn prove_fresh_gateway_batches(
 
 async fn stop_worker(worker: &mut tokio::process::Child) -> anyhow::Result<()> {
     if let Some(lifetime) = worker.stdin.take() {
-        // The SSH launcher reaps its remote worker before acknowledging local EOF.
+        // The external launcher acknowledges EOF after its worker is finished.
         drop(lifetime);
         let stopped = tokio::time::timeout(Duration::from_secs(45), worker.wait()).await;
         if let Ok(status) = stopped {

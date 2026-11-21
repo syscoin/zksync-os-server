@@ -369,6 +369,7 @@ pub struct CanonicalTestStack {
     edges: Vec<Tester>,
     supervisor: Supervisor,
     core: CoreRpc,
+    descriptor_sha256: &'static str,
 }
 
 impl CanonicalTestStack {
@@ -435,6 +436,7 @@ impl CanonicalTestStack {
             edges: Vec::new(),
             supervisor,
             core,
+            descriptor_sha256: digest,
         };
         let startup = timeout(STARTUP_TIMEOUT, stack.start_nodes(&l1, ready.roles))
             .await
@@ -457,15 +459,28 @@ impl CanonicalTestStack {
         self.supervisor.ensure_alive()
     }
 
-    pub fn start_gateway_worker(&self) -> anyhow::Result<tokio::process::Child> {
+    pub fn start_gateway_worker(
+        &self,
+        unproven_from: u64,
+        probe_batches: [u64; 2],
+        first_settlement_block: u64,
+    ) -> anyhow::Result<tokio::process::Child> {
         let gateway = self.gateway();
         let url = gateway
             .prover_api_url()
             .context("canonical Gateway prover API missing")?;
-        // Keep the private settlement state on its owned host when the CUDA worker
-        // connects through a dedicated loopback tunnel on another machine.
         let launcher = std::env::var_os("SYSCOIN_V8_PROVER_LAUNCHER");
-        spawn_prover_child(gateway, &[url], None, launcher.as_deref().map(Path::new))
+        let launcher = launcher.as_deref().map(|path| {
+            let scope = json!({
+                "descriptor_sha256": self.descriptor_sha256,
+                "unproven_from": unproven_from,
+                "first_probe_batch": probe_batches[0],
+                "second_probe_batch": probe_batches[1],
+                "first_settlement_block": first_settlement_block,
+            });
+            (Path::new(path), scope.to_string())
+        });
+        spawn_prover_child(gateway, &[url], None, launcher)
     }
 
     async fn start_nodes(&mut self, l1: &TestL1, roles: RestoredRoles) -> anyhow::Result<()> {
