@@ -88,11 +88,9 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
     def test_bound_private_source_disables_public_fixture_output(self):
         result = self.run_guard(self.preflight)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.repo_path / "output").read_text(), "ready=false\nmode=private\n")
+        self.assertFalse((self.repo_path / "output").exists())
         self.assertIn("do not open or package it", (self.repo_path / "summary").read_text())
-        archive = self.workflow.split("      - name: Archive certified local chains\n", 1)[1].split(
-            "      - name:", 1)[0]
-        self.assertIn("git archive --format=tar.gz", archive)
+        self.assertNotIn("local-chains.tar.gz", self.workflow)
 
     def test_invalid_private_binding_never_uses_legacy_fallback(self):
         with self.checker.open("a") as output:
@@ -128,10 +126,6 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("canonical fixture regeneration marker is present", result.stderr)
         self.assertFalse((self.repo_path / "output").exists())
-        smoke = self.workflow.split("      - name: Check block production with certified canonical fixture\n", 1)[1]
-        self.assertIn("if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}", smoke.split("        env:", 1)[0])
-        archive = self.workflow.split("      - name: Archive certified local chains\n", 1)[1]
-        self.assertIn("if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}", archive.split("        run:", 1)[0])
         self.assertNotIn("--clobber", self.workflow)
 
     def test_fixture_free_config_smoke_uses_empty_working_directory(self):
@@ -153,9 +147,8 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
             "zksync-os-server-v1-x86_64-unknown-linux-gnu.tar.gz",
             "zksync-os-server-v1-aarch64-unknown-linux-gnu.tar.gz",
             "zksync-os-server-v1-universal-apple-darwin.tar.gz",
-            "local-chains.tar.gz",
         )
-        env = {**os.environ, "TARGET_TAG": "v1", "FIXTURE_READY": "true"}
+        env = {**os.environ, "TARGET_TAG": "v1"}
         def run():
             return subprocess.run(["bash", "-c", script], cwd=self.repo_path, env=env,
                                   text=True, capture_output=True).returncode
@@ -173,8 +166,6 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.assertNotEqual(run(), 0)
         (dist / names[0]).unlink()
         (dist / names[0]).write_bytes(b"archive")
-        (dist / "local-chains.tar.gz").unlink()
-        env["FIXTURE_READY"] = "false"
         self.assertEqual(run(), 0)
         (dist / "local-chains.tar.gz").write_bytes(b"archive")
         self.assertNotEqual(run(), 0)
@@ -190,6 +181,8 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
                         staging.index("      - name: Stage complete release archives"))
         self.assertLess(staging.index("      - name: Stage complete release archives"),
                         staging.index("      - name: Upload staged release archives"))
+        self.assertIn('.buildDefinition.internalParameters.syscoinCanonicalFixture = "false"', staging)
+        self.assertIn('fixture_ready:"false"', staging)
         self.assertNotIn("      - name: Upload immutable release artifacts", staging)
         artifact = "name: server-release-${{ inputs.tag }}-${{ inputs.source_sha }}"
         self.assertIn(artifact, staging)
@@ -206,7 +199,7 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         sha = "a" * 40
         url = "https://github.com/example/attestation/1"
         env = {**os.environ, "RELEASE_TAG": tag, "RELEASE_SOURCE_SHA": sha,
-               "FIXTURE_READY": "false", "GITHUB_RUN_ID": "123", "ATTESTATION_URL": url}
+               "GITHUB_RUN_ID": "123", "ATTESTATION_URL": url}
         names = (
             "zksync-os-server-v1-x86_64-unknown-linux-gnu.tar.gz",
             "zksync-os-server-v1-aarch64-unknown-linux-gnu.tar.gz",
@@ -243,6 +236,7 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.assertNotEqual(run(url_value="https://example.invalid"), 0)
         self.assertNotEqual(run(remove=names[0]), 0)
         self.assertNotEqual(run(extra="unexpected.tar.gz"), 0)
+        self.assertNotEqual(run(extra="local-chains.tar.gz"), 0)
         self.assertNotEqual(run(symlink=True), 0)
 
     def test_all_release_targets_use_standard_hosted_runners(self):

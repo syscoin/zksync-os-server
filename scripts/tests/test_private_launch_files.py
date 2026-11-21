@@ -1,4 +1,4 @@
-# SYSCOIN: Bounded private-file and smoke-verdict regressions, with no deployment or live RPC.
+# SYSCOIN: Bounded private-file regressions, with no deployment or live RPC.
 from __future__ import annotations
 
 import ast
@@ -167,26 +167,6 @@ class PrivateLaunchFileTests(unittest.TestCase):
             self.explorer["read_or_create_key"](path)
         path.chmod(0o600)
         self.assertEqual(self.explorer["read_or_create_key"](path), "existing key")
-
-
-class ReleaseSmokeVerdictTests(unittest.TestCase):
-    def test_missing_hash_empty_transactions_and_rpc_error_fail_the_step(self):
-        source = (ROOT / ".github/workflows/release-bins.yml").read_text(encoding="utf-8")
-        start = source.index('          if echo "${FIRST_BLOCK}" | jq -e')
-        branch = source[start:source.index("          fi", start) + len("          fi")]
-        for response, expected in [
-            ('{"result":{"hash":"0x1","transactions":["0x2"]}}', 0),
-            ('{"result":{"transactions":["0x2"]}}', 1),
-            ('{"result":{"hash":"0x1","transactions":[]}}', 1),
-            ('{"error":{"code":-32603}}', 1),
-        ]:
-            with self.subTest(response=response):
-                result = subprocess.run(
-                    ["bash", "-e", "-c", branch],
-                    env={**os.environ, "FIRST_BLOCK": response, "SERVER_LOGFILE": os.devnull},
-                    capture_output=True, text=True,
-                )
-                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
