@@ -43,7 +43,10 @@ jobs:
       - name: Test the mainnet signing domains and app-bound Gateway preflight
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts.tests.test_mainnet_edge_identity
       - name: Test release qualification policy
-        run: python3 -B -m unittest scripts.tests.test_canonical_qualification
+        run: >-
+          python3 -B -m unittest
+          scripts.tests.test_canonical_qualification
+          scripts.tests.test_prepare_qualified_release
 
   ############################
   #       Build server       #

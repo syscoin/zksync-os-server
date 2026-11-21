@@ -97,13 +97,14 @@ release commit. The workflow reads the latest status from that account for
 both lanes with its own read-only token. Both must match that commit, its Git
 tree, and the registered private descriptor.
 
-The binary publisher, the binary recovery workflow, and versioned Docker
-publishing require that same exact qualification. A tag must peel to the
-qualified commit. Retrying the same tag and commit reuses the original CPU
-and CUDA results while the latest trusted statuses still succeed. A new merge
-commit, version bump, squash, or rebase needs qualification at the resulting
-commit. Creating a release tag or publishing release-note metadata does not
-certify its assets. The private fixture remains on the owned test host.
+The release workflow stages a private untagged draft before qualification.
+It creates the public version tag and publishes the draft after both statuses
+pass. The binary publisher, the binary recovery workflow, and versioned
+Docker publishing also require that same exact qualification. Retrying the
+same tag and commit reuses the original CPU and CUDA results while the latest
+trusted statuses still succeed. A new merge commit, version bump, squash,
+or rebase needs qualification at the resulting commit. The private fixture
+remains on the owned test host. [Release workflow](../../.github/release-please/README.md)
 
 Ordinary PRs, main pushes, and stress CI keep their normal builds and tests,
 including the prover integration test compilation. They need no private proof

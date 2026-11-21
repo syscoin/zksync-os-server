@@ -3,9 +3,25 @@
 Release-please uses the repository's `GITHUB_TOKEN` on GitHub-hosted Linux.
 Repository settings must permit Actions to create pull requests. GitHub places
 checks for token-created or token-updated release PRs in an approval-required
-state; a maintainer must approve them before merging. Release binaries and images
-are invoked in the same run using the exact release tag and peeled source SHA,
-because token-created tags do not trigger other push workflows.
+state. A maintainer must approve them before merging.
+
+The Release Please action prepares and updates version PRs. Once the generated
+PR merges, the workflow stages a private, untagged GitHub draft at that exact
+merge SHA. This leaves the public tag and release announcement for the
+qualification gate. The workflow defers the next generated version PR while
+the current version is still awaiting publication because Release Please
+discovers the previous release through its tag. Ordinary main builds and the
+development Docker `:latest` tag continue. [Release Please draft behavior](https://github.com/googleapis/release-please/blob/main/docs/manifest-releaser.md)
+
+After the exact draft commit has passed both private checks, rerun the failed
+release jobs or dispatch **Release-please** on `main` with the draft's release
+ID, version tag and full source SHA. The workflow verifies all three against
+the draft and checks the current trusted CPU and CUDA statuses. It creates
+the version tag at the selected SHA, checks the ref and publishes that draft.
+The binaries and images use the same checked tag and source. A newer main
+commit cannot change the selected source. If GitHub refuses to create the
+exact ref, publication stops. If publication is interrupted after tag
+creation, retry the same inputs. [Canonical qualification](../../scripts/fixtures/canonical-restore-supervisor.md#canonical-release-qualification) · [Git reference API](https://docs.github.com/en/rest/git/refs#create-a-reference)
 
 Binary release archives are staged together as an Actions artifact after the
 builds, smoke tests and attestation. If publication fails, rerun the failed
