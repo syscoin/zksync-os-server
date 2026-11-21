@@ -80,12 +80,19 @@ def harness_process_is_running(pid: int) -> bool:
     proc_stat = Path(f"/proc/{pid}/stat")
     try:
         state = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
-        return state != "Z"
+        return state not in {"Z", "X"}
     except ProcessLookupError:
         # Linux can open stat successfully, then return ESRCH from read when
         # the already-terminated test child is reaped between these checks.
         return False
-    except (FileNotFoundError, IndexError):
+    except FileNotFoundError:
+        # Distinguish reaping between signal zero and stat from a host without procfs.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+    except IndexError:
         return True
 
 
@@ -9810,7 +9817,7 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
             with patch.object(Path, "read_text", side_effect=ProcessLookupError(3, "No such process")):
                 self.assertFalse(harness_process_is_running(123))
             kill_probe.assert_called_once_with(123, 0)
-            for state, expected in (("R", True), ("S", True), ("Z", False)):
+            for state, expected in (("R", True), ("S", True), ("Z", False), ("X", False)):
                 with self.subTest(state=state), patch.object(
                     Path, "read_text", return_value=f"123 (test child) {state} 1 2 3"
                 ):
@@ -9824,6 +9831,10 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
             with patch.object(Path, "read_text", side_effect=PermissionError()):
                 with self.assertRaises(PermissionError):
                     harness_process_is_running(123)
+        with patch.object(os, "kill", side_effect=[None, ProcessLookupError()]), patch.object(
+            Path, "read_text", side_effect=FileNotFoundError()
+        ):
+            self.assertFalse(harness_process_is_running(123))
         with patch.object(os, "kill", side_effect=ProcessLookupError()):
             with patch.object(Path, "read_text") as read_stat:
                 self.assertFalse(harness_process_is_running(123))
@@ -9832,9 +9843,10 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
     def test_gateway_jobs_are_bounded_exact_and_signal_safe(self) -> None:
         def assert_process_stopped(pid: int) -> None:
             deadline = time.monotonic() + 1
-            while harness_process_is_running(pid) and time.monotonic() < deadline:
+            while harness_process_is_running(pid):
+                if time.monotonic() >= deadline:
+                    self.fail(f"PID {pid} is still running")
                 time.sleep(0.02)
-            self.assertFalse(harness_process_is_running(pid), f"PID {pid} is still running")
 
         command = r'''
 source "$COMMON"
