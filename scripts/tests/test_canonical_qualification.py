@@ -131,13 +131,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("continue-on-error:", fields)
         return steps
 
-    def live_check_before(self, steps, mutation, checker, *, versioned=False):
+    def live_check_before(self, steps, mutation, checker, *, versioned=False, versioned_write=False):
         writes = [i for i, step in enumerate(steps) if mutation in step]
         self.assertEqual(len(writes), 1, mutation)
         index = writes[0]
         self.assertGreater(index, 0, mutation)
         write = steps[index]
-        self.assertNotIn("\n        if:", write)
+        versioned_condition = "if: ${{ inputs.tag_name || github.ref_type == 'tag' }}"
+        if versioned_write:
+            self.assertIn(versioned_condition, write)
+        else:
+            self.assertNotIn("\n        if:", write)
         self.assertNotIn("continue-on-error:", write)
         gate = steps[index - 1]
         self.assertIn(f'python3 -I -B {checker}' + ' --source-sha "${RELEASE_SOURCE_SHA}"', gate)
@@ -145,7 +149,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}", gate)
         self.assertNotIn("continue-on-error:", gate)
         if versioned:
-            self.assertIn("if: ${{ inputs.tag_name || github.ref_type == 'tag' }}", gate)
+            self.assertIn(versioned_condition, gate)
         else:
             self.assertNotIn("\n        if:", gate)
         return gate
@@ -225,7 +229,20 @@ class WorkflowTests(unittest.TestCase):
     def test_versioned_docker_qualification_precedes_publication_and_keeps_main_latest(self):
         docker = (WORKFLOWS / "docker.yml").read_text()
         steps = self.publishing_steps("docker.yml", "build-images")
-        push = self.live_check_before(steps, "uses: docker/build-push-action@", '"${checker}"', versioned=True)
+        builds = [step for step in steps if "uses: docker/build-push-action@" in step]
+        self.assertEqual(len(builds), 1)
+        build = builds[0]
+        push = self.live_check_before(
+            steps, "skopeo copy --all --preserve-digests", '"${checker}"',
+            versioned=True, versioned_write=True,
+        )
+        self.assertLess(steps.index(build), steps.index(push))
+        self.assertIn("push: ${{ !(inputs.tag_name || github.ref_type == 'tag') }}", build)
+        self.assertIn(
+            "outputs: ${{ (inputs.tag_name || github.ref_type == 'tag') && "
+            "format('type=oci,tar=false,dest={0}/versioned-image', runner.temp) || '' }}", build,
+        )
+        self.assertNotIn("provenance:", build)
         attest = self.live_check_before(steps, "push-to-registry: true", '"${checker}"', versioned=True)
         for gate in (push, attest):
             self.assertIn("RELEASE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}", gate)

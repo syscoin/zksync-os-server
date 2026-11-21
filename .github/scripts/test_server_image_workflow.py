@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the release-image source binding and non-publishing CI checks."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -84,11 +85,83 @@ class ServerImageWorkflowTests(unittest.TestCase):
         self.assertNotIn('matterlabs-infra', WORKFLOW)
         self.assertIn("github.ref == 'refs/heads/main' && inputs.tag_name == ''", WORKFLOW)
         self.assertIn('push-to-registry: true', WORKFLOW)
-        self.assertIn('image_digest: ${{ steps.build.outputs.digest }}', WORKFLOW)
+        published_digest = "${{ steps.publish-versioned.outputs.digest || steps.build.outputs.digest }}"
+        self.assertIn(f'image_digest: {published_digest}', WORKFLOW)
+        self.assertIn(f'subject-digest: {published_digest}', WORKFLOW)
+        self.assertIn('image_digest: ${{ needs.build-images.outputs.image_digest }}', WORKFLOW)
         self.assertIn('image: ${{ inputs.image_name }}@${{ inputs.image_digest }}', SBOM)
         self.assertIn("io.syscoin.server.image-digest", SBOM)
         self.assertIn("io.syscoin.server.source-sha", SBOM)
         self.assertIn('duplicate server identity', SBOM)
+
+    def test_versioned_registry_publication_preserves_the_exported_manifest(self):
+        promotion = command_block("Publish qualified versioned image")
+        self.assertIn("index.json", promotion)
+        self.assertIn("sha256sum", promotion)
+        self.assertIn("skopeo copy --all --preserve-digests", promotion)
+        self.assertIn("--digestfile", promotion)
+        self.assertIn("skopeo inspect --raw", promotion)
+        self.assertLess(promotion.index("sha256sum"), promotion.index("skopeo copy"))
+        self.assertLess(promotion.index("skopeo copy"), promotion.index("skopeo inspect --raw"))
+        self.assertLess(promotion.index("skopeo inspect --raw"), promotion.index("GITHUB_OUTPUT"))
+        self.assertNotIn("docker load", promotion)
+
+    def test_versioned_promotion_requires_matching_local_and_registry_manifests(self):
+        layout = self.directory / 'versioned-image'
+        blobs = layout / 'blobs' / 'sha256'
+        blobs.mkdir(parents=True)
+        manifest = b'{"schemaVersion":2,"manifests":[]}'
+        digest = hashlib.sha256(manifest).hexdigest()
+        indexed_digest = f'sha256:{digest}'
+        (layout / 'index.json').write_text(json.dumps({'manifests': [{'digest': indexed_digest}]}))
+        (blobs / digest).write_bytes(manifest)
+        remote = self.directory / 'registry-manifest'
+        copies = self.directory / 'registry-copies'
+        skopeo = self.directory / 'skopeo'
+        skopeo.write_text(textwrap.dedent('''\
+            #!/bin/sh
+            set -eu
+            case "$1" in
+                copy)
+                    test "$2" = --all
+                    test "$3" = --preserve-digests
+                    test "$6" = --digestfile
+                    printf '%s\\n' "$9" >> "$REGISTRY_COPIES"
+                    printf '%s' "$COPY_DIGEST" > "$7"
+                    ;;
+                inspect)
+                    test "$2" = --raw
+                    cat "$REGISTRY_MANIFEST"
+                    ;;
+                *) exit 1 ;;
+            esac
+        '''))
+        skopeo.chmod(0o700)
+        values = {
+            'PATH': f'{self.directory}{os.pathsep}{os.environ["PATH"]}',
+            'RUNNER_TEMP': str(self.directory),
+            'DOCKER_CONFIG': str(self.directory),
+            'IMAGE_NAME': 'ghcr.io/syscoin/test-image',
+            'VERSION': 'v1.2.3',
+            'REGISTRY_MANIFEST': str(remote),
+            'REGISTRY_COPIES': str(copies),
+        }
+        for expected, manifest_bytes, copy_digest, copy_count, succeeds in (
+            (indexed_digest, manifest, indexed_digest, 1, True),
+            ('sha256:' + '0' * 64, manifest, indexed_digest, 0, False),
+            (indexed_digest, manifest, 'sha256:' + '0' * 64, 1, False),
+            (indexed_digest, b'foreign manifest', indexed_digest, 1, False),
+        ):
+            with self.subTest(expected=expected, copied=copy_digest, published=manifest_bytes):
+                self.output.write_text('')
+                remote.write_bytes(manifest_bytes)
+                copies.write_text('')
+                result = self.run_block('Publish qualified versioned image', **{
+                    **values, 'EXPECTED_DIGEST': expected, 'COPY_DIGEST': copy_digest,
+                })
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                self.assertEqual(copies.read_text(), 'docker://ghcr.io/syscoin/test-image:v1.2.3\n' * copy_count)
+                self.assertEqual(self.output.read_text(), f'digest={indexed_digest}\n' if succeeds else '')
 
     def test_provenance_binds_source_and_rejects_conflict(self):
         uri = 'git+https://github.com/syscoin/zksync-os-server@refs/tags/v1.2.3'
