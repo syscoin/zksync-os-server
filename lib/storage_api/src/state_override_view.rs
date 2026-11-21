@@ -189,6 +189,16 @@ pub fn build_state_override_maps<V: ViewState>(
     Ok(OwnedOverrides::new(storage, preimages))
 }
 
+// SYSCOIN: exposes the account-properties slot key so callers that create internal
+// balance overrides can remove only those synthetic account writes from overlays.
+pub fn account_properties_storage_key(address: Address) -> B256 {
+    let key = derive_flat_storage_key(
+        &ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
+        &address_into_special_storage_key(&B160::from_be_bytes(address.into_array())),
+    );
+    B256::from(key.as_u8_array())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,14 +279,4 @@ mod tests {
             ));
         }
     }
-}
-
-// SYSCOIN: exposes the account-properties slot key so callers that create internal
-// balance overrides can remove only those synthetic account writes from overlays.
-pub fn account_properties_storage_key(address: Address) -> B256 {
-    let key = derive_flat_storage_key(
-        &ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
-        &address_into_special_storage_key(&B160::from_be_bytes(address.into_array())),
-    );
-    B256::from(key.as_u8_array())
 }
