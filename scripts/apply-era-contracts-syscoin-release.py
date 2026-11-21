@@ -230,6 +230,8 @@ def check_canonical_prover_assets(server, paths, fixture=None):
     for name, path in paths.items():
         require(path, "missing asset path for " + name)
         exact(Path(path), proof[name])
+    # The combined worker loads the executable segment from this sibling file.
+    exact(Path(paths["app_bin_sha256"]).with_suffix(".text"), worker["app_text_sha256"])
     return descriptor_sha
 
 

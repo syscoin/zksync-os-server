@@ -110,9 +110,15 @@ class ActivationTests(unittest.TestCase):
             "v2_prover": {name: proof[name] for name in (
                 "program_commitment", "worker_commit", "app_bin_sha256")},
         }
+        app_text = self.server / "app.text"
+        manifest["v2_prover"]["app_text_sha256"] = put(app_text, b"release text segment")["sha256"]
         with patch.object(M, "load_bundle", return_value=(None, manifest)):
             self.assertEqual(M.check_canonical_prover_assets(self.server, assets),
                              self.binding["descriptor_sha256"])
+            app_text.write_bytes(b"foreign text segment")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                M.check_canonical_prover_assets(self.server, assets)
+            app_text.write_bytes(b"release text segment")
             assets["combined_prover_sha256"].write_bytes(b"foreign worker")
             with self.assertRaisesRegex(ValueError, "SHA-256"):
                 M.check_canonical_prover_assets(self.server, assets)

@@ -461,7 +461,10 @@ impl CanonicalTestStack {
         let url = gateway
             .prover_api_url()
             .context("canonical Gateway prover API missing")?;
-        spawn_prover_child(gateway, &[url], None)
+        // Keep the private settlement state on its owned host when the CUDA worker
+        // connects through a dedicated loopback tunnel on another machine.
+        let launcher = std::env::var_os("SYSCOIN_V8_PROVER_LAUNCHER");
+        spawn_prover_child(gateway, &[url], None, launcher.as_deref().map(Path::new))
     }
 
     async fn start_nodes(&mut self, l1: &TestL1, roles: RestoredRoles) -> anyhow::Result<()> {

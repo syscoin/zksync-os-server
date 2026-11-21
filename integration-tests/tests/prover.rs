@@ -155,7 +155,7 @@ async fn prove_fresh_gateway_batches(
     tokio::select! {
         biased;
         result = &mut proving => {
-            let cleanup = worker.kill().await.context("failed to stop and reap the proof worker");
+            let cleanup = stop_worker(&mut worker).await;
             result.with_context(|| format!("full V8 proving pipeline exceeded {proving_timeout:?}"))?
                 .and(cleanup)?;
         }
@@ -169,4 +169,29 @@ async fn prove_fresh_gateway_batches(
         "fresh app-bound Gateway V8 proof settled on the active NEVM verifier"
     );
     Ok(())
+}
+
+async fn stop_worker(worker: &mut tokio::process::Child) -> anyhow::Result<()> {
+    if let Some(lifetime) = worker.stdin.take() {
+        // The SSH launcher reaps its remote worker before acknowledging local EOF.
+        drop(lifetime);
+        let stopped = tokio::time::timeout(Duration::from_secs(45), worker.wait()).await;
+        if let Ok(status) = stopped {
+            let status = status.context("failed to reap the CUDA worker launcher")?;
+            ensure!(
+                status.success(),
+                "CUDA worker launcher shutdown failed: {status}"
+            );
+            return Ok(());
+        }
+        worker
+            .kill()
+            .await
+            .context("could not stop the CUDA worker launcher after timeout")?;
+        anyhow::bail!("CUDA worker launcher did not acknowledge shutdown");
+    }
+    worker
+        .kill()
+        .await
+        .context("failed to stop and reap the proof worker")
 }
