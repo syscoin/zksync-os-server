@@ -83,15 +83,16 @@ pub fn deadline_from_block_timestamp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::{B256, U256};
     use zksync_os_contract_interface::InteropRoot;
     use zksync_os_types::SystemTxEnvelope;
 
     fn import_root(log_id: u64) -> ZkTransaction {
         SystemTxEnvelope::import_interop_roots(
             vec![InteropRoot {
-                chainId: 57001.into(),
-                blockOrBatchNumber: log_id.into(),
-                sides: vec![],
+                chainId: U256::from(57001),
+                blockOrBatchNumber: U256::from(log_id),
+                sides: vec![B256::repeat_byte(1)],
             }],
             log_id,
         )
