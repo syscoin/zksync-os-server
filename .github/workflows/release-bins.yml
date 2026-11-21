@@ -338,6 +338,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      statuses: read
     steps:
       - name: Checkout release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -389,8 +390,22 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .release-publication-tooling
-          sparse-checkout: scripts/release
+          sparse-checkout: |
+            scripts/release/
+            .github/scripts/check-canonical-qualification.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
+
+      - name: Recheck canonical qualification before publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C .release-publication-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          [[ -z "$(git -C .release-publication-tooling status --porcelain --untracked-files=all)" ]]
+          python3 -I -B .release-publication-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
 
       - name: Upload immutable release artifacts
         env:
@@ -403,6 +418,17 @@ jobs:
           [[ "$(git -C .release-publication-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
           [[ -z "$(git -C .release-publication-tooling status --porcelain --untracked-files=all)" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
           python3 -B .release-publication-tooling/scripts/release/publish-release-assets.py "${RELEASE_TAG}" dist/*.tar.gz
+
+      - name: Recheck canonical qualification before updating release notes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C .release-publication-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          [[ -z "$(git -C .release-publication-tooling status --porcelain --untracked-files=all)" ]]
+          python3 -I -B .release-publication-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
 
       - name: Update release
         env:

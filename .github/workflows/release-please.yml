@@ -88,6 +88,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      statuses: read
     outputs:
       tag_name: ${{ steps.release.outputs.tag }}
       source_sha: ${{ steps.release.outputs.source_sha }}
@@ -98,7 +99,9 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: release-tooling
-          sparse-checkout: scripts/release/prepare-qualified-release.py
+          sparse-checkout: |
+            scripts/release/prepare-qualified-release.py
+            .github/scripts/check-canonical-qualification.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -112,6 +115,18 @@ jobs:
       - name: Check reviewed release inputs for the qualified source
         working-directory: release-source
         run: python3 scripts/check-server-release-inputs.py
+
+      - name: Recheck canonical qualification before publication
+        working-directory: release-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          RELEASE_SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C ../release-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          python3 -I -B ../release-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
 
       - name: Publish the exact verified release
         id: release

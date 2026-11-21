@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import re
 import subprocess
 import unittest
 from unittest.mock import Mock, patch
@@ -121,6 +122,81 @@ class ReleaseTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def publishing_steps(self, workflow, name):
+        text = (WORKFLOWS / workflow).read_text().split("\njobs:\n", 1)[1]
+        job = re.search(rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text)
+        self.assertIsNotNone(job, f"{workflow} must keep the {name} job")
+        fields, *steps = job[1].split("\n      - name: ")
+        self.assertRegex(fields, r"(?m)^      statuses: read$")
+        self.assertNotIn("continue-on-error:", fields)
+        return steps
+
+    def live_check_before(self, steps, mutation, checker, *, versioned=False):
+        writes = [i for i, step in enumerate(steps) if mutation in step]
+        self.assertEqual(len(writes), 1, mutation)
+        index = writes[0]
+        self.assertGreater(index, 0, mutation)
+        write = steps[index]
+        self.assertNotIn("\n        if:", write)
+        self.assertNotIn("continue-on-error:", write)
+        gate = steps[index - 1]
+        self.assertIn(f'python3 -I -B {checker}' + ' --source-sha "${RELEASE_SOURCE_SHA}"', gate)
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", gate)
+        self.assertIn("SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}", gate)
+        self.assertNotIn("continue-on-error:", gate)
+        if versioned:
+            self.assertIn("if: ${{ inputs.tag_name || github.ref_type == 'tag' }}", gate)
+        else:
+            self.assertNotIn("\n        if:", gate)
+        return gate
+
+    def trusted_checkout(self, steps, path):
+        checkouts = [s for s in steps if "ref: ${{ job.workflow_sha }}" in s
+                     and (path is None or f"\n          path: {path}\n" in s)]
+        self.assertEqual(len(checkouts), 1)
+        self.assertIn("uses: actions/checkout@", checkouts[0])
+        self.assertIn("repository: ${{ job.workflow_repository }}", checkouts[0])
+        return checkouts[0]
+
+    def test_release_ref_and_metadata_publication_recheck_exact_attestations(self):
+        steps = self.publishing_steps("release-please.yml", "publish")
+        checkout = self.trusted_checkout(steps, "release-tooling")
+        self.assertIn(".github/scripts/check-canonical-qualification.py", checkout)
+        gate = self.live_check_before(
+            steps, "scripts/release/prepare-qualified-release.py publish",
+            "../release-tooling/.github/scripts/check-canonical-qualification.py",
+        )
+        self.assertIn("working-directory: release-source", gate)
+        sha = "${{ needs.release-please.outputs.source_sha }}"
+        self.assertIn(f"RELEASE_SOURCE_SHA: {sha}", gate)
+        self.assertTrue(any(f"ref: {sha}" in step and "path: release-source" in step for step in steps))
+        self.assertTrue(any(f"SELECTED_SOURCE_SHA: {sha}" in step for step in steps))
+
+    def test_binary_publication_and_recovery_recheck_exact_attestations(self):
+        for workflow, job, tooling_path, checker, write in (
+            ("release-bins.yml", "publish-bins", ".release-publication-tooling",
+             ".release-publication-tooling/.github/scripts/check-canonical-qualification.py",
+             "scripts/release/publish-release-assets.py"),
+            ("release-bins.yml", "publish-bins", ".release-publication-tooling",
+             ".release-publication-tooling/.github/scripts/check-canonical-qualification.py",
+             'gh release edit "${RELEASE_TAG}"'),
+            ("resume-release-bins.yml", "resume", None,
+             "../.github/scripts/check-canonical-qualification.py",
+             "scripts/release/resume-release-bins.py publish staged-release"),
+        ):
+            with self.subTest(workflow=workflow, write=write):
+                steps = self.publishing_steps(workflow, job)
+                self.trusted_checkout(steps, tooling_path)
+                gate = self.live_check_before(steps, write, checker)
+                self.assertIn("RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}", (WORKFLOWS / workflow).read_text())
+                preceding = "\n".join(steps[:steps.index(gate)])
+                self.assertIn("ref: refs/tags/${{ inputs.tag }}", preceding)
+                self.assertIn('^{commit}', preceding)
+                self.assertIn('== "${RELEASE_SOURCE_SHA}"', preceding)
+                if tooling_path is None:
+                    self.assertIn("path: release-source", preceding)
+                    self.assertIn("working-directory: release-source", gate)
+
     def test_pr_main_and_stress_keep_compilation_without_private_status_checks(self):
         ci = (WORKFLOWS / "ci.yml").read_text()
         self.assertIn("  pull_request:", ci)
@@ -148,11 +224,14 @@ class WorkflowTests(unittest.TestCase):
 
     def test_versioned_docker_qualification_precedes_publication_and_keeps_main_latest(self):
         docker = (WORKFLOWS / "docker.yml").read_text()
-        stage = docker.split("Verify canonical qualification for a versioned release", 1)[1]
-        self.assertIn("if: ${{ inputs.tag_name || github.ref_type == 'tag' }}", stage)
-        self.assertIn("RELEASE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}", stage)
-        self.assertLess(docker.index("Verify canonical qualification"),
-                        docker.index("Login to GitHub Container Registry"))
+        steps = self.publishing_steps("docker.yml", "build-images")
+        push = self.live_check_before(steps, "uses: docker/build-push-action@", '"${checker}"', versioned=True)
+        attest = self.live_check_before(steps, "push-to-registry: true", '"${checker}"', versioned=True)
+        for gate in (push, attest):
+            self.assertIn("RELEASE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}", gate)
+            self.assertIn("TOOLING_SHA: ${{ job.workflow_sha }}", gate)
+            self.assertIn('git show "${TOOLING_SHA}:.github/scripts/check-canonical-qualification.py"', gate)
+        self.assertIn('| cmp - "${checker}"', attest)
         self.assertIn("type=raw,value=latest,enable=", docker)
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tag_name == ''",
                       docker)
