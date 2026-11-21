@@ -190,7 +190,7 @@ fn workspace_dir() -> &'static Path {
 }
 
 /// Load config from the given list of paths, each layered on top of the previous.
-async fn load_config_from_paths(config_paths: &[PathBuf]) -> Config {
+pub(crate) async fn load_config_from_paths(config_paths: &[PathBuf]) -> Config {
     let config_schema = Config::schema();
     let mut config_sources = ConfigSources::default();
     load_config_file_sources(&mut config_sources, config_paths);

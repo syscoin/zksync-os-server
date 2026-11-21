@@ -1,5 +1,5 @@
 use crate::config::{ChainLayout, load_chain_config};
-use crate::{AnvilL1, BATCH_VERIFICATION_ADDRESSES, BATCH_VERIFICATION_KEYS};
+use crate::{BATCH_VERIFICATION_ADDRESSES, BATCH_VERIFICATION_KEYS, TestL1};
 use alloy::primitives::Address;
 use blake2::{Blake2s256, Digest};
 use httpmock::Method::POST;
@@ -44,7 +44,7 @@ pub fn make_full_pipeline_config(config: &mut Config) {
 }
 
 pub(crate) async fn build_node_config(
-    l1: &AnvilL1,
+    l1: &TestL1,
     chain_layout: ChainLayout<'static>,
     with_proofs: bool,
 ) -> anyhow::Result<Config> {
@@ -273,7 +273,7 @@ pub async fn run_component_fixture_bootstrap(
             .map_err(anyhow::Error::msg)?;
         let timestamp = crate::l1_state_timestamp(&state_bytes)?;
         drop(state_bytes);
-        // Match AnvilL1's fixture clock; new batches must not jump ahead of
+        // Match the component fixture clock; new batches must not jump ahead of
         // the smoke test's explicitly timestamped Anvil settlement layer.
         config.sequencer_config.block_timestamp_offset_seconds =
             i64::try_from(timestamp)?.saturating_sub(i64::try_from(now())?);

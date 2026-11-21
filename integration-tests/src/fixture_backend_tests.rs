@@ -159,7 +159,7 @@ fn real_inventory_validates_without_anvil_or_restore_fallback() {
         inventory
             .anvil_state(root.path())
             .unwrap_err()
-            .contains("not implemented")
+            .contains("canonical restore adapter")
     );
     assert!(!root.path().join("l1-state.json").exists());
     assert!(!root.path().join("l1-state.json.gz").exists());

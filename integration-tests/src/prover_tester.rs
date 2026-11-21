@@ -1,7 +1,9 @@
 use alloy::eips::BlockNumberOrTag;
+use alloy::network::ReceiptResponse;
 use alloy::primitives::{U256, keccak256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::Filter;
+use anyhow::Context;
 use std::time::{Duration, Instant};
 use zksync_os_alloy_ext::network::Zksync;
 use zksync_os_alloy_ext::provider::ZksyncApi;
@@ -108,6 +110,37 @@ impl ProverTester {
 
                 // Check if our batch_number is within the verified range
                 if batch_u256 > previous_verified && batch_u256 <= current_verified {
+                    if first_settlement_block != 0 {
+                        let number = log
+                            .block_number
+                            .context("verification event has no block number")?;
+                        let block_hash = log
+                            .block_hash
+                            .context("verification event has no block hash")?;
+                        let tx_hash = log
+                            .transaction_hash
+                            .context("verification event has no transaction hash")?;
+                        if log.removed || number < first_settlement_block {
+                            continue;
+                        }
+                        let Some(receipt) = sl_provider.get_transaction_receipt(tx_hash).await?
+                        else {
+                            continue;
+                        };
+                        let canonical_block =
+                            sl_provider.get_block_by_number(number.into()).await?;
+                        anyhow::ensure!(
+                            receipt.status()
+                                && receipt.block_number() == Some(number)
+                                && receipt.block_hash() == Some(block_hash)
+                                && canonical_block
+                                    .is_some_and(|block| block.header.hash == block_hash),
+                            "fresh proof verification event has no successful canonical settlement receipt"
+                        );
+                        if l1_state.last_proved_batch < batch_number {
+                            continue;
+                        }
+                    }
                     tracing::info!(
                         batch_number,
                         "batch #{batch_number} was proved by log `BlocksVerification({}, {})`",

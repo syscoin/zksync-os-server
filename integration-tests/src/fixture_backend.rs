@@ -1,5 +1,5 @@
-//! SYSCOIN: Shared build/runtime fixture inventory boundary, not a snapshot restorer.
-//! A valid inventory is never permission to start Core/NEVM or use Anvil APIs.
+//! SYSCOIN: Shared build/runtime fixture inventory boundary.
+//! The canonical harness launches the exact authenticated restore tool separately.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -136,7 +136,7 @@ pub struct CoreNevmInventory {
     pub proof_identities: FileIdentity,
     pub deployment_record: FileIdentity,
     pub clean_boundary: FileIdentity,
-    /// Exact bytes only; interpreting/restoring this schema is deliberately unsupported.
+    /// Exact archive layout consumed by the authenticated restore tool.
     pub snapshot_manifest: FileIdentity,
     pub snapshots: Vec<RoleArtifact<SnapshotRole>>,
     pub tools: Vec<RoleArtifact<ToolRole>>,
@@ -456,10 +456,15 @@ impl ValidatedFixtureInventory {
                 descriptor.compressed_state.verify(root)?,
                 Some(&descriptor.decompressed_state),
             )),
-            Self::Descriptor(FixtureDescriptor { backend: BackendDescriptor::AnvilComponent {
-                compressed_state, decompressed_state }, .. }) =>
-                Ok((compressed_state.verify(root)?, Some(decompressed_state))),
-            Self::Descriptor(_) => Err("Core/NEVM is not Anvil state; real snapshot restore/runtime adapter is not implemented".into()),
+            Self::Descriptor(FixtureDescriptor {
+                backend:
+                    BackendDescriptor::AnvilComponent {
+                        compressed_state,
+                        decompressed_state,
+                    },
+                ..
+            }) => Ok((compressed_state.verify(root)?, Some(decompressed_state))),
+            Self::Descriptor(_) => Err("Core/NEVM must use the canonical restore adapter".into()),
         }
     }
 
