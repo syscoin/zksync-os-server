@@ -639,9 +639,18 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(git("diff", "--binary"), worktree_before)
 
     def test_explicit_fixture_check_marker_first_and_environment_cannot_override(self):
-        env = dict(os.environ, CANONICAL_BINDING="approved", PROVER_MODE="gpu")
-        result = subprocess.run(["python3", "-B", str(ROOT / "scripts/apply-era-contracts-syscoin-release.py"),
-                                 "--check-canonical-fixture"], env=env, capture_output=True, text=True)
+        with tempfile.TemporaryDirectory() as directory:
+            server = Path(directory).resolve()
+            marker = server / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
+            put(marker, b"pending fixture\n")
+            external = server / "external-fixture"
+            external.mkdir()
+            entrypoint = server / "scripts/apply-era-contracts-syscoin-release.py"
+            put(entrypoint, Path(M.__file__).read_bytes())
+            env = dict(os.environ, CANONICAL_BINDING="approved", PROVER_MODE="gpu",
+                       SYSCOIN_V32_CANONICAL_FIXTURE_DIR=str(external))
+            result = subprocess.run(["python3", "-B", str(entrypoint), "--check-canonical-fixture"],
+                                    env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("regeneration marker", result.stderr)
         self.assertNotIn("git", result.stderr)
