@@ -42,6 +42,8 @@ jobs:
           persist-credentials: false
       - name: Test the mainnet signing domains and app-bound Gateway preflight
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts.tests.test_mainnet_edge_identity
+      - name: Test release qualification policy
+        run: python3 -B -m unittest scripts.tests.test_canonical_qualification
 
   ############################
   #       Build server       #
@@ -278,28 +280,6 @@ jobs:
           done
 
 
-  canonical-restore-smoke:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      statuses: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-
-      - name: Test canonical qualification gate
-        run: python3 -B -m unittest scripts.tests.test_canonical_qualification
-
-      # The private fixture and proof assets stay on the owned test infrastructure.
-      - name: Verify owned-host Core/NEVM restore
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
-        run: python3 -I -B .github/scripts/check-canonical-qualification.py cpu
-
   ####################################
   #  Build prover integration tests  #
   ####################################
@@ -333,25 +313,6 @@ jobs:
           path: ${{ github.workspace }}/${{ env.PROVER_GPU_TESTS }}.tar.zst
           if-no-files-found: error
           retention-days: 1 # delete sooner to not waste storage
-
-  prover-tests:
-    runs-on: ubuntu-24.04
-    needs: [canonical-restore-smoke, build-prover-tests]
-    permissions:
-      contents: read
-      statuses: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-
-      - name: Verify owned-host CUDA proof and settlement
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
-        run: python3 -I -B .github/scripts/check-canonical-qualification.py cuda
 
   ###############################
   #     Configs smoke test      #
@@ -400,9 +361,7 @@ jobs:
         build,
         test,
         format-and-lint,
-        canonical-restore-smoke,
         build-prover-tests,
-        prover-tests,
         check-wire-version,
         config-tests,
         mainnet-launch-identity,

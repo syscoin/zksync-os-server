@@ -56,7 +56,7 @@ commitment, and SysGeth must expose the immediately preceding commitment at
 its pinned height. This allows the native one-block buffer while ensuring the
 restored settlement chain continues advancing.
 
-## Hosted CI qualification
+## Canonical release qualification
 
 Run the private lanes from the exact reviewed commit on the owned test
 infrastructure. Supply the fixture and configuration through
@@ -91,11 +91,22 @@ identities. Use the operator's separate, repository-scoped status credential
 outside Actions.
 
 `SYSCOIN_CANONICAL_QUALIFIER_ID` is the approved operator's numeric GitHub
-account ID in the repository's Actions variables. Hosted CI reads the latest
-status from that account for each lane with its own read-only token. The PR
-checkout accepts an exact attestation for the tested merge commit or for a PR
-head with the identical tree. A single two-parent merge pushed to `main` can
-reuse second-parent attestations when its tree is identical. A new tree,
-squash, or rebase requires attestations on the resulting commit. Rerun failed
-CI jobs after both statuses are available. Keep the normal CI build and test
-results in the review.
+account ID in the repository's Actions variables. Run the manual **Canonical
+release qualification** workflow with `source_sha` set to the exact tested
+release commit. The workflow reads the latest status from that account for
+both lanes with its own read-only token. Both must match that commit, its Git
+tree, and the registered private descriptor.
+
+The binary publisher, the binary recovery workflow, and versioned Docker
+publishing require that same exact qualification. A tag must peel to the
+qualified commit. Retrying the same tag and commit reuses the original CPU
+and CUDA results while the latest trusted statuses still succeed. A new merge
+commit, version bump, squash, or rebase needs qualification at the resulting
+commit. Creating a release tag or publishing release-note metadata does not
+certify its assets. The private fixture remains on the owned test host.
+
+Ordinary PRs, main pushes, and stress CI keep their normal builds and tests,
+including the prover integration test compilation. They need no private proof
+status. An ordinary main push also retains its existing development image
+tags. A pending fixture blocks versioned publication while normal CI remains
+available.

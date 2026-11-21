@@ -2,9 +2,9 @@
 """Verify owned-host qualification without opening the private fixture."""
 
 import argparse
+from functools import cache
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
@@ -31,34 +31,17 @@ def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def candidate_commits(event_name, ref, event, checked, tree):
-    parents = git("show", "-s", "--format=%P", checked).split()
-    if event_name == "pull_request":
-        head = event["pull_request"]["head"]["sha"]
-        if len(parents) != 2 or head != parents[1]:
-            raise ValueError("checkout is not the PR event's merge commit")
-    elif event_name == "push" and ref == "refs/heads/main":
-        # A single main merge can retain the exact tested PR tree despite a new commit SHA.
-        head = parents[1] if len(parents) == 2 and parents[0] == event["before"] else None
-    elif event_name == "push":
-        head = None
-    else:
-        raise ValueError("unsupported canonical qualification event")
-
-    if head is not None and SHA.fullmatch(head) and git("rev-parse", f"{head}^{{tree}}") == tree:
-        return checked, head
-    return (checked,)
-
-
 def descriptor_hash():
     result = subprocess.check_output(
-        [sys.executable, "-B", "scripts/apply-era-contracts-syscoin-release.py",
+        [sys.executable, "-I", "-B", "scripts/apply-era-contracts-syscoin-release.py",
          "--check-canonical-fixture-binding"],
         text=True,
     )
     binding = json.loads(result)
     digest = binding["descriptor_sha256"]
-    if binding.get("fixture_mode") != "private" or not SHA256.fullmatch(digest):
+    if (binding.get("status") != "canonical_fixture_binding_checked"
+            or binding.get("fixture_mode") != "private" or not SHA256.fullmatch(digest)
+            or not int(digest, 16)):
         raise ValueError("invalid source-controlled canonical fixture binding")
     return digest
 
@@ -76,38 +59,48 @@ def status_page(token, sha, page):
         return json.load(response)
 
 
-def verify(candidates, tree, descriptor, creator_id, context, fetch_page):
+def verify(sha, tree, descriptor, creator_id, context, fetch_page):
     expected = f"v1 tree={tree} descriptor={descriptor}"
-    for sha in candidates:
-        # GitHub returns newest first. An earlier success cannot override a later
-        # update by the trusted account, including an explicit pending or failure.
-        for page in range(1, 11):
-            rows = fetch_page(sha, page)
-            if not isinstance(rows, list) or len(rows) > 100:
-                raise ValueError("invalid GitHub commit statuses response")
-            for row in rows:
-                creator = row.get("creator") or {}
-                status_creator = creator.get("id")
-                status_context = row.get("context")
-                if (type(status_creator) is not int or status_creator != creator_id
-                        or not isinstance(status_context, str)
-                        or status_context.casefold() != context):
-                    continue
-                if (status_context != context or row.get("state") != "success"
-                        or row.get("url") != f"{API}/statuses/{sha}"
-                        or row.get("description") != expected):
-                    raise ValueError(f"latest trusted {context} status does not qualify {sha}")
-                return sha
-            if len(rows) < 100:
-                break
-        else:
-            raise ValueError(f"GitHub status search exhausted for {sha}")
-    raise ValueError(f"missing trusted {context} status for the checked tree")
+    # GitHub returns newest first. A later pending or failure from the approved
+    # creator revokes its earlier success for this exact release commit.
+    for page in range(1, 11):
+        rows = fetch_page(sha, page)
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise ValueError("invalid GitHub commit statuses response")
+        for row in rows:
+            creator = row.get("creator") or {}
+            status_creator = creator.get("id")
+            status_context = row.get("context")
+            if (type(status_creator) is not int or status_creator != creator_id
+                    or not isinstance(status_context, str)
+                    or status_context.casefold() != context):
+                continue
+            if (status_context != context or row.get("state") != "success"
+                    or row.get("url") != f"{API}/statuses/{sha}"
+                    or row.get("description") != expected):
+                raise ValueError(f"latest trusted {context} status does not qualify {sha}")
+            return
+        if len(rows) < 100:
+            raise ValueError(f"missing trusted {context} status for release commit {sha}")
+    raise ValueError(f"GitHub status search exhausted for {sha}")
+
+
+def verify_release(source_sha, creator_id, fetch_page):
+    if not SHA.fullmatch(source_sha) or git("rev-parse", "HEAD") != source_sha:
+        raise ValueError("checkout is not the requested exact release commit")
+    git("diff", "--quiet", "HEAD", "--")
+    tree = git("rev-parse", "HEAD^{tree}")
+    descriptor = descriptor_hash()
+    # Qualify both lanes against the same response pages for this immutable SHA.
+    read_statuses = cache(fetch_page)
+    for context in CONTEXTS.values():
+        verify(source_sha, tree, descriptor, creator_id, context, read_statuses)
+    print(f"Verified owned CPU and CUDA qualification on {source_sha}, tree {tree}, descriptor {descriptor}.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("lane", choices=CONTEXTS)
+    parser.add_argument("--source-sha", required=True)
     args = parser.parse_args()
     configured_id = os.environ.get("SYSCOIN_CANONICAL_QUALIFIER_ID", "")
     if not re.fullmatch(r"[1-9][0-9]{0,19}", configured_id):
@@ -117,19 +110,7 @@ def main():
     token = os.environ.pop("GITHUB_TOKEN", "")
     if not token:
         raise ValueError("GitHub status read token is unavailable")
-    checked = git("rev-parse", "HEAD")
-    if not SHA.fullmatch(checked) or checked != os.environ["GITHUB_SHA"]:
-        raise ValueError("checkout is not the exact GitHub event commit")
-    git("diff", "--quiet", "HEAD", "--")
-    tree = git("rev-parse", "HEAD^{tree}")
-    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-    candidates = candidate_commits(os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REF"],
-                                  event, checked, tree)
-    descriptor = descriptor_hash()
-    context = CONTEXTS[args.lane]
-    tested = verify(candidates, tree, descriptor, int(configured_id), context,
-                    lambda sha, page: status_page(token, sha, page))
-    print(f"Verified {context} on tested commit {tested}, tree {tree}, descriptor {descriptor}.")
+    verify_release(args.source_sha, int(configured_id), lambda sha, page: status_page(token, sha, page))
 
 
 if __name__ == "__main__":

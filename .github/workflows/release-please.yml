@@ -55,6 +55,7 @@ jobs:
     needs: release-please
     permissions:
       contents: write
+      statuses: read
       id-token: write
       attestations: write
     uses: ./.github/workflows/release-bins.yml
@@ -67,6 +68,7 @@ jobs:
     needs: release-please
     permissions:
       contents: read
+      statuses: read
       packages: write
       id-token: write
       attestations: write

@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      statuses: read
       packages: write
       id-token: write
       attestations: write
@@ -114,6 +115,22 @@ jobs:
           echo "source_sha=${actual}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "image_name=ghcr.io/${owner}/zksync-os-server" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify canonical qualification for a versioned release
+        if: ${{ inputs.tag_name || github.ref_type == 'tag' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          RELEASE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          # The release source and the workflow's status validator can be different commits.
+          git fetch --quiet --no-tags --depth=1 origin "${TOOLING_SHA}"
+          checker="$(mktemp "${RUNNER_TEMP}/canonical-release-check.XXXXXX")"
+          git show "${TOOLING_SHA}:.github/scripts/check-canonical-qualification.py" > "${checker}"
+          python3 -I -B "${checker}" --source-sha "${RELEASE_SOURCE_SHA}"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0

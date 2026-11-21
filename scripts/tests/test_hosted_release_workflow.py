@@ -4,7 +4,6 @@ import os
 import json
 from pathlib import Path
 import subprocess
-import tarfile
 import tempfile
 import unittest
 
@@ -104,49 +103,35 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("invalid binding", result.stderr)
         self.assertFalse((self.repo_path / "output").exists())
 
-    def test_legacy_requires_existing_checker_and_tracked_anvil_state(self):
+    def test_legacy_anvil_cannot_substitute_for_private_release_binding(self):
         self.checker.write_text(
-            "import os,sys\n"
-            "assert sys.argv[1:] == ['--check-canonical-fixture']\n"
-            "assert 'SYSCOIN_V32_CANONICAL_FIXTURE_DIR' not in os.environ\n")
+            "import sys\n"
+            "if sys.argv[1:] != ['--check-canonical-fixture']:\n"
+            "    sys.exit('older checker does not support private release binding')\n")
         fixture = self.repo_path / "local-chains/v32.0"
         fixture.mkdir(parents=True)
         (fixture / "l1-state.json.gz").write_bytes(b"test-only")
         self.commit_source("legacy exact tagged tooling")
         result = self.run_guard(self.preflight)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.repo_path / "output").read_text(), "ready=true\nmode=legacy-public\n")
-        (fixture / "untracked-capture").write_bytes(b"synthetic fixture sentinel")
-        (self.repo_path / "dist").mkdir()
-        command = self.workflow.split("      - name: Archive certified local chains\n", 1)[1].split(
-            "        run: ", 1)[1].splitlines()[0]
-        env = {**os.environ, "RELEASE_SOURCE_SHA": self.sha, "LOCAL_CHAINS_DIR": "local-chains"}
-        subprocess.run(["bash", "-e", "-c", command], cwd=self.repo_path, env=env, check=True)
-        with tarfile.open(self.repo_path / "dist/local-chains.tar.gz") as archive:
-            self.assertIn("local-chains/v32.0/l1-state.json.gz", archive.getnames())
-            self.assertNotIn("local-chains/v32.0/untracked-capture", archive.getnames())
-        (fixture / "untracked-capture").unlink()
-        (fixture / "l1-backend.json").write_text("{}")
-        self.assertNotEqual(self.run_guard(self.preflight).returncode, 0)
-        (fixture / "l1-backend.json").unlink()
-        (fixture / "l1-state.json.gz").unlink()
-        self.commit_source("missing legacy state")
-        self.assertNotEqual(self.run_guard(self.preflight).returncode, 0)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("older checker does not support private release binding", result.stderr)
+        self.assertFalse((self.repo_path / "output").exists())
 
-    def test_marker_omits_fixture_but_keeps_binary_release_available(self):
+    def test_marker_blocks_release_before_build_steps(self):
         marker = self.repo_path / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
         marker.parent.mkdir(parents=True)
         marker.write_text("pending")
         checker = self.repo_path / "scripts/apply-era-contracts-syscoin-release.py"
-        checker.write_text("raise RuntimeError('must not consume pending fixture')\n")
-        self.assertEqual(self.run_guard(self.preflight).returncode, 0)
-        self.assertIn("ready=false", (self.repo_path / "output").read_text())
-        self.assertIn("block-production smoke and fixture archive are omitted", (self.repo_path / "summary").read_text())
+        checker.write_text("raise SystemExit('canonical fixture regeneration marker is present')\n")
+        self.commit_source("pending fixture")
+        result = self.run_guard(self.preflight)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("canonical fixture regeneration marker is present", result.stderr)
+        self.assertFalse((self.repo_path / "output").exists())
         smoke = self.workflow.split("      - name: Check block production with certified canonical fixture\n", 1)[1]
         self.assertIn("if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}", smoke.split("        env:", 1)[0])
         archive = self.workflow.split("      - name: Archive certified local chains\n", 1)[1]
         self.assertIn("if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}", archive.split("        run:", 1)[0])
-        self.assertIn("block-production smoke was not run", self.workflow)
         self.assertNotIn("--clobber", self.workflow)
 
     def test_fixture_free_config_smoke_uses_empty_working_directory(self):

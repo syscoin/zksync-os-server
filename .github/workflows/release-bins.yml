@@ -2,6 +2,7 @@ name: Release binaries
 
 permissions:
   contents: read
+  statuses: read
 
 on:
   workflow_dispatch:
@@ -41,7 +42,16 @@ defaults:
     shell: 'bash -ex {0}'
 
 jobs:
+  qualify:
+    permissions:
+      contents: read
+      statuses: read
+    uses: ./.github/workflows/release-qualification.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+
   preflight:
+    needs: qualify
     runs-on: ubuntu-24.04
     outputs:
       fixture_ready: ${{ steps.fixture.outputs.ready }}
@@ -65,30 +75,11 @@ jobs:
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
           [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
-          fixture_dir=local-chains/v32.0
-          checker=scripts/apply-era-contracts-syscoin-release.py
-          marker="${fixture_dir}/CANONICAL_V8_REGENERATION_REQUIRED"
-          if [[ -e "${marker}" || -L "${marker}" ]]; then
-            echo "ready=false" >> "${GITHUB_OUTPUT}"
-            echo "mode=pending" >> "${GITHUB_OUTPUT}"
-            echo "Canonical V32 fixture regeneration is pending; block-production smoke and fixture archive are omitted." >> "${GITHUB_STEP_SUMMARY}"
-          elif git grep -Fq -e 'mode.add_argument("--check-canonical-fixture-binding"' "${RELEASE_SOURCE_SHA}" -- "${checker}"; then
-            # A private V32 source binding never authorizes including fixture bytes in this release.
-            python3 "${checker}" --check-canonical-fixture-binding
-            echo "ready=false" >> "${GITHUB_OUTPUT}"
-            echo "mode=private" >> "${GITHUB_OUTPUT}"
-            echo "Canonical V32 fixture is private. Public release tests do not open or package it." >> "${GITHUB_STEP_SUMMARY}"
-          else
-            # Preserve earlier tagged tooling's full check and publish only a tracked Anvil fixture.
-            if [[ -e "${fixture_dir}/l1-backend.json" || -L "${fixture_dir}/l1-backend.json" ]]; then
-              echo "Native fixture data cannot be included in a public release." >&2
-              exit 1
-            fi
-            git cat-file -e "${RELEASE_SOURCE_SHA}:${fixture_dir}/l1-state.json.gz"
-            env -u SYSCOIN_V32_CANONICAL_FIXTURE_DIR python3 "${checker}" --check-canonical-fixture
-            echo "ready=true" >> "${GITHUB_OUTPUT}"
-            echo "mode=legacy-public" >> "${GITHUB_OUTPUT}"
-          fi
+          # The qualification applies to this tag's exact commit and source-only binding.
+          python3 -I -B scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture-binding
+          echo "ready=false" >> "${GITHUB_OUTPUT}"
+          echo "mode=private" >> "${GITHUB_OUTPUT}"
+          echo "Canonical V32 fixture is private. Public release tests do not open or package it." >> "${GITHUB_STEP_SUMMARY}"
 
   # Build server binaries for all target platforms
   build-bins:
@@ -508,7 +499,7 @@ jobs:
             legacy-public)
               FIXTURE_NOTICE="Local fixture smoke: passed; public Anvil local-chain archive included." ;;
             private)
-              FIXTURE_NOTICE="Canonical V32 fixture is private. Binary CLI and linkage checks passed. Canonical block-production qualification runs separately." ;;
+              FIXTURE_NOTICE="Private canonical CPU restore and CUDA settlement qualification passed for this source. Public binary CLI and linkage checks passed." ;;
             pending)
               FIXTURE_NOTICE="Canonical V32 fixture regeneration is pending. Binary CLI and linkage checks passed; block-production smoke was not run and no canonical local-chain archive is included." ;;
             *) exit 1 ;;

@@ -20,14 +20,25 @@ permissions:
   actions: read
   attestations: read
   contents: write
+  statuses: read
 
 concurrency:
   group: server-release-resume-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
+  qualify:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      statuses: read
+    uses: ./.github/workflows/release-qualification.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+
   resume:
     if: ${{ github.ref == 'refs/heads/main' }}
+    needs: qualify
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
