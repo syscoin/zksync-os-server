@@ -2,6 +2,7 @@
 //! See `./test-contracts/README.md` for instructions on how to build the artifacts.
 
 use crate::assert_traits::ReceiptAssert;
+use alloy::eips::BlockId;
 use alloy::network::ReceiptResponse;
 use alloy::primitives::{Address, B256, U256, address};
 use alloy::providers::{PendingTransactionBuilder, Provider};
@@ -287,8 +288,19 @@ impl<P: Provider> L2InteropRootStorage<P> {
         chain_id: u64,
         batch_number: u64,
     ) -> alloy::contract::Result<B256> {
+        self.get_interop_root_at(chain_id, batch_number, BlockId::latest())
+            .await
+    }
+
+    pub async fn get_interop_root_at(
+        &self,
+        chain_id: u64,
+        batch_number: u64,
+        block: BlockId,
+    ) -> alloy::contract::Result<B256> {
         self.0
             .interopRoots(U256::from(chain_id), U256::from(batch_number))
+            .block(block)
             .call()
             .await
     }

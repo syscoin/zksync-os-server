@@ -17,7 +17,9 @@ use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, POLL_INTERVAL,
 use zksync_os_integration_tests::l1_helpers::fetch_l1_state;
 use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::{
-    GatewayTester, Tester, assert_traits::ReceiptAssert, contracts::TestERC20,
+    GatewayTester, Tester,
+    assert_traits::ReceiptAssert,
+    contracts::{L2InteropRootStorage, TestERC20},
 };
 use zksync_os_provider::NodeProvider;
 use zksync_os_rpc_api::types::LogProofTarget;
@@ -492,6 +494,47 @@ async fn fund_wallet_via_l1_deposit(tester: &Tester, wallet: Address, amount: U2
     receipt.block_number.context("deposit receipt block number")
 }
 
+async fn wait_for_interop_import_block(
+    tester: &Tester,
+    chain_id: u64,
+    root_number: u64,
+    mut absent: u64,
+) -> Result<u64> {
+    let root_storage = L2InteropRootStorage::new(&tester.l2_provider);
+    let root_at =
+        |block: u64| root_storage.get_interop_root_at(chain_id, root_number, block.into());
+
+    tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        anyhow::ensure!(
+            root_at(absent).await?.is_zero(),
+            "the root was already present before the source bundle"
+        );
+        let mut present = loop {
+            let head = tester.l2_provider.get_block_number().await?;
+            if head > absent {
+                if !root_at(head).await?.is_zero() {
+                    break head;
+                }
+                absent = head;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
+
+        // Later blocks retain this root. Find the first block that changed its slot.
+        while present - absent > 1 {
+            let mid = absent + (present - absent) / 2;
+            if root_at(mid).await?.is_zero() {
+                absent = mid;
+            } else {
+                present = mid;
+            }
+        }
+        Ok(present)
+    })
+    .await
+    .context("the interop root did not appear on the destination chain")?
+}
+
 async fn assert_interop_import_waits_for_settlement_work(
     tester: &Tester,
     import_block: u64,
@@ -696,6 +739,7 @@ async fn test_interop_bundle_send() -> Result<()> {
     // The InteropCenter charges interopProtocolFee per call as msg.value (when not using fixed ZK fees).
     let protocol_fee = interop_center.interopProtocolFee().call().await?;
     let bundle_value = protocol_fee * U256::from(calls.len());
+    let destination_before_bundle = chain_b.l2_provider.get_block_number().await?;
 
     // Send sendBundle transaction
     let receipt = interop_center
@@ -738,12 +782,13 @@ async fn test_interop_bundle_send() -> Result<()> {
         .settlement_layer_block_number
         .expect("MessageRoot proof must contain settlement_layer_block_number");
 
-    // Wait for interop root to get included on chain B, keyed by gateway chain + GW block
-    chain_b
-        .l2_provider
-        .expect_interop_root_inclusion(gw_chain_id, gw_block_number)
-        .await?;
-    let import_block = chain_b.l2_provider.get_block_number().await?;
+    let import_block = wait_for_interop_import_block(
+        chain_b,
+        gw_chain_id,
+        gw_block_number,
+        destination_before_bundle,
+    )
+    .await?;
     assert_interop_import_waits_for_settlement_work(chain_b, import_block).await?;
 
     // Build MessageInclusionProof
