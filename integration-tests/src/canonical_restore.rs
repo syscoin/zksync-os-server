@@ -9,6 +9,7 @@ use alloy::network::EthereumWallet;
 use alloy::primitives::{Address, B256, U256, address, hex};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::signers::local::PrivateKeySigner;
+use alloy::transports::http::reqwest as alloy_reqwest;
 use anyhow::{Context, ensure};
 use blake2::{Blake2s256, Digest};
 use serde::Deserialize;
@@ -22,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{sleep, timeout};
 use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_provider::NodeProvider;
 use zksync_os_server::config::{
@@ -321,9 +322,9 @@ async fn connect_root(ready: &Ready, dir: Arc<TempDir>) -> anyhow::Result<TestL1
     let signer: PrivateKeySigner = NEVM_FUNDER_KEY.parse()?;
     let wallet = EthereumWallet::new(signer);
     let provider = timeout(Duration::from_secs(30), async {
-        let client = reqwest::Client::builder()
+        let client = alloy_reqwest::Client::builder()
             .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(alloy_reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(10))
             .build()?;
         let provider = ProviderBuilder::new()
