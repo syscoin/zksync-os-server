@@ -18,8 +18,6 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_TERM_COLOR: never
       RUST_BACKTRACE: '1'
-      GATEWAY_DIR: ${{ runner.temp }}/syscoin-interop-${{ github.run_id }}-${{ github.run_attempt }}
-      EVIDENCE_DIR: ${{ runner.temp }}/interop-acceptance-evidence
     defaults:
       run:
         shell: bash
@@ -35,6 +33,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$HOTFIX_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
           test -f local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
+          EVIDENCE_DIR="$RUNNER_TEMP/interop-acceptance-evidence"
+          printf 'EVIDENCE_DIR=%s\nGATEWAY_DIR=%s\n' "$EVIDENCE_DIR" \
+            "$RUNNER_TEMP/syscoin-interop-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
           mkdir -p "$EVIDENCE_DIR"
           {
             git log -1 --format='source=%H%nsubject=%s'
