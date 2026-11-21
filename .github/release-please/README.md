@@ -41,8 +41,8 @@ compare them with the reviewed changes, and update the corresponding fields in
 reviewed advisory database.
 
 The canonical v32 fixture remains blocked while
-`local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists. Release builds
-may proceed with the available CLI smoke checks, but this does not verify
-canonical local-chain execution. The release workflow must not consume or
-archive the blocked fixture, and the full canonical smoke check can resume
-after the fixture is regenerated and verified.
+`local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists. Pending releases
+run the binary CLI and linkage smoke checks. Once the private fixture has
+qualified and its source binding is activated, public releases validate that
+binding and keep the fixture out of the public archive. Canonical Core/NEVM
+block production and proving are checked separately with the private fixture.

@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       fixture_ready: ${{ steps.fixture.outputs.ready }}
+      fixture_mode: ${{ steps.fixture.outputs.mode }}
     steps:
       - name: Validate requested release identity
         shell: bash
@@ -64,13 +65,29 @@ jobs:
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
           [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
-          marker=local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
+          fixture_dir=local-chains/v32.0
+          checker=scripts/apply-era-contracts-syscoin-release.py
+          marker="${fixture_dir}/CANONICAL_V8_REGENERATION_REQUIRED"
           if [[ -e "${marker}" || -L "${marker}" ]]; then
             echo "ready=false" >> "${GITHUB_OUTPUT}"
+            echo "mode=pending" >> "${GITHUB_OUTPUT}"
             echo "Canonical V32 fixture regeneration is pending; block-production smoke and fixture archive are omitted." >> "${GITHUB_STEP_SUMMARY}"
+          elif git grep -Fq -e 'mode.add_argument("--check-canonical-fixture-binding"' "${RELEASE_SOURCE_SHA}" -- "${checker}"; then
+            # A private V32 source binding never authorizes including fixture bytes in this release.
+            python3 "${checker}" --check-canonical-fixture-binding
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+            echo "mode=private" >> "${GITHUB_OUTPUT}"
+            echo "Canonical V32 fixture is private. Public release tests do not open or package it." >> "${GITHUB_STEP_SUMMARY}"
           else
-            python3 scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture
+            # Preserve earlier tagged tooling's full check and publish only a tracked Anvil fixture.
+            if [[ -e "${fixture_dir}/l1-backend.json" || -L "${fixture_dir}/l1-backend.json" ]]; then
+              echo "Native fixture data cannot be included in a public release." >&2
+              exit 1
+            fi
+            git cat-file -e "${RELEASE_SOURCE_SHA}:${fixture_dir}/l1-state.json.gz"
+            env -u SYSCOIN_V32_CANONICAL_FIXTURE_DIR python3 "${checker}" --check-canonical-fixture
             echo "ready=true" >> "${GITHUB_OUTPUT}"
+            echo "mode=legacy-public" >> "${GITHUB_OUTPUT}"
           fi
 
   # Build server binaries for all target platforms
@@ -191,7 +208,7 @@ jobs:
       - name: Check executable and dynamic linkage
         env:
           TARGET: ${{ matrix.target }}
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
+          FIXTURE_MODE: ${{ needs.preflight.outputs.fixture_mode }}
         run: |
           set -euo pipefail
           tar xzf "${ZKSYNC_OS_SERVER_BIN}-${RELEASE_TAG}-${TARGET}.tar.gz"
@@ -211,8 +228,10 @@ jobs:
           else
             otool -L "./${ZKSYNC_OS_SERVER_BIN}"
           fi
-          if [[ "${FIXTURE_READY}" != true ]]; then
+          if [[ "${FIXTURE_MODE}" == pending ]]; then
             echo "Canonical fixture pending: only executable/CLI/linkage smoke ran; block production was not tested." >> "${GITHUB_STEP_SUMMARY}"
+          elif [[ "${FIXTURE_MODE}" == private ]]; then
+            echo "Canonical fixture is private: only executable/CLI/linkage smoke ran here." >> "${GITHUB_STEP_SUMMARY}"
           fi
 
       - name: Install Foundry
@@ -316,7 +335,7 @@ jobs:
 
       - name: Archive certified local chains
         if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
-        run: tar -czf dist/local-chains.tar.gz "${LOCAL_CHAINS_DIR}"
+        run: git archive --format=tar.gz --output=dist/local-chains.tar.gz "${RELEASE_SOURCE_SHA}" -- "${LOCAL_CHAINS_DIR}"
 
       - name: Validate complete release inventory
         env:
@@ -483,13 +502,17 @@ jobs:
       - name: Update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
+          FIXTURE_MODE: ${{ needs.preflight.outputs.fixture_mode }}
         run: |
-          if [[ "${FIXTURE_READY}" == true ]]; then
-            FIXTURE_NOTICE="Canonical fixture smoke: passed; local chain archive included."
-          else
-            FIXTURE_NOTICE="Canonical V32 fixture regeneration is pending. Binary CLI and linkage checks passed; block-production smoke was not run and no canonical local-chain archive is included."
-          fi
+          case "${FIXTURE_MODE}" in
+            legacy-public)
+              FIXTURE_NOTICE="Local fixture smoke: passed; public Anvil local-chain archive included." ;;
+            private)
+              FIXTURE_NOTICE="Canonical V32 fixture is private. Binary CLI and linkage checks passed. Canonical block-production qualification runs separately." ;;
+            pending)
+              FIXTURE_NOTICE="Canonical V32 fixture regeneration is pending. Binary CLI and linkage checks passed; block-production smoke was not run and no canonical local-chain archive is included." ;;
+            *) exit 1 ;;
+          esac
           REALASE_BODY=$(gh release view "${RELEASE_TAG}" --json body -q '.body')
           BINARIES_SECTION=$(cat <<- "ENDBODY"
           ## Binaries

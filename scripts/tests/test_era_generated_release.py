@@ -66,6 +66,27 @@ class ActivationTests(unittest.TestCase):
     def test_complete_synthetic_binding(self):
         self.assertEqual(M.check_activation(self.server), self.binding["descriptor_sha256"])
 
+    def test_source_binding_without_fixture_accepts_rustfmt_registry(self):
+        external = self.server / "private-fixture"
+        self.fixture.rename(external)
+        self.fixture.mkdir()
+        registry = self.server / "integration-tests/src/fixture_backend.rs"
+        registry.write_text('const TRUSTED_DESCRIPTORS: &[(&str, &str)] = &[(\n'
+                            '    "v32.0",\n'
+                            f'    "{self.binding["descriptor_sha256"]}",\n'
+                            ')];\n')
+        self.assertEqual(M.check_source_binding(self.server), self.binding)
+        with self.assertRaises(FileNotFoundError):
+            M.check_activation(self.server)
+        self.assertEqual(M.check_activation(self.server, external), self.binding["descriptor_sha256"])
+
+    def test_source_binding_rejects_invalid_identity_digest(self):
+        broken = copy.deepcopy(self.binding)
+        broken["identity_sha256"]["proof_identities"] = "not-a-digest"
+        with patch.object(M, "CANONICAL_BINDING", broken):
+            with self.assertRaisesRegex(ValueError, "binding hash"):
+                M.check_source_binding(self.server)
+
     def test_prover_assets_follow_the_bound_fixture_and_release(self):
         assets = {
             "app_bin_sha256": self.server / "app.bin",
@@ -384,9 +405,17 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(len(overlay), manifest["overlay_size"])
         self.assertEqual(sha(overlay), manifest["overlay_sha256"])
         self.assertEqual(manifest["overlay_sha256"], module.OVERLAY_SHA)
-        self.assertIsNone(M.CANONICAL_BINDING)
         self.assertEqual(sha((ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_bytes()),
                          module.SOURCE_APPLICATOR_SHA)
+
+    def test_public_source_fixture_policy_is_consistent(self):
+        marker = ROOT / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
+        if os.path.lexists(marker):
+            self.assertIsNone(M.CANONICAL_BINDING)
+            with self.assertRaisesRegex(ValueError, "regeneration marker"):
+                M.check_source_binding(ROOT)
+        else:
+            self.assertEqual(M.check_source_binding(ROOT), M.CANONICAL_BINDING)
 
     def test_current_contract_generation_binds_actual_normal_profile_postimages(self):
         module, manifest = M.load_bundle()
@@ -462,7 +491,6 @@ class BundleAndLauncherTests(unittest.TestCase):
                          "7716000dc165773feb665ddd673dc5c3ab7e588b48009ba750ded73a241a513d")
         for flag in ("live_submission_used", "deployment_attested", "release_promoted"):
             self.assertFalse(evidence[flag])
-        self.assertIsNone(M.CANONICAL_BINDING)
         self.assertFalse(manifest["canonical_fixture_activated"])
         self.assertFalse(manifest["deployed"])
         historical = manifest["historical_2ac3_pending_proof_qualification"]
@@ -498,7 +526,6 @@ class BundleAndLauncherTests(unittest.TestCase):
             self.assertFalse(evidence[flag])
         self.assertFalse(evidence["cross_host_guest_byte_reproduction"]["passed"])
         self.assertEqual(evidence["cross_host_guest_byte_reproduction"]["remaining_guest_pairs_not_compared"], 3)
-        self.assertIsNone(M.CANONICAL_BINDING)
 
     def test_historical_d5bc_contract_generation_remains_distinct(self):
         _, manifest = M.load_bundle()

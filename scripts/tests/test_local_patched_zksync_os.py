@@ -8233,14 +8233,19 @@ class CanonicalFixtureGateStaticTests(unittest.TestCase):
     ) -> None:
         marker_name = "CANONICAL_V8_REGENERATION_REQUIRED"
         marker = REPO_ROOT / "local-chains" / "v32.0" / marker_name
-        self.assertTrue(marker.is_file())
-        marker_text = marker.read_text(encoding="utf-8")
-        self.assertIn("DO NOT LAUNCH THIS FIXTURE", marker_text)
-        self.assertIn("Execution V7, Proving V8", marker_text)
-        self.assertIn(REGISTERED_GUEST_ZKSYNC_OS_TREE, marker_text)
-        self.assertIn("zero values retained in the production keygen workflow", marker_text)
-        self.assertIn("not the current server identity", marker_text)
-        self.assertIn("does not populate or qualify this canonical fixture", marker_text)
+        if os.path.lexists(marker):
+            self.assertTrue(marker.is_file())
+            marker_text = marker.read_text(encoding="utf-8")
+            self.assertIn("DO NOT LAUNCH THIS FIXTURE", marker_text)
+            self.assertIn("Execution V7, Proving V8", marker_text)
+            self.assertIn(REGISTERED_GUEST_ZKSYNC_OS_TREE, marker_text)
+            self.assertIn("zero values retained in the production keygen workflow", marker_text)
+            self.assertIn("not the current server identity", marker_text)
+            self.assertIn("does not populate or qualify this canonical fixture", marker_text)
+        else:
+            subprocess.run(["python3", "scripts/apply-era-contracts-syscoin-release.py",
+                            "--check-canonical-fixture-binding"], check=True, cwd=REPO_ROOT,
+                           capture_output=True, text=True)
 
         guarded_paths = (
             REPO_ROOT / "run_local.sh",

@@ -133,31 +133,48 @@ def canonical_fixture_dir(server, fixture=None):
     return fixture
 
 
-def check_activation(server, fixture=None):
-    fixture = canonical_fixture_dir(server, fixture)
+def check_source_binding(server):
+    canonical_fixture_dir(server)
     binding = CANONICAL_BINDING
     require(isinstance(binding, dict), "generated release is not activated: genuine fixture binding absent")
     require(set(binding) == {"descriptor_sha256", "versions_sha256", "identity_sha256"}
             and isinstance(binding["identity_sha256"], dict)
             and set(binding["identity_sha256"]) == IDENTITIES,
             "invalid source-controlled canonical binding")
-    descriptor = fixture / "l1-backend.json"
-    exact(descriptor, binding["descriptor_sha256"])
-    exact(fixture / "versions.yaml", binding["versions_sha256"])
-    # Use the consumer's source-controlled registry, not a second environment-
-    # selectable registry. Only its literal tuple grammar is accepted here.
+    digests = [binding["descriptor_sha256"], binding["versions_sha256"],
+               *binding["identity_sha256"].values()]
+    require(all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in digests), "invalid source-controlled canonical binding hash")
+    # The immutable Rust registry is the second source of the descriptor identity.
     registry = regular(server / "integration-tests/src/fixture_backend.rs").read_text()
     declarations = re.findall(
         r"const TRUSTED_DESCRIPTORS:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
         registry, re.S)
     require(len(declarations) == 1, "missing or ambiguous fixture registry")
-    body = declarations[0]
-    entries = re.findall(r'\("([^"\n]+)",\s*"([0-9a-f]{64})"\)', body)
-    remainder = re.sub(r'\("([^"\n]+)",\s*"([0-9a-f]{64})"\)', "", body)
-    require(not remainder.replace(",", "").strip(), "nonliteral fixture registry")
+    entry = re.compile(r'\(\s*"([^"\\\r\n]+)"\s*,\s*"([0-9a-f]{64})"\s*,?\s*\)')
+    remaining = declarations[0].strip()
+    entries = []
+    while remaining:
+        match = entry.match(remaining)
+        require(match is not None, "nonliteral fixture registry")
+        entries.append(match.groups())
+        remaining = remaining[match.end():].lstrip()
+        if remaining:
+            require(remaining.startswith(","), "nonliteral fixture registry")
+            remaining = remaining[1:].lstrip()
     require(sum(version == "v32.0" for version, _ in entries) == 1
             and ("v32.0", binding["descriptor_sha256"]) in entries,
             "canonical descriptor is not in the consumer registry")
+    check_app_sources(server)
+    return binding
+
+
+def check_activation(server, fixture=None):
+    fixture = canonical_fixture_dir(server, fixture)
+    binding = check_source_binding(server)
+    descriptor = fixture / "l1-backend.json"
+    exact(descriptor, binding["descriptor_sha256"])
+    exact(fixture / "versions.yaml", binding["versions_sha256"])
     data = read_json(descriptor)
     require(set(data) == {"schema_version", "protocol_version", "backend"}
             and type(data["schema_version"]) is int and data["schema_version"] == 1
@@ -188,7 +205,6 @@ def check_activation(server, fixture=None):
         rel = file_identity(fixture, row)
         require(rel not in paths, "duplicate fixture file path")
         paths.add(rel)
-    check_app_sources(server)
     return binding["descriptor_sha256"]
 
 
@@ -351,6 +367,8 @@ def main():
     mode.add_argument("--check-bundle", action="store_true", help="read-only; never launch authorization")
     mode.add_argument("--check-canonical-fixture", action="store_true",
                       help="read-only certification of the separately accepted packaged fixture")
+    mode.add_argument("--check-canonical-fixture-binding", action="store_true",
+                      help="check immutable source binding without opening private fixture data")
     mode.add_argument("--check-canonical-prover-assets", action="store_true",
                       help="verify the registered app, combined worker and compact CRS")
     mode.add_argument("--check-gateway-chain-id", type=int,
@@ -360,7 +378,12 @@ def main():
     try:
         fixture_value = os.environ.get("SYSCOIN_V32_CANONICAL_FIXTURE_DIR")
         fixture = Path(fixture_value) if fixture_value is not None else None
-        if args.check_canonical_fixture:
+        if args.check_canonical_fixture_binding:
+            require(args.era_root is None, "source fixture binding check does not consume an Era repository")
+            result = {"status": "canonical_fixture_binding_checked", "fixture_mode": "private",
+                      "descriptor_sha256": check_source_binding(SERVER)["descriptor_sha256"],
+                      "canonical_fixture_authorized": False, "target_mutated": False}
+        elif args.check_canonical_fixture:
             require(args.era_root is None, "fixture check does not consume an Era repository")
             result = {"status": "canonical_fixture_checked", "canonical_fixture_authorized": True,
                       "descriptor_sha256": check_activation(SERVER, fixture), "target_mutated": False}

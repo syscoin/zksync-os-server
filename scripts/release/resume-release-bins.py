@@ -126,7 +126,7 @@ def update_notes(repo, tag, files, fixture, attestation_url):
         lines.append(f"| {label} | {arch} | [{name}](https://github.com/{repo}/releases/download/{tag}/{name}) | [Attestation]({attestation_url}) |")
     lines.append(f"| Docker | | [zksync-os-server-{tag}](https://github.com/{repo}/pkgs/container/zksync-os-server?tag={tag}) | - |")
     notice = ("Canonical fixture smoke: passed; local chain archive included." if fixture == "true" else
-              "Canonical V32 fixture regeneration is pending. Binary CLI and linkage checks passed; block-production smoke was not run and no canonical local-chain archive is included.")
+              "Binary CLI and linkage checks passed. This public release has no local-chain archive or public block-production smoke result.")
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as notes:
         notes.write(body + "\n\n" + "\n".join(lines) + "\n\n" + notice + "\n")
         notes.flush()

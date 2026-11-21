@@ -4,6 +4,7 @@ import os
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -34,13 +35,24 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.addCleanup(self.repo.cleanup)
         self.repo_path = Path(self.repo.name)
         subprocess.run(["git", "init", "-q", str(self.repo_path)], check=True)
-        subprocess.run(["git", "-C", str(self.repo_path), "-c", "user.name=Test", "-c",
-                        "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "initial"], check=True)
-        self.sha = subprocess.check_output(["git", "-C", str(self.repo_path), "rev-parse", "HEAD"], text=True).strip()
-        subprocess.run(["git", "-C", str(self.repo_path), "tag", "v1"], check=True)
         (self.repo_path / "scripts").mkdir()
-        (self.repo_path / "scripts/apply-era-contracts-syscoin-release.py").write_text(
-            "import sys\nassert sys.argv[1:] == ['--check-canonical-fixture']\n")
+        self.checker = self.repo_path / "scripts/apply-era-contracts-syscoin-release.py"
+        self.checker.write_text(
+            'import argparse\n'
+            'parser = argparse.ArgumentParser()\n'
+            'mode = parser.add_mutually_exclusive_group(required=True)\n'
+            'mode.add_argument("--check-canonical-fixture-binding", action="store_true")\n'
+            'if not parser.parse_args().check_canonical_fixture_binding:\n'
+            '    raise RuntimeError("must not read the private fixture")\n')
+        self.commit_source("initial")
+
+    def commit_source(self, message):
+        subprocess.run(["git", "add", "scripts", "local-chains"] if (self.repo_path / "local-chains").exists()
+                       else ["git", "add", "scripts"], cwd=self.repo_path, check=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                        "commit", "-qm", message], cwd=self.repo_path, check=True)
+        self.sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_path, text=True).strip()
+        subprocess.run(["git", "tag", "-f", "v1"], cwd=self.repo_path, check=True, stdout=subprocess.PIPE)
 
     def run_guard(self, script, tag="v1", sha=None):
         env = {**os.environ, "RELEASE_TAG": tag, "RELEASE_SOURCE_SHA": sha or self.sha,
@@ -63,14 +75,63 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
                         "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "new"], check=True)
         self.assertNotEqual(self.run_guard(self.preflight).returncode, 0)
 
-    def test_current_marker_fails_the_real_fixture_check_without_consuming_it(self):
+    def test_current_source_policy_matches_checked_out_marker(self):
         marker = ROOT / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
-        if not marker.exists():
-            self.skipTest("canonical fixture regeneration marker has been removed")
         result = subprocess.run(["python3", "scripts/apply-era-contracts-syscoin-release.py",
-                                 "--check-canonical-fixture"], cwd=ROOT, text=True, capture_output=True)
+                                 "--check-canonical-fixture-binding"], cwd=ROOT, text=True, capture_output=True)
+        if os.path.lexists(marker):
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("canonical fixture regeneration marker is present", result.stderr)
+        else:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["fixture_mode"], "private")
+
+    def test_bound_private_source_disables_public_fixture_output(self):
+        result = self.run_guard(self.preflight)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.repo_path / "output").read_text(), "ready=false\nmode=private\n")
+        self.assertIn("do not open or package it", (self.repo_path / "summary").read_text())
+        archive = self.workflow.split("      - name: Archive certified local chains\n", 1)[1].split(
+            "      - name:", 1)[0]
+        self.assertIn("git archive --format=tar.gz", archive)
+
+    def test_invalid_private_binding_never_uses_legacy_fallback(self):
+        with self.checker.open("a") as output:
+            output.write('raise SystemExit("invalid binding")\n')
+        self.commit_source("invalid binding")
+        result = self.run_guard(self.preflight)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("canonical fixture regeneration marker is present", result.stderr)
+        self.assertIn("invalid binding", result.stderr)
+        self.assertFalse((self.repo_path / "output").exists())
+
+    def test_legacy_requires_existing_checker_and_tracked_anvil_state(self):
+        self.checker.write_text(
+            "import os,sys\n"
+            "assert sys.argv[1:] == ['--check-canonical-fixture']\n"
+            "assert 'SYSCOIN_V32_CANONICAL_FIXTURE_DIR' not in os.environ\n")
+        fixture = self.repo_path / "local-chains/v32.0"
+        fixture.mkdir(parents=True)
+        (fixture / "l1-state.json.gz").write_bytes(b"test-only")
+        self.commit_source("legacy exact tagged tooling")
+        result = self.run_guard(self.preflight)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.repo_path / "output").read_text(), "ready=true\nmode=legacy-public\n")
+        (fixture / "untracked-capture").write_bytes(b"synthetic fixture sentinel")
+        (self.repo_path / "dist").mkdir()
+        command = self.workflow.split("      - name: Archive certified local chains\n", 1)[1].split(
+            "        run: ", 1)[1].splitlines()[0]
+        env = {**os.environ, "RELEASE_SOURCE_SHA": self.sha, "LOCAL_CHAINS_DIR": "local-chains"}
+        subprocess.run(["bash", "-e", "-c", command], cwd=self.repo_path, env=env, check=True)
+        with tarfile.open(self.repo_path / "dist/local-chains.tar.gz") as archive:
+            self.assertIn("local-chains/v32.0/l1-state.json.gz", archive.getnames())
+            self.assertNotIn("local-chains/v32.0/untracked-capture", archive.getnames())
+        (fixture / "untracked-capture").unlink()
+        (fixture / "l1-backend.json").write_text("{}")
+        self.assertNotEqual(self.run_guard(self.preflight).returncode, 0)
+        (fixture / "l1-backend.json").unlink()
+        (fixture / "l1-state.json.gz").unlink()
+        self.commit_source("missing legacy state")
+        self.assertNotEqual(self.run_guard(self.preflight).returncode, 0)
 
     def test_marker_omits_fixture_but_keeps_binary_release_available(self):
         marker = self.repo_path / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"

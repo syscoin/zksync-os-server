@@ -220,7 +220,6 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn('V32 canonical fixture cannot use the component-only Anvil backend', backend)
         self.assertIn('check_regeneration_marker(root)?;', backend.split('pub fn load_fixture_inventory(', 1)[1])
         self.assertIn('base.join("anvil-component-only").join(version)', backend)
-        self.assertTrue((ROOT / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED").is_file())
         self.assertFalse((ROOT / "local-chains/v32.0/versions.yaml").exists())
 
     def test_all_current_path_consumers_share_explicit_scope(self):
