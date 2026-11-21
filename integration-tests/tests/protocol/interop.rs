@@ -13,7 +13,9 @@ use anyhow::{Context, Result};
 use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
-use zksync_os_integration_tests::assert_traits::ProviderAssert;
+use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, POLL_INTERVAL, ProviderAssert};
+use zksync_os_integration_tests::l1_helpers::fetch_l1_state;
+use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::{
     GatewayTester, Tester, assert_traits::ReceiptAssert, contracts::TestERC20,
 };
@@ -413,7 +415,7 @@ async fn relayer_get_message_proof(
 }
 
 /// Fund a wallet on L2 via L1 deposit
-async fn fund_wallet_via_l1_deposit(tester: &Tester, wallet: Address, amount: U256) -> Result<()> {
+async fn fund_wallet_via_l1_deposit(tester: &Tester, wallet: Address, amount: U256) -> Result<u64> {
     let chain_id = tester.l2_provider.get_chain_id().await?;
 
     let bridgehub = Bridgehub::new(
@@ -483,10 +485,53 @@ async fn fund_wallet_via_l1_deposit(tester: &Tester, wallet: Address, amount: U2
     let l2_tx_hash = l1_to_l2_tx_log.inner.txHash;
 
     // Wait for L2 transaction to be included
-    PendingTransactionBuilder::new(tester.l2_zk_provider.root().clone(), l2_tx_hash)
+    let receipt = PendingTransactionBuilder::new(tester.l2_zk_provider.root().clone(), l2_tx_hash)
         .expect_successful_receipt()
         .await?;
 
+    receipt.block_number.context("deposit receipt block number")
+}
+
+async fn assert_interop_import_waits_for_settlement_work(
+    tester: &Tester,
+    import_block: u64,
+) -> Result<()> {
+    let check_batcher = async || -> Result<bool> {
+        let pipeline = tester.pipeline_status().await?;
+        let batcher = pipeline
+            .as_array()
+            .context("pipeline status should be an array")?
+            .iter()
+            .find(|component| component["name"] == "batcher")
+            .context("batcher should be present in pipeline status")?;
+        anyhow::ensure!(
+            batcher["processed"]["block_number"]
+                .as_u64()
+                .is_none_or(|block| block < import_block),
+            "the idle batcher sealed interop import block {import_block}: {batcher}"
+        );
+        Ok(batcher["picked"]["block_number"]
+            .as_u64()
+            .is_some_and(|block| block >= import_block))
+    };
+
+    tokio::time::timeout(DEFAULT_TIMEOUT, async {
+        while !check_batcher().await? {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("batcher did not pick up the interop import block")??;
+
+    let committed = fetch_l1_state(tester).await?.last_committed_batch;
+    tokio::time::sleep(tester.config().batcher_config.batch_timeout + POLL_INTERVAL).await;
+    check_batcher().await?;
+    assert_eq!(
+        fetch_l1_state(tester).await?.last_committed_batch,
+        committed,
+        "an interop root import alone must not advance Gateway settlement"
+    );
     Ok(())
 }
 
@@ -590,7 +635,13 @@ async fn test_interop_bundle_send() -> Result<()> {
     // Fund sender wallet on both chains via L1 deposits
     let deposit_amount = U256::from(1000) * U256::from(10).pow(U256::from(18)); // 1000 ETH
     fund_wallet_via_l1_deposit(chain_a, sender, deposit_amount).await?;
-    fund_wallet_via_l1_deposit(chain_b, sender, deposit_amount).await?;
+    let destination_deposit_block =
+        fund_wallet_via_l1_deposit(chain_b, sender, deposit_amount).await?;
+    // Leave no destination work from setup that could seal the imported root in a mixed batch.
+    chain_b
+        .l2_zk_provider
+        .wait_finalized_with_timeout(destination_deposit_block, DEFAULT_TIMEOUT)
+        .await?;
 
     let (token, _deposited_amount, asset_id) = setup_l1_token_on_chain_a(chain_a, sender).await?;
 
@@ -692,6 +743,8 @@ async fn test_interop_bundle_send() -> Result<()> {
         .l2_provider
         .expect_interop_root_inclusion(gw_chain_id, gw_block_number)
         .await?;
+    let import_block = chain_b.l2_provider.get_block_number().await?;
+    assert_interop_import_waits_for_settlement_work(chain_b, import_block).await?;
 
     // Build MessageInclusionProof
     let proof_data: Vec<FixedBytes<32>> = log_proof.proof.clone();
@@ -738,6 +791,26 @@ async fn test_interop_bundle_send() -> Result<()> {
     anyhow::ensure!(
         execute_receipt.gas_used <= execute_gas,
         "executeBundle used more gas than its estimate"
+    );
+    let execution_block = execute_receipt
+        .block_number
+        .context("executeBundle receipt block number")?;
+    chain_b
+        .l2_zk_provider
+        .wait_finalized_with_timeout(execution_block, DEFAULT_TIMEOUT)
+        .await?;
+    let execution_batch = chain_b
+        .l2_zk_provider
+        .get_batch_number_by_block_number(execution_block)
+        .await?
+        .context("finalized executeBundle block should have a batch")?;
+    assert_eq!(
+        chain_b
+            .l2_zk_provider
+            .get_batch_number_by_block_number(import_block)
+            .await?,
+        Some(execution_batch),
+        "the import should settle with destination work in the same batch"
     );
 
     // Verify token balance on chain B
