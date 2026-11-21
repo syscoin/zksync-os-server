@@ -376,7 +376,23 @@ impl CanonicalTestStack {
             protocol_version: PROTOCOL_VERSION_V32_0,
             fixture_scope: FixtureScope::CanonicalSyscoin,
         };
-        let fixture_dir = layout.protocol_dir().canonicalize()?;
+        let source_dir = layout.protocol_dir();
+        fixture_backend::check_regeneration_marker(&source_dir).map_err(anyhow::Error::msg)?;
+        let fixture_dir = match std::env::var_os("SYSCOIN_V32_CANONICAL_FIXTURE_DIR") {
+            Some(path) => {
+                let path = PathBuf::from(path);
+                ensure!(
+                    path.is_absolute(),
+                    "private canonical fixture path must be absolute"
+                );
+                ensure!(
+                    path.canonicalize()? == path,
+                    "private canonical fixture path must be canonical"
+                );
+                path
+            }
+            None => source_dir.canonicalize()?,
+        };
         fixture_backend::check_regeneration_marker(&fixture_dir).map_err(anyhow::Error::msg)?;
         let digest = fixture_backend::trusted_descriptor_hash(PROTOCOL_VERSION_V32_0)
             .context("the canonical V32 fixture has no reviewed descriptor pin")?;
