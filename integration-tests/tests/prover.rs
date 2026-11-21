@@ -142,7 +142,9 @@ async fn prove_fresh_gateway_batches(
     let probe_batches = [first_probe.sealed_through_batch, target_batch];
     let mut worker =
         stack.start_gateway_worker(unproven_from, probe_batches, first_settlement_block)?;
-    let external_worker = worker.stdin.is_some();
+    // Child::wait closes child.stdin, so hold the control pipe until shutdown.
+    let worker_lifetime = worker.stdin.take();
+    let external_worker = worker_lifetime.is_some();
 
     let proving = tokio::time::timeout_at(deadline.into(), async {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -174,7 +176,7 @@ async fn prove_fresh_gateway_batches(
     tokio::select! {
         biased;
         result = &mut proving => {
-            let cleanup = stop_worker(&mut worker).await;
+            let cleanup = stop_worker(&mut worker, worker_lifetime).await;
             result.with_context(|| format!("full V8 proving pipeline exceeded {proving_timeout:?}"))?
                 .and(cleanup)?;
         }
@@ -190,8 +192,11 @@ async fn prove_fresh_gateway_batches(
     Ok(())
 }
 
-async fn stop_worker(worker: &mut tokio::process::Child) -> anyhow::Result<()> {
-    if let Some(lifetime) = worker.stdin.take() {
+async fn stop_worker(
+    worker: &mut tokio::process::Child,
+    lifetime: Option<tokio::process::ChildStdin>,
+) -> anyhow::Result<()> {
+    if let Some(lifetime) = lifetime {
         // The external launcher acknowledges EOF after its worker is finished.
         drop(lifetime);
         let stopped = tokio::time::timeout(Duration::from_secs(45), worker.wait()).await;
