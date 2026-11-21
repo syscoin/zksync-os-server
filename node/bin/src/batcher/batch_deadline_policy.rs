@@ -1,5 +1,39 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
+use zksync_os_types::{PubdataMode, SystemTxType, ZkTransaction};
+
+pub(super) struct BatchDeadlineAnchor {
+    first_block_timestamp: Option<u64>,
+    has_settlement_work: bool,
+}
+
+impl BatchDeadlineAnchor {
+    pub(super) fn new(pubdata_mode: PubdataMode) -> Self {
+        Self {
+            first_block_timestamp: None,
+            has_settlement_work: pubdata_mode != PubdataMode::RelayedL2Calldata,
+        }
+    }
+
+    pub(super) fn observe_block(
+        &mut self,
+        timestamp: u64,
+        transactions: &[ZkTransaction],
+        caught_up: bool,
+    ) -> Option<u64> {
+        let first_timestamp = *self.first_block_timestamp.get_or_insert(timestamp);
+        // Executing an edge batch on Gateway can emit the next root for the edge to import.
+        // Keep that root visible to interop callers without settling it merely because time passed.
+        self.has_settlement_work |= transactions.is_empty()
+            || transactions.iter().any(|tx| {
+                !matches!(
+                    tx.as_system_tx_type(),
+                    Some(SystemTxType::ImportInteropRoots(_))
+                )
+            });
+        (caught_up && self.has_settlement_work).then_some(first_timestamp)
+    }
+}
 
 // SYSCOIN: Preserve the timestamp-based deadline for benign clock skew while bounding malformed
 // future replay/canonization timestamps.
@@ -49,6 +83,52 @@ pub fn deadline_from_block_timestamp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::{B256, U256};
+    use zksync_os_contract_interface::InteropRoot;
+    use zksync_os_types::SystemTxEnvelope;
+
+    fn import_root(log_id: u64) -> ZkTransaction {
+        SystemTxEnvelope::import_interop_roots(
+            vec![InteropRoot {
+                chainId: U256::from(57001),
+                blockOrBatchNumber: U256::from(log_id),
+                sides: vec![B256::repeat_byte(1)],
+            }],
+            log_id,
+        )
+        .into()
+    }
+
+    #[test]
+    fn gateway_imports_do_not_arm_timeout_until_other_work_arrives() {
+        let mut anchor = BatchDeadlineAnchor::new(PubdataMode::RelayedL2Calldata);
+        // The catch-up frontier can be a persisted root-only block after a restart.
+        assert_eq!(anchor.observe_block(100, &[import_root(1)], false), None);
+        assert_eq!(anchor.observe_block(101, &[import_root(2)], true), None);
+        assert_eq!(anchor.observe_block(102, &[import_root(3)], true), None);
+
+        let migration = SystemTxEnvelope::set_sl_chain_id(57001, 1).into();
+        assert_eq!(
+            anchor.observe_block(103, &[import_root(4), migration], true),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn direct_settlement_and_empty_gateway_blocks_keep_their_timeout() {
+        let mut direct = BatchDeadlineAnchor::new(PubdataMode::Blobs);
+        assert_eq!(
+            direct.observe_block(100, &[import_root(1)], true),
+            Some(100)
+        );
+
+        let mut gateway = BatchDeadlineAnchor::new(PubdataMode::RelayedL2Calldata);
+        assert_eq!(gateway.observe_block(100, &[], false), None);
+        assert_eq!(
+            gateway.observe_block(101, &[import_root(1)], true),
+            Some(100)
+        );
+    }
 
     fn now_unix() -> u64 {
         SystemTime::now()
