@@ -68,7 +68,10 @@ pub fn gateway_chain_id(version: &str) -> FixtureResult<u64> {
 
 // Promotion must add an independently reviewed descriptor hash here. A sidecar
 // beside an untrusted descriptor, or an environment override, is not a trust root.
-const TRUSTED_DESCRIPTORS: &[(&str, &str)] = &[];
+const TRUSTED_DESCRIPTORS: &[(&str, &str)] = &[(
+    "v32.0",
+    "75cdda91c6d9a47aa390ad47697d210206a6e90c79d1abc6e8cdf9784a43b1b0",
+)];
 
 pub fn trusted_descriptor_hash(protocol_version: &str) -> Option<&'static str> {
     TRUSTED_DESCRIPTORS

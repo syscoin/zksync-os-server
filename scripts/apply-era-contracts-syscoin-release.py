@@ -34,7 +34,13 @@ APP_SOURCES = {
 # SYSCOIN: This is source-controlled release data, never an operator flag or
 # writable sidecar. It certifies the packaged fixture, not whether the exact
 # generated contract sources can be materialized for a fresh deployment.
-CANONICAL_BINDING = None
+CANONICAL_BINDING = {'descriptor_sha256': '75cdda91c6d9a47aa390ad47697d210206a6e90c79d1abc6e8cdf9784a43b1b0',
+ 'identity_sha256': {'clean_boundary': '1175ed1a1afa24c3cbe0daba7f4d7e21cf33bc2308bedfa29a9a79c055918360',
+                     'deployment_record': '430fe05606a015859366d120bea2f0780432599f513745d0030f1ca0409188a2',
+                     'proof_identities': 'e72d889d99f880ff055dc74aa2c30850dfb67afada9cf0dd09c0ce657193ed55',
+                     'snapshot_manifest': '34d875872dac09499a848ea28c73e8e5047372e093613537c36ca4b6de48f1ee',
+                     'source_identities': 'dfa27d1fff8db912c7d977094478e8e1e9b57c4a78d8f92342f2be855712d137'},
+ 'versions_sha256': '33a1451fb1da5508eaa56d92a880b7f8e0f4743f4eec947b04b1790d92ecb1ba'}
 IDENTITIES = {"source_identities", "proof_identities", "deployment_record",
               "clean_boundary", "snapshot_manifest"}
 SNAPSHOTS = {"core_consensus", "nevm_database", "gateway_database",

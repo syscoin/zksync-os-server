@@ -26,11 +26,11 @@ The ZKsync OS Server design optimizes for throughput, low latency, and a seamles
 
 ## Quickstart
 
-The canonical v32.0/V8 local fixture is pending regeneration with the final V8
-verification key and patched-v0.4 Era contracts. Repository launch/config helpers
-fail closed while
-`local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists; do not launch the
-old fixture bytes from an external checkout.
+The canonical v32.0/V8 fixture is a private Core/NEVM capture for release
+qualification. The repository pins the descriptor and inventory hashes. An
+operator with access to the private package can run the
+[restore and settlement tests](scripts/fixtures/canonical-restore-supervisor.md).
+Fresh development deployments use the [Gateway launch guide](docs/src/guides/gateway_launch.md).
 
 For more configuration and detailed instructions, check the [developer documentation](https://matter-labs.github.io/zksync-os-server/latest).
 
