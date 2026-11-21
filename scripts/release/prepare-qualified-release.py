@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REPO = "syscoin/zksync-os-server"
@@ -42,7 +43,7 @@ def api_for(token):
         )
         try:
             with opener.open(request, timeout=30) as response:
-                return json.load(response)
+                return None if response.status == 204 else json.load(response)
         except HTTPError as error:
             if missing and error.code == 404:
                 return None
@@ -62,11 +63,12 @@ def manifest_tag(source):
 
 def lookup_generated_pr(api, source):
     for pr in api("GET", f"commits/{source}/pulls?per_page=100"):
-        if (pr["merge_commit_sha"] == source and pr["merged_at"]
+        if (type(pr["number"]) is int and pr["number"] > 0
+                and pr["merge_commit_sha"] == source and pr["merged_at"]
                 and pr["base"]["ref"] == "main" and pr["head"]["ref"] == RELEASE_BRANCH
                 and pr["base"]["repo"]["full_name"] == REPO
                 and (pr["head"]["repo"] or {}).get("full_name") == REPO):
-            return
+            return pr
     raise ValueError("the selected source is not a merged generated server release PR")
 
 
@@ -163,7 +165,7 @@ def promote(api, release_id, tag, source):
         raise ValueError("checkout or manifest does not match the qualified release")
     git("diff", "--quiet", "HEAD", "--")
     row = selected(api, release_id, tag, source)
-    lookup_generated_pr(api, source)
+    pr = lookup_generated_pr(api, source)
     if row["draft"]:
         if checked_ref(api, tag, source, missing=True) is None:
             # Creation is exclusive. A concurrent existing tag fails the request.
@@ -175,6 +177,20 @@ def promote(api, release_id, tag, source):
     if row["draft"]:
         raise ValueError("GitHub did not publish the verified release")
     checked_ref(api, tag, source)
+
+    # Release Please blocks the next version while a merged PR is still pending.
+    labels = {label["name"] for label in pr["labels"]}
+    path = f"issues/{pr['number']}/labels"
+    tagged = "autorelease: tagged"
+    pending = "autorelease: pending"
+    if tagged not in labels:
+        api("POST", path, {"labels": [tagged]})
+    if pending in labels:
+        api("DELETE", f"{path}/{quote(pending, safe='')}", missing=True)
+    current = api("GET", f"pulls/{pr['number']}")
+    labels = {label["name"] for label in current["labels"]}
+    if current["number"] != pr["number"] or tagged not in labels or pending in labels:
+        raise ValueError("published release PR labels did not transition to tagged")
     return {"tag": tag, "source_sha": source}
 
 

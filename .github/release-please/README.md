@@ -18,7 +18,9 @@ release jobs or dispatch **Release-please** on `main` with the draft's release
 ID, version tag and full source SHA. The workflow verifies all three against
 the draft and checks the current trusted CPU and CUDA statuses. It creates
 the version tag at the selected SHA, checks the ref and publishes that draft.
-The binaries and images use the same checked tag and source. A newer main
+After publication it marks the merged release PR as tagged so Release Please
+can prepare the next version. The binaries and images use the same checked
+tag and source. A newer main
 commit cannot change the selected source. If GitHub refuses to create the
 exact ref, publication stops. If publication is interrupted after tag
 creation, retry the same inputs. [Canonical qualification](../../scripts/fixtures/canonical-restore-supervisor.md#canonical-release-qualification) · [Git reference API](https://docs.github.com/en/rest/git/refs#create-a-reference)

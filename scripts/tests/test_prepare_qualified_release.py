@@ -17,10 +17,14 @@ MAIN = "b" * 40
 TAG = "v0.24.5"
 DRAFT_ID = "17"
 DRAFT = {"id": 17, "draft": True, "target_commitish": SOURCE, "tag_name": TAG}
-PR = {"merge_commit_sha": SOURCE, "merged_at": "2026-11-21T21:00:00Z",
+PR = {"number": 390, "merge_commit_sha": SOURCE, "merged_at": "2026-11-21T21:00:00Z",
       "base": {"ref": "main", "repo": {"full_name": RELEASE.REPO}},
       "head": {"ref": RELEASE.RELEASE_BRANCH, "repo": {"full_name": RELEASE.REPO}}}
 REF = {"ref": f"refs/tags/{TAG}", "object": {"type": "commit", "sha": SOURCE}}
+PENDING = "autorelease: pending"
+TAGGED = "autorelease: tagged"
+LABELS_PATH = f"issues/{PR['number']}/labels"
+PENDING_PATH = f"{LABELS_PATH}/autorelease%3A%20pending"
 
 
 class ReleaseApi:
@@ -29,13 +33,17 @@ class ReleaseApi:
         self.ref = ref
         self.main = main
         self.writes = []
+        self.labels = {PENDING, "keep-me"}
 
     def __call__(self, method, path, data=None, *, missing=False):
         if method == "GET":
             if path == f"releases/tags/{TAG}":
                 return self.draft if self.draft and not self.draft["draft"] else None
+            pr = {**PR, "labels": [{"name": label} for label in sorted(self.labels)]}
             if path.startswith(f"commits/{SOURCE}/pulls"):
-                return [PR]
+                return [pr]
+            if path == f"pulls/{PR['number']}":
+                return pr
             if path == "releases?per_page=100&page=1":
                 return [self.draft] if self.draft else []
             if path == "git/ref/heads/main":
@@ -59,6 +67,12 @@ class ReleaseApi:
             if (method, path) == ("PATCH", f"releases/{DRAFT_ID}"):
                 self.draft = {**self.draft, **data}
                 return self.draft
+            if (method, path) == ("POST", LABELS_PATH):
+                self.labels.update(data["labels"])
+                return [{"name": label} for label in sorted(self.labels)]
+            if (method, path) == ("DELETE", PENDING_PATH):
+                self.labels.discard(PENDING)
+                return [{"name": label} for label in sorted(self.labels)]
         raise AssertionError(f"unexpected request: {method} {path}")
 
 
@@ -121,8 +135,11 @@ class ReleasePublicationTests(unittest.TestCase):
         self.assertEqual(api.writes, [
             ("POST", "git/refs", {"ref": f"refs/tags/{TAG}", "sha": SOURCE}),
             ("PATCH", f"releases/{DRAFT_ID}", {"draft": False, "tag_name": TAG, "target_commitish": SOURCE}),
+            ("POST", LABELS_PATH, {"labels": [TAGGED]}),
+            ("DELETE", PENDING_PATH, None),
         ])
         self.assertEqual(api.ref, REF)
+        self.assertEqual(api.labels, {TAGGED, "keep-me"})
 
     def test_existing_wrong_ref_or_different_checkout_blocks_mutation(self):
         wrong_ref = {**REF, "object": {"type": "commit", "sha": MAIN}}
@@ -135,9 +152,49 @@ class ReleasePublicationTests(unittest.TestCase):
     def test_existing_exact_ref_allows_retry_and_republishing_is_a_noop(self):
         api = ReleaseApi(draft=DRAFT, ref=REF)
         self.promote(api)
-        self.assertEqual([method for method, _, _ in api.writes], ["PATCH"])
+        self.assertEqual([method for method, _, _ in api.writes], ["PATCH", "POST", "DELETE"])
         self.promote(api)
-        self.assertEqual(len(api.writes), 1)
+        self.assertEqual(len(api.writes), 3)
+
+    def test_publication_retry_finishes_incomplete_label_transition(self):
+        api = ReleaseApi(draft=DRAFT, ref=REF)
+
+        def fail_removal(method, path, data=None, **kwargs):
+            if (method, path) == ("DELETE", PENDING_PATH):
+                raise ValueError("label update unavailable")
+            return api(method, path, data, **kwargs)
+
+        with self.assertRaisesRegex(ValueError, "label update unavailable"):
+            self.promote(Mock(side_effect=fail_removal))
+        self.assertFalse(api.draft["draft"])
+        self.assertEqual(api.labels, {PENDING, TAGGED, "keep-me"})
+
+        api.writes.clear()
+        self.promote(api)
+        self.assertEqual(api.writes, [("DELETE", PENDING_PATH, None)])
+        self.assertEqual(api.labels, {TAGGED, "keep-me"})
+
+    def test_pending_label_removal_requires_successful_readback(self):
+        api = ReleaseApi(draft={**DRAFT, "draft": False}, ref=REF)
+        api.labels.add(TAGGED)
+
+        def empty_removal(method, path, data=None, **kwargs):
+            if (method, path) == ("DELETE", PENDING_PATH):
+                return None
+            return api(method, path, data, **kwargs)
+
+        with self.assertRaisesRegex(ValueError, "did not transition"):
+            self.promote(Mock(side_effect=empty_removal))
+
+        def concurrently_removed(method, path, data=None, **kwargs):
+            if (method, path) == ("DELETE", PENDING_PATH):
+                api.labels.remove(PENDING)
+                return None
+            return api(method, path, data, **kwargs)
+
+        self.assertEqual(self.promote(Mock(side_effect=concurrently_removed)),
+                         {"tag": TAG, "source_sha": SOURCE})
+        self.assertEqual(api.labels, {TAGGED, "keep-me"})
 
     def test_conflicting_ref_created_concurrently_never_reaches_publish(self):
         api = ReleaseApi(draft=DRAFT)
