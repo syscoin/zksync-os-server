@@ -551,3 +551,15 @@ The v32 host moves its verifier, cached recursion setup and RISC-V transpiler to
 ## Actix HTTP parser dependency on November 17
 
 The full lockfile audit flagged three HTTP/1 advisories in actix-http 3.20.3. The lock now selects 3.21.3, whose fixes cover chunked trailer parsing, quoted chunk extensions and keep-alive request timeouts. Sentry's optional Actix integration accounts for this dependency in Cargo metadata. The Linux server's default compiled dependency tree has no Actix HTTP node. The update changes only the actix-http version and registry checksum. The two existing native advisory dispositions maintain their previous scope. [Trailer parsing](https://rustsec.org/advisories/RUSTSEC-2026-0552.html) · [Chunk extensions](https://rustsec.org/advisories/RUSTSEC-2026-0553.html) · [Keep-alive timeout](https://rustsec.org/advisories/RUSTSEC-2026-0554.html)
+
+## Gateway edge idle batching re-review — 2026-11-21
+
+The batcher classifies transactions already accepted into a canonical block and
+keeps the timeout disarmed for a Gateway edge batch containing only interop root
+imports. The production diff changes scheduling and configuration documentation.
+It adds no native or cryptographic API calls, and the lockfile, dependency
+manifests, toolchain, build flags and linkage are unchanged. The regression uses
+the existing Gateway component fixture and its existing signing and RPC
+interfaces. The crypto-bigint and libz-sys callers remain in their recorded
+scopes. The source fingerprint covers this change; the guarded Linux scanners
+still need to pass on the resulting head.
