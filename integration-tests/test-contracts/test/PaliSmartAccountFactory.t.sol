@@ -22,6 +22,9 @@ contract PaliSmartAccountFactoryTest is Test {
     PaliSmartAccountFactory private factory;
     MockEntryPoint private entryPoint;
 
+    address private constant LEGACY_COMPOSITE = address(0xC01);
+    address private constant CORRECTED_COMPOSITE = address(0xC02);
+
     address private owner = address(0xA11CE);
     address private senderCreator = address(0x4337);
 
@@ -29,7 +32,9 @@ contract PaliSmartAccountFactoryTest is Test {
         ecdsa = new PaliECDSAValidatorModule();
         entryPoint = new MockEntryPoint(senderCreator);
         implementation = new PaliSmartAccount(IEntryPoint(address(entryPoint)));
-        factory = new PaliSmartAccountFactory(address(implementation), address(entryPoint));
+        factory = new PaliSmartAccountFactory(
+            address(implementation), address(entryPoint), LEGACY_COMPOSITE, CORRECTED_COMPOSITE
+        );
     }
 
     function testCreateAccountDeploysDeterministicProxyAndInstallsInitialValidator() public {
@@ -52,13 +57,40 @@ contract PaliSmartAccountFactoryTest is Test {
         assertEq(ecdsa.threshold(account), 1);
     }
 
+    function testFactoryRejectsBothCompositeValidatorsDuringBootstrap() public {
+        address[2] memory composites = [LEGACY_COMPOSITE, CORRECTED_COMPOSITE];
+        PaliSmartAccountFactory.ModuleInit[] memory validators = new PaliSmartAccountFactory.ModuleInit[](2);
+        validators[0] = PaliSmartAccountFactory.ModuleInit(address(ecdsa), _ecdsaInitData(owner));
+        PaliSmartAccountFactory.ModuleInit[] memory executors = new PaliSmartAccountFactory.ModuleInit[](0);
+        PaliSmartAccountFactory.ModuleInit memory fallbackHandler;
+        PaliSmartAccountFactory.ModuleInit[] memory hooks = new PaliSmartAccountFactory.ModuleInit[](0);
+        bytes32 salt = keccak256("pali.account.factory.composite");
+
+        for (uint256 i = 0; i < composites.length; ++i) {
+            validators[1] = PaliSmartAccountFactory.ModuleInit(composites[i], "");
+            bytes memory initCode = factory.getInitData(validators, executors, fallbackHandler, hooks);
+            bytes memory expected = abi.encodeWithSelector(
+                PaliSmartAccountFactory.CompositeValidatorRequiresDeployedAccount.selector, composites[i]
+            );
+
+            vm.expectRevert(expected);
+            factory.getAddress(salt, initCode);
+            vm.prank(senderCreator);
+            vm.expectRevert(expected);
+            factory.createAccount(salt, initCode);
+            vm.prank(senderCreator);
+            vm.expectRevert(expected);
+            factory.createAccountWithModules(salt, validators, executors, fallbackHandler, hooks);
+        }
+    }
+
     function testConstructorRejectsNonContractImplementation() public {
         MockEntryPoint otherEntryPoint = new MockEntryPoint(senderCreator);
 
         vm.expectRevert(
             abi.encodeWithSelector(PaliSmartAccountFactory.InvalidImplementation.selector, address(0xBADC0DE))
         );
-        new PaliSmartAccountFactory(address(0xBADC0DE), address(otherEntryPoint));
+        new PaliSmartAccountFactory(address(0xBADC0DE), address(otherEntryPoint), LEGACY_COMPOSITE, CORRECTED_COMPOSITE);
     }
 
     function testConstructorRejectsMismatchedAccountEntryPoint() public {
@@ -69,7 +101,9 @@ contract PaliSmartAccountFactoryTest is Test {
                 PaliSmartAccountFactory.InvalidAccountEntryPoint.selector, address(entryPoint), address(otherEntryPoint)
             )
         );
-        new PaliSmartAccountFactory(address(implementation), address(otherEntryPoint));
+        new PaliSmartAccountFactory(
+            address(implementation), address(otherEntryPoint), LEGACY_COMPOSITE, CORRECTED_COMPOSITE
+        );
     }
 
     function testCreateAccountOnlyAllowsEntryPointSenderCreator() public {

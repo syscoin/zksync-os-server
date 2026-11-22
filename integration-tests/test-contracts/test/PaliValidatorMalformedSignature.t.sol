@@ -119,6 +119,42 @@ contract PaliValidatorMalformedSignatureTest is Test {
         );
     }
 
+    function testECDSAReinstallRequiresClearedPolicy() public {
+        address[] memory replacement = new address[](1);
+        replacement[0] = address(0xB0B);
+        bytes memory policy = abi.encode(replacement, uint64(1));
+
+        vm.expectRevert(PaliECDSAValidatorModule.AlreadyInitialized.selector);
+        ecdsa.onInstall(policy);
+        assertEq(ecdsa.owners(address(this)).length, 1);
+        assertTrue(ecdsa.isOwner(address(this), address(0xA11CE)));
+        assertFalse(ecdsa.isOwner(address(this), replacement[0]));
+
+        ecdsa.onUninstall("");
+        ecdsa.onInstall(policy);
+        assertEq(ecdsa.owners(address(this)), replacement);
+        assertFalse(ecdsa.isOwner(address(this), address(0xA11CE)));
+        assertTrue(ecdsa.isOwner(address(this), replacement[0]));
+        assertEq(ecdsa.threshold(address(this)), 1);
+    }
+
+    function testCompositeReinstallRequiresClearedPolicy() public {
+        address[] memory replacement = new address[](1);
+        replacement[0] = address(p256);
+        bytes memory policy = abi.encode(replacement, uint64(1));
+
+        vm.expectRevert(PaliCompositeValidatorModule.AlreadyInitialized.selector);
+        composite.onInstall(policy);
+        address[] memory children = composite.childValidators(address(this));
+        assertEq(children.length, 1);
+        assertEq(children[0], address(ecdsa));
+
+        composite.onUninstall("");
+        composite.onInstall(policy);
+        assertEq(composite.childValidators(address(this)), replacement);
+        assertEq(composite.threshold(address(this)), 1);
+    }
+
     function testEcdsaMalformedThresholdSignatureFailsClosed() public view {
         assertEq(ecdsa.isValidSignatureWithSender(address(this), keccak256("pali"), hex"1234"), EIP1271_FAILED);
     }

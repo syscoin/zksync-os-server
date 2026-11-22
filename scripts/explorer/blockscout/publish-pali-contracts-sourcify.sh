@@ -119,8 +119,16 @@ account_implementation_address="$(
   create2_address "$(salt "account-implementation")" "${account_implementation_init_code}"
 )"
 
+legacy_composite_validator_address="0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9"
+ecdsa_validator_bytecode="$(forge_inspect_bytecode "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule")"
+ecdsa_validator_address="$(create2_address "$(salt "ecdsa-validator")" "${ecdsa_validator_bytecode}")"
+composite_validator_bytecode="$(forge_inspect_bytecode "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule")"
+composite_validator_address="$(create2_address "$(salt "composite-validator")" "${composite_validator_bytecode}")"
+
 factory_bytecode="$(forge_inspect_bytecode "src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory")"
-factory_ctor="$(abi_encode "constructor(address,address)" "${account_implementation_address}" "${ENTRYPOINT_ADDRESS}")"
+factory_ctor="$(abi_encode "constructor(address,address,address,address)" \
+  "${account_implementation_address}" "${ENTRYPOINT_ADDRESS}" \
+  "${legacy_composite_validator_address}" "${composite_validator_address}")"
 factory_init_code="${factory_bytecode}${factory_ctor#0x}"
 factory_address="$(create2_address "$(salt "factory")" "${factory_init_code}")"
 
@@ -172,11 +180,11 @@ echo
 
 publish_entrypoint
 publish_contract "${account_implementation_address}" "Pali smart account implementation" "src/pali/PaliSmartAccount.sol:PaliSmartAccount" "${account_implementation_ctor}"
-publish_contract "0xbe057b217a1e17ffdc27c5262db790f0aaaa9133" "ECDSA validator module" "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
+publish_contract "${ecdsa_validator_address}" "ECDSA validator module" "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
 publish_contract "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24" "P-256 passkey validator module" "src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
 publish_contract "0x588d8afa40c08983a114957310c04d05a9dcb56d" "SLH-DSA verifier" "src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
 publish_contract "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" "SLH-DSA validator module" "src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule" "${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
-publish_contract "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9" "Composite validator module" "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
+publish_contract "${composite_validator_address}" "Composite validator module" "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
 publish_contract "${guardian_recovery_address}" "Guardian recovery module" "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
 publish_contract "${factory_address}" "Pali smart account factory" "src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory" "${factory_ctor}"
 
@@ -186,11 +194,11 @@ for _ in $(seq 1 30); do
   for addr in \
     "${ENTRYPOINT_ADDRESS}" \
     "${account_implementation_address}" \
-    "0xbe057b217a1e17ffdc27c5262db790f0aaaa9133" \
+    "${ecdsa_validator_address}" \
     "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24" \
     "0x588d8afa40c08983a114957310c04d05a9dcb56d" \
     "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" \
-    "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9" \
+    "${composite_validator_address}" \
     "${guardian_recovery_address}" \
     "${factory_address}"; do
     if [[ "$(runtime_code "${addr}")" == "0x" ]]; then
@@ -212,11 +220,11 @@ unverified=0
 CONTRACTS=(
   "${ENTRYPOINT_ADDRESS}|EntryPoint v0.9"
   "${account_implementation_address}|Pali smart account implementation"
-  "0xbe057b217a1e17ffdc27c5262db790f0aaaa9133|ECDSA validator module"
+  "${ecdsa_validator_address}|ECDSA validator module"
   "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24|P-256 passkey validator module"
   "0x588d8afa40c08983a114957310c04d05a9dcb56d|SLH-DSA verifier"
   "0x3b35e207243164753af0b6d2d99c7ad61f4c4034|SLH-DSA validator module"
-  "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9|Composite validator module"
+  "${composite_validator_address}|Composite validator module"
   "${guardian_recovery_address}|Guardian recovery module"
   "${factory_address}|Pali smart account factory"
 )

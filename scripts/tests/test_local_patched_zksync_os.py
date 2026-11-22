@@ -6757,6 +6757,36 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertEqual(relay["address"], PUBLISHED_EDGE_RELAY)
         self.assertEqual(relay["runtime_keccak256"], PUBLISHED_EDGE_RELAY_RUNTIME_HASH)
 
+    def test_pali_gas_tank_signer_configuration(self) -> None:
+        script = REPO_ROOT / "scripts/explorer/blockscout/deploy-pali-entrypoint-gastank-zktanenbaum.sh"
+        # Stop at local configuration validation, before any RPC or signing.
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/tmp",
+            "ZKSYS_TOKEN_ADDRESS": "0x1",
+            "GAS_TANK_GRANT_BURNER_ROLE": "invalid",
+        }
+        for variable in ("DEPLOYER_PRIVATE_KEY", "DEPLOYER_MNEMONIC", "DEPLOYER_MNEMONIC_INDEX"):
+            with self.subTest(variable=variable):
+                result = subprocess.run(
+                    ["bash", str(script)], env={**env, variable: "fixture-value", "DEPLOYER_ACCOUNT": "test"},
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("use DEPLOYER_ACCOUNT", result.stderr)
+                self.assertNotIn("fixture-value", result.stdout + result.stderr)
+
+        configurations = [
+            {"DEPLOYER_ACCOUNT": "test", "DEPLOYER_PASSWORD_FILE": "/test/password"},
+            {"DEPLOYER_KEYSTORE": "/test/keystore", "DEPLOYER_PASSWORD_FILE": "/test/password"},
+            *({"DEPLOYER_SIGNER": signer, "DEPLOYER_ADDRESS": "0x1"} for signer in ("ledger", "trezor", "aws", "gcp")),
+        ]
+        for config in configurations:
+            with self.subTest(config=config):
+                result = subprocess.run(["bash", str(script)], env={**env, **config}, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("GAS_TANK_GRANT_BURNER_ROLE must be true or false", result.stderr)
+
     def test_published_consensus_constants_are_consistent(self) -> None:
         deploy_en = (
             REPO_ROOT

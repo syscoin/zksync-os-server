@@ -21,6 +21,7 @@ contract PaliSmartAccountFactory {
     error InvalidAccountEntryPoint(address accountEntryPoint, address factoryEntryPoint);
     error InvalidImplementation(address implementation);
     error OnlySenderCreator(address caller);
+    error CompositeValidatorRequiresDeployedAccount(address validator);
 
     address public immutable implementation;
     address public immutable entryPoint;
@@ -29,8 +30,15 @@ contract PaliSmartAccountFactory {
     /// this contract. Gating createAccount on it prevents anyone else from
     /// triggering deployments outside the 4337 flow.
     address public immutable senderCreator;
+    address public immutable legacyCompositeValidator;
+    address public immutable compositeValidator;
 
-    constructor(address implementation_, address entryPoint_) {
+    constructor(
+        address implementation_,
+        address entryPoint_,
+        address legacyCompositeValidator_,
+        address compositeValidator_
+    ) {
         if (implementation_.code.length == 0) {
             revert InvalidImplementation(implementation_);
         }
@@ -41,6 +49,8 @@ contract PaliSmartAccountFactory {
         implementation = implementation_;
         entryPoint = entryPoint_;
         senderCreator = IEntryPointSenderCreator(entryPoint_).senderCreator();
+        legacyCompositeValidator = legacyCompositeValidator_;
+        compositeValidator = compositeValidator_;
     }
 
     function createAccount(bytes32 salt, bytes memory initCode) public payable returns (address account) {
@@ -100,6 +110,15 @@ contract PaliSmartAccountFactory {
     }
 
     function _deploymentCode(bytes memory initCode) internal view returns (bytes memory) {
+        (ModuleInit[] memory validators,,,) = abi.decode(initCode, (ModuleInit[], ModuleInit[], ModuleInit, ModuleInit[]));
+        for (uint256 i = 0; i < validators.length; ++i) {
+            address validator = validators[i].module;
+            // The known composite modules query the account before the proxy has runtime code.
+            if (validator == legacyCompositeValidator || validator == compositeValidator) {
+                revert CompositeValidatorRequiresDeployedAccount(validator);
+            }
+        }
+
         return abi.encodePacked(
             type(ERC1967Proxy).creationCode,
             abi.encode(implementation, abi.encodeCall(PaliSmartAccount.initializeAccount, (initCode)))
