@@ -127,7 +127,10 @@ fn v32_gateway_matches_guest_and_legacy506_is_rejected() {
             .unwrap_err()
             .contains("reviewed private chain IDs")
     );
-    assert!(trusted_descriptor_hash("v32.0").is_none());
+    assert_eq!(
+        trusted_descriptor_hash("v32.0"),
+        Some("75cdda91c6d9a47aa390ad47697d210206a6e90c79d1abc6e8cdf9784a43b1b0")
+    );
 }
 
 #[test]
@@ -135,7 +138,6 @@ fn missing_registry_and_modified_descriptor_rejected() {
     let root = TempDir::new().unwrap();
     let mut descriptor = real_descriptor(root.path());
     let hash = write_descriptor(root.path(), &descriptor);
-    assert!(trusted_descriptor_hash("v32.0").is_none());
     assert!(
         load_fixture_inventory(root.path(), "v32.0", None)
             .unwrap_err()
@@ -159,7 +161,7 @@ fn real_inventory_validates_without_anvil_or_restore_fallback() {
         inventory
             .anvil_state(root.path())
             .unwrap_err()
-            .contains("not implemented")
+            .contains("canonical restore adapter")
     );
     assert!(!root.path().join("l1-state.json").exists());
     assert!(!root.path().join("l1-state.json.gz").exists());

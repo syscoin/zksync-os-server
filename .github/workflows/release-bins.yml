@@ -2,6 +2,7 @@ name: Release binaries
 
 permissions:
   contents: read
+  statuses: read
 
 on:
   workflow_dispatch:
@@ -30,21 +31,23 @@ env:
   RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
   ZKSYNC_OS_SERVER_BIN: 'zksync-os-server'
   RELEASE_PROFILE: 'maxperf'
-  SERVER_LOGFILE: zksync-os-server.log.txt
-  FOUNDRY_VERSION: 'v1.5.1'
-  # SYSCOIN: Fresh release artifacts expose only the canonical V32 identity.
-  PROTOCOL_VERSION: 'v32.0'
-  LOCAL_CHAINS_DIR: 'local-chains'
 
 defaults:
   run:
     shell: 'bash -ex {0}'
 
 jobs:
+  qualify:
+    permissions:
+      contents: read
+      statuses: read
+    uses: ./.github/workflows/release-qualification.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+
   preflight:
+    needs: qualify
     runs-on: ubuntu-24.04
-    outputs:
-      fixture_ready: ${{ steps.fixture.outputs.ready }}
     steps:
       - name: Validate requested release identity
         shell: bash
@@ -58,20 +61,14 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
       - name: Verify tag and fixture readiness
-        id: fixture
         shell: bash
         run: |
           set -euo pipefail
           [[ "$(git rev-parse HEAD)" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
           [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" == "${RELEASE_SOURCE_SHA}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
-          marker=local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
-          if [[ -e "${marker}" || -L "${marker}" ]]; then
-            echo "ready=false" >> "${GITHUB_OUTPUT}"
-            echo "Canonical V32 fixture regeneration is pending; block-production smoke and fixture archive are omitted." >> "${GITHUB_STEP_SUMMARY}"
-          else
-            python3 scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture
-            echo "ready=true" >> "${GITHUB_OUTPUT}"
-          fi
+          # The qualification applies to this tag's exact commit and source-only binding.
+          python3 -I -B scripts/apply-era-contracts-syscoin-release.py --check-canonical-fixture-binding
+          echo "Canonical V32 fixture is private. Public release tests do not open or package it." >> "${GITHUB_STEP_SUMMARY}"
 
   # Build server binaries for all target platforms
   build-bins:
@@ -191,7 +188,6 @@ jobs:
       - name: Check executable and dynamic linkage
         env:
           TARGET: ${{ matrix.target }}
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
         run: |
           set -euo pipefail
           tar xzf "${ZKSYNC_OS_SERVER_BIN}-${RELEASE_TAG}-${TARGET}.tar.gz"
@@ -211,62 +207,7 @@ jobs:
           else
             otool -L "./${ZKSYNC_OS_SERVER_BIN}"
           fi
-          if [[ "${FIXTURE_READY}" != true ]]; then
-            echo "Canonical fixture pending: only executable/CLI/linkage smoke ran; block production was not tested." >> "${GITHUB_STEP_SUMMARY}"
-          fi
-
-      - name: Install Foundry
-        if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
-        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1.9.0
-        with:
-          version: '${{ env.FOUNDRY_VERSION }}'
-
-      - name: Check block production with certified canonical fixture
-        if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
-        env:
-          TIMEOUT: 60
-          INTERVAL: 2
-          PORT: 3050
-        run: |
-          L1_STATE_JSON="${LOCAL_CHAINS_DIR}/${PROTOCOL_VERSION}/l1-state.json"
-          gzip -dfk "${L1_STATE_JSON}.gz"
-          anvil --load-state "${L1_STATE_JSON}" \
-            --port 8545 \
-            --block-time 0.25 \
-            --mixed-mining --slots-in-an-epoch 10 > anvil.log.txt 2>&1 &
-          ./${ZKSYNC_OS_SERVER_BIN} > ${SERVER_LOGFILE} 2>&1 &
-          elapsed=0
-          while ! nc -z localhost ${PORT}; do
-            if (( elapsed >= TIMEOUT )); then
-              echo "Timeout reached after $elapsed seconds. Server did not start."
-              cat "${SERVER_LOGFILE}"
-              exit 1
-            fi
-            echo "Waiting for server to start..."
-            sleep ${INTERVAL}
-            (( elapsed += INTERVAL ))
-          done
-          echo "Sequencer is up and running."
-          FIRST_BLOCK=$(curl -X POST http://localhost:${PORT} \
-            -H "Content-Type: application/json" \
-            -d '{
-              "jsonrpc": "2.0",
-              "method": "eth_getBlockByNumber",
-              "params": ["0x1", false],
-              "id": 1
-            }')
-          # Check that the response contains a hash and a non-empty transactions array
-          if echo "${FIRST_BLOCK}" | jq -e '.result.hash and (.result.transactions | length > 0)' >/dev/null; then
-            echo "✅ First block is correct."
-          else
-            echo "❌ Missing hash or transactions array is empty in the first block."
-            echo "${FIRST_BLOCK}"
-            cat "${SERVER_LOGFILE}"
-            # SYSCOIN: Diagnostic output must not turn a failed release smoke check green.
-            exit 1
-          fi
-
-
+          echo "Public executable, CLI and linkage checks passed." >> "${GITHUB_STEP_SUMMARY}"
 
   # Package and attest the exact archives before publication.
   release-bins:
@@ -314,14 +255,9 @@ jobs:
           tar -czf dist/${{ env.ZKSYNC_OS_SERVER_BIN }}-${{ inputs.tag }}-universal-apple-darwin.tar.gz \
             ${{ env.ZKSYNC_OS_SERVER_BIN }}
 
-      - name: Archive certified local chains
-        if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}
-        run: tar -czf dist/local-chains.tar.gz "${LOCAL_CHAINS_DIR}"
-
       - name: Validate complete release inventory
         env:
           TARGET_TAG: ${{ inputs.tag }}
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
         run: |
           set -euo pipefail
           python3 - <<'PY_INVENTORY'
@@ -334,10 +270,6 @@ jobs:
               f"zksync-os-server-{tag}-aarch64-unknown-linux-gnu.tar.gz",
               f"zksync-os-server-{tag}-universal-apple-darwin.tar.gz",
           }
-          if os.environ["FIXTURE_READY"] == "true":
-              expected.add("local-chains.tar.gz")
-          elif os.environ["FIXTURE_READY"] != "false":
-              raise SystemExit("unknown fixture readiness")
           files = list(root.iterdir())
           if {p.name for p in files} != expected or any(p.is_symlink() or not p.is_file() for p in files):
               raise SystemExit("release inventory is incomplete or contains unexpected files")
@@ -353,7 +285,6 @@ jobs:
           BASE_PROVENANCE_TYPE: ${{ steps.build-provenance.outputs.predicate-type }}
           TOOLING_SHA: ${{ job.workflow_sha }}
           TOOLING_REPOSITORY: ${{ job.workflow_repository }}
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
         run: |
           set -euo pipefail
           [[ "${BASE_PROVENANCE_TYPE}" == https://slsa.dev/provenance/v1 ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
@@ -361,8 +292,7 @@ jobs:
           jq -e --arg uri "git+${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}@refs/tags/${RELEASE_TAG}" \
             --arg sha "${RELEASE_SOURCE_SHA}" \
             --arg tooling_uri "git+${GITHUB_SERVER_URL}/${TOOLING_REPOSITORY}@${TOOLING_SHA}" \
-            --arg tooling_sha "${TOOLING_SHA}" \
-            --arg fixture_ready "${FIXTURE_READY}" '
+            --arg tooling_sha "${TOOLING_SHA}" '
               if .buildDefinition.buildType != "https://actions.github.io/buildtypes/workflow/v1"
                 or (.buildDefinition.resolvedDependencies | type) != "array"
                 or (.runDetails.builder.id | type) != "string"
@@ -373,7 +303,7 @@ jobs:
                   elif any(.[]; .uri == $uri and .digest.gitCommit == $sha) then .
                   else . + [{uri: $uri, digest: {gitCommit: $sha}}] end
               | .buildDefinition.resolvedDependencies += [{uri: $tooling_uri, digest: {gitCommit: $tooling_sha}}]
-              | .buildDefinition.internalParameters.syscoinCanonicalFixture = $fixture_ready
+              | .buildDefinition.internalParameters.syscoinCanonicalFixture = "false"
             ' <<< "${BASE_PROVENANCE}" > "${RUNNER_TEMP}/server-release-provenance.json"
 
       - name: Binaries attestation
@@ -386,15 +316,14 @@ jobs:
 
       - name: Stage complete release archives
         env:
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
           ATTESTATION_URL: ${{ steps.attestation.outputs.attestation-url }}
         run: |
           set -euo pipefail
           mkdir -p staged-release
           cp -R dist staged-release/dist
           jq -n --arg tag "${RELEASE_TAG}" --arg source_sha "${RELEASE_SOURCE_SHA}" \
-            --arg fixture_ready "${FIXTURE_READY}" --arg run_id "${GITHUB_RUN_ID}" \
-            '{tag:$tag, source_sha:$source_sha, fixture_ready:$fixture_ready, run_id:$run_id}' > staged-release/metadata.json
+            --arg run_id "${GITHUB_RUN_ID}" \
+            '{tag:$tag, source_sha:$source_sha, fixture_ready:"false", run_id:$run_id}' > staged-release/metadata.json
           printf '%s\n' "${ATTESTATION_URL}" > staged-release/attestation-url.txt
 
       - name: Upload staged release archives
@@ -409,6 +338,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      statuses: read
     steps:
       - name: Checkout release tag
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -431,13 +361,12 @@ jobs:
 
       - name: Validate staged release identity
         env:
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
           ATTESTATION_URL: ${{ needs.release-bins.outputs.attestation_url }}
         run: |
           set -euo pipefail
           jq -e --arg tag "${RELEASE_TAG}" --arg sha "${RELEASE_SOURCE_SHA}" \
-            --arg ready "${FIXTURE_READY}" --arg run "${GITHUB_RUN_ID}" \
-            '.tag == $tag and .source_sha == $sha and .fixture_ready == $ready and .run_id == $run' staged-release/metadata.json > /dev/null
+            --arg run "${GITHUB_RUN_ID}" \
+            '.tag == $tag and .source_sha == $sha and .fixture_ready == "false" and .run_id == $run' staged-release/metadata.json > /dev/null
           [[ "$(cat staged-release/attestation-url.txt)" == "${ATTESTATION_URL}" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
           mv staged-release/dist dist
           python3 - <<'PY_INVENTORY'
@@ -450,10 +379,6 @@ jobs:
               f"zksync-os-server-{tag}-aarch64-unknown-linux-gnu.tar.gz",
               f"zksync-os-server-{tag}-universal-apple-darwin.tar.gz",
           }
-          if os.environ["FIXTURE_READY"] == "true":
-              expected.add("local-chains.tar.gz")
-          elif os.environ["FIXTURE_READY"] != "false":
-              raise SystemExit("unknown fixture readiness")
           files = list(root.iterdir())
           if {p.name for p in files} != expected or any(p.is_symlink() or not p.is_file() for p in files):
               raise SystemExit("staged release inventory is incomplete or contains unexpected files")
@@ -465,8 +390,22 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .release-publication-tooling
-          sparse-checkout: scripts/release
+          sparse-checkout: |
+            scripts/release/
+            .github/scripts/check-canonical-qualification.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
+
+      - name: Recheck canonical qualification before publication
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C .release-publication-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          [[ -z "$(git -C .release-publication-tooling status --porcelain --untracked-files=all)" ]]
+          python3 -I -B .release-publication-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
 
       - name: Upload immutable release artifacts
         env:
@@ -480,16 +419,22 @@ jobs:
           [[ -z "$(git -C .release-publication-tooling status --porcelain --untracked-files=all)" ]] || { echo "release identity or provenance mismatch" >&2; exit 1; }
           python3 -B .release-publication-tooling/scripts/release/publish-release-assets.py "${RELEASE_TAG}" dist/*.tar.gz
 
+      - name: Recheck canonical qualification before updating release notes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C .release-publication-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          [[ -z "$(git -C .release-publication-tooling status --porcelain --untracked-files=all)" ]]
+          python3 -I -B .release-publication-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
+
       - name: Update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FIXTURE_READY: ${{ needs.preflight.outputs.fixture_ready }}
         run: |
-          if [[ "${FIXTURE_READY}" == true ]]; then
-            FIXTURE_NOTICE="Canonical fixture smoke: passed; local chain archive included."
-          else
-            FIXTURE_NOTICE="Canonical V32 fixture regeneration is pending. Binary CLI and linkage checks passed; block-production smoke was not run and no canonical local-chain archive is included."
-          fi
+          FIXTURE_NOTICE="Private canonical CPU restore and CUDA settlement qualification passed for this source. Public binary CLI and linkage checks passed."
           REALASE_BODY=$(gh release view "${RELEASE_TAG}" --json body -q '.body')
           BINARIES_SECTION=$(cat <<- "ENDBODY"
           ## Binaries

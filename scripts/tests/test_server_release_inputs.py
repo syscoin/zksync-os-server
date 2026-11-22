@@ -80,11 +80,13 @@ class ReleaseInputsTests(unittest.TestCase):
 
     def test_workflow_releases_from_main_and_binds_release_sha(self):
         workflow = (ROOT / ".github/workflows/release-please.yml").read_text()
-        self.assertNotIn("skip-github-release", workflow)
+        self.assertIn("skip-github-release: true", workflow)
         self.assertIn("target-branch: main", workflow)
         self.assertIn("if: ${{ github.ref == 'refs/heads/main' }}", workflow)
         self.assertIn("group: server-release-${{ github.ref }}", workflow)
-        self.assertEqual(workflow.count("source_sha: ${{ needs.release-please.outputs.source_sha }}"), 2)
+        self.assertIn("source_sha: ${{ needs.release-please.outputs.source_sha }}", workflow)
+        self.assertEqual(workflow.count("source_sha: ${{ needs.publish.outputs.source_sha }}"), 2)
+        self.assertIn("needs: [release-please, qualify]", workflow)
 
     def test_ci_checks_review_scope_before_mutating_worktree(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

@@ -40,6 +40,8 @@ use zksync_os_status_server::StatusResponse;
 use zksync_os_types::{NodeRole, REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE};
 
 pub mod assert_traits;
+#[cfg(feature = "prover-tests")]
+pub mod canonical_restore;
 mod component_fee_payer;
 pub mod component_replay;
 pub mod config;
@@ -128,7 +130,7 @@ static BATCH_VERIFICATION_ADDRESSES: LazyLock<Vec<String>> = LazyLock::new(|| {
 });
 
 pub struct TestEnvironment {
-    l1: AnvilL1,
+    l1: TestL1,
     chain_layout: ChainLayout<'static>,
     gateway: Option<GatewayContext>,
     prepared_runtime: PreparedRuntime,
@@ -166,7 +168,7 @@ impl TestEnvironment {
                     protocol_version: case.protocol_version,
                     fixture_scope: case.fixture_scope,
                 };
-                let l1 = AnvilL1::start(chain_layout).await?;
+                let l1 = TestL1::start_anvil(chain_layout).await?;
                 let prepared_runtime = PreparedRuntime::new().await?;
                 Ok(Self {
                     l1,
@@ -183,7 +185,7 @@ impl TestEnvironment {
                     fixture_scope,
                     chain_index: 0,
                 };
-                let l1 = AnvilL1::start(ChainLayout::Gateway {
+                let l1 = TestL1::start_anvil(ChainLayout::Gateway {
                     protocol_version,
                     fixture_scope,
                 })
@@ -277,7 +279,21 @@ impl TestEnvironment {
         .await
     }
 
-    pub async fn launch(mut self, mut config: Config) -> anyhow::Result<Tester> {
+    pub async fn launch(self, config: Config) -> anyhow::Result<Tester> {
+        self.launch_inner(config, true).await
+    }
+
+    /// Exercise the same startup and production verifier checks without attaching a worker.
+    #[cfg(feature = "prover-tests")]
+    pub async fn launch_without_prover(self, config: Config) -> anyhow::Result<Tester> {
+        self.launch_inner(config, false).await
+    }
+
+    async fn launch_inner(
+        mut self,
+        mut config: Config,
+        #[cfg_attr(not(feature = "prover-tests"), allow(unused_variables))] start_prover: bool,
+    ) -> anyhow::Result<Tester> {
         Tester::bind_runtime_config(
             &self.l1,
             self.prepared_runtime.tempdir.as_ref(),
@@ -300,7 +316,7 @@ impl TestEnvironment {
         // SYSCOIN: Launch the external app-bound FRI+SNARK service only when its HTTP API is
         // explicitly enabled. An idle commit-only node also has fake FRI disabled, but must not
         // accidentally spawn a prover against an unbound endpoint.
-        let enable_prover = config.prover_api_config.enabled;
+        let enable_prover = start_prover && config.prover_api_config.enabled;
         let mut tester = Tester::launch_node_inner(
             self.l1,
             config,
@@ -325,8 +341,11 @@ impl TestEnvironment {
                         .expect("supporting node must have prover API port bound for prover tests"),
                 );
             }
-            tester.prover_service_task =
-                Some(spawn_prover_service(&tester, &sequencer_urls, sequencer_urls.len()).await);
+            tester.prover_service_task = Some(spawn_prover_service(
+                &tester,
+                &sequencer_urls,
+                sequencer_urls.len(),
+            )?);
         }
         Ok(tester)
     }
@@ -336,7 +355,7 @@ impl TestEnvironment {
 /// runtimes that need to stay alive for the test topology.
 #[derive(Debug)]
 pub struct Tester {
-    l1: AnvilL1,
+    l1: TestL1,
     pub l2_provider: NodeProvider,
     /// ZKsync OS-specific provider. Generally prefer to use `l2_provider` as we strive for the
     /// system to be Ethereum-compatible. But this can be useful if you need to assert custom fields
@@ -376,7 +395,7 @@ pub struct Tester {
 /// started again.
 #[derive(Debug)]
 pub struct StoppedTester {
-    l1: AnvilL1,
+    l1: TestL1,
     config: Config,
     previous_bound_ports: ServerPorts,
     http_port_reservations: HttpPortReservations,
@@ -680,7 +699,7 @@ impl Tester {
     }
 
     async fn launch_with_new_runtime(
-        l1: AnvilL1,
+        l1: TestL1,
         chain_layout: ChainLayout<'static>,
         mut config: Config,
     ) -> anyhow::Result<Self> {
@@ -699,7 +718,7 @@ impl Tester {
         .await
     }
 
-    fn bind_runtime_config(l1: &AnvilL1, tempdir: &TempDir, config: &mut Config) {
+    fn bind_runtime_config(l1: &TestL1, tempdir: &TempDir, config: &mut Config) {
         config.general_config.rocks_db_path = tempdir
             .path()
             .canonicalize()
@@ -712,10 +731,14 @@ impl Tester {
             // Retain any test-specific encryption, including the age recovery test.
             *root_path = tempdir.path().join("replay_archive");
         }
+        config.prover_api_config.proof_storage.path = tempdir.path().join("proof_storage_path");
+        Self::bind_runtime_endpoints(l1, config);
+    }
+
+    fn bind_runtime_endpoints(l1: &TestL1, config: &mut Config) {
         config.l1_provider_config.rpc_url = l1.address.clone();
         config.rpc_config.address = "0.0.0.0:0".to_string();
-        config.prover_api_config.address = "0.0.0.0:0".to_string();
-        config.prover_api_config.proof_storage.path = tempdir.path().join("proof_storage_path");
+        config.prover_api_config.address = "127.0.0.1:0".to_string();
         config.status_server_config.address = "0.0.0.0:0".to_string();
         config.network_config.address = Ipv4Addr::LOCALHOST;
         config.network_config.interface = None;
@@ -726,7 +749,7 @@ impl Tester {
     }
 
     async fn launch_node_inner(
-        l1: AnvilL1,
+        l1: TestL1,
         mut config: Config,
         tempdir: Arc<TempDir>,
         chain_layout: ChainLayout<'static>,
@@ -1112,7 +1135,7 @@ async fn shutdown_runtime(runtime: Runtime) -> anyhow::Result<()> {
 }
 
 async fn ensure_test_wallet_funded(
-    l1: &AnvilL1,
+    l1: &TestL1,
     l2_provider: &NodeProvider,
     l2_zk_provider: &DynProvider<Zksync>,
     l2_wallet: &EthereumWallet,
@@ -1293,7 +1316,7 @@ impl GatewayTesterBuilder {
 
         let protocol_version = self.protocol_version;
         let fixture_scope = self.fixture_scope;
-        let l1 = AnvilL1::start(ChainLayout::Gateway {
+        let l1 = TestL1::start_anvil(ChainLayout::Gateway {
             protocol_version,
             fixture_scope,
         })
@@ -1372,7 +1395,7 @@ impl GatewayTesterBuilder {
 }
 
 async fn wait_for_gateway_readiness(
-    l1: &AnvilL1,
+    l1: &TestL1,
     gateway_rpc_url: &str,
     chain_config: &Config,
 ) -> anyhow::Result<()> {
@@ -1414,19 +1437,23 @@ async fn wait_for_gateway_readiness(
     .await
 }
 #[derive(Debug, Clone)]
-pub struct AnvilL1 {
+pub struct TestL1 {
     pub address: String,
     pub provider: NodeProvider,
     pub wallet: EthereumWallet,
     pub(crate) timestamp_offset_seconds: i64,
 
-    // Temporary directory that holds uncompressed l1-state.json used to initialize Anvil's state.
-    // Needs to be held for the duration of test's lifetime.
+    // Retain the private component dump or restored Core/NEVM state while nodes use it.
     _tempdir: Arc<TempDir>,
 }
 
-impl AnvilL1 {
-    async fn start(chain_layout: ChainLayout<'_>) -> anyhow::Result<Self> {
+impl TestL1 {
+    async fn start_anvil(chain_layout: ChainLayout<'_>) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            chain_layout.fixture_scope() != FixtureScope::CanonicalSyscoin
+                || chain_layout.protocol_version() != PROTOCOL_VERSION_V32_0,
+            "the canonical V32 fixture requires the Core/NEVM restore harness"
+        );
         let tempdir = tempfile::tempdir()?;
         let l1_state = chain_layout.l1_state();
         let l1_timestamp = l1_state_timestamp(&l1_state)?;
@@ -1597,30 +1624,69 @@ fn l1_state_timestamp(state: &[u8]) -> anyhow::Result<u64> {
 #[cfg(feature = "prover-tests")]
 // SYSCOIN: Return the child monitor so the caller can propagate failure and synchronously abort
 // the owned process during test cleanup instead of detaching it.
-async fn spawn_prover_service(
+fn spawn_prover_service(
     tester: &Tester,
     sequencer_urls: &[String],
     iterations: usize,
-) -> JoinHandle<anyhow::Result<()>> {
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    let mut child = spawn_prover_child(tester, sequencer_urls, Some(iterations), None)?;
+    Ok(tokio::task::spawn(async move {
+        let status = child
+            .wait()
+            .await
+            .context("failed to wait for prover service")?;
+        anyhow::ensure!(
+            status.success(),
+            "prover service terminated with exit code {status}"
+        );
+        Ok(())
+    }))
+}
+
+#[cfg(feature = "prover-tests")]
+fn spawn_prover_child(
+    tester: &Tester,
+    sequencer_urls: &[String],
+    iterations: Option<usize>,
+    launcher: Option<(&std::path::Path, String)>,
+) -> anyhow::Result<tokio::process::Child> {
     let protocol_version = tester.chain_layout.protocol_version();
     assert_eq!(protocol_version, PROTOCOL_VERSION_V32_0);
     let app_bin_path = std::env::var("SYSCOIN_V8_APP_BIN")
         .map(std::path::PathBuf::from)
-        .expect("SYSCOIN_V8_APP_BIN must point to the canonical patched-v0.4 app binary");
-    assert!(
+        .context("SYSCOIN_V8_APP_BIN must point to the canonical patched-v0.4 app binary")?;
+    anyhow::ensure!(
         app_bin_path.is_file(),
-        "SYSCOIN_V8_APP_BIN is not a file: {}",
-        app_bin_path.display()
+        "the pinned app binary is not a file"
     );
-    let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
+    let trusted_setup_file =
+        std::env::var("COMPACT_CRS_FILE").context("missing pinned compact CRS")?;
     let output_dir = tester.tempdir.path().join("outputs");
     let submission_dir = tester.tempdir.path().join("prover-submissions");
-    std::fs::create_dir_all(&output_dir).unwrap();
+    std::fs::create_dir_all(&output_dir)?;
 
     let path = std::env::var("SYSCOIN_V8_PROVER_BIN")
-        .expect("SYSCOIN_V8_PROVER_BIN must point to the app-bound Syscoin V8 prover");
+        .context("SYSCOIN_V8_PROVER_BIN must point to the app-bound Syscoin V8 prover")?;
 
-    let mut child = tokio::process::Command::new(&path)
+    let executable = launcher.as_ref().map_or_else(
+        || std::path::Path::new(&path),
+        |(executable, _)| *executable,
+    );
+    let mut command = tokio::process::Command::new(executable);
+    if let Some((launcher_path, proof_scope)) = launcher {
+        anyhow::ensure!(
+            launcher_path.is_absolute() && launcher_path.is_file(),
+            "SYSCOIN_V8_PROVER_LAUNCHER must name an absolute operator-provisioned file"
+        );
+        command
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .env("SYSCOIN_V8_CANONICAL_PROOF_SCOPE", proof_scope);
+    }
+    if let Some(iterations) = iterations {
+        command.arg("--iterations").arg(iterations.to_string());
+    }
+    let child = command
         .arg("--sequencer-urls")
         .arg(sequencer_urls.join(","))
         .arg("--app-bin-path")
@@ -1633,8 +1699,6 @@ async fn spawn_prover_service(
         .arg(submission_dir)
         .arg("--trusted-setup-file")
         .arg(trusted_setup_file)
-        .arg("--iterations")
-        .arg(iterations.to_string())
         .arg("--max-fris-per-snark")
         .arg("2")
         // SYSCOIN: This process connects only to loopback endpoints created inside the isolated
@@ -1645,29 +1709,18 @@ async fn spawn_prover_service(
         // dropped on runtime shutdown without ever signalling the child.
         .kill_on_drop(true)
         .spawn()
-        .expect("failed to spawn prover service");
+        .context("failed to spawn prover service")?;
     let pid = child
         .id()
-        .expect("newly spawned prover service has no process ID");
-    let name = std::path::Path::new(&path)
+        .context("newly spawned prover service has no process ID")?;
+    let name = executable
         .file_name()
-        .expect("prover binary path has no file name")
+        .context("prover binary path has no file name")?
         .to_string_lossy();
     // Same rationale as for anvil: `kill_on_drop` never fires if the test process is
     // SIGKILLed or aborts.
-    leash::attach(pid, &name).expect("failed to attach leash to prover service");
-    tokio::task::spawn(async move {
-        let code = child
-            .wait()
-            .await
-            .context("failed to wait for prover service")?;
-        anyhow::ensure!(
-            code.success(),
-            "prover service terminated with exit code {code}"
-        );
-        tracing::info!("prover service finished running");
-        Ok(())
-    })
+    leash::attach(pid, &name).context("failed to attach leash to prover service")?;
+    Ok(child)
 }
 
 #[cfg(test)]

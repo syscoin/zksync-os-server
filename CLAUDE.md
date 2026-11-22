@@ -18,15 +18,14 @@ rewritten server workspace. Do not use plain Cargo for commands that compile
 
 ### Local Development Setup
 
-The canonical v32.0/V8 local-chain fixture is pending atomic regeneration. The
-historical files were removed; do not populate or consume a canonical fixture under
-`local-chains/v32.0` while `CANONICAL_V8_REGENERATION_REQUIRED` exists. This blocks
-fixture consumers, not fresh deployments using the completed app-bound V8 key and
-exact generated verifier sources. The deployment helper checks those source
-identities independently; real proving still checks the deployed production
-verifier and matching VK. The separate no-proofs localhost/Tanenbaum lane retains
-its explicit testnet-verifier restrictions. Canonical fixture setup commands will
-be restored only with the regenerated fixture.
+The canonical v32.0/V8 fixture is private and registered by descriptor hash.
+Use the package and configuration paths in
+[the restore runbook](scripts/fixtures/canonical-restore-supervisor.md) on the
+owned qualification host. Keep the snapshots and private configs outside the
+checkout. In older checkouts, `CANONICAL_V8_REGENERATION_REQUIRED` blocks fixture
+consumption. Fresh deployments use the matching app-bound V8 key and generated
+verifier sources and validate the deployed verifier independently. The
+no-proofs localhost/Tanenbaum lane retains its testnet-verifier restrictions.
 
 ## Submitting a PR
 

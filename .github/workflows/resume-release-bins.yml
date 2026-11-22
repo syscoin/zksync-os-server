@@ -16,21 +16,30 @@ on:
         required: true
         type: string
 
-permissions:
-  actions: read
-  attestations: read
-  contents: write
-
 concurrency:
   group: server-release-resume-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
+  qualify:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      statuses: read
+    uses: ./.github/workflows/release-qualification.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+
   resume:
     if: ${{ github.ref == 'refs/heads/main' }}
+    needs: qualify
     runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+      statuses: read
     env:
-      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
@@ -39,10 +48,13 @@ jobs:
       - name: Check out reviewed recovery tooling
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.sha }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           persist-credentials: false
 
       - name: Validate original run
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 -B scripts/release/resume-release-bins.py validate-run
 
       - name: Check out release tag
@@ -67,5 +79,19 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.original_run_id }}
 
+      - name: Recheck canonical qualification before publication
+        working-directory: release-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C .. rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          [[ -z "$(git -C .. status --porcelain --untracked-files=all -- .github/scripts/check-canonical-qualification.py scripts/release)" ]]
+          python3 -I -B ../.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
+
       - name: Verify and resume release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 -B scripts/release/resume-release-bins.py publish staged-release
