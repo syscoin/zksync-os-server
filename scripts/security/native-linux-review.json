@@ -4,9 +4,9 @@
   "review_document": "docs/audits/native-linux-dependency-exceptions-2026-10-26.md",
   "target": "x86_64-unknown-linux-gnu",
   "rustc_commit": "771916f9028e7fe56d2685f2c4f698de5d7d6a45",
-  "lock_sha256": "6bb7ac6b40f74643675e572838148ebfbfb5b9d2b1ef9c0bb0a39795b904b42d",
-  "source_sha256": "7e5113b814004a38ee2e508cc6e57f5908b900fcbe75eaa51357ade92cb20dc4",
-  "graph_sha256": "ad74d71fb6bd90b4eb56007616cd53af5e9bcdc70fe886eb2a797903d5767fd2",
+  "lock_sha256": "6ea582d38ef3b03065c96648c02eb30bd9ceea7da1aa4c893b66cf6164a1a96c",
+  "source_sha256": "c13f5fdd983c7813662fd7001203f00091a3f4980a13ac5a2dd56ebcd552524e",
+  "graph_sha256": "04622734be48f4859349c766f08f4c402f75caa6f5a2f1017628fe5d1794df85",
   "packages": {
     "cc": {
       "version": "1.2.62",

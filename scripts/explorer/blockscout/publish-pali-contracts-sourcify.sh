@@ -29,11 +29,13 @@ RPC_URL="${ZKTANENBAUM_RPC_URL:-${RPC_URL:-https://rpc-zk.tanenbaum.io}}"
 ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
 PALI_CREATE2_DEPLOYER_ADDRESS="${PALI_CREATE2_DEPLOYER_ADDRESS:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
 PALI_INFRASTRUCTURE_VERSION="PALI_SMART_ACCOUNT_ERC7579_V2"
+SLH_DSA_VALIDATOR_ADDRESS="0x3b35e207243164753af0b6d2d99c7ad61f4c4034"
+P256_VALIDATOR_ADDRESS="0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24"
 
 export FOUNDRY_BYTECODE_HASH=none
 export FOUNDRY_CBOR_METADATA=false
 
-# SLH-DSA validator constructor args: abi.encode(verifier).
+# SLH-DSA validator constructor args: abi.encode(verifier, verifierCodeHash).
 SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000588d8afa40c08983a114957310c04d05a9dcb56d31e33d9848db6a8821cf39adeb347aff047a308f52b04aee2a398e29fee8b628"
 
 lower() {
@@ -119,16 +121,15 @@ account_implementation_address="$(
   create2_address "$(salt "account-implementation")" "${account_implementation_init_code}"
 )"
 
-legacy_composite_validator_address="0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9"
 ecdsa_validator_bytecode="$(forge_inspect_bytecode "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule")"
 ecdsa_validator_address="$(create2_address "$(salt "ecdsa-validator")" "${ecdsa_validator_bytecode}")"
 composite_validator_bytecode="$(forge_inspect_bytecode "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule")"
 composite_validator_address="$(create2_address "$(salt "composite-validator")" "${composite_validator_bytecode}")"
 
 factory_bytecode="$(forge_inspect_bytecode "src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory")"
-factory_ctor="$(abi_encode "constructor(address,address,address,address)" \
+factory_ctor="$(abi_encode "constructor(address,address,address,address,address)" \
   "${account_implementation_address}" "${ENTRYPOINT_ADDRESS}" \
-  "${legacy_composite_validator_address}" "${composite_validator_address}")"
+  "${ecdsa_validator_address}" "${P256_VALIDATOR_ADDRESS}" "${SLH_DSA_VALIDATOR_ADDRESS}")"
 factory_init_code="${factory_bytecode}${factory_ctor#0x}"
 factory_address="$(create2_address "$(salt "factory")" "${factory_init_code}")"
 
@@ -181,9 +182,9 @@ echo
 publish_entrypoint
 publish_contract "${account_implementation_address}" "Pali smart account implementation" "src/pali/PaliSmartAccount.sol:PaliSmartAccount" "${account_implementation_ctor}"
 publish_contract "${ecdsa_validator_address}" "ECDSA validator module" "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
-publish_contract "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24" "P-256 passkey validator module" "src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
+publish_contract "${P256_VALIDATOR_ADDRESS}" "P-256 passkey validator module" "src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
 publish_contract "0x588d8afa40c08983a114957310c04d05a9dcb56d" "SLH-DSA verifier" "src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
-publish_contract "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" "SLH-DSA validator module" "src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule" "${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
+publish_contract "${SLH_DSA_VALIDATOR_ADDRESS}" "SLH-DSA validator module" "src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule" "${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
 publish_contract "${composite_validator_address}" "Composite validator module" "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
 publish_contract "${guardian_recovery_address}" "Guardian recovery module" "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
 publish_contract "${factory_address}" "Pali smart account factory" "src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory" "${factory_ctor}"
@@ -195,9 +196,9 @@ for _ in $(seq 1 30); do
     "${ENTRYPOINT_ADDRESS}" \
     "${account_implementation_address}" \
     "${ecdsa_validator_address}" \
-    "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24" \
+    "${P256_VALIDATOR_ADDRESS}" \
     "0x588d8afa40c08983a114957310c04d05a9dcb56d" \
-    "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" \
+    "${SLH_DSA_VALIDATOR_ADDRESS}" \
     "${composite_validator_address}" \
     "${guardian_recovery_address}" \
     "${factory_address}"; do
@@ -221,9 +222,9 @@ CONTRACTS=(
   "${ENTRYPOINT_ADDRESS}|EntryPoint v0.9"
   "${account_implementation_address}|Pali smart account implementation"
   "${ecdsa_validator_address}|ECDSA validator module"
-  "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24|P-256 passkey validator module"
+  "${P256_VALIDATOR_ADDRESS}|P-256 passkey validator module"
   "0x588d8afa40c08983a114957310c04d05a9dcb56d|SLH-DSA verifier"
-  "0x3b35e207243164753af0b6d2d99c7ad61f4c4034|SLH-DSA validator module"
+  "${SLH_DSA_VALIDATOR_ADDRESS}|SLH-DSA validator module"
   "${composite_validator_address}|Composite validator module"
   "${guardian_recovery_address}|Guardian recovery module"
   "${factory_address}|Pali smart account factory"
