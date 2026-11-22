@@ -1,0 +1,55 @@
+name: Canonical release qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact tested release commit SHA
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact tested release commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  statuses: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Require an exact release commit input
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Checkout qualification tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: qualification-tooling
+          sparse-checkout: .github/scripts/check-canonical-qualification.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Checkout the exact release candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Verify private CPU restore and CUDA settlement attestations
+        working-directory: release-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+        run: python3 -I -B ../qualification-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"

@@ -66,11 +66,81 @@ class ActivationTests(unittest.TestCase):
     def test_complete_synthetic_binding(self):
         self.assertEqual(M.check_activation(self.server), self.binding["descriptor_sha256"])
 
+    def test_source_binding_without_fixture_accepts_rustfmt_registry(self):
+        external = self.server / "private-fixture"
+        self.fixture.rename(external)
+        self.fixture.mkdir()
+        registry = self.server / "integration-tests/src/fixture_backend.rs"
+        registry.write_text('const TRUSTED_DESCRIPTORS: &[(&str, &str)] = &[(\n'
+                            '    "v32.0",\n'
+                            f'    "{self.binding["descriptor_sha256"]}",\n'
+                            ')];\n')
+        self.assertEqual(M.check_source_binding(self.server), self.binding)
+        with self.assertRaises(FileNotFoundError):
+            M.check_activation(self.server)
+        self.assertEqual(M.check_activation(self.server, external), self.binding["descriptor_sha256"])
+
+    def test_source_binding_rejects_invalid_identity_digest(self):
+        broken = copy.deepcopy(self.binding)
+        broken["identity_sha256"]["proof_identities"] = "not-a-digest"
+        with patch.object(M, "CANONICAL_BINDING", broken):
+            with self.assertRaisesRegex(ValueError, "binding hash"):
+                M.check_source_binding(self.server)
+
+    def test_prover_assets_follow_the_bound_fixture_and_release(self):
+        assets = {
+            "app_bin_sha256": self.server / "app.bin",
+            "combined_prover_sha256": self.server / "combined-prover",
+            "compact_crs_sha256": self.server / "compact.key",
+        }
+        proof = {
+            "schema": "syscoin-v32-canonical-proof-identities-v1",
+            "verification_key_hash": "0x" + "1" * 64,
+            "program_commitment": "0x" + "2" * 64,
+            "worker_commit": "3" * 40,
+        }
+        for field, path in assets.items():
+            proof[field] = put(path, field.encode())["sha256"]
+        identity = put(self.fixture / "proof_identities.json", json.dumps(proof).encode())
+        self.inv["proof_identities"] = identity
+        self.binding["identity_sha256"]["proof_identities"] = identity["sha256"]
+        self.refresh()
+        manifest = {
+            "verification_key_hash": proof["verification_key_hash"],
+            "v2_prover": {name: proof[name] for name in (
+                "program_commitment", "worker_commit", "app_bin_sha256")},
+        }
+        app_text = self.server / "app.text"
+        manifest["v2_prover"]["app_text_sha256"] = put(app_text, b"release text segment")["sha256"]
+        with patch.object(M, "load_bundle", return_value=(None, manifest)):
+            self.assertEqual(M.check_canonical_prover_assets(self.server, assets),
+                             self.binding["descriptor_sha256"])
+            app_text.write_bytes(b"foreign text segment")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                M.check_canonical_prover_assets(self.server, assets)
+            app_text.write_bytes(b"release text segment")
+            assets["combined_prover_sha256"].write_bytes(b"foreign worker")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                M.check_canonical_prover_assets(self.server, assets)
+            manifest["v2_prover"]["worker_commit"] = "4" * 40
+            with self.assertRaisesRegex(ValueError, "registered application"):
+                M.check_canonical_prover_assets(self.server, assets)
+
     def test_marker_first_even_dangling_symlink(self):
         marker = self.fixture / "CANONICAL_V8_REGENERATION_REQUIRED"
         marker.symlink_to("not-present")
         with patch.object(M, "CANONICAL_BINDING", None), self.assertRaisesRegex(ValueError, "marker"):
             M.check_activation(self.server)
+
+    def test_external_storage_respects_the_source_marker_and_registry(self):
+        external = self.server / "private-fixture"
+        self.fixture.rename(external)
+        self.fixture.mkdir()
+        self.assertEqual(M.check_activation(self.server, external),
+                         self.binding["descriptor_sha256"])
+        (self.fixture / "CANONICAL_V8_REGENERATION_REQUIRED").touch()
+        with self.assertRaisesRegex(ValueError, "marker"):
+            M.check_activation(self.server, external)
 
     def test_removed_marker_does_not_activate_binding(self):
         with patch.object(M, "CANONICAL_BINDING", None), self.assertRaisesRegex(ValueError, "not activated"):
@@ -341,9 +411,17 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(len(overlay), manifest["overlay_size"])
         self.assertEqual(sha(overlay), manifest["overlay_sha256"])
         self.assertEqual(manifest["overlay_sha256"], module.OVERLAY_SHA)
-        self.assertIsNone(M.CANONICAL_BINDING)
         self.assertEqual(sha((ROOT / "scripts/apply-era-contracts-syscoin-patch.sh").read_bytes()),
                          module.SOURCE_APPLICATOR_SHA)
+
+    def test_public_source_fixture_policy_is_consistent(self):
+        marker = ROOT / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
+        if os.path.lexists(marker):
+            self.assertIsNone(M.CANONICAL_BINDING)
+            with self.assertRaisesRegex(ValueError, "regeneration marker"):
+                M.check_source_binding(ROOT)
+        else:
+            self.assertEqual(M.check_source_binding(ROOT), M.CANONICAL_BINDING)
 
     def test_current_contract_generation_binds_actual_normal_profile_postimages(self):
         module, manifest = M.load_bundle()
@@ -419,7 +497,6 @@ class BundleAndLauncherTests(unittest.TestCase):
                          "7716000dc165773feb665ddd673dc5c3ab7e588b48009ba750ded73a241a513d")
         for flag in ("live_submission_used", "deployment_attested", "release_promoted"):
             self.assertFalse(evidence[flag])
-        self.assertIsNone(M.CANONICAL_BINDING)
         self.assertFalse(manifest["canonical_fixture_activated"])
         self.assertFalse(manifest["deployed"])
         historical = manifest["historical_2ac3_pending_proof_qualification"]
@@ -455,7 +532,6 @@ class BundleAndLauncherTests(unittest.TestCase):
             self.assertFalse(evidence[flag])
         self.assertFalse(evidence["cross_host_guest_byte_reproduction"]["passed"])
         self.assertEqual(evidence["cross_host_guest_byte_reproduction"]["remaining_guest_pairs_not_compared"], 3)
-        self.assertIsNone(M.CANONICAL_BINDING)
 
     def test_historical_d5bc_contract_generation_remains_distinct(self):
         _, manifest = M.load_bundle()
@@ -563,9 +639,18 @@ class BundleAndLauncherTests(unittest.TestCase):
         self.assertEqual(git("diff", "--binary"), worktree_before)
 
     def test_explicit_fixture_check_marker_first_and_environment_cannot_override(self):
-        env = dict(os.environ, CANONICAL_BINDING="approved", PROVER_MODE="gpu")
-        result = subprocess.run(["python3", "-B", str(ROOT / "scripts/apply-era-contracts-syscoin-release.py"),
-                                 "--check-canonical-fixture"], env=env, capture_output=True, text=True)
+        with tempfile.TemporaryDirectory() as directory:
+            server = Path(directory).resolve()
+            marker = server / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
+            put(marker, b"pending fixture\n")
+            external = server / "external-fixture"
+            external.mkdir()
+            entrypoint = server / "scripts/apply-era-contracts-syscoin-release.py"
+            put(entrypoint, Path(M.__file__).read_bytes())
+            env = dict(os.environ, CANONICAL_BINDING="approved", PROVER_MODE="gpu",
+                       SYSCOIN_V32_CANONICAL_FIXTURE_DIR=str(external))
+            result = subprocess.run(["python3", "-B", str(entrypoint), "--check-canonical-fixture"],
+                                    env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("regeneration marker", result.stderr)
         self.assertNotIn("git", result.stderr)

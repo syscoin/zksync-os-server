@@ -1,5 +1,5 @@
-//! SYSCOIN: Shared build/runtime fixture inventory boundary, not a snapshot restorer.
-//! A valid inventory is never permission to start Core/NEVM or use Anvil APIs.
+//! SYSCOIN: Shared build/runtime fixture inventory boundary.
+//! The canonical harness launches the exact authenticated restore tool separately.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -68,7 +68,10 @@ pub fn gateway_chain_id(version: &str) -> FixtureResult<u64> {
 
 // Promotion must add an independently reviewed descriptor hash here. A sidecar
 // beside an untrusted descriptor, or an environment override, is not a trust root.
-const TRUSTED_DESCRIPTORS: &[(&str, &str)] = &[];
+const TRUSTED_DESCRIPTORS: &[(&str, &str)] = &[(
+    "v32.0",
+    "75cdda91c6d9a47aa390ad47697d210206a6e90c79d1abc6e8cdf9784a43b1b0",
+)];
 
 pub fn trusted_descriptor_hash(protocol_version: &str) -> Option<&'static str> {
     TRUSTED_DESCRIPTORS
@@ -136,7 +139,7 @@ pub struct CoreNevmInventory {
     pub proof_identities: FileIdentity,
     pub deployment_record: FileIdentity,
     pub clean_boundary: FileIdentity,
-    /// Exact bytes only; interpreting/restoring this schema is deliberately unsupported.
+    /// Exact archive layout consumed by the authenticated restore tool.
     pub snapshot_manifest: FileIdentity,
     pub snapshots: Vec<RoleArtifact<SnapshotRole>>,
     pub tools: Vec<RoleArtifact<ToolRole>>,
@@ -456,10 +459,15 @@ impl ValidatedFixtureInventory {
                 descriptor.compressed_state.verify(root)?,
                 Some(&descriptor.decompressed_state),
             )),
-            Self::Descriptor(FixtureDescriptor { backend: BackendDescriptor::AnvilComponent {
-                compressed_state, decompressed_state }, .. }) =>
-                Ok((compressed_state.verify(root)?, Some(decompressed_state))),
-            Self::Descriptor(_) => Err("Core/NEVM is not Anvil state; real snapshot restore/runtime adapter is not implemented".into()),
+            Self::Descriptor(FixtureDescriptor {
+                backend:
+                    BackendDescriptor::AnvilComponent {
+                        compressed_state,
+                        decompressed_state,
+                    },
+                ..
+            }) => Ok((compressed_state.verify(root)?, Some(decompressed_state))),
+            Self::Descriptor(_) => Err("Core/NEVM must use the canonical restore adapter".into()),
         }
     }
 

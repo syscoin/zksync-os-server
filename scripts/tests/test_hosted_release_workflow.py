@@ -34,13 +34,24 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.addCleanup(self.repo.cleanup)
         self.repo_path = Path(self.repo.name)
         subprocess.run(["git", "init", "-q", str(self.repo_path)], check=True)
-        subprocess.run(["git", "-C", str(self.repo_path), "-c", "user.name=Test", "-c",
-                        "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "initial"], check=True)
-        self.sha = subprocess.check_output(["git", "-C", str(self.repo_path), "rev-parse", "HEAD"], text=True).strip()
-        subprocess.run(["git", "-C", str(self.repo_path), "tag", "v1"], check=True)
         (self.repo_path / "scripts").mkdir()
-        (self.repo_path / "scripts/apply-era-contracts-syscoin-release.py").write_text(
-            "import sys\nassert sys.argv[1:] == ['--check-canonical-fixture']\n")
+        self.checker = self.repo_path / "scripts/apply-era-contracts-syscoin-release.py"
+        self.checker.write_text(
+            'import argparse\n'
+            'parser = argparse.ArgumentParser()\n'
+            'mode = parser.add_mutually_exclusive_group(required=True)\n'
+            'mode.add_argument("--check-canonical-fixture-binding", action="store_true")\n'
+            'if not parser.parse_args().check_canonical_fixture_binding:\n'
+            '    raise RuntimeError("must not read the private fixture")\n')
+        self.commit_source("initial")
+
+    def commit_source(self, message):
+        subprocess.run(["git", "add", "scripts", "local-chains"] if (self.repo_path / "local-chains").exists()
+                       else ["git", "add", "scripts"], cwd=self.repo_path, check=True)
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                        "commit", "-qm", message], cwd=self.repo_path, check=True)
+        self.sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_path, text=True).strip()
+        subprocess.run(["git", "tag", "-f", "v1"], cwd=self.repo_path, check=True, stdout=subprocess.PIPE)
 
     def run_guard(self, script, tag="v1", sha=None):
         env = {**os.environ, "RELEASE_TAG": tag, "RELEASE_SOURCE_SHA": sha or self.sha,
@@ -63,29 +74,58 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
                         "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "new"], check=True)
         self.assertNotEqual(self.run_guard(self.preflight).returncode, 0)
 
-    def test_current_marker_fails_the_real_fixture_check_without_consuming_it(self):
+    def test_current_source_policy_matches_checked_out_marker(self):
         marker = ROOT / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
-        if not marker.exists():
-            self.skipTest("canonical fixture regeneration marker has been removed")
         result = subprocess.run(["python3", "scripts/apply-era-contracts-syscoin-release.py",
-                                 "--check-canonical-fixture"], cwd=ROOT, text=True, capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("canonical fixture regeneration marker is present", result.stderr)
+                                 "--check-canonical-fixture-binding"], cwd=ROOT, text=True, capture_output=True)
+        if os.path.lexists(marker):
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("canonical fixture regeneration marker is present", result.stderr)
+        else:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["fixture_mode"], "private")
 
-    def test_marker_omits_fixture_but_keeps_binary_release_available(self):
+    def test_bound_private_source_disables_public_fixture_output(self):
+        result = self.run_guard(self.preflight)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.repo_path / "output").exists())
+        self.assertIn("do not open or package it", (self.repo_path / "summary").read_text())
+        self.assertNotIn("local-chains.tar.gz", self.workflow)
+
+    def test_invalid_private_binding_never_uses_legacy_fallback(self):
+        with self.checker.open("a") as output:
+            output.write('raise SystemExit("invalid binding")\n')
+        self.commit_source("invalid binding")
+        result = self.run_guard(self.preflight)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid binding", result.stderr)
+        self.assertFalse((self.repo_path / "output").exists())
+
+    def test_legacy_anvil_cannot_substitute_for_private_release_binding(self):
+        self.checker.write_text(
+            "import sys\n"
+            "if sys.argv[1:] != ['--check-canonical-fixture']:\n"
+            "    sys.exit('older checker does not support private release binding')\n")
+        fixture = self.repo_path / "local-chains/v32.0"
+        fixture.mkdir(parents=True)
+        (fixture / "l1-state.json.gz").write_bytes(b"test-only")
+        self.commit_source("legacy exact tagged tooling")
+        result = self.run_guard(self.preflight)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("older checker does not support private release binding", result.stderr)
+        self.assertFalse((self.repo_path / "output").exists())
+
+    def test_marker_blocks_release_before_build_steps(self):
         marker = self.repo_path / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
         marker.parent.mkdir(parents=True)
         marker.write_text("pending")
         checker = self.repo_path / "scripts/apply-era-contracts-syscoin-release.py"
-        checker.write_text("raise RuntimeError('must not consume pending fixture')\n")
-        self.assertEqual(self.run_guard(self.preflight).returncode, 0)
-        self.assertIn("ready=false", (self.repo_path / "output").read_text())
-        self.assertIn("block-production smoke and fixture archive are omitted", (self.repo_path / "summary").read_text())
-        smoke = self.workflow.split("      - name: Check block production with certified canonical fixture\n", 1)[1]
-        self.assertIn("if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}", smoke.split("        env:", 1)[0])
-        archive = self.workflow.split("      - name: Archive certified local chains\n", 1)[1]
-        self.assertIn("if: ${{ needs.preflight.outputs.fixture_ready == 'true' }}", archive.split("        run:", 1)[0])
-        self.assertIn("block-production smoke was not run", self.workflow)
+        checker.write_text("raise SystemExit('canonical fixture regeneration marker is present')\n")
+        self.commit_source("pending fixture")
+        result = self.run_guard(self.preflight)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("canonical fixture regeneration marker is present", result.stderr)
+        self.assertFalse((self.repo_path / "output").exists())
         self.assertNotIn("--clobber", self.workflow)
 
     def test_fixture_free_config_smoke_uses_empty_working_directory(self):
@@ -107,9 +147,8 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
             "zksync-os-server-v1-x86_64-unknown-linux-gnu.tar.gz",
             "zksync-os-server-v1-aarch64-unknown-linux-gnu.tar.gz",
             "zksync-os-server-v1-universal-apple-darwin.tar.gz",
-            "local-chains.tar.gz",
         )
-        env = {**os.environ, "TARGET_TAG": "v1", "FIXTURE_READY": "true"}
+        env = {**os.environ, "TARGET_TAG": "v1"}
         def run():
             return subprocess.run(["bash", "-c", script], cwd=self.repo_path, env=env,
                                   text=True, capture_output=True).returncode
@@ -127,8 +166,6 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.assertNotEqual(run(), 0)
         (dist / names[0]).unlink()
         (dist / names[0]).write_bytes(b"archive")
-        (dist / "local-chains.tar.gz").unlink()
-        env["FIXTURE_READY"] = "false"
         self.assertEqual(run(), 0)
         (dist / "local-chains.tar.gz").write_bytes(b"archive")
         self.assertNotEqual(run(), 0)
@@ -144,6 +181,8 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
                         staging.index("      - name: Stage complete release archives"))
         self.assertLess(staging.index("      - name: Stage complete release archives"),
                         staging.index("      - name: Upload staged release archives"))
+        self.assertIn('.buildDefinition.internalParameters.syscoinCanonicalFixture = "false"', staging)
+        self.assertIn('fixture_ready:"false"', staging)
         self.assertNotIn("      - name: Upload immutable release artifacts", staging)
         artifact = "name: server-release-${{ inputs.tag }}-${{ inputs.source_sha }}"
         self.assertIn(artifact, staging)
@@ -160,7 +199,7 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         sha = "a" * 40
         url = "https://github.com/example/attestation/1"
         env = {**os.environ, "RELEASE_TAG": tag, "RELEASE_SOURCE_SHA": sha,
-               "FIXTURE_READY": "false", "GITHUB_RUN_ID": "123", "ATTESTATION_URL": url}
+               "GITHUB_RUN_ID": "123", "ATTESTATION_URL": url}
         names = (
             "zksync-os-server-v1-x86_64-unknown-linux-gnu.tar.gz",
             "zksync-os-server-v1-aarch64-unknown-linux-gnu.tar.gz",
@@ -197,6 +236,7 @@ class HostedReleaseWorkflowTests(unittest.TestCase):
         self.assertNotEqual(run(url_value="https://example.invalid"), 0)
         self.assertNotEqual(run(remove=names[0]), 0)
         self.assertNotEqual(run(extra="unexpected.tar.gz"), 0)
+        self.assertNotEqual(run(extra="local-chains.tar.gz"), 0)
         self.assertNotEqual(run(symlink=True), 0)
 
     def test_all_release_targets_use_standard_hosted_runners(self):

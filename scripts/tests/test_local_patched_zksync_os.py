@@ -80,12 +80,19 @@ def harness_process_is_running(pid: int) -> bool:
     proc_stat = Path(f"/proc/{pid}/stat")
     try:
         state = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
-        return state != "Z"
+        return state not in {"Z", "X"}
     except ProcessLookupError:
         # Linux can open stat successfully, then return ESRCH from read when
         # the already-terminated test child is reaped between these checks.
         return False
-    except (FileNotFoundError, IndexError):
+    except FileNotFoundError:
+        # Distinguish reaping between signal zero and stat from a host without procfs.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+    except IndexError:
         return True
 
 
@@ -8226,14 +8233,19 @@ class CanonicalFixtureGateStaticTests(unittest.TestCase):
     ) -> None:
         marker_name = "CANONICAL_V8_REGENERATION_REQUIRED"
         marker = REPO_ROOT / "local-chains" / "v32.0" / marker_name
-        self.assertTrue(marker.is_file())
-        marker_text = marker.read_text(encoding="utf-8")
-        self.assertIn("DO NOT LAUNCH THIS FIXTURE", marker_text)
-        self.assertIn("Execution V7, Proving V8", marker_text)
-        self.assertIn(REGISTERED_GUEST_ZKSYNC_OS_TREE, marker_text)
-        self.assertIn("zero values retained in the production keygen workflow", marker_text)
-        self.assertIn("not the current server identity", marker_text)
-        self.assertIn("does not populate or qualify this canonical fixture", marker_text)
+        if os.path.lexists(marker):
+            self.assertTrue(marker.is_file())
+            marker_text = marker.read_text(encoding="utf-8")
+            self.assertIn("DO NOT LAUNCH THIS FIXTURE", marker_text)
+            self.assertIn("Execution V7, Proving V8", marker_text)
+            self.assertIn(REGISTERED_GUEST_ZKSYNC_OS_TREE, marker_text)
+            self.assertIn("zero values retained in the production keygen workflow", marker_text)
+            self.assertIn("not the current server identity", marker_text)
+            self.assertIn("does not populate or qualify this canonical fixture", marker_text)
+        else:
+            subprocess.run(["python3", "scripts/apply-era-contracts-syscoin-release.py",
+                            "--check-canonical-fixture-binding"], check=True, cwd=REPO_ROOT,
+                           capture_output=True, text=True)
 
         guarded_paths = (
             REPO_ROOT / "run_local.sh",
@@ -9810,7 +9822,7 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
             with patch.object(Path, "read_text", side_effect=ProcessLookupError(3, "No such process")):
                 self.assertFalse(harness_process_is_running(123))
             kill_probe.assert_called_once_with(123, 0)
-            for state, expected in (("R", True), ("S", True), ("Z", False)):
+            for state, expected in (("R", True), ("S", True), ("Z", False), ("X", False)):
                 with self.subTest(state=state), patch.object(
                     Path, "read_text", return_value=f"123 (test child) {state} 1 2 3"
                 ):
@@ -9824,6 +9836,10 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
             with patch.object(Path, "read_text", side_effect=PermissionError()):
                 with self.assertRaises(PermissionError):
                     harness_process_is_running(123)
+        with patch.object(os, "kill", side_effect=[None, ProcessLookupError()]), patch.object(
+            Path, "read_text", side_effect=FileNotFoundError()
+        ):
+            self.assertFalse(harness_process_is_running(123))
         with patch.object(os, "kill", side_effect=ProcessLookupError()):
             with patch.object(Path, "read_text") as read_stat:
                 self.assertFalse(harness_process_is_running(123))
@@ -9832,9 +9848,10 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
     def test_gateway_jobs_are_bounded_exact_and_signal_safe(self) -> None:
         def assert_process_stopped(pid: int) -> None:
             deadline = time.monotonic() + 1
-            while harness_process_is_running(pid) and time.monotonic() < deadline:
+            while harness_process_is_running(pid):
+                if time.monotonic() >= deadline:
+                    self.fail(f"PID {pid} is still running")
                 time.sleep(0.02)
-            self.assertFalse(harness_process_is_running(pid), f"PID {pid} is still running")
 
         command = r'''
 source "$COMMON"

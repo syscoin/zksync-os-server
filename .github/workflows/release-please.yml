@@ -8,6 +8,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      release_id:
+        description: Exact private draft release ID to promote (provide all three inputs)
+        type: string
+      tag:
+        description: Exact version tag from the draft
+        type: string
+      source_sha:
+        description: Exact CPU and CUDA qualified draft source SHA
+        type: string
 
 concurrency:
   group: server-release-${{ github.ref }}
@@ -22,24 +32,38 @@ jobs:
       pull-requests: write
       issues: write
     outputs:
-      releases_created: ${{ steps.release.outputs.releases_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      source_sha: ${{ steps.release.outputs.sha }}
+      release_id: ${{ steps.candidate.outputs.release_id }}
+      tag_name: ${{ steps.candidate.outputs.tag }}
+      source_sha: ${{ steps.candidate.outputs.source_sha }}
     steps:
       - name: Checkout release inputs
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
       - name: Check reviewed release inputs
+        if: ${{ !inputs.release_id && !inputs.tag && !inputs.source_sha }}
         run: python3 scripts/check-server-release-inputs.py
-      - name: Prepare release
+      - name: Select exact candidate or stage its private draft
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_RELEASE_ID: ${{ inputs.release_id }}
+          SELECTED_RELEASE_TAG: ${{ inputs.tag }}
+          SELECTED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: python3 -I -B scripts/release/prepare-qualified-release.py prepare
+
+      - name: Prepare the next release PR
         id: release
+        if: ${{ steps.candidate.outputs.prepare_pr == 'true' }}
         uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
         with:
           token: ${{ github.token }}
           target-branch: main
           config-file: .github/release-please/config.json
           manifest-file: .github/release-please/manifest.json
+          skip-github-release: true
 
       - name: Align generated workspace versions
         if: ${{ steps.release.outputs.prs_created == 'true' }}
@@ -48,25 +72,90 @@ jobs:
           RELEASE_PRS: ${{ steps.release.outputs.prs }}
         run: python3 .github/scripts/sync-release-workspace.py
 
-  # GITHUB_TOKEN-created tags do not trigger other push workflows, so invoke
-  # both publishers directly with the released commit identity.
-  release-bins:
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+  qualify:
+    if: ${{ needs.release-please.outputs.release_id != '' }}
     needs: release-please
     permissions:
+      contents: read
+      statuses: read
+    uses: ./.github/workflows/release-qualification.yml
+    with:
+      source_sha: ${{ needs.release-please.outputs.source_sha }}
+
+  publish:
+    needs: [release-please, qualify]
+    runs-on: ubuntu-24.04
+    permissions:
       contents: write
+      pull-requests: write
+      statuses: read
+    outputs:
+      tag_name: ${{ steps.release.outputs.tag }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+    steps:
+      - name: Checkout reviewed publication tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: release-tooling
+          sparse-checkout: |
+            scripts/release/prepare-qualified-release.py
+            .github/scripts/check-canonical-qualification.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Checkout the qualified source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.release-please.outputs.source_sha }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Check reviewed release inputs for the qualified source
+        working-directory: release-source
+        run: python3 scripts/check-server-release-inputs.py
+
+      - name: Recheck canonical qualification before publication
+        working-directory: release-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
+          RELEASE_SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git -C ../release-tooling rev-parse HEAD)" == "${TOOLING_SHA}" ]]
+          python3 -I -B ../release-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
+
+      - name: Publish the exact verified release
+        id: release
+        working-directory: release-source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          SELECTED_RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          SELECTED_SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
+        run: python3 -I -B ../release-tooling/scripts/release/prepare-qualified-release.py publish
+
+  # GITHUB_TOKEN-created tags do not trigger other push workflows.
+  release-bins:
+    needs: publish
+    permissions:
+      contents: write
+      statuses: read
       id-token: write
       attestations: write
     uses: ./.github/workflows/release-bins.yml
     with:
-      tag: ${{ needs.release-please.outputs.tag_name }}
-      source_sha: ${{ needs.release-please.outputs.source_sha }}
+      tag: ${{ needs.publish.outputs.tag_name }}
+      source_sha: ${{ needs.publish.outputs.source_sha }}
 
   release-images:
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
-    needs: release-please
+    needs: publish
     permissions:
       contents: read
+      statuses: read
       packages: write
       id-token: write
       attestations: write
@@ -74,5 +163,5 @@ jobs:
     uses: ./.github/workflows/docker.yml
     secrets: inherit
     with:
-      tag_name: ${{ needs.release-please.outputs.tag_name }}
-      source_sha: ${{ needs.release-please.outputs.source_sha }}
+      tag_name: ${{ needs.publish.outputs.tag_name }}
+      source_sha: ${{ needs.publish.outputs.source_sha }}

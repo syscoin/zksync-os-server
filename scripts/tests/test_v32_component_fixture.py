@@ -220,7 +220,6 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertIn('V32 canonical fixture cannot use the component-only Anvil backend', backend)
         self.assertIn('check_regeneration_marker(root)?;', backend.split('pub fn load_fixture_inventory(', 1)[1])
         self.assertIn('base.join("anvil-component-only").join(version)', backend)
-        self.assertTrue((ROOT / "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED").is_file())
         self.assertFalse((ROOT / "local-chains/v32.0/versions.yaml").exists())
 
     def test_all_current_path_consumers_share_explicit_scope(self):
@@ -254,8 +253,10 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertEqual(smoke.count('python3 scripts/fixtures/verify-v32-component-fixture.py'), 2)
         prover = (ROOT / "integration-tests/tests/prover.rs").read_text()
         self.assertIn('#![cfg(feature = "prover-tests")]', prover)
-        self.assertIn('fake_fri_provers.enabled = false', prover)
-        self.assertIn('fake_snark_provers.enabled = false', prover)
+        self.assertEqual(prover.count('CanonicalTestStack::start().await?'), 2)
+        restored = (ROOT / "integration-tests/src/canonical_restore.rs").read_text()
+        self.assertIn('!config.prover_api_config.fake_fri_provers.enabled', restored)
+        self.assertIn('!config.prover_api_config.fake_snark_provers.enabled', restored)
 
     def test_config_cleanup_waits_for_nodes_before_removing_database(self):
         smoke = (ROOT / ".github/scripts/test-configs.sh").read_text()

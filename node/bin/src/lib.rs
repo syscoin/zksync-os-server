@@ -3488,13 +3488,15 @@ async fn resolve_syscoin_edge_da_commit_target(
             pending_gateway_ctm_asset_id = Some(ctm_asset_id);
             None
         } else {
-            match resolve_gateway_local_syscoin_edge_da_commit_target(local_eth_call, ctm_asset_id)?
-            {
-                Some(target) => Some(target),
-                None => {
-                    // SYSCOIN: This is the one permitted incomplete bootstrap state. Do not create
-                    // a placeholder target: target-consuming components remain unconstructed or
-                    // gated until the post-pipeline resolver publishes the authenticated address.
+            match resolve_gateway_local_syscoin_edge_da_commit_target(
+                local_eth_call,
+                local_state,
+                ctm_asset_id,
+            )? {
+                GatewayLocalEdgeDaTarget::Resolved(target) => Some(target),
+                pending => {
+                    pending.log_missing_ctm_code();
+                    // SYSCOIN: A partial bootstrap never supplies a placeholder target.
                     pending_gateway_ctm_asset_id = Some(ctm_asset_id);
                     None
                 }
@@ -3552,15 +3554,57 @@ async fn resolve_gateway_l1_syscoin_ctm_asset_id(l1_state: &L1State) -> anyhow::
     Ok(ctm_asset_id)
 }
 
-// SYSCOIN: Gateway activation is a canonical multi-block priority sequence. The authenticated L1
-// asset mapping may still be zero before the local Bridgehub mapping is installed. That state
-// remains pending and authorizes nothing; once mapped, CTM and target identity must be complete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GatewayLocalEdgeDaTarget {
+    Unmapped,
+    MissingCtmCode { address: Address, block_number: u64 },
+    Resolved(Address),
+}
+
+impl GatewayLocalEdgeDaTarget {
+    fn log_missing_ctm_code(self) {
+        if let Self::MissingCtmCode {
+            address,
+            block_number,
+        } = self
+        {
+            tracing::info!(%address, block_number, "Gateway-local CTM code is awaiting priority replay");
+        }
+    }
+}
+
+// SYSCOIN: The canonical priority sequence can install the mapping before the CTM code. Anchor
+// both calls and the code check to FullDiffs' applied block so a moving head cannot hide bad ABI.
 fn resolve_gateway_local_syscoin_edge_da_commit_target(
     local_eth_call: &dyn LocalEthCall,
+    local_state: &impl ReadStateHistory,
     ctm_asset_id: B256,
-) -> anyhow::Result<Option<Address>> {
+) -> anyhow::Result<GatewayLocalEdgeDaTarget> {
+    let block_number = *local_state.block_range_available().end();
+    let mut view = local_state
+        .state_view_at(block_number)
+        .context("failed to open Gateway state for CTM bootstrap")?;
+    resolve_gateway_local_syscoin_edge_da_commit_target_at(
+        local_eth_call,
+        ctm_asset_id,
+        block_number,
+        |address| {
+            view.get_account(address)
+                .is_some_and(|account| account.observable_bytecode_len != 0)
+        },
+    )
+}
+
+fn resolve_gateway_local_syscoin_edge_da_commit_target_at(
+    local_eth_call: &dyn LocalEthCall,
+    ctm_asset_id: B256,
+    block_number: u64,
+    ctm_has_code: impl FnOnce(Address) -> bool,
+) -> anyhow::Result<GatewayLocalEdgeDaTarget> {
+    let block = BlockId::Number(BlockNumberOrTag::Number(block_number));
     let local_ctm = local_contract_address_call(
         local_eth_call,
+        block,
         L2_BRIDGEHUB_ADDRESS,
         ctmAssetIdToAddressCall {
             _assetInfo: ctm_asset_id,
@@ -3569,11 +3613,18 @@ fn resolve_gateway_local_syscoin_edge_da_commit_target(
         "Gateway-local Bridgehub.ctmAssetIdToAddress()",
     )?;
     if local_ctm.is_zero() {
-        return Ok(None);
+        return Ok(GatewayLocalEdgeDaTarget::Unmapped);
+    }
+    if !ctm_has_code(local_ctm) {
+        return Ok(GatewayLocalEdgeDaTarget::MissingCtmCode {
+            address: local_ctm,
+            block_number,
+        });
     }
 
     let validator_timelock = local_contract_address_call(
         local_eth_call,
+        block,
         local_ctm,
         validatorTimelockPostV29Call {}.abi_encode(),
         "Gateway-local CTM.validatorTimelockPostV29()",
@@ -3582,7 +3633,7 @@ fn resolve_gateway_local_syscoin_edge_da_commit_target(
         !validator_timelock.is_zero(),
         "Gateway-local CTM.validatorTimelockPostV29() returned zero"
     );
-    Ok(Some(validator_timelock))
+    Ok(GatewayLocalEdgeDaTarget::Resolved(validator_timelock))
 }
 
 // SYSCOIN: Poll only the local state populated by the running canonical replay/priority pipeline.
@@ -3594,14 +3645,26 @@ async fn wait_for_gateway_local_syscoin_edge_da_commit_target(
     poll_interval: Duration,
 ) -> anyhow::Result<Address> {
     let poll_interval = poll_interval.max(Duration::from_millis(10));
+    let mut logged_missing_ctm_code = false;
     loop {
-        if let Some(live_target) =
-            resolve_gateway_local_syscoin_edge_da_commit_target(local_eth_call, ctm_asset_id)?
-        {
-            let live_target = validate_syscoin_edge_da_commit_target(live_target, None, true);
-            if validate_syscoin_edge_da_gateway_local_target_runtime(local_state)? {
-                return Ok(live_target);
+        match resolve_gateway_local_syscoin_edge_da_commit_target(
+            local_eth_call,
+            local_state,
+            ctm_asset_id,
+        )? {
+            GatewayLocalEdgeDaTarget::Resolved(live_target) => {
+                let live_target = validate_syscoin_edge_da_commit_target(live_target, None, true);
+                if validate_syscoin_edge_da_gateway_local_target_runtime(local_state)? {
+                    return Ok(live_target);
+                }
             }
+            pending @ GatewayLocalEdgeDaTarget::MissingCtmCode { .. }
+                if !logged_missing_ctm_code =>
+            {
+                pending.log_missing_ctm_code();
+                logged_missing_ctm_code = true;
+            }
+            _ => {}
         }
         tokio::time::sleep(poll_interval).await;
     }
@@ -3644,6 +3707,7 @@ fn initial_syscoin_edge_da_commit_target(
 
 fn local_contract_address_call(
     local_eth_call: &dyn LocalEthCall,
+    block: BlockId,
     contract: Address,
     calldata: Vec<u8>,
     description: &str,
@@ -3652,7 +3716,7 @@ fn local_contract_address_call(
         .with_to(contract)
         .with_input(Bytes::from(calldata));
     let output = local_eth_call
-        .call(request, Some(BlockId::latest()))
+        .call(request, Some(block))
         .with_context(|| format!("failed to call {description}"))?;
     anyhow::ensure!(
         output.len() == 32,
@@ -4261,12 +4325,12 @@ mod tests {
     }
 
     use super::{
-        MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, PipelineStartupReadiness, canonical_pubdata_mode,
-        check_batch_verification_mismatch, defer_syscoin_gateway_local_identity,
-        initial_syscoin_edge_da_commit_target, initial_transaction_acceptance_state,
-        monitor_liveness_bound_startup_signal, parse_syscoin_require_gas_tank,
-        requires_genesis_replay_repository_completion,
-        resolve_gateway_local_syscoin_edge_da_commit_target, rpc_edge_da_target_required,
+        GatewayLocalEdgeDaTarget, MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, PipelineStartupReadiness,
+        canonical_pubdata_mode, check_batch_verification_mismatch,
+        defer_syscoin_gateway_local_identity, initial_syscoin_edge_da_commit_target,
+        initial_transaction_acceptance_state, monitor_liveness_bound_startup_signal,
+        parse_syscoin_require_gas_tank, requires_genesis_replay_repository_completion,
+        resolve_gateway_local_syscoin_edge_da_commit_target_at, rpc_edge_da_target_required,
         syscoin_edge_da_uses_gateway_local_target, validate_batch_verification_startup_policy,
         validate_deployed_verifier_prover_policy, validate_l1_archive_history_observation,
         validate_l1_archive_identity_observation, validate_syscoin_edge_da_commit_target,
@@ -4978,6 +5042,7 @@ mod tests {
     }
 
     fn expected_address_call(
+        block_number: u64,
         contract: Address,
         calldata: Vec<u8>,
         output: Address,
@@ -4985,7 +5050,7 @@ mod tests {
         ExpectedLocalEthCall {
             contract,
             calldata: Bytes::from(calldata),
-            block: Some(BlockId::latest()),
+            block: Some(BlockId::number(block_number)),
             output: address_abi_word(output),
         }
     }
@@ -5002,6 +5067,7 @@ mod tests {
     fn compact_edge_da_gateway_zero_mapping_remains_unresolved() {
         let asset_id = B256::repeat_byte(0x11);
         let local = QueuedLocalEthCall::new([expected_address_call(
+            2,
             L2_BRIDGEHUB_ADDRESS,
             ctmAssetIdToAddressCall {
                 _assetInfo: asset_id,
@@ -5010,8 +5076,66 @@ mod tests {
             Address::ZERO,
         )]);
         assert_eq!(
-            resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id).unwrap(),
-            None
+            resolve_gateway_local_syscoin_edge_da_commit_target_at(&local, asset_id, 2, |_| {
+                panic!("unmapped Gateway must not inspect a CTM account")
+            })
+            .unwrap(),
+            GatewayLocalEdgeDaTarget::Unmapped
+        );
+        assert_eq!(local.remaining(), 0);
+    }
+
+    #[test]
+    fn compact_edge_da_gateway_waits_for_ctm_code_after_mapping() {
+        let asset_id = B256::repeat_byte(0x21);
+        let local_ctm = address!("0x000000000000000000000000000000000000c7a1");
+        let mapping_call = ctmAssetIdToAddressCall {
+            _assetInfo: asset_id,
+        }
+        .abi_encode();
+        let local = QueuedLocalEthCall::new([
+            expected_address_call(3, L2_BRIDGEHUB_ADDRESS, mapping_call.clone(), local_ctm),
+            expected_address_call(4, L2_BRIDGEHUB_ADDRESS, mapping_call, local_ctm),
+            expected_address_call(
+                4,
+                local_ctm,
+                validatorTimelockPostV29Call {}.abi_encode(),
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            ),
+        ]);
+        assert_eq!(
+            resolve_gateway_local_syscoin_edge_da_commit_target_at(
+                &local,
+                asset_id,
+                3,
+                |address| {
+                    assert_eq!(address, local_ctm);
+                    false
+                }
+            )
+            .unwrap(),
+            GatewayLocalEdgeDaTarget::MissingCtmCode {
+                address: local_ctm,
+                block_number: 3,
+            }
+        );
+        assert_eq!(
+            local.remaining(),
+            2,
+            "no getter call is allowed without code"
+        );
+        assert_eq!(
+            resolve_gateway_local_syscoin_edge_da_commit_target_at(
+                &local,
+                asset_id,
+                4,
+                |address| {
+                    assert_eq!(address, local_ctm);
+                    true
+                }
+            )
+            .unwrap(),
+            GatewayLocalEdgeDaTarget::Resolved(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET)
         );
         assert_eq!(local.remaining(), 0);
     }
@@ -5022,6 +5146,7 @@ mod tests {
         let local_ctm = address!("0x000000000000000000000000000000000000c7a1");
         let local = QueuedLocalEthCall::new([
             expected_address_call(
+                4,
                 L2_BRIDGEHUB_ADDRESS,
                 ctmAssetIdToAddressCall {
                     _assetInfo: asset_id,
@@ -5030,43 +5155,56 @@ mod tests {
                 local_ctm,
             ),
             expected_address_call(
+                4,
                 local_ctm,
                 validatorTimelockPostV29Call {}.abi_encode(),
                 SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
             ),
         ]);
         assert_eq!(
-            resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id).unwrap(),
-            Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET)
+            resolve_gateway_local_syscoin_edge_da_commit_target_at(&local, asset_id, 4, |_| true)
+                .unwrap(),
+            GatewayLocalEdgeDaTarget::Resolved(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET)
         );
         assert_eq!(local.remaining(), 0);
     }
 
     // SYSCOIN: Malformed CTM output is never downgraded into a retryable state.
     #[test]
-    fn compact_edge_da_gateway_rejects_malformed_nonempty_timelock_output() {
+    fn compact_edge_da_gateway_rejects_empty_malformed_or_zero_timelock_with_ctm_code() {
         let asset_id = B256::repeat_byte(0x34);
         let local_ctm = address!("0x000000000000000000000000000000000000c7a1");
-        let local = QueuedLocalEthCall::new([
-            expected_address_call(
-                L2_BRIDGEHUB_ADDRESS,
-                ctmAssetIdToAddressCall {
-                    _assetInfo: asset_id,
-                }
-                .abi_encode(),
-                local_ctm,
-            ),
-            ExpectedLocalEthCall {
-                contract: local_ctm,
-                calldata: Bytes::from(validatorTimelockPostV29Call {}.abi_encode()),
-                block: Some(BlockId::latest()),
-                output: Bytes::from(vec![0_u8; 31]),
-            },
-        ]);
-        let err =
-            resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id).unwrap_err();
-        assert!(err.to_string().contains("returned 31 bytes"));
-        assert_eq!(local.remaining(), 0);
+        for (output, error) in [
+            (Bytes::new(), "returned 0 bytes"),
+            (Bytes::from(vec![0_u8; 31]), "returned 31 bytes"),
+            (Bytes::from(vec![1_u8; 32]), "non-canonical ABI address"),
+            (address_abi_word(Address::ZERO), "returned zero"),
+        ] {
+            let local = QueuedLocalEthCall::new([
+                expected_address_call(
+                    4,
+                    L2_BRIDGEHUB_ADDRESS,
+                    ctmAssetIdToAddressCall {
+                        _assetInfo: asset_id,
+                    }
+                    .abi_encode(),
+                    local_ctm,
+                ),
+                ExpectedLocalEthCall {
+                    contract: local_ctm,
+                    calldata: Bytes::from(validatorTimelockPostV29Call {}.abi_encode()),
+                    block: Some(BlockId::number(4)),
+                    output,
+                },
+            ]);
+            let err =
+                resolve_gateway_local_syscoin_edge_da_commit_target_at(&local, asset_id, 4, |_| {
+                    true
+                })
+                .unwrap_err();
+            assert!(err.to_string().contains(error));
+            assert_eq!(local.remaining(), 0);
+        }
     }
 
     // SYSCOIN: A well-formed but wrong eventual target reaches the immutable guest-binding check
@@ -5079,6 +5217,7 @@ mod tests {
         let wrong_target = address!("0x0000000000000000000000000000000000000042");
         let local = QueuedLocalEthCall::new([
             expected_address_call(
+                4,
                 L2_BRIDGEHUB_ADDRESS,
                 ctmAssetIdToAddressCall {
                     _assetInfo: asset_id,
@@ -5087,14 +5226,18 @@ mod tests {
                 local_ctm,
             ),
             expected_address_call(
+                4,
                 local_ctm,
                 validatorTimelockPostV29Call {}.abi_encode(),
                 wrong_target,
             ),
         ]);
-        let target = resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id)
-            .unwrap()
-            .unwrap();
+        let GatewayLocalEdgeDaTarget::Resolved(target) =
+            resolve_gateway_local_syscoin_edge_da_commit_target_at(&local, asset_id, 4, |_| true)
+                .unwrap()
+        else {
+            panic!("CTM with code must return a well-formed nonzero address")
+        };
         validate_syscoin_edge_da_commit_target(target, None, true);
     }
 
