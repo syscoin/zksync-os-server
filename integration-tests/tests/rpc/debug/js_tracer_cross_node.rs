@@ -1,9 +1,10 @@
 use alloy::eips::BlockId;
 use alloy::network::{EthereumWallet, TransactionBuilder};
-use alloy::primitives::U256;
-use alloy::providers::ProviderBuilder;
+use alloy::primitives::{B256, U256};
 use alloy::providers::ext::DebugApi;
+use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
+use alloy::rpc::types::state::{AccountOverride, StateOverride};
 use alloy::rpc::types::trace::geth::{GethDebugTracerType, GethDebugTracingCallOptions, GethTrace};
 use alloy::signers::local::LocalSigner;
 use serde_json::Value;
@@ -61,6 +62,55 @@ async fn compare_js_tracer_outputs_between_nodes() -> anyhow::Result<()> {
         TracingSecondary::deploy(reth_provider.clone(), secondary_init_value).await?;
     let primary_reth =
         TracingPrimary::deploy(reth_provider.clone(), *secondary_reth.address()).await?;
+
+    for (node, provider, secondary, supports_full_replacement) in [
+        ("ZKsync OS", &zksync_provider, &secondary_zksync, false),
+        ("Reth", &reth_provider, &secondary_reth, true),
+    ] {
+        let request = secondary.multiply(U256::from(1)).into_transaction_request();
+        let baseline = provider.call(request.clone()).await?;
+        assert_eq!(
+            U256::from_be_slice(&baseline),
+            secondary_init_value,
+            "{node}: baseline storage read"
+        );
+
+        let sparse = StateOverride::from_iter([(
+            *secondary.address(),
+            AccountOverride::default()
+                .with_state_diff([(B256::with_last_byte(1), B256::with_last_byte(2))]),
+        )]);
+        let sparse_result = provider.call(request.clone()).overrides(sparse).await?;
+        assert_eq!(
+            U256::from_be_slice(&sparse_result),
+            secondary_init_value,
+            "{node}: stateDiff must preserve the omitted slot"
+        );
+
+        let replacement = StateOverride::from_iter([(
+            *secondary.address(),
+            AccountOverride::default().with_state([]),
+        )]);
+        let replacement_result = provider.call(request).overrides(replacement).await;
+        if supports_full_replacement {
+            assert_eq!(
+                U256::from_be_slice(&replacement_result?),
+                U256::ZERO,
+                "{node}: empty state must clear the omitted slot"
+            );
+        } else {
+            // The flat ZKsync OS storage reader cannot mask every slot for an account.
+            let error = replacement_result.expect_err("empty state must be rejected");
+            let response = error
+                .as_error_resp()
+                .unwrap_or_else(|| panic!("expected a JSON-RPC error from {node}, got {error}"));
+            assert_eq!(response.code, -32602, "{node}: {response:?}");
+            assert!(
+                response.message.contains("full storage replacement"),
+                "{node}: {response:?}"
+            );
+        }
+    }
 
     // Prepare calls we want to compare.
     let calculate_value = U256::from(3);

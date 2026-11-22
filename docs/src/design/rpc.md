@@ -11,6 +11,16 @@
     * `zks_getBridgehubContract`
 * `ots_` namespace is used for Otterscan integration (meant for local development only)
 
+## Storage overrides in simulations
+
+`eth_call`, `eth_estimateGas`, `debug_traceCall`, and `eth_simulateV1` accept
+`stateDiff` for sparse storage overrides. The listed slots use the supplied
+values, and omitted slots retain their values in the current simulation state.
+
+Full storage replacement via `state` is unsupported. An empty `state: {}` and
+a populated `state` both return JSON-RPC error `-32602` (`Invalid params`).
+Storage overrides apply only to the request's temporary simulation state.
+
 <!-- SYSCOIN: Downstream RPC retention, capture capacities, and trusted-JS opt-in. -->
 ## Local RPC capture and retention capacities
 

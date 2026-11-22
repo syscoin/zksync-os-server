@@ -200,6 +200,7 @@ impl<Ok> ToRpcResult<Ok, EthCallError> for Result<Ok, EthCallError> {
             ),
             EthCallError::SimulateInvalidParams(_)
             | EthCallError::SimulateInvalidBlockOverride(_)
+            | EthCallError::StateOverride(_)
             // SYSCOIN: Excess caller gas is rejected before VM execution.
             | EthCallError::CallGasLimitExceeded { .. } => {
                 invalid_params_rpc_err(err.to_string())
