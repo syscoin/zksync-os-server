@@ -33,11 +33,11 @@ def api_for(token):
         raise ValueError("GitHub release token is unavailable")
     opener = build_opener(NoRedirect())
 
-    def api(method, path, data=None, *, missing=False):
+    def api(method, path, data=None, *, missing=False, version="2026-03-10"):
         request = Request(
             f"https://api.github.com/repos/{REPO}/{path}",
             headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
-                     "Content-Type": "application/json", "X-GitHub-Api-Version": "2026-03-10"},
+                     "Content-Type": "application/json", "X-GitHub-Api-Version": version},
             data=json.dumps(data).encode() if data is not None else None,
             method=method,
         )
@@ -62,9 +62,10 @@ def manifest_tag(source):
 
 
 def lookup_generated_pr(api, source):
-    for pr in api("GET", f"commits/{source}/pulls?per_page=100"):
+    # GitHub removed merge_commit_sha from pull request payloads in 2026-03-10.
+    for pr in api("GET", f"commits/{source}/pulls?per_page=100", version="2022-11-28"):
         if (type(pr["number"]) is int and pr["number"] > 0
-                and pr["merge_commit_sha"] == source and pr["merged_at"]
+                and pr.get("merge_commit_sha") == source and pr["merged_at"]
                 and pr["base"]["ref"] == "main" and pr["head"]["ref"] == RELEASE_BRANCH
                 and pr["base"]["repo"]["full_name"] == REPO
                 and (pr["head"]["repo"] or {}).get("full_name") == REPO):
