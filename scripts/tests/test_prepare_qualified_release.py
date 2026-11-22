@@ -35,12 +35,14 @@ class ReleaseApi:
         self.writes = []
         self.labels = {PENDING, "keep-me"}
 
-    def __call__(self, method, path, data=None, *, missing=False):
+    def __call__(self, method, path, data=None, *, missing=False, version="2026-03-10"):
         if method == "GET":
             if path == f"releases/tags/{TAG}":
                 return self.draft if self.draft and not self.draft["draft"] else None
             pr = {**PR, "labels": [{"name": label} for label in sorted(self.labels)]}
             if path.startswith(f"commits/{SOURCE}/pulls"):
+                if version == "2026-03-10":
+                    pr.pop("merge_commit_sha")
                 return [pr]
             if path == f"pulls/{PR['number']}":
                 return pr
@@ -111,6 +113,14 @@ class ReleasePreparationTests(unittest.TestCase):
             with self.subTest(api=api), self.assertRaises(ValueError):
                 self.stage(api)
             self.assertEqual(api.writes, [])
+
+    def test_unverifiable_merge_commit_prevents_staging(self):
+        api = ReleaseApi()
+        for candidate in ({"number": 390}, {**PR, "merge_commit_sha": MAIN}):
+            with self.subTest(candidate=candidate), patch.dict(PR, candidate, clear=True):
+                with self.assertRaisesRegex(ValueError, "not a merged generated server release PR"):
+                    self.stage(api)
+        self.assertEqual(api.writes, [])
 
     def test_manual_selection_requires_exact_id_tag_and_source(self):
         api = ReleaseApi(draft=DRAFT)
