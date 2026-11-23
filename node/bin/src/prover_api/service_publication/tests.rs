@@ -628,26 +628,40 @@ async fn native_observations_authorize_only_the_matching_batch() {
                 asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
             }
         }
-        let result = native.confirmed_gap(&publication).await;
-        match (number, matching_hash) {
-            (1, true) => assert_eq!(
-                result.unwrap(),
-                NativeObservation::Confirmed(safe_block.header.hash)
-            ),
-            (1, false) => assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("differs from local proof")
-            ),
-            _ => assert_eq!(result.unwrap(), NativeObservation::NoGap),
+        let (_, directory, _) = publication.journal.stage(&work, 256).unwrap();
+        if number == 1 && matching_hash {
+            assert!(
+                publication
+                    .wait_for_work(&work, None, &native)
+                    .await
+                    .unwrap()
+            );
+            let evidence = read_private(&directory.join("superseded.json"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<B256>(&evidence).unwrap(),
+                safe_block.header.hash
+            );
+        } else {
+            let result = native.confirmed_gap(&publication).await;
+            if number == 1 {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("differs from local proof")
+                );
+            } else {
+                assert_eq!(result.unwrap(), NativeObservation::NoGap);
+            }
+            assert!(!directory.join("superseded.json").exists());
         }
         asserter.push_success(&Bytes::from(0u64.abi_encode()));
         assert_eq!(
             native.confirmed_gap(&publication).await.unwrap(),
             NativeObservation::Pending
         );
-        let (_, directory, _) = publication.journal.stage(&work, 256).unwrap();
         assert!(!directory.join("confirmed.json").exists());
     }
 }
