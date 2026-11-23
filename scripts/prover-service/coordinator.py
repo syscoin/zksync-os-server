@@ -267,7 +267,7 @@ class Coordinator:
         self.save()
         return identifier
 
-    def acquire(self, identifier, execute):
+    def acquire(self, identifier, execute, *, next_native_batch=None):
         op, directory = self.state["operations"][identifier], self.directory(identifier)
         if not execute:
             return "would_pick_native_snark"
@@ -326,6 +326,8 @@ class Coordinator:
         payload = io.private_json(lease / "payload.json", io.MAX_PAYLOAD)
         job.validate_payload(payload, "SNARK", self.settings["vk_hash"])
         io.immutable_json(directory / "payload.json", payload, io.MAX_PAYLOAD)
+        if next_native_batch is not None and payload["from_batch_number"] > next_native_batch:
+            return "await_native_frontier_for_picked_lease"
         if not (directory / "evidence.json").exists():
             start, end = payload["from_batch_number"], payload["to_batch_number"]
             status, _, raw = self.native.request(sentry.endpoint_url(self.config["endpoint"]) +
@@ -648,18 +650,22 @@ class Coordinator:
                     self.save()
                     return None
             result = relay.step(op["relay"], execute, receipt_only=receipt_only)
-            if result["status"] in ("accepted", "accepted_elsewhere"):
+            entry = relay.state["operations"][op["relay"]]
+            pending_nonce = relay.external_acceptance_with_pending_nonce(entry)
+            if result["status"] in ("accepted", "accepted_elsewhere") or pending_nonce:
                 if not result["acceptance"].get("transaction_hash"):
                     return {**result, "next_action": "wait_for_acceptance_transaction"}
                 s.require(op["publication"] is not None, "native_publication_missing")
                 handoff = relay.export_handoff(op["relay"], op["publication"], execute)
-                if execute:
-                    op["status"] = "settled"
+                status = "settled_with_pending_nonce" if pending_nonce else "settled"
+                if execute and (op["status"] != status or self.state["active"] == identifier):
+                    op["status"] = status
+                    if pending_nonce and identifier not in self.state.setdefault("regrouped_pending", []):
+                        self.state["regrouped_pending"].append(identifier)
                     if self.state["active"] == identifier:
                         self.state["active"] = None
                     self.save()
                 return handoff
-            entry = relay.state["operations"][op["relay"]]
             if result["status"] in ("stale_unsigned", "reverted") and (entry["unsigned_transaction"] is None
                     or result["status"] == "reverted"):
                 if execute:
@@ -772,6 +778,19 @@ class Coordinator:
                 retired = self.retire_regrouped(identifier, payload, execute)
                 if retired:
                     return retired
+                # A node restart can replace an in-memory lease before a wrapper exists
+                # to journal. Only an expired pick with no submission or endorsements can
+                # be released on this evidence alone. Keep its original authority on disk.
+                if op["lease"] and not any(op[k] for k in ("bundle", "proof", "works", "maintenance", "relay")):
+                    authority = read_private_json(directory / op["lease"] / "authority.json")
+                    if authority["status"] == "picked" and authority["submission_sha256"] is None:
+                        deadline = next(item["deadline"] for item in op["leases"] if item["name"] == op["lease"])
+                        if int(self.clock()) < deadline:
+                            return {"next_action": "await_native_frontier_for_picked_lease"}
+                        if execute:
+                            op["status"], self.state["active"] = "expired", None
+                            self.save()
+                        return {"next_action": "pick_after_expired_future_lease" if execute else "would_release_expired_future_lease"}
             if chain["next_native_batch"] > payload["from_batch_number"]:
                 if execute:
                     op["status"], self.state["active"] = "superseded", None
@@ -779,7 +798,7 @@ class Coordinator:
                 return {"next_action": "range_already_proven" if chain["next_native_batch"] > payload["to_batch_number"]
                         else "native_advance_requires_new_range"}
         if op["lease"] is None or op["status"] == "picking":
-            result = self.acquire(identifier, execute)
+            result = self.acquire(identifier, execute, next_native_batch=chain["next_native_batch"])
             if result:
                 return {"next_action": result}
         payload = io.private_json(payload_path, io.MAX_PAYLOAD)

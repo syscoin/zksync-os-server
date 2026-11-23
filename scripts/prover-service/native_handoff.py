@@ -84,10 +84,18 @@ def regrouped_work(root, retained, settings, limits, rpc, now, payload, evidence
         if (work.get("batch_from"), work.get("batch_to")) != (start, end):
             continue
         s.require(all(work.get(key) == value for key, value in pins.items()), "node_publication_work_mismatch")
-        if evidence is not None and work["batch_outputs"] != [batch["output"] for batch in evidence["batches"]]:
-            continue
-        if proof is not None and work["proof_data"] != "0x" + s.proof_data(evidence, s.decode_proof(proof["proof"])).hex():
-            continue
+        if evidence is not None:
+            batches = evidence["batches"]
+            if work["batch_outputs"] != [batch["output"] for batch in batches]:
+                continue
+            previous, stored = s.decode_proof_data(s.raw_hex(work["proof_data"]))
+            if previous != evidence["previous_batch"] or stored != [batch["stored"] for batch in batches]:
+                continue
+        # A published operation binds exact proof bytes. An unpublished lease can hold
+        # a different valid proof of the same native batches from another worker.
+        if retained is not None and proof is not None:
+            if work["proof_data"] != "0x" + s.proof_data(evidence, s.decode_proof(proof["proof"])).hex():
+                continue
         disposition = io.private_json(marker_file)
         s.exact(disposition, ("schema_version", "work_hash", "native_proved", "native_batch_hash"))
         s.require(disposition["schema_version"] == 1 and disposition["work_hash"] == s.keccak(data), "regrouped_work_binding_changed")
@@ -96,14 +104,23 @@ def regrouped_work(root, retained, settings, limits, rpc, now, payload, evidence
         head, anchor = r.anchored_head(rpc, settings, limits, now)
         chain = settings["chain_address"]
         gate = settings["proof_gate"]
-        s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, anchor]))) == limits["gate_code_hash"]
-                  and r.call_word(rpc, gate, "chain()", anchor, kind="address") == chain, "gate_configuration_changed")
         tip = r.call_word(rpc, chain, "getTotalBatchesVerified()", anchor)
         # A later advance can overtake the marker. Once this exact range is next,
         # the native planner may legitimately issue a fresh lease with the same bounds.
         retired = frontier <= tip and (retained is not None or tip + 1 < start)
         if retired:
-            s.require(r.call_word(rpc, chain, "storedBatchHash(uint256)", anchor, s.word(frontier), "bytes32")
+            depth = max(limits["confirmations"], s.uint(work["required_confirmations"], 64), 1)
+            safe_number = s.uint(head["number"]) - depth + 1
+            s.require(safe_number >= 0, "regrouped_native_frontier_unconfirmed")
+            safe = rpc.call("eth_getBlockByNumber", [hex(safe_number), False])
+            s.require(isinstance(safe, dict) and s.uint(safe["number"]) == safe_number,
+                      "regrouped_native_anchor_unavailable")
+            confirmed = {"blockHash": s.nonzero(safe["hash"]), "requireCanonical": True}
+            s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, confirmed]))) == limits["gate_code_hash"]
+                      and r.call_word(rpc, gate, "chain()", confirmed, kind="address") == chain, "gate_configuration_changed")
+            s.require(r.call_word(rpc, chain, "getTotalBatchesVerified()", confirmed) >= frontier,
+                      "regrouped_native_frontier_unconfirmed")
+            s.require(r.call_word(rpc, chain, "storedBatchHash(uint256)", confirmed, s.word(frontier), "bytes32")
                       == s.nonzero(disposition["native_batch_hash"]), "regrouped_native_hash_changed")
         r.check_anchor(rpc, settings, head)
         if retired:

@@ -256,6 +256,8 @@ class CoordinatorTests(unittest.TestCase):
         native = fixture(batch_count=5)
         full = native["evidence"]
         self.rpc.evidence = full
+        self.rpc.advance()
+        self.now = self.rpc.now
         self.rpc.native_proved = self.rpc.observed_native = 2
         identifier = self.controller.reserve()
         directory = self.controller.directory(identifier)
@@ -307,6 +309,61 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.controller.step(True)["next_action"], "pick_regrouped_native_range")
         self.assertEqual(self.controller_reload().state["operations"][old]["publication"], str(root))
         self.assertFalse(self.native.calls or self.rpc.sent)
+
+    def test_unpublished_regrouped_lease_can_hold_another_proof_of_the_same_batches(self):
+        old, native, root = self.regrouped_publication(retained=False)
+        full = native["evidence"]
+        evidence = {**full, "previous_batch": full["batches"][2]["stored"], "batches": full["batches"][3:]}
+        proof = {**native["snark"], "from_batch_number": 4, "proof": base64.b64encode(b"b" * (44 * 32)).decode()}
+        directory = self.controller.directory(old)
+        io.immutable_json(directory / "evidence.json", evidence)
+        io.immutable_json(directory / "proof.json", proof)
+        op = self.controller.state["operations"][old]
+        op["proof"] = io.digest(proof)
+        payload = io.private_json(directory / "payload.json")
+        op["publication"] = str(root)
+        self.assertIsNone(self.controller.retire_regrouped(old, payload, False))
+        op["publication"] = None
+        self.controller.save()
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "pick_regrouped_native_range")
+        self.assertFalse(self.wallet.calls or self.relay_wallet.calls or self.rpc.sent)
+
+    def test_regrouped_publication_requires_the_frontier_at_confirmation_depth(self):
+        old, _, _ = self.regrouped_publication(retained=True)
+        original = self.rpc.call
+        safe_hash = self.rpc.blocks[hex(s.uint(self.rpc.head["number"]) - 1)]["hash"]
+        def unconfirmed(method, params):
+            if (method == "eth_call" and params[1]["blockHash"] == safe_hash
+                    and params[0]["data"] == "0x" + r.selector("getTotalBatchesVerified()").hex()):
+                return "0x" + s.word(1).hex()
+            return original(method, params)
+        with patch.object(self.rpc, "call", side_effect=unconfirmed):
+            with self.assertRaisesRegex(s.Error, "regrouped_native_frontier_unconfirmed"):
+                self.controller_reload().step(True)
+        self.assertEqual(self.controller_reload().state["active"], old)
+
+    def test_markerless_future_pick_restarts_after_expiry_and_preserves_lease_records(self):
+        native = fixture(batch_count=5)
+        self.rpc.evidence = native["evidence"]
+        self.rpc.native_proved = self.rpc.observed_native = 2
+        payload = {**native["fri_payload"], "from_batch_number": 4, "fri_proofs": native["fri_payload"]["fri_proofs"][3:]}
+        self.native.responses.append((200, {}, {**payload, "lease_token": h(192)}))
+        self.assertEqual(self.controller.step(True)["next_action"], "await_native_frontier_for_picked_lease")
+        old = self.controller.state["active"]
+        op = self.controller.state["operations"][old]
+        lease = self.controller.directory(old) / op["lease"] / "authority.json"
+        original = lease.read_bytes()
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_native_frontier_for_picked_lease")
+        self.rpc.advance(seconds=self.config["native_lease_seconds"] + 1)
+        self.now = self.rpc.now
+        self.assertEqual(self.controller.step(False)["next_action"], "would_release_expired_future_lease")
+        self.assertEqual(self.controller_reload().state["active"], old)
+        self.assertEqual(self.controller.step(True)["next_action"], "pick_after_expired_future_lease")
+        self.assertEqual(self.controller_reload().step(False)["next_action"], "would_pick_native_snark")
+        self.assertEqual(self.controller.state["operations"][old]["status"], "expired")
+        self.assertEqual(lease.read_bytes(), original)
+        self.assertEqual(len(self.native.calls), 1)
+        self.assertFalse(self.rpc.sent or self.wallet.calls or self.relay_wallet.calls)
 
     def test_regroup_marker_distinguishes_old_publication_from_newly_eligible_lease(self):
         old, _, root = self.regrouped_publication(retained=False)

@@ -475,7 +475,8 @@ class Relay:
         """Export a receipt hint; the node independently authenticates every chain claim."""
         item = self.load_artifact(operation_id)
         op = self.state["operations"][operation_id]
-        s.require(op["status"] in ("accepted", "accepted_elsewhere"), "relay_acceptance_not_confirmed")
+        s.require(op["status"] in ("accepted", "accepted_elsewhere") or self.external_acceptance_with_pending_nonce(op),
+                  "relay_acceptance_not_confirmed")
         acceptance = op["acceptance"]
         s.require(isinstance(acceptance, dict) and acceptance.get("transaction_hash"),
                   "acceptance_transaction_hash_required")
@@ -521,10 +522,12 @@ class Relay:
                 "transaction_hash": acceptance["transaction_hash"], "sidecar": item["sidecar"]}
         destination = directory / "relay.json"
         if execute:
+            previous = None
             if destination.exists() or destination.is_symlink():
-                s.read(destination, private=True, maximum=2 * 1024 * 1024)
+                previous = s.read(destination, private=True, maximum=2 * 1024 * 1024)
                 s.require(destination.lstat().st_nlink == 1, "linked_handoff_file_forbidden")
-            atomic_json(destination, hint)
+            if previous != s.canonical(hint):
+                atomic_json(destination, hint)
         return {"work_hash": hint["work_hash"], "transaction_hash": hint["transaction_hash"],
                 "handoff": str(destination), "written": execute,
                 "next_action": "node_verifies_canonical_native_gate_receipt"}
@@ -537,6 +540,13 @@ class Relay:
 
     def _confirmations(self, block_number, head):
         return s.uint(head["number"]) - s.uint(block_number) + 1
+
+    def external_acceptance_with_pending_nonce(self, op):
+        acceptance = op["acceptance"]
+        return (op["status"] in ("accepted_with_pending_nonce", "mined_unconfirmed") and op["unsigned_transaction"] is not None
+                and acceptance is not None and acceptance["source"] == "gate_event" and acceptance.get("transaction_hash")
+                and acceptance["transaction_hash"] != op["transaction_hash"]
+                and self._confirmations(acceptance["block_number"], op["context"]["head"]) >= self.limits["confirmations"])
 
     def _observe_receipt(self, op, item, observed):
         head = observed["head"]
@@ -615,16 +625,23 @@ class Relay:
         if receipt:
             if self._confirmations(receipt["block_number"], observed["head"]) >= confirmations:
                 op["status"] = "accepted" if receipt["status"] else "reverted"
-                if receipt["status"] == 0 and acceptance and self._confirmations(acceptance["block_number"], observed["head"]) >= confirmations:
-                    op["status"] = "accepted_elsewhere"
                 action = "complete"
+                if receipt["status"] == 0 and acceptance:
+                    if self._confirmations(acceptance["block_number"], observed["head"]) >= confirmations:
+                        op["status"] = "accepted_elsewhere"
+                    else:
+                        op["status"], action = "accepted_unconfirmed", "wait_for_confirmations"
             else:
                 op["status"], action = "mined_unconfirmed", "wait_for_confirmations"
+            if self.external_acceptance_with_pending_nonce(op):
+                action = "export_acceptance_and_reconcile_own_nonce"
             self.save(execute)
             return self.summary(operation_id, action)
         if acceptance:
             if op["unsigned_transaction"]:
                 op["status"], action = "accepted_with_pending_nonce", "wait_for_own_nonce_receipt"
+                if self.external_acceptance_with_pending_nonce(op):
+                    action = "export_acceptance_and_reconcile_own_nonce"
             elif self._confirmations(acceptance["block_number"], observed["head"]) >= confirmations:
                 op["status"], action = "accepted_elsewhere", "complete"
             else:

@@ -464,6 +464,30 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(result["next_action"], "wait_for_own_nonce_receipt")
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def test_receipt_only_external_handoff_requires_exact_confirmed_gate_event(self):
+        self.relayer().step(self.operation_id, True)
+        work = Path(self.temp.name).resolve() / "node-work"
+        work.mkdir(mode=0o700)
+        s.write_new(work / "work.json", self.node_work())
+        included = copy.deepcopy(self.rpc.head)
+        self.rpc.parent = self.item["package_hash"]
+        self.relayer().step(self.operation_id, True, receipt_only=True)
+        with self.assertRaisesRegex(s.Error, "relay_acceptance_not_confirmed"):
+            self.relayer().export_handoff(self.operation_id, work, True)
+
+        self.rpc.logs = [{"address": self.settings["proof_gate"], "topics": r.acceptance_topics(self.item),
+                          "data": "0x" + s.word(0).hex(), "transactionHash": h(90),
+                          "blockNumber": included["number"], "blockHash": included["hash"]}]
+        self.relayer().step(self.operation_id, True, receipt_only=True)
+        with self.assertRaisesRegex(s.Error, "relay_acceptance_not_confirmed"):
+            self.relayer().export_handoff(self.operation_id, work, True)
+        self.rpc.advance()
+        result = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(result["next_action"], "export_acceptance_and_reconcile_own_nonce")
+        self.assertNotIn(result["status"], r.TERMINAL)
+        self.assertEqual(self.relayer().export_handoff(self.operation_id, work, True)["transaction_hash"], h(90))
+        self.assertEqual(len(self.rpc.sent), 1)
+
     def test_external_acceptance_before_signing_finishes_without_wallet(self):
         self.rpc.parent = self.item["package_hash"]
         self.assertEqual(self.relayer().step(self.operation_id, execute=True)["status"], "accepted_unconfirmed")
