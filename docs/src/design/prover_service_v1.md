@@ -255,13 +255,20 @@ Only the next batch can use a reservation. Requests that become overdue after
 the reservation affect subsequent batches. The per-batch rule guarantees
 ordered progress under a backlog, which can take multiple proof groups to clear.
 
-The multi-block producer integration is pending. A reservation must cover the
-whole native batch. The node normally seals on block, transaction, pubdata,
-resource, interop and time limits. A resource cut can move the next already
-formed block to the following batch, so the production path must authorize
-that lookahead before canonization or classify the boundary before canonizing
-it. The integration must let ordinary blocks continue through batch formation
-without waiting for native commitment after each L2 block.
+The draft permits one outstanding reservation per lane, and native commitment
+clears it. This would make the sequencer wait for batch N to commit before it
+could start batch N+1. Preserving production overlap requires changing admission
+as well as integrating the multi-block producer. The node normally seals on
+block, transaction, pubdata, resource, interop and time limits. A resource cut
+can move the next already formed block to the following batch. The producer must
+cover that block under the correct reservation before canonization and recover
+the same boundary after a restart or sequencer handoff.
+
+The candidate native setter installs one policy at a drained frontier. Its
+sequencer address is immutable. Returning to ordinary commitment after
+installation, rotating that address, or moving to native priority mode currently
+requires a coordinated contract upgrade. Those transitions are open design
+items for activation review.
 
 V1 activation is held until the producer can supply that boundary and the
 admission paths are qualified on both settlement lanes.

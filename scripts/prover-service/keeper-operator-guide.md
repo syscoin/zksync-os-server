@@ -369,8 +369,10 @@ contracts do not authenticate ChainLocks or guarantee that a keeper will run.
 
 ### Admit each native batch before commit
 
-This procedure requires the replacement multi-block producer, which is pending
-implementation and qualification. Keep V1 inactive until both lanes are ready.
+These commands describe the single-reservation contract in the draft. Production
+requires a reservation policy that permits overlapping native batches and a
+multi-block producer that preserves their boundaries. Both lanes still require
+implementation and qualification before activation.
 
 Use `priority-admission-status` to read the policy and current reservation at a
 canonical settlement head. With no reservation, simulate
