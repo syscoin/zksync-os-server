@@ -824,20 +824,22 @@ async fn validate_archive_batch_against_live(
         live_commit_tx_hash,
         commit_log.firstBlockNumber..=commit_log.lastBlockNumber,
     )?;
-    // A reverted commit can still have an authentic historical event and a reused stored hash.
-    // The live fallback can resolve an ambiguous same-block revert using its active-commit scan.
-    anyhow::ensure!(
-        util::find_latest_l1_revert(
-            live_proxy,
+    // The matched event survived the end of its block. A later revert invalidates that
+    // historical range even if a subsequent commitment reuses the same stored batch hash.
+    if let Some(next_block) = commit_block.checked_add(1) {
+        anyhow::ensure!(
+            util::find_latest_l1_revert(
+                live_proxy,
+                batch.number(),
+                next_block,
+                max_l1_blocks_to_scan
+            )
+            .await?
+            .is_none(),
+            "archive batch {} has a later settlement revert",
             batch.number(),
-            commit_block,
-            max_l1_blocks_to_scan
         )
-        .await?
-        .is_none(),
-        "archive batch {} has a live settlement revert at or after its reported commit",
-        batch.number(),
-    );
+    }
     for header in [live_commit_block, live_tip] {
         let canonical_block = provider
             .get_block_by_number(header.inner.number.into())

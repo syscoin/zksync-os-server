@@ -199,7 +199,8 @@ walks backward until block `0`, and writes the canonical chain into RocksDB from
 
 When recovering from a shared archive, use `--trusted-session` on both commands to scope the
 restore to exact session IDs recorded independently in trusted writer logs or a reviewed inventory.
-Repeat the option for each trusted session needed to cover the full chain from the anchor. Copies
+Repeat the option for each trusted session needed to cover the full chain from the anchor. The
+download lists each selected writer prefix directly on filesystem, S3 and GCS backends. Copies
 in the selected sessions must still agree. Use storage access controls that reserve each selected
 prefix to its corresponding writer.
 

@@ -669,7 +669,10 @@ mod tests {
         config.bitcoin_da_rpc_url = Some("not a url".to_owned());
 
         let err = GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap_err();
-        assert!(err.to_string().contains("invalid bitcoin_da_rpc_url"));
+        assert!(
+            err.to_string()
+                .contains("invalid batcher.bitcoin_da_rpc_url")
+        );
     }
 
     #[test]

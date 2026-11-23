@@ -73,39 +73,49 @@ where
 
     // Listing and downloading are interleaved page by page: downloads start right after the
     // first listing page instead of waiting for a full listing of a large archive.
-    let mut page_token = None;
     let mut downloaded = 0;
     let mut found_keys = false;
 
-    loop {
-        let mut page = reader.list_keys_page(page_token.take()).await?;
-        page.keys
-            .retain(|key| session_selected(trusted_sessions, &key.session));
-        found_keys |= !page.keys.is_empty();
-
-        let mut objects = futures::stream::iter(
+    let mut scopes: Vec<_> = trusted_sessions.iter().map(Some).collect();
+    scopes.sort_unstable();
+    scopes.dedup();
+    if scopes.is_empty() {
+        scopes.push(None);
+    }
+    for session in scopes {
+        let mut page_token = None;
+        loop {
+            let mut page = reader
+                .list_keys_page_for_session(session, page_token.take())
+                .await?;
             page.keys
-                .into_iter()
-                .filter(|key| !existing.contains(key))
-                .map(|key| async move {
-                    let bytes = reader.fetch_object(&key).await?;
-                    anyhow::Ok((key, bytes))
-                }),
-        )
-        .buffer_unordered(download_concurrency.get());
+                .retain(|key| session.is_none_or(|selected| selected == &key.session));
+            found_keys |= !page.keys.is_empty();
 
-        while let Some(object) = objects.next().await {
-            let (key, bytes) = object?;
-            write_downloaded_object(output_root, &key, bytes).await?;
-            downloaded += 1;
-            log_recovery_progress(downloaded, || {
-                tracing::info!(downloaded, "Downloaded replay archive objects");
-            });
-        }
+            let mut objects = futures::stream::iter(
+                page.keys
+                    .into_iter()
+                    .filter(|key| !existing.contains(key))
+                    .map(|key| async move {
+                        let bytes = reader.fetch_object(&key).await?;
+                        anyhow::Ok((key, bytes))
+                    }),
+            )
+            .buffer_unordered(download_concurrency.get());
 
-        match page.next_page_token {
-            Some(token) => page_token = Some(token),
-            None => break,
+            while let Some(object) = objects.next().await {
+                let (key, bytes) = object?;
+                write_downloaded_object(output_root, &key, bytes).await?;
+                downloaded += 1;
+                log_recovery_progress(downloaded, || {
+                    tracing::info!(downloaded, "Downloaded replay archive objects");
+                });
+            }
+
+            match page.next_page_token {
+                Some(token) => page_token = Some(token),
+                None => break,
+            }
         }
     }
 
@@ -846,6 +856,67 @@ mod tests {
     use zksync_os_storage_api::ReadReplay;
 
     #[tokio::test]
+    async fn selected_session_download_paginates_each_prefix_without_listing_the_bucket() {
+        struct PrefixRestrictedReader;
+
+        #[async_trait::async_trait]
+        impl ReplayArchiveStorageReader for PrefixRestrictedReader {
+            async fn list_keys_page(
+                &self,
+                _: Option<String>,
+            ) -> anyhow::Result<crate::ReplayArchiveKeyPage> {
+                anyhow::bail!("bucket-wide listing denied")
+            }
+
+            async fn list_keys_page_for_session(
+                &self,
+                session: Option<&ReplayArchiveSession>,
+                token: Option<String>,
+            ) -> anyhow::Result<crate::ReplayArchiveKeyPage> {
+                let session = session.context("session-scoped access required")?;
+                let (block, next_page_token) = match token {
+                    None => (1, Some(session.folder_name())),
+                    Some(token) if token == session.folder_name() => (2, None),
+                    _ => anyhow::bail!("page token belongs to a different session"),
+                };
+                Ok(crate::ReplayArchiveKeyPage {
+                    keys: vec![ReplayArchiveKey::new(session.clone(), block, B256::ZERO)],
+                    next_page_token,
+                })
+            }
+
+            async fn fetch_object(&self, key: &ReplayArchiveKey) -> anyhow::Result<Vec<u8>> {
+                Ok(key.session.folder_name().into_bytes())
+            }
+        }
+
+        let output = tempfile::tempdir().unwrap();
+        let first = ReplayArchiveSession::new(42, "writer-a").unwrap();
+        let second = ReplayArchiveSession::new(42, "writer-b").unwrap();
+        let selected = [first.clone(), second.clone(), first];
+        assert_eq!(
+            download_replay_archive_objects(
+                &PrefixRestrictedReader,
+                output.path(),
+                DEFAULT_DOWNLOAD_CONCURRENCY,
+                &selected
+            )
+            .await
+            .unwrap(),
+            4
+        );
+        assert!(
+            download_all_replay_archive_objects(
+                &PrefixRestrictedReader,
+                output.path(),
+                DEFAULT_DOWNLOAD_CONCURRENCY
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn download_uses_only_the_selected_session() {
         let archive_root = tempfile::tempdir().unwrap();
         let output_root = tempfile::tempdir().unwrap();
@@ -865,7 +936,8 @@ mod tests {
                 .unwrap();
         }
         let reader = FileSystemReplayArchiveReader::new(archive_root.path().to_path_buf());
-        let trusted_sessions = [first.clone()];
+        // A duplicate option must not start a second listing for the same session.
+        let trusted_sessions = [first.clone(), first.clone()];
         let download = || {
             download_replay_archive_objects(
                 &reader,
