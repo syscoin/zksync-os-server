@@ -759,7 +759,7 @@ impl Tester {
     ) -> anyhow::Result<Self> {
         // Restarts retain their current DB; only a new component main node is
         // seeded from the reviewed fixture's newly generated canonical WAL.
-        if log_state.is_none()
+        let verified_anchor = if log_state.is_none()
             && config.general_config.node_role.is_main()
             && chain_layout.fixture_scope() == FixtureScope::AnvilComponentOnly
         {
@@ -776,8 +776,10 @@ impl Tester {
                 &config.general_config.rocks_db_path,
             )
             .await?;
-            component_replay::verify_pending_replay(&config).await?;
-        }
+            component_replay::verify_pending_replay(&config).await?
+        } else {
+            None
+        };
         // In-process fake provers use job managers directly; keep the HTTP API only for tests
         // that can hand jobs to external prover workers.
         if config.prover_api_config.fake_fri_provers.enabled
@@ -935,6 +937,14 @@ impl Tester {
             #[cfg(feature = "prover-tests")]
             prover_service_task: None,
         };
+        if let Some(anchor) = verified_anchor {
+            tokio::time::timeout(
+                crate::assert_traits::DEFAULT_TIMEOUT,
+                component_replay::wait_for_anchor(&tester.l2_provider, anchor),
+            )
+            .await
+            .context("normal fixture RPC did not reach its verified archive anchor")??;
+        }
         if wait_for_initial_deposit {
             tester.wait_for_initial_deposit().await?;
         }
