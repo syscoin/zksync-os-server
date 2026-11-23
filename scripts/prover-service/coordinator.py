@@ -88,6 +88,8 @@ class Coordinator:
         self.state = journal.load(store.root / "coordinator.json")
         s.require(self.state["schema_version"] == 1 and self.state["configuration_sha256"] == io.digest(self.config),
                   "coordinator_configuration_changed")
+        if "native_observation_receipt" in self.state:
+            self.state["maintenance_receipt"] = self.state.pop("native_observation_receipt")
         self.keeper, self.settings = self.config["keeper"], self.config["keeper"]["settings"]
         self.rpc = rpc or k.rpc_for(self.keeper)
         self.wallet, self.relay_wallet = wallet, relay_wallet
@@ -510,12 +512,16 @@ class Coordinator:
         op = self.state["operations"][identifier]
         if not execute:
             return "would_" + call["action"]
-        if op["maintenance"] is None and self.state.get("native_observation_receipt"):
+        if op["maintenance"] is None and self.state.get("maintenance_receipt"):
             return {"next_action": "wait_for_existing_wallet_reservation"}
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
             self.signing_wallet(), transactions.Store(self.store.root / "transactions"), self.clock)
         if op["maintenance"] is None:
-            op["maintenance"] = manager.plan(call)
+            pending = manager.plan(call)
+            if (pending["call"]["action"] != call["action"] or
+                    call["action"] not in transactions.REPEATABLE and pending["call"]["transaction"] != call["transaction"]):
+                return self.track_reserved_receipt(manager, pending["operation_id"], True)
+            op["maintenance"] = pending
             self.save()
         operation_id = self.stage_maintenance(op["maintenance"], manager, True)
         def preflight(original, head, anchor):
@@ -543,6 +549,15 @@ class Coordinator:
             s.require(manager.stage(pending["call"], pending["invocation"]) == expected, "maintenance_descriptor_changed")
         return expected
 
+    def track_reserved_receipt(self, manager, operation_id, execute):
+        result = manager.step(operation_id, execute, receipt_only=True)
+        if execute:
+            entry = manager.state["operations"][operation_id]
+            if entry["unsigned_transaction"] is not None and result["status"] not in transactions.TERMINAL:
+                self.state["maintenance_receipt"] = operation_id
+            self.save()
+        return result
+
     def recover_maintenance(self, identifier, execute, bundle, evidence, payload, *, receipt_only=False):
         op = self.state["operations"][identifier]
         if op["maintenance"] is None:
@@ -552,6 +567,19 @@ class Coordinator:
         operation_id = self.stage_maintenance(op["maintenance"], manager, execute)
         if operation_id not in manager.state["operations"]:
             return {"next_action": "would_stage_maintenance", "operation_id": operation_id}
+        if not receipt_only:
+            call = manager.state["operations"][operation_id]["call"]
+            detached = operation_id == self.state.get("maintenance_receipt")
+            if payload is not None and call["action"] in ("openPackage", "repairPackage"):
+                package = k.decode_package(s.raw_hex(call["transaction"]["data"])[4:])
+                lease_range = (payload["from_batch_number"], payload["to_batch_number"])
+                detached = detached or (package["batchFrom"], package["batchTo"]) != lease_range
+            if detached:
+                # An older journal could attach a previous range's wallet reservation to this lease.
+                if execute:
+                    op["maintenance"] = None
+                self.track_reserved_receipt(manager, operation_id, execute)
+                return None
         def preflight(original, head, anchor):
             if receipt_only:
                 return False
@@ -734,7 +762,7 @@ class Coordinator:
             return k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()))
 
         pending = self.state.get("native_observation")
-        if not pending and self.state.get("native_observation_receipt"):
+        if not pending and self.state.get("maintenance_receipt"):
             return {"next_action": "wait_for_existing_wallet_reservation"}
         if not pending and not execute:
             return {"next_action": "would_observe_native_settlement"}
@@ -742,15 +770,21 @@ class Coordinator:
             self.signing_wallet() if execute else None, transactions.Store(self.store.root / "transactions"), self.clock)
         if not pending:
             pending = manager.plan(observation())
-            self.state["native_observation"] = pending
-            self.save()
+            if pending["call"]["action"] == "observeNativeSettlement" and pending["invocation"] is not None:
+                self.state["native_observation"] = pending
+                self.save()
         operation_id = self.stage_maintenance(pending, manager, execute)
         if operation_id not in manager.state["operations"]:
             return {"next_action": "would_stage_maintenance", "operation_id": operation_id}
+        entry = manager.state["operations"][operation_id]
+        if entry["call"]["action"] != "observeNativeSettlement" or entry.get("invocation") is None:
+            # Planning can recover a reservation for a different call. Older journals may
+            # already point the observation slot at it. Only its own receipt resolves the nonce.
+            if execute:
+                self.state.pop("native_observation", None)
+            return self.track_reserved_receipt(manager, operation_id, execute)
 
         def preflight(original, head, anchor):
-            if original["action"] != "observeNativeSettlement":
-                return False
             try:
                 current = observation()
             except s.Error:
@@ -769,7 +803,7 @@ class Coordinator:
             if execute:
                 # Move ownership in one journal write. The maintenance wallet still owns the nonce.
                 self.state.pop("native_observation")
-                self.state["native_observation_receipt"] = operation_id
+                self.state["maintenance_receipt"] = operation_id
                 self.save()
             return {**result, "next_action": "resume_after_confirmed_native_observation" if execute
                     else "would_resume_after_confirmed_native_observation"}
@@ -777,13 +811,13 @@ class Coordinator:
 
     def step(self, execute=False):
         s.require(type(execute) is bool, "invalid_execute_flag")
-        observation = self.state.get("native_observation_receipt")
-        if observation:
+        reserved = self.state.get("maintenance_receipt")
+        if reserved:
             manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
                 store=transactions.Store(self.store.root / "transactions"), clock=self.clock)
-            receipt = manager.step(observation, execute, receipt_only=True)
+            receipt = manager.step(reserved, execute, receipt_only=True)
             if execute and receipt["status"] in transactions.TERMINAL:
-                self.state.pop("native_observation_receipt")
+                self.state.pop("maintenance_receipt")
                 self.save()
         self.reconcile_regrouped(execute)
         identifier = self.state["active"]

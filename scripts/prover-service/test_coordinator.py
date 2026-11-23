@@ -292,6 +292,9 @@ class CoordinatorTests(unittest.TestCase):
         evidence = {**full, "previous_batch": full["batches"][1]["stored"], "batches": full["batches"][2:]}
         self.native.responses += [(200, {}, {**payload, "lease_token": h(191)}), (200, {}, evidence)]
         self.assertEqual(self.controller_reload().step(True)["next_action"], "resume_after_confirmed_native_observation")
+        # The first receipt-only release stored this reservation under the observation-specific name.
+        self.controller.state["native_observation_receipt"] = self.controller.state.pop("maintenance_receipt")
+        self.controller.save()
         self.assertEqual(self.controller_reload().step(True)["next_action"], "native_advance_requires_new_range")
         self.assertEqual(self.controller_reload().step(True)["next_action"], "wait_for_existing_wallet_reservation")
         new = self.controller.state["active"]
@@ -369,6 +372,70 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(row["raw_transaction"], original["raw_transaction"])
         self.assertIsNone(row["receipt"])
         self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+
+    def test_pending_package_open_cannot_hold_the_native_observation_slot_after_restart(self):
+        self.check_pending_package_open_recovery(legacy_observation=True)
+
+    def test_replacement_package_cannot_adopt_the_old_package_open_reservation(self):
+        self.check_pending_package_open_recovery(legacy_observation=False)
+
+    def check_pending_package_open_recovery(self, *, legacy_observation):
+        self.continuous_dispatch(batch_count=4)
+        old = self.acquired()
+        self.assertEqual(self.controller.step(True)["status"], "broadcast")
+        pending = self.controller.state["operations"][old]["maintenance"]
+        self.assertEqual(pending["call"]["action"], "openPackage")
+        store = c.transactions.Store(self.control_store.root / "transactions")
+        def reservation():
+            return store.load(self.f["settings"], self.config["transaction_policy"])["operations"][pending["operation_id"]]
+        original = reservation()
+
+        self.rpc.native_proved = 2
+        if legacy_observation:
+            self.controller_reload().step(True)
+            self.assertNotEqual(self.controller_reload().state.get("native_observation"), pending)
+            self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+
+            # An older coordinator could journal the pending package open as the observation.
+            self.controller.state.pop("maintenance_receipt", None)
+            self.controller.state["native_observation"] = copy.deepcopy(pending)
+            self.controller.save()
+        self.rpc.advance()
+        self.rpc.observed_native = 2
+        self.rpc.advance()
+        self.now = self.rpc.now
+        full = self.f["evidence"]
+        payload = {**self.f["fri_payload"], "from_batch_number": 3, "fri_proofs": self.f["fri_payload"]["fri_proofs"][2:]}
+        evidence = {**full, "previous_batch": full["batches"][1]["stored"], "batches": full["batches"][2:]}
+        self.native.responses += [(200, {}, {**payload, "lease_token": h(191)}), (200, {}, evidence)]
+        for _ in range(4):
+            self.controller_reload().step(True)
+            active = self.controller.state["active"]
+            if active is not None and active != old:
+                break
+        self.assertIsNotNone(active)
+        self.assertNotEqual(active, old)
+        self.assertEqual(io.private_json(self.controller.directory(active) / "payload.json"), payload)
+        self.assertEqual(io.private_json(self.controller.directory(active) / "evidence.json"), evidence)
+        self.assertIsNotNone(self.controller.state["operations"][active]["bundle"])
+        self.assertNotEqual(self.controller.state["operations"][active]["maintenance"], pending)
+        self.assertNotIn("native_observation", self.controller_reload().state)
+        if not legacy_observation:
+            # Old package planning could also attach the same reservation directly to the replacement lease.
+            self.controller.state.pop("maintenance_receipt", None)
+            self.controller.state["operations"][active]["maintenance"] = copy.deepcopy(pending)
+            self.controller.save()
+            self.controller_reload().step(True)
+            self.assertIsNone(self.controller_reload().state["operations"][active]["maintenance"])
+            self.assertEqual(self.controller.state["maintenance_receipt"], pending["operation_id"])
+            self.assertEqual(self.controller.state["active"], active)
+        self.assertEqual(len(self.native.calls), 4)
+        self.assertIsNone(reservation()["receipt"])
+        for field in ("unsigned_transaction", "raw_transaction", "transaction_hash"):
+            self.assertEqual(reservation()[field], original[field])
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+        self.assertEqual([args[0] for method, args in self.wallet.calls if method == "eth_signTransaction"],
+                         [original["unsigned_transaction"]])
 
     def publish_signed_three_batch_relay(self):
         self.continuous_dispatch(batch_count=3)
