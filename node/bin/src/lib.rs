@@ -977,14 +977,12 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
             && config.sequencer_config.max_blocks_to_produce != Some(0)
         {
             let recipient = config.sequencer_config.fee_collector_address;
-            let development_recipient =
-                alloy::primitives::address!("36615Cf349d7F6344891B1e7CA7C72883F5dc049");
             assert!(
                 !recipient.is_zero(),
                 "block production requires `sequencer.fee_collector_address`"
             );
             assert!(
-                l1_state.l1_chain_id == 31337 || recipient != development_recipient,
+                l1_state.l1_chain_id == 31337 || recipient != config::DEVELOPMENT_FEE_COLLECTOR,
                 "the development fee collector is only supported on the local development L1"
             );
         }
@@ -1112,7 +1110,7 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
         last_l1_executed_block,
     };
 
-    node_startup_state.assert_consistency();
+    node_startup_state.assert_consistency(archive_recovery.map(|recovery| recovery.anchor_block));
     if let Some(recovery) = archive_recovery
         && recovery.verified_through.is_none()
     {

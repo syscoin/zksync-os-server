@@ -264,6 +264,10 @@ class WorkflowTests(unittest.TestCase):
         build = builds[0]
         self.assertIn("push: false", build)
         self.assertIn("outputs: type=oci,tar=false,dest=${{ runner.temp }}/server-image", build)
+        self.assertEqual(
+            [line.strip() for line in build.splitlines() if line.strip().startswith("tags:")],
+            ["tags: ${{ needs.resolve-source.outputs.image_name }}:${{ needs.resolve-source.outputs.version }}"],
+        )
         self.assertNotIn("provenance:", build)
 
         steps = self.publishing_steps("docker.yml", "publish-image")
@@ -278,9 +282,11 @@ class WorkflowTests(unittest.TestCase):
         for gate in (push, attest):
             self.assertIn("RELEASE_SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}", gate)
             self.assertIn("working-directory: release-source", gate)
-        self.assertIn('publish_tag latest', docker)
+        publish = next(step for step in steps if "skopeo copy --all --preserve-digests" in step)
+        self.assertIn('publish_tag "${VERSION}"', publish)
+        self.assertRegex(publish, r'if \[\[ "\$\{PUBLISH_LATEST\}" == true \]\]; then\s+publish_tag latest\s+fi')
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tag_name == ''",
-                      docker)
+                      publish)
 
 
 if __name__ == "__main__":

@@ -1020,6 +1020,9 @@ fn interop_root_limits_are_executable(per_tx: usize, per_batch: u64) -> bool {
     per_tx > 0 && u64::try_from(per_tx).is_ok_and(|per_tx| per_tx <= per_batch)
 }
 
+pub(crate) const DEVELOPMENT_FEE_COLLECTOR: Address =
+    alloy::primitives::address!("36615Cf349d7F6344891B1e7CA7C72883F5dc049");
+
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 #[config(derive(Default))]
 pub struct SequencerConfig {
@@ -1063,8 +1066,8 @@ pub struct SequencerConfig {
     #[config(default_t = "./db/block_dumps".into())]
     pub block_dump_path: PathBuf,
 
-    /// Operator-controlled fee recipient required when producing blocks.
-    #[config(with = Serde![str], default_t = Address::ZERO)]
+    /// Fee recipient. The default is accepted for block production only on development L1 chain 31337.
+    #[config(with = Serde![str], default_t = DEVELOPMENT_FEE_COLLECTOR)]
     pub fee_collector_address: Address,
 
     /// Maximum number of blocks to produce.
@@ -3151,6 +3154,14 @@ mod tests {
     const TEST_SECRET_KEY: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
     const TEST_BOOT_NODE: &str = "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@localhost:30303?discport=30301";
+
+    #[test]
+    fn omitted_fee_collector_keeps_local_development_recipient() {
+        assert_eq!(
+            SequencerConfig::default().fee_collector_address,
+            alloy::primitives::address!("36615Cf349d7F6344891B1e7CA7C72883F5dc049")
+        );
+    }
 
     // SYSCOIN: Capacity controls must survive configuration deserialization and runtime conversion.
     #[test]
