@@ -26,9 +26,9 @@ Z = '0x' + '00' * 32
 
 def sample():
     return {'chain_id': 57, 'genesis_hash': H, 'sender': A, 'chain': B, 'chain_code_hash': H,
-            'timelock': C, 'timelock_code_hash': H, 'checkpoint': D, 'checkpoint_code_hash': H,
+            'timelock': C, 'timelock_code_hash': H, 'admission': D, 'admission_code_hash': H,
             'message_sink': deploy.ZERO, 'message_sink_code_hash': Z, 'sequencer': E, 'policy_hash': H,
-            'production_vk_hash': H, 'child_chain_id': 57001, 'max_snapshot_age': 600,
+            'production_vk_hash': H, 'child_chain_id': 57001,
             'max_proof_work_seconds': 1200, 'max_priority_per_package': 64, 'factory_salt': H,
             'create2_code_hash': H, 'gas_limit': 9000000, 'gas_price': 10,
             'keystore': '/private/keystore', 'password_file': '/private/password'}
@@ -53,8 +53,8 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(first['guard'], deploy.cast('compute-address', first['factory'], '--nonce', '1').split()[-1].lower())
         self.assertEqual(first['gate'], deploy.cast('compute-address', first['factory'], '--nonce', '2').split()[-1].lower())
         guard_args = '0x' + first['guard_init'][len('0x60006000'):]
-        decoded = deploy.cast('abi-decode', 'f()(address,address,address,bytes32,uint64,uint64,uint64)', guard_args)
-        self.assertIn(first['gate'], decoded.lower())
+        decoded = deploy.cast('abi-decode', 'f()(address,address,address,bytes32,uint64,uint64)', guard_args)
+        self.assertEqual(decoded.lower().splitlines(), [first['gate'], B, D, H, '1200', '64'])
         gate_args = '0x' + first['gate_init'][len('0x60006000'):]
         decoded = deploy.cast('abi-decode', 'f()(address,address,address,bytes32,bytes32,address,address)', gate_args)
         self.assertIn(first['guard'], decoded.lower())
@@ -71,14 +71,15 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue()), {'status': 'unverified_plan', **plan})
 
     def test_queue_drain_is_required_before_broadcast(self):
-        values = {'getTotalBatchesVerified()': 5, 'getTotalBatchesExecuted()': 5,
+        values = {'getTotalBatchesCommitted()': 5, 'getTotalBatchesVerified()': 5, 'getTotalBatchesExecuted()': 5,
                   'getFirstUnprocessedPriorityTx()': 2, 'getTotalPriorityTxs()': 2,
                   'isPriorityQueueActive()': 0}
         def word(_rpc, _address, signature):
             return '0x' + format(values[signature], '064x')
         with mock.patch.object(deploy, 'call_word', side_effect=word):
             deploy.verify_queue_drained(None, sample())
-            for field, value in [('getTotalBatchesExecuted()', 4), ('getTotalPriorityTxs()', 3),
+            for field, value in [('getTotalBatchesCommitted()', 6), ('getTotalBatchesExecuted()', 4),
+                                 ('getTotalPriorityTxs()', 3),
                                  ('isPriorityQueueActive()', 1)]:
                 old = values[field]
                 values[field] = value
