@@ -226,7 +226,6 @@ impl SnarkProvingPipelineStep {
         sl_chain_id: u64,
         required_confirmations: u64,
         expected_vk_hash: B256,
-        priority_package_limit: Option<u64>,
         // SYSCOIN: Startup verifier policy already enforces an all-real or all-fake topology.
         fake_proving: bool,
     ) -> (
@@ -243,19 +242,16 @@ impl SnarkProvingPipelineStep {
             sl_chain_id,
             expected_vk_hash,
         ));
-        let snark_job_manager = Arc::new(
-            SnarkJobManager::new_with_journal(
-                proof_commands_sender,
-                max_fris_per_snark,
-                target_fris_per_snark,
-                max_snark_batch_wait,
-                assignment_timeout,
-                max_assigned_batch_range,
-                journal.clone(),
-                preflight.clone(),
-            )
-            .with_priority_package_limit(priority_package_limit),
-        );
+        let snark_job_manager = Arc::new(SnarkJobManager::new_with_journal(
+            proof_commands_sender,
+            max_fris_per_snark,
+            target_fris_per_snark,
+            max_snark_batch_wait,
+            assignment_timeout,
+            max_assigned_batch_range,
+            journal.clone(),
+            preflight.clone(),
+        ));
 
         let result = Self {
             service_publication: None,
@@ -775,12 +771,26 @@ impl PipelineComponent for SnarkProvingPipelineStep {
 
         // The native proved counter is insufficient service authority after a crash between gate
         // acceptance and handoff. Authenticate covered exact commands before recovery may reap.
+        let mut superseded = Vec::new();
         if let Some(publication) = self.service_publication {
             for command in journal
-                .covered_service_commands(last_proved_batch_number)
+                .intersecting_service_commands(last_proved_batch_number)
                 .await?
             {
-                publication.confirm_command(&command).await?;
+                if publication.confirm_recovery(&command).await? {
+                    // A native proof has consumed the prefix. The old wrapper cannot prove its
+                    // suffix independently; normal startup rebuilds FRI work above the frontier.
+                    let batches = command.as_ref();
+                    let from = batches
+                        .first()
+                        .context("empty superseded command")?
+                        .batch_number();
+                    let to = batches
+                        .last()
+                        .context("empty superseded command")?
+                        .batch_number();
+                    superseded.push((from, to));
+                }
             }
         }
 
@@ -808,6 +818,16 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             .map_or(last_proved_batch_number, |snapshot| {
                 snapshot.confirmation_safe_proved
             });
+
+        for (from, to) in superseded {
+            anyhow::ensure!(
+                from <= last_proved_batch_number
+                    && to <= last_committed_batch_number
+                    && from <= confirmation_safe_proved,
+                "startup native settlement changed before retiring superseded wrapper {from}-{to}"
+            );
+            journal.retire_superseded(from, to).await?;
+        }
 
         // SYSCOIN: Canonical-state validate and classify every durable wrapper before exposing any
         // rehydrated FRI to aggregation. Latest-covered but not depth-safe records remain durable
@@ -1342,7 +1362,6 @@ mod tests {
             SL_CHAIN_ID,
             1,
             B256::ZERO,
-            None,
             true,
         );
 

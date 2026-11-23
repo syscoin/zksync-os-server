@@ -22,7 +22,7 @@ class Rpc:
         self.send_error, self.send_interrupt, self.reorg, self.bad_code = None, False, False, False
         self.chain = settings["settlement_chain_id"]
         self.store, self.operation_id = None, None
-        self.work_id, self.checkpoint_hash = h(150), h(151)
+        self.observed_batch, self.native_batch, self.native_hash = 100, 110, h(151)
         self.receipts = {}
 
     def advance(self):
@@ -54,8 +54,7 @@ class Rpc:
             assert params[1] == {"blockHash": self.head["hash"], "requireCanonical": True}
             if self.bad_code:
                 return "0x00"
-            return "0x" + {self.settings["proof_gate"]: b"gate-code", self.settings["coordinator"]: b"coordinator-code",
-                            a(123): b"priority-code"}[params[0]].hex()
+            return "0x" + {self.settings["proof_gate"]: b"gate-code", self.settings["coordinator"]: b"coordinator-code"}[params[0]].hex()
         if method == "eth_getTransactionCount":
             return hex(self.pending_nonce if params[1] == "pending" else self.nonce)
         if method == "eth_getBalance":
@@ -80,12 +79,13 @@ class Rpc:
             data = s.raw_hex(tx["data"])
             values = {"chain()": self.settings["chain_address"], "childChainId()": s.uint(self.settings["execution_chain_id"]),
                       "sequencer()": self.settings["sequencer"], "policyHash()": self.settings["policy_hash"],
-                      "productionVkHash()": self.settings["vk_hash"], "priorityGuard()": a(123),
-                      "coordinator()": self.settings["coordinator"], "priorityWorkId()": self.work_id,
+                      "productionVkHash()": self.settings["vk_hash"], "observedNativeBatch()": self.observed_batch,
+                      "coordinator()": self.settings["coordinator"], "getTotalBatchesVerified()": self.native_batch,
                       "acceptanceGate()": self.settings["proof_gate"]}
-            if data == r.selector("work()"):
-                return "0x" + (s.raw_hex(self.work_id) + s.raw_hex(self.checkpoint_hash) + bytes(32)
-                               + b"".join(s.word(value) for value in (1, 1000, 0, 0, 0, 0))).hex()
+            if data[:4] == r.selector("storedBatchHash(uint256)"):
+                assert tx["to"] == self.settings["chain_address"]
+                assert int.from_bytes(data[4:], "big") == self.native_batch
+                return self.native_hash
             for signature, value in values.items():
                 if data == r.selector(signature):
                     return "0x" + (s.word(value) if type(value) is int else s.raw_hex(value).rjust(32, b"\0")).hex()
@@ -132,9 +132,9 @@ class TransactionsTests(unittest.TestCase):
         self.rpc.store = self.store
         self.wallet = Wallet(self.settings, self.limits, self.store)
         self.call = {"schema_version": 1, "chain_id": self.settings["settlement_chain_id"],
-                     "anchor": copy.deepcopy(self.rpc.head), "action": "refreshPriorityCheckpoint", "broadcast": False,
-                     "transaction": {"from": self.settings["sequencer"], "to": self.settings["proof_gate"], "value": "0x0",
-                                     "data": "0x" + r.selector("refreshPriorityCheckpoint()").hex()}}
+                     "anchor": copy.deepcopy(self.rpc.head), "action": "recordRosterDraw", "broadcast": False,
+                     "transaction": {"from": self.settings["sequencer"], "to": self.settings["coordinator"], "value": "0x0",
+                                     "data": "0x" + (r.selector("recordRosterDraw(uint64)") + s.word(5)).hex()}}
         self.identifier = self.runner().stage(self.call)
         self.rpc.operation_id = self.identifier
 
@@ -154,8 +154,14 @@ class TransactionsTests(unittest.TestCase):
                                    data="0x" + (r.selector("prepareRosterDraw(uint64)") + s.word(5)).hex())
         return self.runner().stage(call)
 
-    def scoped(self, call=None):
-        call = {**(call or self.call), "anchor": copy.deepcopy(self.rpc.head)}
+    def observation(self):
+        return {**self.call, "action": "observeNativeSettlement", "anchor": copy.deepcopy(self.rpc.head),
+                "transaction": {**self.call["transaction"], "to": self.settings["proof_gate"],
+                                "data": "0x" + (r.selector("observeNativeSettlement(uint64)")
+                                                + s.word(self.rpc.native_batch)).hex()}}
+
+    def scoped(self):
+        call = self.call = self.observation()
         descriptor = self.runner().plan(call)
         self.identifier = self.runner().stage(descriptor["call"], descriptor["invocation"])
         self.rpc.operation_id, self.rpc.receipt = self.identifier, None
@@ -172,41 +178,31 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual(self.runner().stage(changed), self.identifier)
         self.assertEqual(len(self.store.load(self.settings, self.limits)["operations"]), 1)
 
-    def test_checkpoint_scope_repeats_refresh_after_restart_and_for_a_later_package(self):
+    def test_new_canonical_native_ranges_have_distinct_observation_intents(self):
         identifiers, raw = [], []
-        for work_id, checkpoint in ((h(150), h(151)), (h(150), h(152)), (h(153), h(154))):
-            self.rpc.work_id, self.rpc.checkpoint_hash = work_id, checkpoint
+        for observed, tip in ((100, 110), (110, 114), (114, 130)):
+            self.rpc.observed_batch, self.rpc.native_batch, self.rpc.native_hash = observed, tip, h(tip)
             descriptor = self.scoped()
-            self.assertEqual(descriptor["invocation"], {"scope": {"guard": a(123), "work_id": work_id,
-                             "checkpoint_hash": checkpoint}, "generation": 0})
+            self.assertEqual(descriptor["invocation"], {"scope": {"observed_batch": observed, "native_batch": tip,
+                             "native_hash": h(tip)}, "generation": 0})
             self.assertEqual(self.step()["status"], "broadcast")
             identifiers.append(self.identifier)
             raw.append(self.rpc.sent[-1])
             self.confirm()
-            replay = self.runner().plan({**self.call, "anchor": copy.deepcopy(self.rpc.head)})
-            self.assertEqual(replay["operation_id"], self.identifier)
             self.assertEqual(self.step()["status"], "confirmed")
+            self.rpc.observed_batch = tip
+            with self.assertRaisesRegex(s.Error, "no_forward_native_advance"):
+                self.runner().plan(self.observation())
         self.assertEqual(len(set(identifiers)), 3)
         self.assertEqual(len(set(raw)), 3)
         self.assertEqual([s.uint(call[1][0]["nonce"]) for call in self.signatures()], [0, 1, 2])
-        self.assertEqual(len(self.rpc.sent), 3)
 
-    def test_same_prefix_calldata_is_new_only_after_checkpoint_changes(self):
-        call = copy.deepcopy(self.call)
-        call["action"] = "publishPrefixWitness"
-        call["transaction"].update(to=a(123), data="0x" + (r.selector(t.ACTIONS[call["action"]][0])
-                                   + s.raw_hex(self.rpc.work_id) + bytes(128)).hex())
-        first = self.scoped(call)
-        self.step()
-        self.confirm()
-        self.rpc.checkpoint_hash = h(152)
-        second = self.scoped(call)
-        self.assertEqual(first["call"]["transaction"], second["call"]["transaction"])
-        self.assertNotEqual(first["operation_id"], second["operation_id"])
-        self.step()
-        self.confirm()
-        self.assertEqual(len(self.signatures()), 2)
-        self.assertEqual(len(self.rpc.sent), 2)
+    def test_refuses_expected_native_height_that_differs_from_scoped_observation(self):
+        call = self.observation()
+        self.rpc.native_batch += 1
+        with self.assertRaisesRegex(s.Error, "invalid_native_observation"):
+            self.runner().plan(call)
+        self.assertEqual(self.signatures(), [])
 
     def test_scoped_ambiguous_send_and_crash_recover_the_same_signature_and_bytes(self):
         descriptor = self.scoped()
@@ -223,15 +219,15 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual(len(self.signatures()), 1)
         self.confirm()
 
-    def test_changed_checkpoint_cannot_reauthorize_reserved_or_unsigned_scope(self):
+    def test_changed_native_hash_cannot_reauthorize_reserved_or_unsigned_scope(self):
         descriptor = self.scoped()
-        self.rpc.checkpoint_hash = h(152)
+        self.rpc.native_hash = h(152)
         self.assertEqual(self.step()["status"], "stale_unsigned")
         self.assertEqual(self.signatures(), [])
-        self.rpc.checkpoint_hash = descriptor["invocation"]["scope"]["checkpoint_hash"]
+        self.rpc.native_hash = descriptor["invocation"]["scope"]["native_hash"]
         self.step()
         original = self.store.load(self.settings, self.limits)["operations"][self.identifier]
-        self.rpc.checkpoint_hash = h(152)
+        self.rpc.native_hash = h(152)
         self.rpc.advance()
         self.assertEqual(self.step()["status"], "authorization_stale_reserved")
         planned = self.runner().plan({**self.call, "anchor": copy.deepcopy(self.rpc.head)})
@@ -242,14 +238,14 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual(len(self.signatures()), 1)
         self.assertEqual(len(self.rpc.sent), 1)
 
-    def test_checkpoint_changes_during_wallet_signing_prevent_broadcast(self):
+    def test_native_hash_changes_during_wallet_signing_prevent_broadcast(self):
         self.scoped()
         original = self.wallet.call
         def changed(method, args):
             result = original(method, args)
             if method == "eth_signTransaction":
                 self.rpc.advance()
-                self.rpc.checkpoint_hash = h(152)
+                self.rpc.native_hash = h(152)
             return result
         with patch.object(self.wallet, "call", side_effect=changed):
             self.assertEqual(self.step()["status"], "authorization_stale_reserved")
@@ -349,7 +345,7 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual(len(self.signatures()), 2)
         self.assertEqual(len(self.rpc.sent), 2)
 
-    def test_legacy_confirmed_row_does_not_block_scoped_refresh(self):
+    def test_confirmed_roster_call_does_not_block_native_observation(self):
         legacy = self.identifier
         self.step()
         self.confirm()
@@ -364,7 +360,7 @@ class TransactionsTests(unittest.TestCase):
         original = self.store.load(self.settings, self.limits)["operations"][identifier]["call"]
         self.rpc.advance()
         self.assertEqual(self.runner().plan({**original, "anchor": copy.deepcopy(self.rpc.head)})["operation_id"], identifier)
-        invocation = {"scope": {"guard": a(123), "work_id": h(150), "checkpoint_hash": h(151)}, "generation": 0}
+        invocation = {"scope": {"observed_batch": 100, "native_batch": 110, "native_hash": h(151)}, "generation": 0}
         with self.assertRaisesRegex(s.Error, "nonrepeatable_maintenance_invocation"):
             self.runner().stage(original, invocation)
 
@@ -550,13 +546,11 @@ class TransactionsTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "unsupported_keeper_action"):
             self.runner().stage(call)
 
-    def test_priority_target_is_authenticated_before_signing(self):
-        call = copy.deepcopy(self.call)
-        call["action"] = "publishPrefixWitness"
-        call["transaction"].update(to=a(99), data="0x" + r.selector(t.ACTIONS[call["action"]][0]).hex())
-        identifier = self.runner().stage(call)
+    def test_observation_cannot_target_another_gate(self):
+        call = self.observation()
+        call["transaction"]["to"] = a(99)
         with self.assertRaisesRegex(s.Error, "keeper_target_mismatch"):
-            self.step(identifier=identifier)
+            self.runner().plan(call)
         self.assertEqual(self.wallet.calls, [])
 
     def test_policy_change_missing_preflight_and_external_pending_nonce_fail_closed(self):

@@ -3,10 +3,6 @@ pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {ZkSysServiceComponentDeploymentFactoryV1} from "../src/zksys/ZkSysServiceComponentDeploymentFactoryV1.sol";
-import {
-    ZkSysRootPrioritySourceV1,
-    ZkSysPriorityCheckpointReceiverV1
-} from "contracts/src/zksys/ZkSysPriorityGuardV1.sol";
 import {ZkSysRootServiceMessageSinkV1, ZkSysNativeRootDrawV1} from "contracts/src/zksys/ZkSysRootServiceV1.sol";
 import {ZkSysRootDrawV1, ZkSysRootDrawReceiverV1, IZkSysMessageProofV1} from "contracts/src/zksys/ZkSysRootDrawV1.sol";
 import {
@@ -19,45 +15,15 @@ import {
     IZkSysWrapperRosterSourceV1
 } from "contracts/src/zksys/ZkSysServiceTypesV1.sol";
 import {IL1BridgehubMinimal} from "contracts/src/zksys/ZkSysRegistryBridge.sol";
-import {PriorityMailboxMock} from "./ZkSysPriorityGuard.t.sol";
 import {RootDrawHub} from "./ZkSysRootDraw.t.sol";
-import {GateRosterSource} from "./ZkSysProofGate.t.sol";
+import {GateRosterSource, GateSettlement, GateVerifier} from "./ZkSysProofGate.t.sol";
 
 contract ZkSysServiceComponentDeploymentFactoryV1Test is Test {
     bytes32 internal constant POLICY = keccak256("policy");
 
-    function testActualCrossChainPriorityComponents() public {
-        PriorityMailboxMock mailbox = new PriorityMailboxMock();
-        RootDrawHub hub = new RootDrawHub();
-        ZkSysServiceComponentDeploymentFactoryV1 sourceFactory =
-            new ZkSysServiceComponentDeploymentFactoryV1(address(this));
-        ZkSysServiceComponentDeploymentFactoryV1 receiverFactory =
-            new ZkSysServiceComponentDeploymentFactoryV1(address(this));
-        address source = vm.computeCreateAddress(address(sourceFactory), 1);
-        address receiver = vm.computeCreateAddress(address(receiverFactory), 1);
-        bytes memory sourceCode = abi.encodePacked(
-            type(ZkSysRootPrioritySourceV1).creationCode, abi.encode(mailbox, hub, receiver, 5050, POLICY, 100)
-        );
-        bytes memory receiverCode =
-            abi.encodePacked(type(ZkSysPriorityCheckpointReceiverV1).creationCode, abi.encode(source, 57, POLICY));
-        sourceFactory.deploy(sourceCode);
-        receiverFactory.deploy(receiverCode);
-        assertEq(sourceFactory.component(), source);
-        assertEq(receiverFactory.component(), receiver);
-        assertEq(ZkSysRootPrioritySourceV1(source).gatewayReceiver(), receiver);
-        assertEq(ZkSysRootPrioritySourceV1(source).childChainId(), 57);
-        assertEq(ZkSysPriorityCheckpointReceiverV1(receiver).childChainId(), 57);
-        address aliasAddress;
-        unchecked {
-            aliasAddress = address(uint160(source) + uint160(0x1111000000000000000000000000000000001111));
-        }
-        assertEq(ZkSysPriorityCheckpointReceiverV1(receiver).aliasedRootSource(), aliasAddress);
-        assertEq(sourceFactory.deploymentCommitment(), keccak256(sourceCode));
-    }
-
     function testActualRootServiceSinkAndOneTimeAuthorization() public {
         RootDrawHub hub = new RootDrawHub();
-        PriorityMailboxMock gatewayMailbox = new PriorityMailboxMock();
+        GateSettlement gatewayMailbox = new GateSettlement(new GateVerifier());
         hub.setChain(57, address(gatewayMailbox));
         ZkSysServiceComponentDeploymentFactoryV1 factory = new ZkSysServiceComponentDeploymentFactoryV1(address(this));
         address sink = vm.computeCreateAddress(address(factory), 1);
@@ -89,7 +55,7 @@ contract ZkSysServiceComponentDeploymentFactoryV1Test is Test {
     }
 
     function testActualRosterAndCrossChainDrawConstructors() public {
-        PriorityMailboxMock mailbox = new PriorityMailboxMock();
+        GateSettlement mailbox = new GateSettlement(new GateVerifier());
         RootDrawHub hub = new RootDrawHub();
         ZkSysServiceComponentDeploymentFactoryV1 rosterFactory =
             new ZkSysServiceComponentDeploymentFactoryV1(address(this));
@@ -132,7 +98,8 @@ contract ZkSysServiceComponentDeploymentFactoryV1Test is Test {
     }
 
     function testActualNativeDrawPinsPredictedCoordinator() public {
-        PriorityMailboxMock gate = new PriorityMailboxMock();
+        GateSettlement gate = new GateSettlement(new GateVerifier());
+        gate.setVerified(3);
         GateRosterSource roster = new GateRosterSource(POLICY);
         ZkSysServiceComponentDeploymentFactoryV1 drawFactory =
             new ZkSysServiceComponentDeploymentFactoryV1(address(this));
@@ -147,7 +114,7 @@ contract ZkSysServiceComponentDeploymentFactoryV1Test is Test {
             rosterSource: IZkSysWrapperRosterSourceV1(address(roster)),
             sequencer: address(10),
             childChainId: 57001,
-            childChainAddress: address(11),
+            childChainAddress: address(gate),
             policyHash: POLICY,
             productionVkHash: keccak256("vk"),
             initialParent: keccak256("parent"),

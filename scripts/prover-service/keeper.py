@@ -24,11 +24,10 @@ def configuration(value):
     s.require(value["schema_version"] == 1 and value["lane"] in ("child", "gateway"), "invalid_keeper_configuration")
     s.config(value["settings"])
     p = value["policy"]
-    s.exact(p, ("expected_operator", "gate_code_hash", "coordinator_code_hash", "priority_guard_code_hash",
+    s.exact(p, ("expected_operator", "gate_code_hash", "coordinator_code_hash",
                 "reserve_seconds", "max_head_age_seconds", "rpc_timeout_seconds"))
     s.nonzero(p["expected_operator"], 20)
-    for field in ("gate_code_hash", "priority_guard_code_hash"):
-        s.nonzero(p[field])
+    s.nonzero(p["gate_code_hash"])
     s.raw_hex(p["coordinator_code_hash"], 32)
     s.require((value["settings"]["coordinator"] == s.ZERO_ADDRESS) == (p["coordinator_code_hash"] == s.ZERO),
               "coordinator_address_and_code_hash_must_match_phase")
@@ -261,17 +260,12 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True, *,
         for period in {duty["period"] for duty in prepared["duties"]}:
             s.require(period <= accepted["period"], "future_duty_period")
             s.require(not s.round_closed(settings, registry_rpc, period), "closed_duty_period")
-    priority = None
-    if require_open:
-        priority = r.priority_context(rpc, settings, {**limits, "min_turn_seconds": runtime + limits["reserve_seconds"]},
-                                      {"sidecar": prepared}, head, anchor)
-        s.require(priority["reason"] == "ready", priority["reason"])
-        deadline = min(deadline, priority["deadline"]) if deadline is not None else priority["deadline"]
+    if require_open and deadline is not None:
         # Host wall time also consumes the work window when an RPC head is delayed.
         s.require(now + runtime + limits["reserve_seconds"] < deadline, "insufficient_compute_window")
     r.check_anchor(rpc, settings, head)
     return {"head": {key: head[key] for key in ("number", "hash", "timestamp")}, "frozen_package_hash": frozen_hash,
-            "deadline": deadline, "control_work": control, "priority": priority}
+            "deadline": deadline, "control_work": control}
 
 
 def permit(config, rpc, request, evidence, payload, now, runtime, *, enrollment=None):
@@ -294,7 +288,6 @@ def validate_permit(config, rpc, value, evidence, payload, now, runtime, *, enro
     current = permit(config, rpc, value["request"], evidence, payload, now, runtime, enrollment=enrollment)
     for field in ("frozen_package_hash", "deadline", "control_work"):
         s.require(value["state"][field] == current["state"][field], "compute_permit_state_changed")
-    s.require(value["state"]["priority"] == current["state"]["priority"], "compute_permit_checkpoint_changed")
     return current
 
 
@@ -332,22 +325,24 @@ def maintenance(config, rpc, action, args, now):
         check_code(rpc, target, limits["coordinator_code_hash"], anchor, "coordinator_code_changed")
         signature = ("prepareRosterDraw" if action == "prepare-roster" else "recordRosterDraw") + "(uint64)"
         encoded = s.word(s.uint(args["period"], 64))
-    elif action == "refresh-priority":
+    elif action == "observe-native":
         s.exact(args, ())
-        target, account = settings["proof_gate"], settings["sequencer"]
+        target = settings["proof_gate"]
         check_code(rpc, target, limits["gate_code_hash"], anchor, "gate_code_changed")
-        signature, encoded = "refreshPriorityCheckpoint()", b""
-    elif action in ("request-draw", "capture-draw", "relay-draw", "relay-checkpoint"):
-        fields = ("target", "code_hash", "value") + (() if action == "relay-checkpoint" else ("commitment",))
+        native_tip = r.call_word(rpc, settings["chain_address"], "getTotalBatchesVerified()", anchor)
+        observed = r.call_word(rpc, target, "observedNativeBatch()", anchor)
+        s.require(native_tip > observed, "no_forward_native_advance")
+        signature, encoded = "observeNativeSettlement(uint64)", s.word(s.uint(native_tip, 64))
+    elif action in ("request-draw", "capture-draw", "relay-draw"):
+        fields = ("target", "code_hash", "value", "commitment")
         if action == "request-draw":
             fields += ("batch_number", "index", "tx_number_in_batch", "proof")
-        if action in ("relay-draw", "relay-checkpoint"):
+        if action == "relay-draw":
             fields += ("gas_limit", "gas_per_pubdata_byte_limit", "refund_recipient")
         s.exact(args, fields)
         target, value = s.nonzero(args["target"], 20), args["value"]
         check_code(rpc, target, s.nonzero(args["code_hash"]), anchor, "maintenance_target_code_changed")
-        if action != "relay-checkpoint":
-            commitment = s.raw_hex(s.nonzero(args["commitment"]))
+        commitment = s.raw_hex(s.nonzero(args["commitment"]))
         if action == "request-draw":
             s.require(type(args["proof"]) is list and len(args["proof"]) <= 64 and s.uint(value) == 0, "invalid_draw_proof")
             signature = "requestDraw(bytes32,uint256,uint256,uint16,bytes32[])"
@@ -361,45 +356,11 @@ def maintenance(config, rpc, action, args, now):
             s.nonzero(args["refund_recipient"], 20)
             s.require(s.uint(args["gas_limit"]) > 0 and s.uint(args["gas_per_pubdata_byte_limit"]) > 0, "invalid_relay_gas")
             suffix = s.word(args["gas_limit"]) + s.word(args["gas_per_pubdata_byte_limit"]) + bytes(12) + s.raw_hex(args["refund_recipient"], 20)
-            signature = "relayDraw(bytes32,uint256,uint256,address)" if action == "relay-draw" else "relayCheckpoint(uint256,uint256,address)"
-            encoded = commitment + suffix if action == "relay-draw" else suffix
+            signature = "relayDraw(bytes32,uint256,uint256,address)"
+            encoded = commitment + suffix
     else:
         raise s.Error("unknown_maintenance_action")
     return unsigned_call(rpc, settings, limits, head, anchor, account, target, signature, encoded, value)
-
-
-def prefix_call(config, rpc, evidence, witness, now):
-    s.validate_evidence(config["settings"], evidence)
-    s.exact(witness, ("batch_item_preimages", "left_path", "right_path"))
-    s.require(type(witness["batch_item_preimages"]) is list and len(witness["batch_item_preimages"]) == len(evidence["batches"]),
-              "invalid_prefix_batch_count")
-    counts, hashes = [], []
-    for entries, batch in zip(witness["batch_item_preimages"], evidence["batches"]):
-        s.require(type(entries) is list and len(entries) == s.uint(batch["output"]["l1TxCount"]), "invalid_prefix_count")
-        rolling = s.keccak(b"")
-        for preimage in entries:
-            raw = s.raw_hex(preimage)
-            s.require(raw and len(raw) <= s.MAX_FILE and len(hashes) < 4096, "invalid_priority_preimage")
-            digest = s.keccak(raw)
-            hashes.append(digest)
-            rolling = s.keccak(s.raw_hex(rolling) + s.raw_hex(digest))
-        s.require(rolling == batch["output"]["priorityOperationsHash"], "priority_preimage_hash_mismatch")
-        counts.append(len(entries))
-    for key in ("left_path", "right_path"):
-        s.require(type(witness[key]) is list and len(witness[key]) <= 64, "invalid_priority_path")
-    settings, limits = config["settings"], config["policy"]
-    head, anchor = r.anchored_head(rpc, settings, limits, now)
-    check_code(rpc, settings["proof_gate"], limits["gate_code_hash"], anchor, "gate_code_changed")
-    guard = r.call_word(rpc, settings["proof_gate"], "priorityGuard()", anchor, kind="address")
-    check_code(rpc, guard, limits["priority_guard_code_hash"], anchor, "priority_guard_code_changed")
-    work_id = r.call_word(rpc, settings["proof_gate"], "priorityWorkId()", anchor, kind="bytes32")
-    s.nonzero(work_id)
-    arrays = [(s.word(len(counts)) + b"".join(s.word(count) for count in counts), True)]
-    arrays += [(s.word(len(values)) + b"".join(s.raw_hex(value, 32) for value in values), True)
-               for values in (hashes, witness["left_path"], witness["right_path"])]
-    return unsigned_call(rpc, settings, limits, head, anchor, limits["expected_operator"], guard,
-                         "publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
-                         s.encode_dynamic_tuple([(s.raw_hex(work_id), False)] + arrays))
 
 
 def decode_package(raw):
@@ -490,13 +451,14 @@ def status(config, rpc, now, roster_artifact=None):
     active = call(gate, "serviceActive()", "bool")
     result = {"schema_version": 1, "head": head, "service_active": active,
               "parent": call(gate, "lastAcceptedPackage()", "bytes32"),
-              "priority_work_id": call(gate, "priorityWorkId()", "bytes32"),
+              "observed_native_batch": call(gate, "observedNativeBatch()"),
               "next_native_batch": call(settings["chain_address"], "getTotalBatchesVerified()") + 1,
               "mode": "bootstrap", "control_work": False, "opening_roster": None, "frozen_package": None,
               "package_open": False, "frozen_package_hash": None, "current_turn": None,
               "selected_wrapper_index": None, "turn_deadline": None, "roster": None,
               "selected_candidate": None, "selected_candidate_proof": None, "local_operator_selected": None}
     s.uint(result["next_native_batch"], 64)
+    s.require(result["observed_native_batch"] < result["next_native_batch"], "native_verified_height_rewound")
     if coordinator != s.ZERO_ADDRESS:
         s.require(coordinator == settings["coordinator"], "coordinator_configuration_changed")
         check_code(rpc, coordinator, limits["coordinator_code_hash"], anchor, "coordinator_code_changed")
@@ -507,6 +469,9 @@ def status(config, rpc, now, roster_artifact=None):
             ("acceptedParent()", "bytes32", result["parent"]), ("nextBatch()", "uint", result["next_native_batch"])):
             s.require(call(coordinator, signature, kind) == expected, "coordinator_configuration_changed")
         result["mode"] = "service" if active else "activation_pending"
+        if result["observed_native_batch"] + 1 < result["next_native_batch"]:
+            r.check_anchor(rpc, settings, head)
+            return result
         result["package_open"] = call(coordinator, "packageOpen()", "bool")
         s.require(active or not result["package_open"], "invalid_service_phase")
         if result["package_open"]:
@@ -534,10 +499,10 @@ def status(config, rpc, now, roster_artifact=None):
         s.require(result["roster"]["count"] > 0, "invalid_roster_count")
     else:
         s.require(not active, "invalid_service_phase")
-        result["package_open"] = result["priority_work_id"] != s.ZERO
+        frozen = decode_package(raw_call(rpc, gate, "bootstrapPackage()", anchor, size=32 * len(s.PACKAGE)))
+        result["package_open"] = (frozen["batchFrom"] != 0 and result["observed_native_batch"] + 1 == result["next_native_batch"])
         if result["package_open"]:
-            result["frozen_package"] = decode_package(raw_call(rpc, gate, "bootstrapPackage()", anchor,
-                                                              size=32 * len(s.PACKAGE)))
+            result["frozen_package"] = frozen
             result["frozen_package_hash"] = s.struct_hash("AcceptedPackageV1", s.PACKAGE, result["frozen_package"])
             result["local_operator_selected"] = limits["expected_operator"] == settings["sequencer"]
     if result["package_open"]:
@@ -565,10 +530,7 @@ def main():
             command.add_argument("--" + field, required=True)
         if name == "permit":
             command.add_argument("--runtime-seconds", type=int, required=True)
-    command = commands.add_parser("prefix-witness")
-    command.add_argument("--evidence", required=True)
-    command.add_argument("--witness", required=True)
-    for name in ("prepare-roster", "record-roster", "request-draw", "capture-draw", "relay-draw", "relay-checkpoint", "refresh-priority"):
+    for name in ("prepare-roster", "record-roster", "request-draw", "capture-draw", "relay-draw", "observe-native"):
         commands.add_parser(name).add_argument("--arguments", required=True)
     args = parser.parse_args()
     config = configuration(s.read_json(args.config))
@@ -580,8 +542,6 @@ def main():
         payload = s.read_json(args.payload, maximum=256 * 1024 * 1024)
         result = permit(config, rpc, request, evidence, payload, now, args.runtime_seconds) if args.command == "permit" else package_call(
             config, rpc, request, evidence, payload, now, args.command)
-    elif args.command == "prefix-witness":
-        result = prefix_call(config, rpc, s.read_json(args.evidence), s.read_json(args.witness), now)
     else:
         result = maintenance(config, rpc, args.command, s.read_json(args.arguments), now)
     s.write_new(args.output, result)

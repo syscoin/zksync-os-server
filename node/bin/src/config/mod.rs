@@ -1864,15 +1864,6 @@ pub struct BatcherConfig {
     #[config(default_t = 10000)]
     pub tx_per_batch_limit: u64,
 
-    /// Protected priority guard's `maxPriorityPerPackage`. Native publication can set this
-    /// before cutover. Service publication must set it to the deployed guard's value.
-    /// Drain incompatible committed batches and local replay blocks before enabling the limit.
-    #[config_validate(custom(
-        |_root: &Config, value: &Option<u64>| value.is_none_or(|cap| (2..=1024).contains(&cap)),
-        "must be in 2..=1024 when configured"
-    ))]
-    pub priority_package_limit: Option<u64>,
-
     /// SYSCOIN: Maximum number of L2 blocks per batch. On a signing external node this is also
     /// the local native-replay admission ceiling; it must be at least the producing main node's
     /// value or legitimate larger batches will be refused.
@@ -2810,13 +2801,6 @@ impl PolicyServiceConfig {
             )
             .expect("failed to build PolicyClient from `policy_service`")
         })
-    }
-}
-
-impl BatcherConfig {
-    pub(crate) fn priority_txs_per_batch_limit(&self) -> Option<u64> {
-        // A protected package must be able to aggregate at least two adjacent batches.
-        self.priority_package_limit.map(|cap| cap / 2)
     }
 }
 
@@ -3816,22 +3800,6 @@ mod tests {
             &mut errors,
             "service_publication",
         );
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("batcher.priority_package_limit"))
-        );
-        errors.clear();
-        config.batcher_config.priority_package_limit = Some(101);
-        assert_eq!(
-            config.batcher_config.priority_txs_per_batch_limit(),
-            Some(50)
-        );
-        config.service_publication_config.validate_conditional(
-            &config,
-            &mut errors,
-            "service_publication",
-        );
         Config::validate_operator_signers(&config, &config.l1_sender_config, &mut errors)
             .await
             .unwrap();
@@ -3864,36 +3832,6 @@ mod tests {
             "service_publication",
         );
         assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn priority_package_limit_supports_optional_preprovisioning() {
-        let mut config = base_config(NodeRole::MainNode);
-        assert_eq!(config.batcher_config.priority_txs_per_batch_limit(), None);
-        for (cap, batch_limit) in [(2, Some(1)), (3, Some(1)), (1024, Some(512))] {
-            config.batcher_config.priority_package_limit = Some(cap);
-            let mut errors = Vec::new();
-            config
-                .batcher_config
-                .validate_conditional(&config, &mut errors, "batcher");
-            assert!(errors.is_empty(), "{errors:?}");
-            assert_eq!(
-                config.batcher_config.priority_txs_per_batch_limit(),
-                batch_limit
-            );
-        }
-        for cap in [0, 1, 1025] {
-            config.batcher_config.priority_package_limit = Some(cap);
-            let mut errors = Vec::new();
-            config
-                .batcher_config
-                .validate_conditional(&config, &mut errors, "batcher");
-            assert!(
-                errors
-                    .iter()
-                    .any(|error| error.message.contains("2..=1024"))
-            );
-        }
     }
 
     fn set_bitcoin_da_credentials(

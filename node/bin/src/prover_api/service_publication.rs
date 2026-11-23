@@ -1,5 +1,5 @@
 //! Durable handoff to a service wallet. Files are hints; only canonical settlement receipts
-//! for the exact native command authorize downstream batch execution.
+//! and authenticated native settlement gaps authorize downstream batch execution.
 use crate::config::ServicePublicationConfig;
 use alloy::{
     consensus::Transaction as _,
@@ -32,6 +32,9 @@ use zksync_os_l1_sender::{
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 use zksync_os_provider::NodeProvider;
+
+mod native_settlement;
+use native_settlement::{NativeBatch, NativeObservation};
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -264,11 +267,37 @@ impl PipelineComponent for ProofPublication {
             reporter.enter_state(GenericComponentState::Active);
             match command {
                 L1SenderCommand::Passthrough(mut batch) => {
-                    let work = publication.journal.work_for_batch(&batch, &publication)?;
-                    let work_hash = keccak256(serde_json::to_vec(&work)?);
-                    if !confirmed_work_hashes.contains(&work_hash) {
-                        publication.wait_for_work(&work, None).await?;
-                        confirmed_work_hashes.insert(work_hash);
+                    if let Some(work) = publication.journal.work_for_batch(&batch, &publication)? {
+                        let work_hash = keccak256(serde_json::to_vec(&work)?);
+                        if !confirmed_work_hashes.contains(&work_hash) {
+                            let native =
+                                NativeBatch::from_batch(&batch, work.required_confirmations);
+                            if !publication.wait_for_work(&work, None, &native).await? {
+                                confirmed_work_hashes.insert(work_hash);
+                            }
+                        }
+                    } else {
+                        let native = NativeBatch::from_batch(
+                            &batch,
+                            publication.confirmation_policy.required_confirmations(),
+                        );
+                        loop {
+                            match tokio::time::timeout(
+                                publication.config.rpc_timeout,
+                                native.confirmed_gap(&publication),
+                            )
+                            .await??
+                            {
+                                NativeObservation::Confirmed(_) => break,
+                                NativeObservation::Pending => {
+                                    tokio::time::sleep(publication.config.poll_interval).await
+                                }
+                                NativeObservation::NoGap => anyhow::bail!(
+                                    "proved batch {} has no retained service work or canonical native gap",
+                                    batch.batch_number()
+                                ),
+                            }
+                        }
                     }
                     batch.set_stage(ProofCommand::PASSTHROUGH_STAGE);
                     output.send_and_record(*batch, &reporter).await?;
@@ -306,17 +335,36 @@ impl ServicePublication {
     /// Startup must authenticate covered wrappers before the ordinary recovery frontier can
     /// retire them. This path never resubmits or recomputes an already accepted native proof.
     pub(super) async fn confirm_command(&self, command: &ProofCommand) -> anyhow::Result<()> {
-        let (work, _, _) = self
+        let work = self
             .journal
-            .stage(&Work::new(command, self)?, self.config.max_records)?;
-        self.wait_for_work(&work, Some(command)).await
+            .stage(&Work::new(command, self)?, self.config.max_records)?
+            .0;
+        let native = NativeBatch::from_work(&work, work.batch_from)?;
+        anyhow::ensure!(
+            !self.wait_for_work(&work, Some(command), &native).await?,
+            "native settlement overtook service work {}-{}; restart for canonical batch discovery",
+            work.batch_from,
+            work.batch_to
+        );
+        Ok(())
+    }
+
+    /// Returns true only when a confirmed native advance invalidates the retained aggregate.
+    pub(super) async fn confirm_recovery(&self, command: &ProofCommand) -> anyhow::Result<bool> {
+        let work = self
+            .journal
+            .stage(&Work::new(command, self)?, self.config.max_records)?
+            .0;
+        let native = NativeBatch::from_work(&work, work.batch_from)?;
+        self.wait_for_work(&work, Some(command), &native).await
     }
 
     async fn wait_for_work(
         &self,
         work: &Work,
         command: Option<&ProofCommand>,
-    ) -> anyhow::Result<()> {
+        native: &NativeBatch,
+    ) -> anyhow::Result<bool> {
         let (_, directory, work_hash) = self.journal.stage(work, self.config.max_records)?;
         tracing::info!(batch_from=work.batch_from, batch_to=work.batch_to,
             directory=%directory.display(), "native proof awaiting canonical service receipt");
@@ -339,7 +387,7 @@ impl ServicePublication {
                             &directory.join("confirmed.json"),
                             &serde_json::to_vec(&confirmed)?,
                         )?;
-                        return Ok(());
+                        return Ok(false);
                     }
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
@@ -349,6 +397,23 @@ impl ServicePublication {
                         tracing::warn!("service receipt check timed out; retaining native proof")
                     }
                 }
+            }
+            match tokio::time::timeout(self.config.rpc_timeout, native.confirmed_gap(self)).await {
+                Ok(Ok(NativeObservation::Confirmed(event_block))) => {
+                    // This marker only disambiguates overlapping work directories after
+                    // reaggregation. Passthrough still authenticates each batch on chain.
+                    atomic_write(
+                        &directory.join("superseded.json"),
+                        &serde_json::to_vec(&event_block)?,
+                    )?;
+                    tracing::info!(batch_from=work.batch_from, batch_to=work.batch_to, %event_block, "native settlement superseded service work");
+                    return Ok(true);
+                }
+                Ok(Ok(NativeObservation::Pending | NativeObservation::NoGap)) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "could not authenticate native settlement progress")
+                }
+                Err(_) => tracing::warn!("native settlement check timed out"),
             }
             tokio::time::sleep(self.config.poll_interval).await;
         }
@@ -584,7 +649,7 @@ impl Journal {
         &self,
         batch: &SignedBatchEnvelope<FriProof>,
         publication: &ServicePublication,
-    ) -> anyhow::Result<Work> {
+    ) -> anyhow::Result<Option<Work>> {
         let mut found = None;
         let entries = fs::read_dir(&self.directory)?
             .take(publication.config.max_records + 2)
@@ -598,6 +663,9 @@ impl Journal {
                 continue;
             }
             private_directory(&entry.path())?;
+            if read_private(&entry.path().join("superseded.json"))?.is_some() {
+                continue;
+            }
             let Some(bytes) = read_private(&entry.path().join("work.json"))? else {
                 continue;
             };
@@ -612,7 +680,7 @@ impl Journal {
             );
             found = Some(work);
         }
-        found.context("proved service batch has no retained native publication work")
+        Ok(found)
     }
 
     fn stage(&self, work: &Work, max_records: usize) -> anyhow::Result<(Work, PathBuf, B256)> {

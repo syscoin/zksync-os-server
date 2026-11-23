@@ -82,15 +82,14 @@ class Rpc:
 
 
 def policy(value):
-    s.exact(value, ("schema_version", "account", "gate_code_hash", "coordinator_code_hash", "priority_guard_code_hash", "gas_limit",
+    s.exact(value, ("schema_version", "account", "gate_code_hash", "coordinator_code_hash", "gas_limit",
                     "max_fee_per_gas", "max_priority_fee_per_gas", "max_total_fee_wei", "confirmations",
                     "min_turn_seconds", "max_head_age_seconds", "rpc_timeout_seconds",
                     "rebroadcast_interval_seconds", "max_broadcast_attempts"))
     s.require(value["schema_version"] == 1, "unsupported_relay_policy")
     s.nonzero(value["account"], 20)
     s.raw_hex(value["coordinator_code_hash"], 32)
-    for field in ("gate_code_hash", "priority_guard_code_hash"):
-        s.nonzero(value[field])
+    s.nonzero(value["gate_code_hash"])
     for field in ("gas_limit", "confirmations", "min_turn_seconds", "max_head_age_seconds", "rpc_timeout_seconds",
                   "rebroadcast_interval_seconds", "max_broadcast_attempts"):
         s.require(0 < s.uint(value[field], 64), "positive_relay_limit_required")
@@ -334,50 +333,6 @@ def check_anchor(rpc, settings, head):
               and s.uint(rpc.call("eth_chainId", [])) == s.uint(settings["settlement_chain_id"]), "rpc_reorg_or_chain_change")
 
 
-def priority_context(rpc, settings, limits, item, head, anchor):
-    gate, accepted = settings["proof_gate"], item["sidecar"]["accepted_package"]
-    guard = call_word(rpc, gate, "priorityGuard()", anchor, kind="address")
-    s.nonzero(guard, 20)
-    s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [guard, anchor]))) == limits["priority_guard_code_hash"],
-              "priority_guard_code_changed")
-    for signature, kind, expected in (("acceptanceGate()", "address", gate), ("chain()", "address", settings["chain_address"]),
-                                       ("policyHash()", "bytes32", settings["policy_hash"])):
-        s.require(call_word(rpc, guard, signature, anchor, kind=kind) == expected, "priority_guard_configuration_changed")
-    work_id = s.keccak(s.raw_hex(accepted["parent"]) + s.word(accepted["batchFrom"]))
-    current_id = call_word(rpc, gate, "priorityWorkId()", anchor, kind="bytes32")
-    data = s.raw_hex(rpc.call("eth_call", [{"to": guard, "data": "0x" + selector("work()").hex()}, anchor]), 9 * 32)
-    words = [data[i:i + 32] for i in range(0, len(data), 32)]
-    numbers = [s.uint(int.from_bytes(value, "big"), 64) for value in words[3:]]
-    batch_from, opened, _, _, required_end, max_end = numbers
-    cursor = call_word(rpc, guard, "priorityCursor()", anchor)
-    maximum_seconds = call_word(rpc, guard, "maxProofWorkSeconds()", anchor)
-    deadline = opened + maximum_seconds
-    result = {"guard": guard, "work_id": current_id, "checkpoint_hash": "0x" + words[1].hex(),
-              "cursor": cursor, "required_end": required_end, "max_end": max_end, "deadline": deadline,
-              "reason": "ready"}
-    if current_id != work_id or words[0] != s.raw_hex(work_id) or batch_from != accepted["batchFrom"] or opened == 0:
-        result["reason"] = "priority_work_not_frozen"
-        return result
-    if maximum_seconds == 0 or deadline - s.uint(head["timestamp"]) < limits["min_turn_seconds"]:
-        result["reason"] = "priority_checkpoint_needs_refresh"
-        return result
-    counts = [s.uint(output["l1TxCount"]) for output in item["sidecar"]["batch_outputs"]]
-    hashes = [output["priorityOperationsHash"] for output in item["sidecar"]["batch_outputs"]]
-    if not required_end <= cursor + sum(counts) <= max_end:
-        result["reason"] = "priority_prefix_range_mismatch"
-    elif sum(counts) == 0:
-        if any(value != s.keccak(b"") for value in hashes):
-            result["reason"] = "priority_empty_hash_mismatch"
-    else:
-        encoded = s.encode_dynamic_tuple([(s.raw_hex(work_id), False), (words[1], False),
-                                           (s.word(len(counts)) + b"".join(s.word(count) for count in counts), True),
-                                           (s.word(len(hashes)) + b"".join(s.raw_hex(value) for value in hashes), True)])
-        witness = call_word(rpc, guard, "prefixWitness(bytes32)", anchor, s.raw_hex(s.keccak(encoded)), "bool")
-        if not witness:
-            result["reason"] = "priority_prefix_witness_missing"
-    return result
-
-
 def context(rpc, settings, limits, item, now, simulate=True):
     head, anchor = anchored_head(rpc, settings, limits, now)
     gate, accepted = settings["proof_gate"], item["sidecar"]["accepted_package"]
@@ -393,7 +348,7 @@ def context(rpc, settings, limits, item, now, simulate=True):
     result = {"head": {k: head[k] for k in ("number", "hash", "timestamp")}, "parent": parent,
               "eligible": False, "reason": "unknown", "selected_wrapper_index": None, "current_turn": None, "turn_deadline": None,
               "period": accepted["period"], "batch_from": accepted["batchFrom"], "batch_to": accepted["batchTo"],
-              "candidate_operator": accepted["wrapper"], "priority": None}
+              "candidate_operator": accepted["wrapper"]}
     if parent == item["package_hash"]:
         result["reason"] = "package_already_accepted"
     elif parent != accepted["parent"]:
@@ -402,8 +357,16 @@ def context(rpc, settings, limits, item, now, simulate=True):
         result["reason"] = "bootstrap_phase_closed"
     elif item["mode"] == "service" and (not active or coordinator != settings["coordinator"]):
         result["reason"] = "service_phase_not_active"
+    elif call_word(rpc, settings["chain_address"], "getTotalBatchesVerified()", anchor) >= accepted["batchFrom"]:
+        result["reason"] = "range_already_proven"
     else:
         result["reason"] = "ready"
+        if item["mode"] == "bootstrap":
+            expected = {**accepted, "turn": 0, "proofHash": s.ZERO, "wrapper": s.ZERO_ADDRESS,
+                        "wrapperBeneficiary": s.ZERO_ADDRESS}
+            frozen = rpc.call("eth_call", [{"to": gate, "data": "0x" + selector("bootstrapPackage()").hex()}, anchor])
+            if s.raw_hex(frozen, 32 * len(s.PACKAGE)) != s.encode_fields(s.PACKAGE, expected):
+                result["reason"] = "bootstrap_package_repaired"
         if item["mode"] == "service":
             s.nonzero(limits["coordinator_code_hash"])
             s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [coordinator, anchor]))) == limits["coordinator_code_hash"],
@@ -432,9 +395,6 @@ def context(rpc, settings, limits, item, now, simulate=True):
                     result["reason"] = "stale_wrapper_turn"
                 elif deadline - s.uint(head["timestamp"]) < limits["min_turn_seconds"]:
                     result["reason"] = "insufficient_turn_time"
-        if result["reason"] == "ready":
-            result["priority"] = priority_context(rpc, settings, limits, item, head, anchor)
-            result["reason"] = result["priority"]["reason"]
         if result["reason"] == "ready":
             contract = gate if item["mode"] == "bootstrap" else coordinator
             signature = ("bootstrapDigest" if item["mode"] == "bootstrap" else "packageDigest") + "(" + abi_tuple(s.PACKAGE) + ")"
@@ -681,7 +641,8 @@ class Relay:
             if op["raw_transaction"]:
                 op["status"] = "authorization_stale_inflight"
                 action = "wait_for_receipt_no_resign"
-            elif observed["reason"] in ("stale_wrapper_turn", "frozen_package_repaired", "accepted_parent_changed", "bootstrap_phase_closed"):
+            elif observed["reason"] in ("stale_wrapper_turn", "frozen_package_repaired", "accepted_parent_changed", "bootstrap_phase_closed",
+                                       "range_already_proven", "bootstrap_package_repaired"):
                 op["status"] = "stale_unsigned"
                 action = "new_artifact_requires_fresh_endorsements"
             else:

@@ -5,12 +5,11 @@ with a protected handoff and canonical receipt observer. Commit and execute
 senders retain their existing behavior. A service node does not construct or
 require `operator_prove_sk`; the external relayer owns proof transaction signing.
 The default is `false`, preserving the existing timelock proof sender.
-Before enabling it on an existing node, pause production and settle the entire
-ordinary committed backlog and any locally pending batches. Drain the native
-priority queue. Deploy the guard at that shared committed, verified and executed
-frontier, then transfer prover authority and start producing with the same
-priority package limit as the guard. Service recovery requires a gate receipt
-and retained work for every proved-but-unexecuted range.
+Record the native verified frontier and the gate's deployment block before
+enabling the handoff. Reconcile ordinary in-flight proof submissions and retain
+their canonical batch metadata. The node can authenticate independently verified
+batches through the gate's native-frontier observation. Ordinary proof or
+emergency authority must already be available on the intended settlement layer.
 
 Enable this only on a main node with the batcher and real FRI/SNARK proving. Pin
 the reviewed proof gate address/runtime hash, service policy, production V8 VK,
@@ -33,8 +32,6 @@ and canonical local-chain fixture acceptance remain separate requirements.
 Example overlay:
 
 ```yaml
-batcher:
-  priority_package_limit: 64
 service_publication:
   enabled: true
   directory: /secure/zksys/node-service-publication
@@ -49,10 +46,6 @@ service_publication:
   rpc_timeout: 30s
   max_records: 256
 ```
-
-The batcher and block producer limit each batch to half the configured package
-limit, so the minimum two-batch V8 range fits. Node startup compares this setting
-to `maxPriorityPerPackage()` on the pinned lane's guard.
 
 The directory must be absolute, with no symlink components. Its parent must
 exist. The node creates the directory with mode 0700, requires owner-only files,
@@ -74,16 +67,13 @@ python3 scripts/prover-service/publication_config.py \
 ```
 
 The directory must already exist with owner-only permissions for this preview.
-It checks lane and chain identities, reviewed gate, coordinator and guard pins,
+It checks lane and chain identities, reviewed gate and coordinator pins,
 the source V8 key, deployed verifier and timelock prover authority at a pinned
 RPC head. The output is a JSON object usable as YAML, printed for review; the
 command neither edits a node config nor starts a node. Its VK check is against
 the source checkout, so independently confirm the node binary uses that build.
-Matching operator-supplied hashes does not establish their provenance or prove
-that no alternate native validator exists. The helper does not enroll provers,
-produce bootstrap proofs, publish a roster, or activate the service. Finish
-ordinary in-flight proof handling and the remaining bootstrap steps before
-switching the node's proof sender.
+Record the provenance of the supplied runtime hashes, inventory all native
+prover authorities, and verify both service and ordinary proving on each lane.
 
 After native SNARK acceptance, the node fsyncs one immutable `work.json` per
 execution chain/range/native-proof hash. It contains the exact native
@@ -120,14 +110,25 @@ both the stored and current confirmation depths. Pending, reverted, malformed,
 foreign, reorged or unavailable receipts keep the native proof waiting. A local
 `confirmed.json` never substitutes for fresh chain checks on restart.
 
-Only after these checks does the node fsync `confirmed.json`, notify its durable
-SNARK journal, and forward the original batch envelopes to priority-tree and
-execute processing. At startup, covered native journal commands pass the same
-receipt observer before ordinary recovery can retire them. Already-proved
-passthrough batches also require matching retained service work and a canonical
-receipt. There is no second proof computation, resubmission, or local signature
-step. Missing handoff data keeps recovery closed; restore the original protected
-journals rather than deleting records to bypass it.
+For a service acceptance, the node records `confirmed.json`, notifies the durable
+SNARK journal and forwards the original batch envelopes to priority-tree and
+execute processing. Restore the service receipt and original `work.json` when
+recovering that acceptance.
+
+An independently verified range can advance on its native evidence. The node
+checks the execution and settlement identities, reviewed gate code, confirmation
+depth and canonical stored hash of each covered local batch. It locates the
+gate's first observation of the range and verifies the corresponding
+`NativeSettlementAdvanced` event. For a batch already verified before gate
+deployment, it checks the predeployment native frontier. RPC access to that
+historical state and its logs is required. Preserve the journals if historical
+evidence is unavailable or conflicts with local metadata.
+
+When native progress covers part of a pending service aggregate, the original
+endorsements become stale. The confirmed prefix can continue to execution.
+Rebuild the remaining unverified suffix from its native batches and obtain a
+fresh package. A local `superseded.json` records disposition for recovery.
+Service credit still requires an authenticated service acceptance.
 
 A bootstrap receipt remains valid when coordinator installation follows it in
 the same block. The successful exact `submitBootstrap` call proves the bootstrap
@@ -137,6 +138,6 @@ coordinator transition while all native/deployment pins remain identical.
 
 Completed publication records remain available for recovery and audit. Archive
 only ranges already executed on the canonical settlement chain, retaining an
-operator backup; proved-but-unexecuted ranges still need their work/receipt
-handoff after a restart. The bounded journal fails closed when `max_records` is
+operator backup. Keep native metadata and the applicable service receipts or
+canonical native observation evidence for proved-but-unexecuted ranges. The bounded journal fails closed when `max_records` is
 exhausted. Confirmation depth is not a claim of Bitcoin ChainLock finality.

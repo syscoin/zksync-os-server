@@ -7,7 +7,7 @@ qualified proving roster. The ordinary coordinator and wrapper require an
 activated service and cannot perform this pre-activation operation.
 
 This is a controlled manual workflow, not an end-to-end launcher. Configure the
-two proof lanes, priority guard, node service-publication mode, dedicated wallet
+two proof lanes, node service-publication mode, dedicated wallet
 nonces, external prover pool and exact production verifier first. Gateway prover
 role changes are separate L1 ChainAdmin priority messages; do not send them as
 direct Gateway transactions. Preserve every native lease, pool and relay journal.
@@ -44,8 +44,8 @@ direct Gateway transactions. Preserve every native lease, pool and relay journal
    evidence, or parent changes, obtain and review a fresh call; preserve any
    already-signed transaction until its nonce is resolved.
 
-4. Publish the required priority checkpoint and prefix witness, and use
-   `keeper.py permit` for the exact request, evidence and native payload. Enqueue
+4. Obtain a permit with `keeper.py permit` for the exact request, evidence
+   and native payload. Enqueue
    the SNARK in the pinned prover pool with that permit, preserving the original
    lease deadline. Follow the pool's `export`, `launch`, and `complete` sequence
    in the [prover pool guide](../prover-rental/pool-README.md). Import the result
@@ -74,7 +74,7 @@ direct Gateway transactions. Preserve every native lease, pool and relay journal
    package and signature, omitting the wrapper signature. Extract `proof_data`
    from the same package, and use the [durable relay](relay-README.md) to stage,
    sign, broadcast, confirm and export the node handoff. The relay independently
-   rechecks gate and priority state; it is not replaced by these local checks.
+   checks the gate, frozen package and native verified frontier before submission.
 
 After the membership transaction is finalized on zkSYS, use
 [initial enrollment](bootstrap-enrollment.md). Accepted qualification duties,

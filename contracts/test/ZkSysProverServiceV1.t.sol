@@ -143,6 +143,8 @@ contract ServiceRosterMockV1 is IZkSysWrapperRosterSourceV1 {
 }
 
 contract ServiceGateMockV1 {
+    uint256 public getTotalBatchesVerified;
+
     function open(ZkSysWrapperCoordinatorV1 coordinator, AcceptedPackageV1 calldata accepted) external {
         coordinator.openPackage(accepted);
     }
@@ -159,7 +161,9 @@ contract ServiceGateMockV1 {
         bytes calldata sequencerSignature,
         bytes calldata wrapperSignature
     ) external returns (bytes32) {
-        return coordinator.acceptPackage(accepted, candidate, proof, sequencerSignature, wrapperSignature);
+        bytes32 result = coordinator.acceptPackage(accepted, candidate, proof, sequencerSignature, wrapperSignature);
+        getTotalBatchesVerified = accepted.batchTo;
+        return result;
     }
 }
 
@@ -1645,7 +1649,7 @@ contract ZkSysWrapperCoordinatorV1Test is ServiceTestBaseV1 {
                 rosterSource: rosters,
                 sequencer: vm.addr(SEQUENCER_KEY),
                 childChainId: block.chainid,
-                childChainAddress: CHAIN,
+                childChainAddress: address(gate),
                 policyHash: POLICY,
                 productionVkHash: VK,
                 initialParent: keccak256("genesis-parent"),
@@ -1666,6 +1670,7 @@ contract ZkSysWrapperCoordinatorV1Test is ServiceTestBaseV1 {
     function _proposed() internal view returns (AcceptedPackageV1 memory accepted) {
         accepted = _basePackage();
         accepted.rosterRoot = rosters.root();
+        accepted.chainAddress = address(gate);
     }
 
     function _signed(AcceptedPackageV1 memory proposed)
@@ -1931,7 +1936,7 @@ contract ZkSysWrapperCoordinatorV1Test is ServiceTestBaseV1 {
             rosterSource: rosters,
             sequencer: vm.addr(SEQUENCER_KEY),
             childChainId: block.chainid,
-            childChainAddress: CHAIN,
+            childChainAddress: address(gate),
             policyHash: POLICY,
             productionVkHash: VK,
             initialParent: keccak256("genesis-parent"),

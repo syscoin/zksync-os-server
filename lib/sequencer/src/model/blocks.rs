@@ -212,12 +212,9 @@ pub enum InvalidTxPolicy {
 
 #[derive(Clone, Copy, Debug)]
 pub enum SealPolicy {
-    /// Seal production blocks at a deadline, total transaction cap, or priority transaction cap.
-    Decide {
-        block_time: Duration,
-        tx_limit: usize,
-        priority_tx_limit: Option<u64>,
-    },
+    /// Seal non-empty blocks after deadline or N transactions. Used when producing a block
+    /// (Block Deadline, Block Size)
+    Decide(Duration, usize),
     /// Seal when all txs from tx source are executed.
     /// `allowed_to_finish_early` indicates whether it's expected for block to be sealed earlier for different reason.
     /// - `Replay` maps to `UntilExhausted { allowed_to_finish_early: false }`

@@ -33,7 +33,6 @@ class RpcErrorTests(unittest.TestCase):
 def relay_policy(settings):
     return {"schema_version": 1, "account": s.cast("wallet", "address", "--private-key", KEYS["account"]).lower(),
             "gate_code_hash": s.keccak(b"gate-code"), "coordinator_code_hash": s.keccak(b"coordinator-code"),
-            "priority_guard_code_hash": s.keccak(b"priority-code"),
             "gas_limit": 1000000, "max_fee_per_gas": "0x64", "max_priority_fee_per_gas": "0x2",
             "max_total_fee_wei": hex(100000000), "confirmations": 2, "min_turn_seconds": 30,
             "max_head_age_seconds": 120, "rpc_timeout_seconds": 15,
@@ -80,7 +79,7 @@ class FakeRpc:
         self.turn = item["sidecar"]["accepted_package"]["turn"]
         self.selected, self.deadline, self.opened = 0, self.now + 200, True
         self.frozen_override, self.chain_override, self.reorg_anchor, self.stage_store = None, None, False, None
-        self.guard_work_missing, self.guard_expired, self.witness = False, False, True
+        self.native_proved = item["sidecar"]["accepted_package"]["batchFrom"] - 1
 
     def advance(self, seconds=30, blocks=1):
         self.now += seconds
@@ -111,7 +110,7 @@ class FakeRpc:
                 value["hash"] = h(99)
             return value
         if method == "eth_getCode":
-            codes = {self.settings["proof_gate"]: b"gate-code", self.settings["coordinator"]: b"coordinator-code", a(123): b"priority-code"}
+            codes = {self.settings["proof_gate"]: b"gate-code", self.settings["coordinator"]: b"coordinator-code"}
             return "0x" + codes[params[0]].hex()
         if method == "eth_getTransactionCount":
             return hex(self.pending_nonce if params[1] == "pending" else self.nonce)
@@ -142,13 +141,11 @@ class FakeRpc:
                     raise r.RpcError(3)
                 return "0x"
             accepted = self.item["sidecar"]["accepted_package"]
-            work_id = s.keccak(s.raw_hex(accepted["parent"]) + s.word(accepted["batchFrom"]))
-            if tx["data"] == "0x" + r.selector("work()").hex():
-                return "0x" + (s.raw_hex(work_id) + s.raw_hex(h(124)) + s.raw_hex(h(125))
-                                + b"".join(s.word(value) for value in (accepted["batchFrom"], 1 if self.guard_expired else 1000,
-                                                                        0, 4, 2, 2))).hex()
             normalized = {**accepted, "turn": 0, "proofHash": s.ZERO, "wrapper": s.ZERO_ADDRESS, "wrapperBeneficiary": s.ZERO_ADDRESS}
+            if tx["data"] == "0x" + r.selector("bootstrapPackage()").hex():
+                return "0x" + s.encode_fields(s.PACKAGE, normalized).hex()
             values = {
+                "getTotalBatchesVerified()": self.native_proved,
                 "chain()": self.settings["chain_address"], "childChainId()": s.uint(self.settings["execution_chain_id"]),
                 "sequencer()": self.settings["sequencer"], "policyHash()": self.settings["policy_hash"],
                 "productionVkHash()": self.settings["vk_hash"], "lastAcceptedPackage()": self.parent,
@@ -159,8 +156,6 @@ class FakeRpc:
                 "frozenPackageHash()": self.frozen_override or s.struct_hash("AcceptedPackageV1", s.PACKAGE, normalized),
                 "currentTurn()": self.turn, "selectedWrapperIndex()": self.selected, "turnDeadline()": self.deadline,
                 "rosterRoot()": accepted["rosterRoot"],
-                "priorityGuard()": a(123), "priorityWorkId()": s.ZERO if self.guard_work_missing else work_id,
-                "priorityCursor()": 0, "maxProofWorkSeconds()": 500, "prefixWitness(bytes32)": self.witness,
                 "bootstrapDigest(" + r.abi_tuple(s.PACKAGE) + ")": self.item["digest"],
                 "packageDigest(" + r.abi_tuple(s.PACKAGE) + ")": self.item["digest"]}
             for signature, value in values.items():
@@ -409,6 +404,15 @@ class RelayTests(unittest.TestCase):
                 self.rpc.turn = self.item["sidecar"]["accepted_package"]["turn"]
                 self.rpc.frozen_override = None
 
+    def test_native_advance_retires_unsigned_package_without_a_service_receipt(self):
+        relayer = self.relayer()
+        operation = relayer.stage(self.item)
+        self.rpc.native_proved = self.item["sidecar"]["accepted_package"]["batchFrom"]
+        result = relayer.step(operation, execute=True)
+        self.assertEqual(result["status"], "stale_unsigned")
+        self.assertIsNone(relayer.state["operations"][operation]["acceptance"])
+        self.assertFalse(self.rpc.sent)
+
     def test_stale_inflight_never_resigns_or_rebroadcasts(self):
         self.relayer().step(self.operation_id, execute=True)
         self.rpc.turn += 1
@@ -556,18 +560,6 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(result["next_action"], "wait_for_existing_wallet_reservation")
         self.assertEqual(len(self.signatures()), 1)
         self.assertEqual(len(self.rpc.sent), 1)
-
-    def test_missing_expired_or_unsatisfied_priority_work_never_signs(self):
-        for flag, value, reason in (("guard_work_missing", True, "priority_work_not_frozen"),
-                                    ("guard_expired", True, "priority_checkpoint_needs_refresh"),
-                                    ("witness", False, "priority_prefix_witness_missing")):
-            with self.subTest(flag=flag):
-                setattr(self.rpc, flag, value)
-                result = self.relayer().step(self.operation_id, execute=True)
-                self.assertEqual(result["context"]["reason"], reason)
-                self.assertEqual(self.signatures(), [])
-                self.rpc.guard_work_missing = self.rpc.guard_expired = False
-                self.rpc.witness = True
 
 
 if __name__ == "__main__":

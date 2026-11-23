@@ -17,8 +17,8 @@ a fee beneficiary, or selects a replacement wrapper.
 ## Deployment and wallet inputs
 
 Use the same reviewed `config.json` as the signing workflow. Populate
-`relay-policy.example.json` with the relay account, deployed gate/coordinator
-and priority-guard runtime Keccak code hashes, fixed gas and fee caps, required confirmations,
+`relay-policy.example.json` with the relay account, deployed gate and coordinator
+runtime Keccak hashes, fixed gas and fee caps, required confirmations,
 minimum remaining turn time, and maximum permitted RPC head age. The template's
 zero values deliberately fail validation, except that bootstrap uses a zero
 coordinator address and may use a zero coordinator runtime hash. Service mode
@@ -93,17 +93,13 @@ block hash, and the block/chain are rechecked after dependent calls. The
 deployment code hashes, chain ID, child-chain address, sequencer, policy, VK,
 signing domain, frozen package commitment, roster root and current candidate
 must match. The full gate call is simulated with the configured gas limit.
-The status also shows the priority guard's frozen work, checkpoint hash, cursor,
-required/capped prefix end and expiry. Missing freeze, expired work, mismatched
-prefix counts or a missing prefix witness prevent signing.
-
-For service mode, the sequencer must already have opened the exact normalized
-package. For bootstrap, it must have frozen bootstrap work through
-`openBootstrapPackage` before submission. The mandatory priority guard must
-have the required current checkpoint and prefix witness. Those operations are
-separate authenticated workflows; missing or expired guard state makes the
-exact gate simulation refuse signing. Repairs and checkpoint refreshes must
-preserve the coordinator's schedule as the contracts require.
+For service mode, the sequencer must have opened the exact normalized package.
+For bootstrap it opens the work through `openBootstrapPackage`. The proposed
+first batch must still follow the native verified frontier when the gate verifies
+the proof. If independent native settlement covers the start of a frozen range,
+reconcile its relay nonce, observe the native advance, and obtain a fresh package
+for the remaining work. Service acceptance requires the gate transaction and its
+matching event.
 
 Stage the immutable artifact under its package hash:
 

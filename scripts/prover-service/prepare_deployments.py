@@ -32,13 +32,10 @@ def predicted_addresses(kind, cfg):
     init = deploy_gate.bytecode(factory_contract) + deploy_gate.encode('constructor(address)', sender)
     factory = deploy_gate.cast('create2', '--deployer', deploy_gate.CREATE2, '--salt', salt, '--init-code', init).lower()
     require(deploy_gate.ADDRESS.fullmatch(factory), 'invalid predicted factory')
-    def child(nonce):
-        value = deploy_gate.cast('compute-address', factory, '--nonce', str(nonce)).split()[-1].lower()
-        require(deploy_gate.ADDRESS.fullmatch(value), 'invalid predicted address')
-        return value
-    if kind == 'gate':
-        return {'factory': factory, 'guard': child(1), 'gate': child(2)}
-    return {'factory': factory, 'component': child(1)}
+    address = deploy_gate.cast('compute-address', factory, '--nonce', '1').split()[-1].lower()
+    require(deploy_gate.ADDRESS.fullmatch(address), 'invalid predicted address')
+    field = 'gate' if kind == 'gate' else 'component'
+    return {'factory': factory, field: address}
 
 
 def replace_refs(value, predictions):
@@ -76,7 +73,7 @@ def prepare(manifest):
         if kind == 'gate':
             config = deploy_gate.config(config)
             plan = deploy_gate.build(config)
-            expected_fields = ('factory', 'guard', 'gate')
+            expected_fields = ('factory', 'gate')
         else:
             config = deploy_component.component_config(config)
             plan = deploy_component.build(config)

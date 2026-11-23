@@ -91,7 +91,7 @@ index/turn, frozen parent and roster are authenticated by the dispatcher, audit,
 and keeper against canonical contract state before the automated workflow
 endorses work. The contracts enforce the applicable on-chain checks again.
 Low-level signing helpers are not a substitute for those live checks. Real
-enrolled-roster operation, authenticated transport, and deployed priority/message
+enrolled-roster operation, authenticated transport, and deployed service message
 delivery still require production qualification.
 
 ## Domain and JSON conventions
@@ -374,7 +374,7 @@ checks the deployed gate/coordinator state, and uses a trusted wallet RPC only
 under `--execute`. Its journal persists signed raw transactions before broadcast
 and reconciles ambiguous sends without replacing authorization. See
 [`relay-README.md`](relay-README.md) for code/fee pinning, the read-only schedule
-view, bootstrap and priority-guard prerequisites, nonce ownership and recovery.
+view, bootstrap prerequisites, native frontier checks, nonce ownership and recovery.
 
 ## Verification
 
@@ -664,5 +664,6 @@ remains separately gated; materializing the reviewed real-VK sources does not
 certify either that fixture or this service's deployed message and recovery paths.
 
 The opt-in [node publication mode](node-publication.md) connects confirmed service
-receipts to the native batch pipeline, including restart recovery, without a
-node proof signing key.
+receipts to the native batch pipeline. The node also authenticates confirmed native
+advances separately, retires superseded service work and recovers the remaining
+batches without assigning service credit to them.

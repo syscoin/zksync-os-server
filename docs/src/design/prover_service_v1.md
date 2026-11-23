@@ -117,15 +117,15 @@ zkSYS chain history, a finalized accounting claim in a later zkSYS batch follows
 execution of the earlier batches in order. The root uses the normal priority
 message route and needs no additional operator-submitted Gateway transaction.
 
-An authorized settlement-layer revert of a verified but unexecuted batch can
-leave the gate and coordinator cursors ahead of the native chain; recovery for
-this exceptional case has not been qualified. Whether a replacement batch could
-lead to finalized stale credit under the intended sole-prover configuration has
-not been established. Qualify both this recovery and real cross-chain delivery
-before running the service unattended.
+The coordinator reads the next batch directly from the native chain's verified
+height. The gate stores the last accepted service package and its native batch
+hash. If native settlement moves ahead independently, the gate records the new
+height, retires superseded work and preserves that service parent. A rewind or
+a changed native hash at either recorded anchor stops automatic recovery.
+Reconciliation of rewritten service history requires separate qualification.
 
-Each settlement chain runs its own full `ZkSysProofGateV1`, priority guard and
-wrapper coordinator. The NEVM gate has the same joint sequencer/wrapper
+Each settlement chain runs its own `ZkSysProofGateV1` and wrapper coordinator.
+The NEVM gate has the same joint sequencer/wrapper
 authorization and native proof binding as the child's gate on Gateway. It is the
 sole configured timelock prover for Gateway and runs Gateway's native verifier
 exactly once. Both native proof lanes contribute to the same child accounting.
@@ -206,7 +206,7 @@ The gate freezes `transitionWork` when opening any such prestart or recovery
 package. Its report must remain empty through repair and submission, even if a
 period boundary passes before completion. Native transaction-bearing batches may
 still be proved, but the gate emits no accepted-reward message for that package.
-It advances the canonical parent, priority cursor and wrapper counter normally.
+It advances the accepted service parent and the wrapper counter.
 Once the current roster and draw arrive, the next package resumes ordinary work
 credit. A complete lack of any qualified roster still prevents activation; stale
 recovery wrappers preserve proving availability without renewing their bonus.
@@ -222,56 +222,20 @@ Any failure rolls back coordinator acceptance and produces no accepted receipt.
 Commit/execute ordering, execution delays, and native withdrawal proofs stay in
 their existing contracts.
 
-`ZkSysRootPrioritySourceV1` reads the child's canonical NEVM Mailbox priority tree
-and its existing request timestamps. The pinned native patch exposes two read-only
-getters for request timestamps and exact tree height; it changes no guest state,
-proof statement, or verification key. It does change the native facet and selector
-identities, so deployment cuts must be derived from the current combined source.
-Inherited crypto-validation records retain their original source scope and do not
-certify that new deployment. Anyone can pay to relay a checkpoint through
-the existing Bridgehub to `ZkSysPriorityCheckpointReceiverV1` on Gateway. Only the
-canonical alias of that immutable root source can install a checkpoint. The source
-finds the overdue prefix by a bounded binary search over native append-order
-timestamps. All existing priority requests must drain before guard construction,
-which requires the native priority cursor to equal the total request count and
-the committed, verified and executed frontiers to agree. Timestamp coverage begins at the source's
-immutable deployment cursor.
+Native priority inclusion belongs to the Mailbox, sequencer and settlement
+contracts. A root request for the child must first reach the Gateway and then
+the child Mailbox. Each lane consumes its native queue in order and verifies the
+batch's committed transaction counts and rolling hashes. The V1 payment service
+signs the exact committed range and attributes eligible proof work. A root
+request arriving while a package is being proved creates no new obligation for
+that sealed range.
 
-The mandatory `ZkSysPriorityGuardV1` freezes a fresh authenticated checkpoint when
-the sequencer opens each bootstrap or service package. Bootstrap submission now
-requires `openBootstrapPackage` with a zero proof hash before proving. The guard
-requires the next bounded overdue prefix, capped by its immutable package limit,
-and permits younger requests already covered by that checkpoint. A permissionless
-`publishPrefixWitness` call proves the contiguous priority-tree leaves and binds
-their exact per-batch counts and native rolling hashes. The gate compares those
-bindings with the existing native BatchOutput preimages, then calls native proof
-verification once. Failed native verification rolls back both guard and wrapper
-acceptance. The guard advances a separate verified priority cursor so delayed
-execution cannot credit the same prefix again.
-
-Later queue arrivals do not invalidate an in-flight proof. Work expires after the
-immutable proof window; `refreshPriorityCheckpoint` then requires a fresh root
-checkpoint and new prefix witness while retaining the original required prefix,
-wrapper clock and selection. Subsequent packages use the newer overdue frontier.
-An empty package remains legal only when the frozen overdue requirement is empty.
-Snapshot freshness, inclusion delay, proof duration, and the per-package cap are
-explicit deployment policy. A backlog drains in ordered bounded chunks as packages
-are proved; this is a progress condition, not a wall-clock inclusion guarantee.
-The rule covers root priority requests, not ordinary off-chain mempool submissions.
-
-The Gateway gate's guard reads a second `ZkSysRootPrioritySourceV1` directly on
-NEVM, scoped to Gateway's own canonical Mailbox. The child guard continues to use
-the authenticated checkpoint receiver on Gateway. Each lane has its own verified
-cursor, native tree witness and bounded overdue prefix; the shared reward quota
-does not merge priority queues or duplicate native verification.
-
-In the Gateway topology, root priority requests may be overdue before Gateway has
-forwarded them to the child Mailbox. The guard sees the root checkpoint and stops
-child proof progress until a valid prefix can be included. It cannot compel the
-parent Gateway sequencer to forward requests or checkpoints. Missing keepers,
-withheld checkpoints, unavailable root proofs, and unavailable Gateway delivery
-therefore fail closed. Production qualification must exercise these message paths
-and the oldest-request backlog under real root/Gateway delays.
+After a native-only advance, the gate emits `NativeSettlementAdvanced` for the
+observed range. That event carries no Sentry credit. For example, if the last
+service package ended at 100 and native settlement verified through 110, the
+next service package starts at 111 and uses the same previously accepted service
+parent. The gate checks the recorded native hashes when adopting the advance.
+A new service acceptance then records its own batch hash and service parent.
 
 The gate requires itself to be the only timelock `PROVER_ROLE` member. That is
 **not** a proof that the diamond has no other validators: its validator mapping
@@ -391,11 +355,11 @@ exact native proof bytes, batch outputs and reviewed deployment pins to a privat
 `work.json`. After a relayer returns a matching `relay.json`, the node reconstructs
 the exact gate call and verifies its successful transaction, acceptance event,
 historical contract code and configuration, canonical block and configured
-confirmation depth before advancing those batches to native execution. A file
-or a native proved frontier alone cannot authorize advancement. Recovery retains
-the original proof until this same receipt check succeeds. Commit and execute
-remain in their existing pipeline stages; the service proof sender needs no
-node-owned proof wallet. Bootstrap uses zero coordinator pins. When the reviewed
+confirmation depth before advancing service-proved batches to execution.
+For a confirmed native-only advance, the node authenticates the reviewed gate's
+observation and the canonical stored hash for each local batch it forwards.
+Superseded wrappers are retired and outstanding batches are regrouped from the
+native frontier. Commit and execute use their existing pipeline stages. Bootstrap uses zero coordinator pins. When the reviewed
 coordinator is later installed, recovery preserves each outstanding bootstrap
 record's original bytes and zero pins while checking its unchanged gate, policy,
 VK and native proof identity.
@@ -423,7 +387,7 @@ The audit introduces no new reward rule or duty points.
 
 `keeper.py` prepares and simulates unsigned package opening, repair and fixed
 maintenance calls. For external service SNARK work it validates the actual native
-commitments, frozen package, selected wrapper, current turn and priority witness
+commitments, frozen package, selected wrapper and current turn
 before producing a compute permit. The rental pool pins the lane's keeper
 configuration and revalidates that permit before launch, then checks that the
 runtime and reserve still fit the deadline immediately before provider creation.
@@ -444,14 +408,11 @@ retain exact signed bytes across ambiguous sends, and the node still independent
 verifies the confirmed gate receipt before advancing execution. Maintenance and
 proof-relay transactions use separate nonce accounts.
 
-The [keeper operator guide](https://github.com/syscoin/zksync-os-server/blob/codex/senior-prover-service/scripts/prover-service/keeper-operator-guide.md)
-documents configuration, automatic operation, and manual recovery. The automation
-does not register subscriptions, publish or relay cross-chain rosters and draws,
-invent priority-tree witnesses, or authorize an unreviewed image/VK. Operators
-supply the complete roster artifacts, independently pinned audit trust, actual
-native priority preimages/paths, and authenticated inbox transport; existing
-cross-chain capture and relay keepers must continue running. Bootstrap remains
-the explicit pre-activation keeper path.
+The [keeper operator guide](../../../scripts/prover-service/keeper-operator-guide.md)
+documents configuration, automatic operation and manual recovery. Operators
+supply complete roster artifacts, independently pinned audit trust and
+authenticated inbox transport. Cross-chain capture and relay keepers carry
+rosters and draws. Bootstrap uses the explicit pre-activation keeper path.
 Prestart and rollover control packages require empty duty reports, so their FRI
 compute must not consume the dispatcher's paid assessment slots. Their ordinary
 compute costs do not create service credit.
@@ -485,12 +446,11 @@ compute costs do not create service credit.
    nonrewarded prestart/rollover recovery packages with actual native messages.
    Measure the lead/grace windows and run independent root capture and relay
    keepers. Prove that either missing activation cannot lock passive principal.
-5. Qualify the implemented root-priority guard against real NEVM/Gateway queues,
-   including checkpoint delivery, delayed root-request forwarding, prefix witness
-   construction, expired-proof recovery, and backlog drain. Deploy the patched
-   native timestamp/tree-height getters and prove that existing requests are
-   drained before constructing the guard. Contract tests alone do not
-   establish parent-Gateway inclusion or a deployed deadline guarantee.
+5. Rehearse a native-only advance on each lane with a service package open.
+   Confirm the gate observes the final native range, the last service parent
+   survives, the node checks the historical evidence and the next eligible
+   package resumes without crediting skipped work. Exercise native priority
+   forwarding and separate Gateway emergency settlement on the target topology.
 6. Perform the deployed validator/prover/emergency-path audit and production
    verifier integration test. Preserve all native final withdrawal checks.
 7. Qualify the final hardware and immutable image, including cold setup, FRI,

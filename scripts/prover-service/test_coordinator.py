@@ -42,16 +42,6 @@ class Wallet:
         raise AssertionError(method)
 
 
-class RangeProofRpc(ProofRpc):
-    def call(self, method, params):
-        value = super().call(method, params)
-        if method == "eth_call" and params[0]["data"] == "0x" + r.selector("work()").hex():
-            count = sum(s.uint(output["l1TxCount"]) for output in self.item["sidecar"]["batch_outputs"])
-            data = s.raw_hex(value)
-            value = "0x" + (data[:-96] + s.word(max(4, count)) + s.word(count) + s.word(count)).hex()
-        return value
-
-
 class CoordinatorTests(unittest.TestCase):
     setUpClass = classmethod(td.DispatcherTests.setUpClass.__func__)
     reload = td.DispatcherTests.reload
@@ -79,7 +69,7 @@ class CoordinatorTests(unittest.TestCase):
         self.rpc = ProofRpc(self.f, keeper, item)
         self.rpc.opened = False
         self.native = td.Network()
-        for name in ("rosters", "inbox", "witnesses", "publications"):
+        for name in ("rosters", "inbox", "publications"):
             io.directory(self.base / name, create=True)
         io.immutable_json(self.base / "rosters" / "5.json", self.roster)
         snark_release = release("SNARK")
@@ -93,7 +83,7 @@ class CoordinatorTests(unittest.TestCase):
             "native_auth_file": str(self.base / "auth"), "release_file": str(self.base / "release.json"),
             "native_lease_seconds": 600, "dispatcher_dir": str(self.root.resolve()), "roster_dir": str(self.base / "rosters"),
             "operator_inboxes": {self.f["proposal"]["candidate"]["operator"]: str(self.base / "inbox")},
-            "priority_witness_dir": str(self.base / "witnesses"), "publication_dir": str(self.base / "publications"),
+            "publication_dir": str(self.base / "publications"),
             "sequencer_wallet_file": str(self.base / "sequencer-wallet"), "relay_wallet_file": str(self.base / "relay-wallet"),
             "transaction_policy": {**policy, "account": self.f["settings"]["sequencer"]}, "relay_policy": policy,
             "sequencer_beneficiary": self.f["proposal"]["accepted_package"]["sequencerBeneficiary"], "poll_interval_seconds": 1}
@@ -136,7 +126,7 @@ class CoordinatorTests(unittest.TestCase):
         self.registry_rpc = self.rpc
         keeper, _, item = setup(self.f)
         keeper["policy"]["expected_operator"] = self.f["settings"]["sequencer"]
-        self.rpc = RangeProofRpc(self.f, keeper, item)
+        self.rpc = ProofRpc(self.f, keeper, item)
         self.rpc.opened = False
         self.native = td.Network()
         self.config = {**self.config, "keeper": keeper, "dispatcher_dir": str(self.root)}
@@ -234,6 +224,33 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.native.calls, [])
         self.assertEqual(self.wallet.calls, [])
         self.assertEqual(before, {str(path): path.read_bytes() for path in self.base.rglob("*") if path.is_file()})
+
+    def test_native_observation_recovers_after_restart_and_supersedes_overlapping_lease(self):
+        identifier = self.acquired()
+        self.rpc.native_proved = 1
+        self.assertEqual(self.controller.step(False)["next_action"], "would_observe_native_settlement")
+        self.assertNotIn("native_observation", self.controller.state)
+        self.assertEqual(self.controller.step(True)["status"], "broadcast")
+        observation = self.controller.state["native_observation"]
+        self.assertEqual(observation["invocation"]["scope"]["native_batch"], 1)
+        self.assertEqual(observation["call"]["action"], "observeNativeSettlement")
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "wait_before_identical_rebroadcast")
+        self.rpc.observed_native = 1
+        self.rpc.nonce = self.rpc.pending_nonce = 1
+        self.rpc.receipt = {"transactionHash": s.keccak(s.raw_hex(self.rpc.sent[-1])),
+                            "from": self.f["settings"]["sequencer"], "to": self.f["settings"]["proof_gate"],
+                            "blockNumber": self.rpc.head["number"], "blockHash": self.rpc.head["hash"],
+                            "status": "0x1", "logs": []}
+        self.assertEqual(self.controller_reload().step(True)["status"], "mined_unconfirmed")
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.assertEqual(self.controller_reload().step(True)["status"], "confirmed")
+        self.assertNotIn("native_observation", self.controller.state)
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "native_advance_requires_new_range")
+        self.assertEqual(self.controller.state["operations"][identifier]["status"], "superseded")
+        self.assertIsNone(self.controller.state["active"])
+        self.assertEqual(len(self.native.calls), 2)
+        self.assertEqual(len(self.rpc.sent), 1)
 
     def test_completed_operation_history_does_not_block_new_range(self):
         for index in range(1001):
@@ -877,7 +894,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.base = Path(temporary.name).resolve()
         self.f = copy.deepcopy(self.base_fixture)
         keeper, policy = copy.deepcopy(self.base_keeper), copy.deepcopy(self.base_policy)
-        for name in ("dispatcher", "rosters", "inbox", "witnesses", "publications"):
+        for name in ("dispatcher", "rosters", "inbox", "publications"):
             io.directory(self.base / name, create=True)
         snark_release = release("SNARK")
         snark_release["vk_hash"] = self.f["settings"]["vk_hash"]
@@ -886,7 +903,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
             "native_auth_file": str(self.base / "auth"), "release_file": str(self.base / "release.json"),
             "native_lease_seconds": 600, "dispatcher_dir": str(self.base / "dispatcher"), "roster_dir": str(self.base / "rosters"),
             "operator_inboxes": {self.f["proposal"]["candidate"]["operator"]: str(self.base / "inbox")},
-            "priority_witness_dir": str(self.base / "witnesses"), "publication_dir": str(self.base / "publications"),
+            "publication_dir": str(self.base / "publications"),
             "sequencer_wallet_file": str(self.base / "sequencer-wallet"), "relay_wallet_file": str(self.base / "relay-wallet"),
             "transaction_policy": {**policy, "account": self.f["settings"]["sequencer"]}, "relay_policy": policy,
             "sequencer_beneficiary": self.f["proposal"]["accepted_package"]["sequencerBeneficiary"], "poll_interval_seconds": 1}
@@ -904,14 +921,14 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.controller = c.Coordinator(self.store, self.rpc, self.wallet, clock=lambda: self.rpc.now)
         return self.controller
 
-    def refresh(self):
-        return k.maintenance(self.config["keeper"], self.rpc, "refresh-priority", {}, self.rpc.now)
+    def observe(self):
+        return k.maintenance(self.config["keeper"], self.rpc, "observe-native", {}, self.rpc.now)
 
     def pending(self):
         return self.controller.state["operations"][self.identifier]["maintenance"]
 
     def maintain(self, producer=None):
-        producer = producer or self.refresh
+        producer = producer or self.observe
         original_stage = c.transactions.Transactions.stage
         def stage(manager, *args, **kwargs):
             identifier = original_stage(manager, *args, **kwargs)
@@ -937,40 +954,21 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
     def signatures(self):
         return [args[0] for method, args in self.wallet.calls if method == "eth_signTransaction"]
 
-    def test_successive_refreshes_and_later_package_survive_coordinator_restart(self):
+    def test_successive_native_frontiers_survive_coordinator_restart(self):
         identifiers = []
-        for work, checkpoint in ((h(150), h(151)), (h(150), h(152)), (h(153), h(154))):
-            self.rpc.work_id, self.rpc.checkpoint_hash = work, checkpoint
+        for observed, tip in ((100, 110), (110, 112), (112, 123)):
+            self.rpc.observed_batch, self.rpc.native_batch, self.rpc.native_hash = observed, tip, h(tip)
             self.assertEqual(self.maintain()["status"], "broadcast")
             pending = copy.deepcopy(self.pending())
             identifiers.append(pending["operation_id"])
             self.reload()
             self.assertEqual(self.pending(), pending)
             self.confirm()
+            self.rpc.observed_batch = tip
+            with self.assertRaisesRegex(s.Error, "no_forward_native_advance"):
+                self.observe()
         self.assertEqual(len(set(identifiers)), 3)
         self.assertEqual([s.uint(tx["nonce"]) for tx in self.signatures()], [0, 1, 2])
-        self.assertEqual(len(self.rpc.sent), 3)
-
-    def test_identical_prefix_witness_is_published_again_after_refresh(self):
-        witness = {"batch_item_preimages": [["0x0102"], ["0x0304"]], "left_path": [], "right_path": []}
-        for entry, batch in zip(witness["batch_item_preimages"], self.f["evidence"]["batches"]):
-            digest = s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(s.keccak(s.raw_hex(entry[0]))))
-            batch["output"]["priorityOperationsHash"] = batch["stored"]["priorityOperationsHash"] = digest
-            batch["stored"]["commitment"] = s.output_hash(batch["output"])
-        io.immutable_json(self.base / "witnesses" / (self.rpc.work_id[2:] + ".json"), witness)
-        producer = lambda: k.prefix_call(self.config["keeper"], self.rpc, self.f["evidence"], witness, self.rpc.now)
-        self.assertEqual(self.maintain(producer)["status"], "broadcast")
-        first = copy.deepcopy(self.pending())
-        self.confirm()
-        self.assertEqual(self.maintain()["status"], "broadcast")
-        self.rpc.checkpoint_hash = h(152)
-        self.confirm()
-        self.assertEqual(self.maintain(producer)["status"], "broadcast")
-        second = copy.deepcopy(self.pending())
-        self.assertEqual(first["call"]["transaction"], second["call"]["transaction"])
-        self.assertNotEqual(first["operation_id"], second["operation_id"])
-        self.confirm()
-        self.assertEqual(len(self.signatures()), 3)
         self.assertEqual(len(self.rpc.sent), 3)
 
     def test_descriptor_is_durable_before_stage_and_reconstructs_after_either_crash(self):
@@ -986,7 +984,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
                         original_stage(manager, *args, **kwargs)
                     raise KeyboardInterrupt()
                 with patch.object(c.transactions.Transactions, "stage", new=interrupted), self.assertRaises(KeyboardInterrupt):
-                    self.controller.maintenance(self.identifier, self.refresh(), self.refresh, True)
+                    self.controller.maintenance(self.identifier, self.observe(), self.observe, True)
                 pending = copy.deepcopy(self.pending())
                 self.assertEqual(self.signatures(), [])
                 self.assertEqual(len(self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"]), int(after_stage))
@@ -1004,9 +1002,9 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
 
     def test_stale_unsigned_descriptor_keeps_scope_during_restart(self):
         with patch.object(c.transactions.Transactions, "stage", side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
-            self.controller.maintenance(self.identifier, self.refresh(), self.refresh, True)
+            self.controller.maintenance(self.identifier, self.observe(), self.observe, True)
         old = copy.deepcopy(self.pending())
-        self.rpc.checkpoint_hash = h(152)
+        self.rpc.native_hash = h(152)
         self.reload()
         self.assertIsNone(self.recover())
         self.assertEqual(self.signatures(), [])
@@ -1022,7 +1020,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.rpc.send_error = s.Error("rpc_transport_failure")
         self.assertEqual(self.maintain()["status"], "send_uncertain")
         pending = copy.deepcopy(self.pending())
-        self.rpc.send_error, self.rpc.checkpoint_hash = None, h(152)
+        self.rpc.send_error, self.rpc.native_hash = None, h(152)
         self.rpc.advance()
         self.reload()
         self.assertEqual(self.recover()["status"], "authorization_stale_reserved")
@@ -1033,30 +1031,22 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.assertEqual(self.maintain()["status"], "broadcast")
         self.assertEqual([s.uint(tx["nonce"]) for tx in self.signatures()], [0, 1])
 
-    def test_legacy_pointer_and_orphaned_reservation_are_receipt_only(self):
-        for pointed in (False, True):
-            with self.subTest(pointed=pointed):
-                self.start("legacy-" + str(pointed))
-                manager = c.transactions.Transactions(self.f["settings"], self.config["transaction_policy"], self.rpc,
-                                                       self.wallet, self.rpc.store, lambda: self.rpc.now)
-                legacy = manager.stage(self.refresh())
-                self.rpc.operation_id = legacy
-                self.assertEqual(manager.step(legacy, True, lambda *args: True)["status"], "broadcast")
-                self.controller.state["operations"][self.identifier]["maintenance"] = legacy if pointed else None
-                self.controller.save()
-                self.rpc.checkpoint_hash = h(152)
-                self.rpc.advance()
-                self.reload()
-                result = self.recover() if pointed else self.maintain()
-                self.assertEqual(result["status"], "authorization_stale_reserved")
-                self.assertEqual(len(self.signatures()), 1)
-                self.assertEqual(len(self.rpc.sent), 1)
-                self.confirm()
-                retained = copy.deepcopy(self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"][legacy])
-                self.assertEqual(self.maintain()["status"], "broadcast")
-                self.assertNotEqual(self.pending()["operation_id"], legacy)
-                self.assertEqual(self.rpc.store.load(self.f["settings"], self.config["transaction_policy"])["operations"][legacy], retained)
-                self.assertEqual(len(self.signatures()), 2)
+    def test_orphaned_reserved_native_observation_recovers_original_descriptor(self):
+        self.assertEqual(self.maintain()["status"], "broadcast")
+        reserved = copy.deepcopy(self.pending())
+        self.controller.state["operations"][self.identifier]["maintenance"] = None
+        self.controller.save()
+        self.rpc.native_batch += 1
+        self.rpc.advance()
+        self.reload()
+        self.assertEqual(self.maintain()["status"], "authorization_stale_reserved")
+        self.assertEqual(self.pending(), reserved)
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.confirm()
+        self.assertEqual(self.maintain()["status"], "broadcast")
+        self.assertNotEqual(self.pending()["operation_id"], reserved["operation_id"])
+        self.assertEqual(len(self.signatures()), 2)
 
     def test_revert_retry_descriptor_survives_restart_and_reorg_blocks_new_nonce(self):
         self.maintain()
@@ -1068,7 +1058,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.assertIsNone(self.recover())
         self.rpc.receipt = None
         with patch.object(c.transactions.Transactions, "stage", side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
-            self.controller.maintenance(self.identifier, self.refresh(), self.refresh, True)
+            self.controller.maintenance(self.identifier, self.observe(), self.observe, True)
         second = copy.deepcopy(self.pending())
         self.assertEqual(second["invocation"]["generation"], 1)
         self.assertEqual(first["invocation"]["scope"], second["invocation"]["scope"])

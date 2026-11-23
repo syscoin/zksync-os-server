@@ -34,7 +34,7 @@ from runpod import Store, atomic_json, read_private_json
 def configuration(value):
     s.exact(value, ("schema_version", "keeper", "endpoint", "native_auth_file", "release_file",
                     "native_lease_seconds", "dispatcher_dir", "roster_dir", "operator_inboxes",
-                    "priority_witness_dir", "publication_dir", "sequencer_wallet_file", "relay_wallet_file",
+                    "publication_dir", "sequencer_wallet_file", "relay_wallet_file",
                     "transaction_policy", "relay_policy", "sequencer_beneficiary", "poll_interval_seconds"))
     s.require(value["schema_version"] == 1, "unsupported_coordinator_configuration")
     k.configuration(value["keeper"])
@@ -42,7 +42,7 @@ def configuration(value):
     s.require(settings["coordinator"] != s.ZERO_ADDRESS and pins["expected_operator"] == settings["sequencer"],
               "coordinator_requires_sequencer_keeper")
     sentry.endpoint_url(value["endpoint"])
-    for name in ("dispatcher_dir", "roster_dir", "priority_witness_dir", "publication_dir"):
+    for name in ("dispatcher_dir", "roster_dir", "publication_dir"):
         io.directory(value[name])
     for name in ("native_auth_file", "release_file", "sequencer_wallet_file", "relay_wallet_file"):
         s.require(Path(value[name]).is_absolute(), "absolute_coordinator_file_required")
@@ -57,7 +57,7 @@ def configuration(value):
         io.directory(path)
     for name in ("transaction_policy", "relay_policy"):
         r.policy(value[name])
-        for pin in ("gate_code_hash", "coordinator_code_hash", "priority_guard_code_hash"):
+        for pin in ("gate_code_hash", "coordinator_code_hash"):
             s.require(value[name][pin] == pins[pin], "transaction_code_pin_mismatch")
     s.require(value["transaction_policy"]["account"] == settings["sequencer"]
               and value["relay_policy"]["account"] != settings["sequencer"], "separate_relay_nonce_account_required")
@@ -551,19 +551,15 @@ class Coordinator:
         def preflight(original, head, anchor):
             try:
                 action = original["action"]
-                # Legacy rows did not bind a checkpoint. A reserved nonce remains receipt-only recovery.
+                # Legacy rows did not bind a native observation. A reserved nonce remains receipt-only recovery.
                 if action in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
                     return False
                 if action in ("openPackage", "repairPackage"):
                     call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()),
                                           "open" if action == "openPackage" else "repair",
                                           enrollment=self.enrollment_for(bundle["request"]))
-                elif action == "refreshPriorityCheckpoint":
-                    call = k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
-                elif action == "publishPrefixWitness":
-                    work_id = r.call_word(self.rpc, self.settings["proof_gate"], "priorityWorkId()", anchor, kind="bytes32")
-                    witness = io.private_json(Path(self.config["priority_witness_dir"]) / (work_id[2:] + ".json"))
-                    call = k.prefix_call(self.keeper, self.rpc, evidence, witness, int(self.clock()))
+                elif action == "observeNativeSettlement":
+                    call = k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()))
                 else:
                     return False
                 return call["transaction"] == original["transaction"] and call["anchor"]["hash"] == head["hash"]
@@ -637,18 +633,17 @@ class Coordinator:
             if entry["unsigned_transaction"] is None and entry["raw_transaction"] is None and entry["status"] not in r.TERMINAL:
                 bundle = io.private_json(self.directory(identifier) / op.get("bundle_file", "bundle.json"))
                 s.require(io.digest(bundle) == op["bundle"], "frozen_bundle_changed")
-                if self.refresh_report(identifier, bundle, False) != bundle:
-                    # Observe existing acceptance first; retiring an unreserved artifact must
-                    # not lose a confirmed handoff or release an uncertain wallet nonce.
-                    relay.step(op["relay"], False)
-                    if entry["acceptance"] is None and entry["receipt"] is None:
-                        if not execute:
-                            return {"next_action": "would_retire_expired_unsigned_report", "operation_id": op["relay"]}
-                        entry["status"] = "stale_unsigned"
-                        relay.save(True)
-                        op["relay"] = None
-                        self.save()
-                        return None
+                preview = relay.step(op["relay"], False)
+                if (entry["acceptance"] is None and entry["receipt"] is None
+                        and preview["context"]["reason"] != "range_already_proven"
+                        and self.refresh_report(identifier, bundle, False) != bundle):
+                    if not execute:
+                        return {"next_action": "would_retire_expired_unsigned_report", "operation_id": op["relay"]}
+                    entry["status"] = "stale_unsigned"
+                    relay.save(True)
+                    op["relay"] = None
+                    self.save()
+                    return None
             result = relay.step(op["relay"], execute)
             if result["status"] in ("accepted", "accepted_elsewhere"):
                 s.require(op["publication"] is not None, "native_publication_missing")
@@ -666,30 +661,78 @@ class Coordinator:
                 return None
             return result
 
+    def observe_native(self, execute):
+        def observation():
+            return k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()))
+
+        pending = self.state.get("native_observation")
+        if not pending and not execute:
+            return {"next_action": "would_observe_native_settlement"}
+        manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
+            self.signing_wallet() if execute else None, transactions.Store(self.store.root / "transactions"), self.clock)
+        if not pending:
+            pending = manager.plan(observation())
+            self.state["native_observation"] = pending
+            self.save()
+        operation_id = self.stage_maintenance(pending, manager, execute)
+        if operation_id not in manager.state["operations"]:
+            return {"next_action": "would_stage_maintenance", "operation_id": operation_id}
+
+        def preflight(original, head, anchor):
+            if original["action"] != "observeNativeSettlement":
+                return False
+            try:
+                current = observation()
+            except s.Error:
+                return False
+            return current["transaction"] == original["transaction"] and current["anchor"]["hash"] == head["hash"]
+
+        result = manager.step(operation_id, execute, preflight)
+        entry = manager.state["operations"][operation_id]
+        if execute and (result["status"] in transactions.TERMINAL
+                        or result["status"] == "stale_unsigned" and entry["unsigned_transaction"] is None):
+            self.state.pop("native_observation", None)
+            self.save()
+        return result
+
     def step(self, execute=False):
         s.require(type(execute) is bool, "invalid_execute_flag")
         identifier = self.state["active"]
+        if self.state.get("native_observation"):
+            return self.observe_native(execute)
         if identifier is not None:
             result = self.relay(identifier, execute)
             if result is not None:
+                if (result.get("context") or {}).get("reason") == "range_already_proven":
+                    head, _ = r.anchored_head(self.rpc, self.settings, self.config["transaction_policy"], int(self.clock()))
+                    if transactions.observation_scope(self.rpc, self.settings, head) is not None:
+                        return self.observe_native(execute)
                 return result
         chain, roster = self.status()
+        if chain["observed_native_batch"] + 1 < chain["next_native_batch"]:
+            return self.observe_native(execute)
         s.require(chain["mode"] == "service" and chain["service_active"], "service_activation_required")
         if identifier is None:
             if not execute:
                 return {"next_action": "would_pick_native_snark", "chain": chain}
             identifier = self.reserve()
         op, directory = self.state["operations"][identifier], self.directory(identifier)
+        payload_path = directory / "payload.json"
+        if payload_path.exists():
+            # A restart may have persisted the pick just before its old evidence became unavailable.
+            payload = io.private_json(payload_path, io.MAX_PAYLOAD)
+            if chain["next_native_batch"] > payload["from_batch_number"]:
+                if execute:
+                    op["status"], self.state["active"] = "superseded", None
+                    self.save()
+                return {"next_action": "range_already_proven" if chain["next_native_batch"] > payload["to_batch_number"]
+                        else "native_advance_requires_new_range"}
         if op["lease"] is None or op["status"] == "picking":
             result = self.acquire(identifier, execute)
             if result:
                 return {"next_action": result}
-        payload, evidence = io.private_json(directory / "payload.json", io.MAX_PAYLOAD), io.private_json(directory / "evidence.json")
-        if chain["next_native_batch"] > payload["to_batch_number"]:
-            if execute:
-                op["status"], self.state["active"] = "superseded", None
-                self.save()
-            return {"next_action": "range_already_proven"}
+        payload = io.private_json(payload_path, io.MAX_PAYLOAD)
+        evidence = io.private_json(directory / "evidence.json")
         s.require(chain["next_native_batch"] == payload["from_batch_number"], "native_frontier_does_not_match_retained_lease")
         bundle = self.snapshot(identifier, chain, roster, execute)
         if bundle is None:
@@ -715,21 +758,7 @@ class Coordinator:
                                              enrollment=self.enrollment_for(bundle["request"]))
             return self.maintenance(identifier, produce(), produce, execute)
         request = k.rebind_request(self.settings, bundle["request"], chain, roster)
-        prepared = self.prepare(request, evidence, payload)
-        priority = r.priority_context(self.rpc, self.settings, {**self.keeper["policy"], "min_turn_seconds": 1},
-                     {"sidecar": prepared}, chain["head"], {"blockHash": chain["head"]["hash"], "requireCanonical": True})
-        r.check_anchor(self.rpc, self.settings, chain["head"])
-        if priority["reason"] == "priority_checkpoint_needs_refresh":
-            produce = lambda: k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
-            return self.maintenance(identifier, produce(), produce, execute)
-        if priority["reason"] == "priority_prefix_witness_missing":
-            witness_path = Path(self.config["priority_witness_dir"]) / (priority["work_id"][2:] + ".json")
-            if not witness_path.exists():
-                return {"next_action": "await_authenticated_priority_witness", "work_id": priority["work_id"]}
-            witness = io.private_json(witness_path)
-            produce = lambda: k.prefix_call(self.keeper, self.rpc, evidence, witness, int(self.clock()))
-            return self.maintenance(identifier, produce(), produce, execute)
-        s.require(priority["reason"] == "ready", priority["reason"])
+        self.prepare(request, evidence, payload)
         result = self.result(identifier, execute)
         if result:
             return {"next_action": result}

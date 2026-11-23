@@ -55,7 +55,7 @@ def publication_work(root, settings, limits, evidence, proof):
         if child.name.startswith(".") or not child.is_dir() or child.is_symlink():
             continue
         path = child / "work.json"
-        if not path.exists():
+        if not path.exists() or (child / "superseded.json").exists():
             continue
         io.directory(child)
         work = io.private_json(path, 2 * 1024 * 1024)

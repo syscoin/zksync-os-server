@@ -432,8 +432,18 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         )
         .await
         .unwrap();
-    assert!(native.covered_service_commands(1).await.unwrap().is_empty());
-    let covered = native.covered_service_commands(2).await.unwrap();
+    assert!(
+        native
+            .intersecting_service_commands(0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        native.intersecting_service_commands(1).await.unwrap().len(),
+        1
+    );
+    let covered = native.intersecting_service_commands(2).await.unwrap();
     assert_eq!(covered.len(), 1);
     let command = &covered[0];
     let work = Work::new(command, &publication).unwrap();
@@ -496,7 +506,7 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
             .journal
             .work_for_batch(&command.as_ref()[0], &publication)
             .unwrap(),
-        work
+        Some(work)
     );
     let mut wrong = create_test_batch_envelope_with_data(
         1,
@@ -540,5 +550,104 @@ async fn restart_cannot_lower_the_frozen_confirmation_depth() {
                 .unwrap()
                 .is_none()
         );
+    }
+}
+
+#[tokio::test]
+async fn native_observations_authorize_only_the_matching_batch() {
+    // In all cases native batches 1 and 2 are proved. Batch 2 was service-accepted
+    // in the same settlement block as the first observation, so it still needs its receipt.
+    for (number, initial, matching_hash) in [
+        (1, 0, true),
+        (2, 0, true),
+        (1, 0, false),
+        (1, 1, true),
+        (2, 1, true),
+    ] {
+        let asserter = Asserter::new();
+        let (publication, work, _, _, _temporary) = fixture(&asserter, true).await;
+        let native = NativeBatch::from_work(&work, number).unwrap();
+        let (_, batches, _) =
+            <(StoredBatch, Vec<StoredBatch>, Vec<U256>)>::abi_decode_params_validate(
+                &work.proof_data[1..],
+            )
+            .unwrap();
+        let first_hash = keccak256(batches[0].abi_encode());
+        let safe_block = block(1, B256::repeat_byte(1));
+        let frontier = 2u64;
+
+        asserter.push_success(&Bytes::from(frontier.abi_encode()));
+        asserter.push_success(&block(3, B256::repeat_byte(3)));
+        asserter.push_success(&safe_block);
+        asserter.push_success(&Bytes::from(U256::from(frontier).abi_encode()));
+        asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
+        asserter.push_success(&Bytes::from_static(b"gate"));
+        for result in [
+            work.chain_address.abi_encode(),
+            work.execution_chain_id.abi_encode(),
+            work.policy_hash.abi_encode(),
+            work.timelock.abi_encode(),
+            frontier.abi_encode(),
+            initial.abi_encode(),
+        ] {
+            asserter.push_success(&Bytes::from(result));
+        }
+        if number > initial {
+            // Gate deployment at block one pins the binary search to this block.
+            asserter.push_success(&U64::from(1));
+            asserter.push_success(&Bytes::from_static(b"gate"));
+            asserter.push_success(&Bytes::new());
+            asserter.push_success(&safe_block);
+            if initial == 0 {
+                let observation = IZkSysProofGateV1::NativeSettlementAdvanced {
+                    from: 1,
+                    to: 1,
+                    nativeBatchHash: first_hash,
+                }
+                .encode_log_data();
+                asserter.push_success(&json!([{"address":work.gate, "data":observation.data,
+                    "topics":observation.topics(),"blockNumber":"0x1","blockHash":safe_block.header.hash,
+                    "logIndex":"0x0","transactionIndex":"0x0","transactionHash":B256::repeat_byte(17),"removed":false}]));
+                if number == 1 {
+                    asserter.push_success(&Bytes::from(first_hash.abi_encode()));
+                }
+            } else {
+                asserter.push_success(&json!([]));
+            }
+        }
+        if number == 1 {
+            let stored = if matching_hash {
+                first_hash
+            } else {
+                B256::ZERO
+            };
+            asserter.push_success(&Bytes::from(stored.abi_encode()));
+            if matching_hash {
+                asserter.push_success(&safe_block);
+                asserter.push_success(&safe_block);
+                asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
+            }
+        }
+        let result = native.confirmed_gap(&publication).await;
+        match (number, matching_hash) {
+            (1, true) => assert_eq!(
+                result.unwrap(),
+                NativeObservation::Confirmed(safe_block.header.hash)
+            ),
+            (1, false) => assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("differs from local proof")
+            ),
+            _ => assert_eq!(result.unwrap(), NativeObservation::NoGap),
+        }
+        asserter.push_success(&Bytes::from(0u64.abi_encode()));
+        assert_eq!(
+            native.confirmed_gap(&publication).await.unwrap(),
+            NativeObservation::Pending
+        );
+        let (_, directory, _) = publication.journal.stage(&work, 256).unwrap();
+        assert!(!directory.join("confirmed.json").exists());
     }
 }
