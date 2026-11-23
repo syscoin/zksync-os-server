@@ -109,6 +109,22 @@ administrator may be the aliased L1 ChainAdmin, so use the existing authorized
 L1-to-Gateway administrator route and verify each finalized Gateway operation.
 No new cutover contract is required.
 
+## Commitment-time priority admission candidate
+
+The [native Era overlay](../patches/era-contracts-syscoin-v1-priority-admission.patch)
+adds a policy callback before the diamond records each V32 commitment. It binds
+the callback to the exact stored batch hash, priority count and rolling hash.
+The existing ValidatorTimelock address and commit selectors are preserved.
+The policy is unset by default. Installation requires the chain admin, matching
+committed, verified and executed frontiers, and a drained native priority queue.
+The candidate rejects coexistence with native permissionless Priority Mode.
+
+The full V1 cutover also requires the admission policy and producer to agree on
+an authenticated eligibility checkpoint before batch formation. Proof opening
+and retries must use the admitted batch commitments. Qualify the combined Era
+build, generated facet inventory and both lanes together before installing the
+policy.
+
 ## Priority checkpoints and root message sink
 
 `deploy_component.py` provides the preceding stages for the NEVM priority

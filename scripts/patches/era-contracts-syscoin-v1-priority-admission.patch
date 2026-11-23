@@ -1,0 +1,307 @@
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/ZKChainStorage.sol b/l1-contracts/contracts/state-transition/chain-deps/ZKChainStorage.sol
+index ce0e2e1c77f833583c528941c103c4663c76a752..d6e69cd9cd717f940ddcf75ad07ec7fe798a2ca1 100644
+--- a/l1-contracts/contracts/state-transition/chain-deps/ZKChainStorage.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/ZKChainStorage.sol
+@@ -267,3 +267,5 @@ struct ZKChainStorage {
+     /// @dev STORAGE SLOT: 68
+     uint64 zksyncOSMaxTxGasLimit;
++    /// @dev Opt-in zkSYS priority admission policy. Zero preserves the native commitment flow.
++    address syscoinPriorityCommitPolicy;
+ }
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
+index 525493577b11e197bc261e47da0230434e049d55..a02052278c8fa591e7b119a781270735a1077647 100644
+--- a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
+@@ -5,4 +5,9 @@ pragma solidity 0.8.28;
+ import {IAdmin} from "../../chain-interfaces/IAdmin.sol";
+ import {IMailbox} from "../../chain-interfaces/IMailbox.sol";
++import {
++    ISyscoinPriorityCommitPolicy,
++    InvalidSyscoinPriorityCommitPolicy,
++    SyscoinPriorityCommitPolicyConflictsWithPriorityMode
++} from "../../chain-interfaces/ISyscoinPriorityCommitPolicy.sol";
+ import {Diamond} from "../../libraries/Diamond.sol";
+ import {PRIORITY_TX_MAX_GAS_LIMIT} from "../../../common/PriorityGasLimits.sol"; // SYSCOIN: Separate priority and upgrade gas budgets.
+@@ -156,4 +161,27 @@ contract AdminFacet is ZKChainBase, IAdmin {
+     }
+
++    /// @inheritdoc IAdmin
++    function setSyscoinPriorityCommitPolicy(address _policy) external onlyAdmin onlySettlementLayer onlyZKsyncOS {
++        // The permissionless validator can rewind verified batches and prove without the V1 gate.
++        if (s.priorityModeInfo.canBeActivated || s.priorityModeInfo.activated) {
++            revert SyscoinPriorityCommitPolicyConflictsWithPriorityMode();
++        }
++        if (
++            s.syscoinPriorityCommitPolicy != address(0) || _policy.code.length == 0
++                || s.totalBatchesCommitted != s.totalBatchesVerified || s.totalBatchesVerified != s.totalBatchesExecuted
++                || _isPriorityQueueActive() || s.priorityTree.getFirstUnprocessedPriorityTx() != _getTotalPriorityTxs()
++                || ISyscoinPriorityCommitPolicy(_policy).chain() != address(this)
++        ) {
++            revert InvalidSyscoinPriorityCommitPolicy();
++        }
++        s.syscoinPriorityCommitPolicy = _policy;
++        emit SyscoinPriorityCommitPolicyInstalled(_policy);
++    }
++
++    /// @inheritdoc IAdmin
++    function getSyscoinPriorityCommitPolicy() external view returns (address) {
++        return s.syscoinPriorityCommitPolicy;
++    }
++
+     /// @inheritdoc IAdmin
+     function setPorterAvailability(bool _zkPorterIsAvailable) external onlyChainTypeManager {
+@@ -419,4 +447,7 @@ contract AdminFacet is ZKChainBase, IAdmin {
+     /// @inheritdoc IAdmin
+     function permanentlyAllowPriorityMode() external onlyAdmin onlySettlementLayer onlyL1 onlyZKsyncOS {
++        if (s.syscoinPriorityCommitPolicy != address(0)) {
++            revert SyscoinPriorityCommitPolicyConflictsWithPriorityMode();
++        }
+         if (s.priorityModeInfo.canBeActivated) {
+             revert PriorityModeAlreadyAllowed();
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
+index a73e7f3bb2f4c72a7e1a7dc7987c5b41cc5b696e..4f3e3c7158a14e2865c951417b34aa04df3b3bd3 100644
+--- a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
+@@ -47,4 +47,5 @@ import {UncheckedMath} from "../../../common/libraries/UncheckedMath.sol";
+ import {UnsafeBytes} from "../../../common/libraries/UnsafeBytes.sol";
+ import {StoredBatchHashing} from "../StoredBatchHashing.sol";
++import {ISyscoinPriorityCommitPolicy} from "../../chain-interfaces/ISyscoinPriorityCommitPolicy.sol";
+ import {
+     L2_BOOTLOADER_ADDRESS,
+@@ -321,7 +322,15 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+             );
+
+-            s.storedBatchHashes[_lastCommittedBatchData.batchNumber] = StoredBatchHashing.hashStoredBatchInfo(
+-                _lastCommittedBatchData
+-            );
++            bytes32 storedBatchHash = StoredBatchHashing.hashStoredBatchInfo(_lastCommittedBatchData);
++            address priorityPolicy = s.syscoinPriorityCommitPolicy;
++            if (priorityPolicy != address(0)) {
++                ISyscoinPriorityCommitPolicy(priorityPolicy).recordCommit(
++                    _lastCommittedBatchData.batchNumber,
++                    storedBatchHash,
++                    _lastCommittedBatchData.numberOfLayer1Txs,
++                    _lastCommittedBatchData.priorityOperationsHash
++                );
++            }
++            s.storedBatchHashes[_lastCommittedBatchData.batchNumber] = storedBatchHash;
+             emit BlockCommit(
+                 _lastCommittedBatchData.batchNumber,
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/ZKChainBase.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/ZKChainBase.sol
+index ae087da13f182fd67a4f858c971815475a4143e7..755d991a0aa683cd40a2b0445bb207a870055ff7 100644
+--- a/l1-contracts/contracts/state-transition/chain-deps/facets/ZKChainBase.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/facets/ZKChainBase.sol
+@@ -37,4 +37,8 @@ import {CantRevertExecutedBatch, RevertedBatchNotAfterNewLastBatch} from "../../
+ import {IAdmin} from "../../chain-interfaces/IAdmin.sol";
+ import {IExecutor} from "../../chain-interfaces/IExecutor.sol";
++import {
++    ISyscoinPriorityCommitPolicy,
++    CannotRevertVerifiedSyscoinPriorityBatch
++} from "../../chain-interfaces/ISyscoinPriorityCommitPolicy.sol";
+ import {StoredBatchHashing} from "../StoredBatchHashing.sol";
+
+@@ -334,4 +338,13 @@ contract ZKChainBase is ReentrancyGuard {
+         }
+
++        address priorityPolicy = s.syscoinPriorityCommitPolicy;
++        if (priorityPolicy != address(0) && _newLastBatch < s.totalBatchesCommitted) {
++            // V1 has already advanced its verified cursor and wrapper parent past verified batches.
++            if (_newLastBatch < s.totalBatchesVerified) {
++                revert CannotRevertVerifiedSyscoinPriorityBatch();
++            }
++            ISyscoinPriorityCommitPolicy(priorityPolicy).recordRevert(_newLastBatch);
++        }
++
+         s.precommitmentForTheLatestBatch = DEFAULT_PRECOMMITMENT_FOR_THE_LAST_BATCH;
+
+diff --git a/l1-contracts/contracts/state-transition/chain-interfaces/IAdmin.sol b/l1-contracts/contracts/state-transition/chain-interfaces/IAdmin.sol
+index 38a475c0eec85e665efecdc5661457175170c992..5e47e552245be42827cded32122f3e54f9d9db13 100644
+--- a/l1-contracts/contracts/state-transition/chain-interfaces/IAdmin.sol
++++ b/l1-contracts/contracts/state-transition/chain-interfaces/IAdmin.sol
+@@ -43,4 +43,12 @@ interface IAdmin is IZKChainBase, IChainUpgrader {
+     function setZKsyncOSMaxTxGasLimit(uint64 _newMaxTxGasLimit) external;
+
++    /// @notice Installs the zkSYS priority admission policy once at a drained native settlement frontier.
++    function setSyscoinPriorityCommitPolicy(address _policy) external;
++
++    /// @notice Returns the installed zkSYS priority admission policy, or zero for ordinary native settlement.
++    function getSyscoinPriorityCommitPolicy() external view returns (address);
++
++    event SyscoinPriorityCommitPolicyInstalled(address indexed policy);
++
+     /// @notice Change the fee params for L1->L2 transactions
+     /// @param _newFeeParams The new fee params
+diff --git a/l1-contracts/contracts/state-transition/chain-interfaces/ISyscoinPriorityCommitPolicy.sol b/l1-contracts/contracts/state-transition/chain-interfaces/ISyscoinPriorityCommitPolicy.sol
+new file mode 100644
+index 0000000000000000000000000000000000000000..233f43f73802e46abc30b0470a701452de8eabbb
+--- /dev/null
++++ b/l1-contracts/contracts/state-transition/chain-interfaces/ISyscoinPriorityCommitPolicy.sol
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.21;
++
++error InvalidSyscoinPriorityCommitPolicy();
++error SyscoinPriorityCommitPolicyConflictsWithPriorityMode();
++error CannotRevertVerifiedSyscoinPriorityBatch();
++
++/// @notice Optional zkSYS priority admission for a specific native settlement diamond.
++interface ISyscoinPriorityCommitPolicy {
++    function chain() external view returns (address);
++
++    /// @notice Called by the settlement diamond before it stores the batch hash and advances its frontier.
++    function recordCommit(uint64 batchNumber, bytes32 storedHash, uint256 priorityCount, bytes32 priorityHash) external;
++
++    /// @notice Called by the settlement diamond before it rewinds its unverified commitment frontier.
++    function recordRevert(uint256 newLastBatch) external;
++}
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
+index 20fc395c6a98cfeff2c8156fc8bc05da497eec87..a3abade4cb9ded38871120403203e4661e34b183 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
+@@ -8,4 +8,10 @@ import {ExecutorTest} from "./_Executor_Shared.t.sol";
+
+ import {CommitBatchInfoZKsyncOS} from "contracts/state-transition/chain-interfaces/ICommitter.sol";
++import {
++    ISyscoinPriorityCommitPolicy,
++    InvalidSyscoinPriorityCommitPolicy,
++    SyscoinPriorityCommitPolicyConflictsWithPriorityMode
++} from "contracts/state-transition/chain-interfaces/ISyscoinPriorityCommitPolicy.sol";
++import {GettersFacet} from "contracts/state-transition/chain-deps/facets/Getters.sol";
+ import {L2DACommitmentScheme, TESTNET_COMMIT_TIMESTAMP_NOT_OLDER} from "contracts/common/Config.sol";
+ import {
+@@ -20,5 +26,6 @@ import {
+     InvalidBlockRange,
+     L2TimestampTooBig,
+-    TimeNotReached
++    TimeNotReached,
++    Unauthorized
+ } from "contracts/common/L1ContractErrors.sol";
+ import {
+@@ -100,4 +107,43 @@ contract SyscoinBitcoinDAWrong {
+ }
+
++contract SyscoinPriorityCommitRecorder is ISyscoinPriorityCommitPolicy {
++    error CommitRejected();
++
++    address public immutable chain;
++    bool public rejectCommit;
++    uint256 public frontierAtCommit;
++    bytes32 public hashAtCommit;
++    uint64 public batchNumber;
++    bytes32 public storedHash;
++    uint256 public priorityCount;
++    bytes32 public priorityHash;
++    uint256 public frontierAtRevert;
++    uint256 public keptBatch;
++
++    constructor(address _chain, bool _rejectCommit) {
++        chain = _chain;
++        rejectCommit = _rejectCommit;
++    }
++
++    function recordCommit(uint64 _batchNumber, bytes32 _storedHash, uint256 _priorityCount, bytes32 _priorityHash)
++        external
++    {
++        require(msg.sender == chain);
++        if (rejectCommit) revert CommitRejected();
++        frontierAtCommit = GettersFacet(chain).getTotalBatchesCommitted();
++        hashAtCommit = GettersFacet(chain).storedBatchHash(_batchNumber);
++        batchNumber = _batchNumber;
++        storedHash = _storedHash;
++        priorityCount = _priorityCount;
++        priorityHash = _priorityHash;
++    }
++
++    function recordRevert(uint256 _newLastBatch) external {
++        require(msg.sender == chain);
++        frontierAtRevert = GettersFacet(chain).getTotalBatchesCommitted();
++        keptBatch = _newLastBatch;
++    }
++}
++
+ contract CommittingTest is ExecutorTest {
+     function isZKsyncOS() internal pure override returns (bool) {
+@@ -153,4 +199,65 @@ contract CommittingTest is ExecutorTest {
+     }
+
++    function test_RecordPriorityCommitAndRevertWithNativeFrontier() public {
++        SyscoinPriorityCommitRecorder policy = new SyscoinPriorityCommitRecorder(address(admin), false);
++        vm.prank(owner);
++        admin.setSyscoinPriorityCommitPolicy(address(policy));
++        CommitBatchInfoZKsyncOS memory batch = _canonicalSyscoinBatch();
++        batch.numberOfLayer1Txs = 2;
++        batch.priorityOperationsHash = keccak256("priority");
++        _commitCanonicalSyscoinBatch(batch, "");
++
++        assertEq(policy.frontierAtCommit(), 0);
++        assertEq(policy.hashAtCommit(), bytes32(0));
++        assertEq(policy.batchNumber(), batch.batchNumber);
++        assertEq(policy.storedHash(), getters.storedBatchHash(batch.batchNumber));
++        assertEq(policy.priorityCount(), batch.numberOfLayer1Txs);
++        assertEq(policy.priorityHash(), batch.priorityOperationsHash);
++        assertEq(getters.getTotalBatchesCommitted(), batch.batchNumber);
++
++        vm.prank(validator);
++        executor.revertBatchesSharedBridge(address(0), 0);
++        assertEq(policy.frontierAtRevert(), batch.batchNumber);
++        assertEq(policy.keptBatch(), 0);
++        assertEq(getters.getTotalBatchesCommitted(), 0);
++    }
++
++    function test_RejectedPriorityAdmissionLeavesNativeCommitUnchanged() public {
++        SyscoinPriorityCommitRecorder policy = new SyscoinPriorityCommitRecorder(address(admin), true);
++        vm.prank(owner);
++        admin.setSyscoinPriorityCommitPolicy(address(policy));
++        _commitCanonicalSyscoinBatch(
++            _canonicalSyscoinBatch(),
++            abi.encodeWithSelector(SyscoinPriorityCommitRecorder.CommitRejected.selector)
++        );
++        assertEq(getters.getTotalBatchesCommitted(), 0);
++        assertEq(getters.storedBatchHash(1), bytes32(0));
++    }
++
++    function test_OnlyAdminCanInstallPriorityAdmissionAtDrainedFrontier() public {
++        SyscoinPriorityCommitRecorder policy = new SyscoinPriorityCommitRecorder(address(admin), false);
++        vm.expectRevert(abi.encodeWithSelector(Unauthorized.selector, randomSigner));
++        vm.prank(randomSigner);
++        admin.setSyscoinPriorityCommitPolicy(address(policy));
++
++        _commitCanonicalSyscoinBatch(_canonicalSyscoinBatch(), "");
++        vm.expectRevert(InvalidSyscoinPriorityCommitPolicy.selector);
++        vm.prank(owner);
++        admin.setSyscoinPriorityCommitPolicy(address(policy));
++        assertEq(admin.getSyscoinPriorityCommitPolicy(), address(0));
++    }
++
++    function test_InstalledPriorityAdmissionRejectsEnablingNativePriorityMode() public {
++        SyscoinPriorityCommitRecorder policy = new SyscoinPriorityCommitRecorder(address(admin), false);
++        vm.prank(owner);
++        admin.setSyscoinPriorityCommitPolicy(address(policy));
++
++        vm.chainId(1);
++        vm.expectRevert(SyscoinPriorityCommitPolicyConflictsWithPriorityMode.selector);
++        vm.prank(owner);
++        admin.permanentlyAllowPriorityMode();
++        assertEq(admin.getSyscoinPriorityCommitPolicy(), address(policy));
++    }
++
+     function test_RevertWhen_CommittingWithWrongL2DACommitmentScheme() public {
+         CommitBatchInfoZKsyncOS memory batch = _canonicalSyscoinBatch();
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
+index d61e22d61d366b60fe3e80bad86382c970dee682..a4a91cbc337dd422e44ceb007ef71bcae630b5b3 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
+@@ -89,5 +89,5 @@ contract ExecutorTest is UtilsCallMockerTest {
+
+     function getAdminSelectors() private view returns (bytes4[] memory) {
+-        bytes4[] memory selectors = new bytes4[](15);
++        bytes4[] memory selectors = new bytes4[](17);
+         uint256 i = 0;
+         selectors[i++] = admin.setPendingAdmin.selector;
+@@ -106,4 +106,6 @@ contract ExecutorTest is UtilsCallMockerTest {
+         selectors[i++] = admin.permanentlyAllowPriorityMode.selector;
+         selectors[i++] = admin.activatePriorityMode.selector;
++        selectors[i++] = admin.setSyscoinPriorityCommitPolicy.selector;
++        selectors[i++] = admin.getSyscoinPriorityCommitPolicy.selector;
+         return selectors;
+     }
