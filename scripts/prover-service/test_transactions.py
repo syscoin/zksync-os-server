@@ -249,6 +249,13 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual([s.uint(args[0]["nonce"]) for _, args in self.signatures()], [0, 1])
 
     def test_deferred_plan_rechecks_canonical_anchor_and_recovers_reserved_call_first(self):
+        before = copy.deepcopy(self.rpc.head)
+        self.rpc.advance()
+        current = copy.deepcopy(self.rpc.head)
+        for inconsistent in (before, {**current, "hash": h(208)}):
+            with self.subTest(head=inconsistent), patch.object(r, "anchored_head",
+                    side_effect=[(current, {}), (inconsistent, {})]), self.assertRaisesRegex(s.Error, "rpc_reorg_or_chain_change"):
+                self.runner().plan(lambda head: self.fail("unstable head must not prepare a call"))
         def reorg(head):
             call = self.observation()
             self.rpc.reorg = True

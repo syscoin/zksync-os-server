@@ -116,6 +116,8 @@ class Transactions:
 
     def _head_after_history(self, previous):
         head, anchor = r.anchored_head(self.rpc, self.settings, self.limits, int(self.clock()))
+        s.require(head["hash"] == previous["hash"] or s.uint(head["number"]) > s.uint(previous["number"]),
+                  "rpc_reorg_or_chain_change")
         r.check_anchor(self.rpc, self.settings, previous)
         return head, anchor
 
