@@ -9,6 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, ReceiptAssert};
+use zksync_os_integration_tests::component_replay::verify_pending_replay;
 use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, test_multisetup};
 use zksync_os_replay_archive::{
@@ -203,6 +204,12 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
         .await
         .context("failed to join recovered WAL verification shutdown wait")?;
 
+    let verified_anchor = verify_pending_replay(stopped.config()).await?;
+    assert_eq!(
+        verified_anchor,
+        Some((latest_block_number, latest_block_hash)),
+        "the encrypted restore must verify its own selected archive anchor"
+    );
     let mut restarted = stopped.start().await?;
     // SYSCOIN: An archived tail can belong to a batch that shutdown had not sealed yet. Waiting
     // for that tail to finalize before producing another block deadlocks the test; repository
