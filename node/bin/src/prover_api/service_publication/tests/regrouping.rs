@@ -207,6 +207,19 @@ async fn regrouping_refuses_unconfirmed_frontier_and_preserves_service_receipt_h
     );
 }
 
+async fn journaled_wrappers(
+    journal: &crate::prover_api::snark_proof_journal::SnarkProofJournal,
+    lane: &Work,
+) -> Vec<crate::prover_api::snark_proof_journal::JournaledProof> {
+    let mut wrappers = Vec::new();
+    for (from, to, generation) in [(4, 5, 7), (6, 7, 8)] {
+        let wrapper = command(lane, from, to, generation);
+        let proof = wrapper.preflight_inputs().1.clone();
+        wrappers.push(journal.persist(wrapper.into(), proof).await.unwrap());
+    }
+    wrappers
+}
+
 #[tokio::test]
 async fn startup_finishes_parked_snark_unlink_after_restart_or_a_later_native_advance() {
     use crate::prover_api::{
@@ -217,29 +230,13 @@ async fn startup_finishes_parked_snark_unlink_after_restart_or_a_later_native_ad
         let asserter = Asserter::new();
         let (publication, lane, _, _, temp) = fixture(&asserter, false).await;
         let old = command(&lane, 4, 5, 7);
-        let successor = command(&lane, 6, 7, 8);
         let (journal, _) = SnarkProofJournal::open(temp.path()).await.unwrap();
-        for command in [&old, &successor] {
-            let (batches, proof) = command.preflight_inputs();
-            journal
-                .persist(batches.to_vec(), proof.clone())
-                .await
-                .unwrap();
-        }
+        journaled_wrappers(&journal, &lane).await;
         anchor(&asserter, &lane);
         publication.regroup_unproved(&old, 2).await.unwrap();
         drop(journal);
         let (journal, _) = SnarkProofJournal::open(temp.path()).await.unwrap();
-        let mut validated = Vec::new();
-        for command in [&old, &successor] {
-            let (batches, proof) = command.preflight_inputs();
-            validated.push(
-                journal
-                    .persist(batches.to_vec(), proof.clone())
-                    .await
-                    .unwrap(),
-            );
-        }
+        let validated = journaled_wrappers(&journal, &lane).await;
         anchor_at(&asserter, &lane, frontier, frontier, B256::repeat_byte(2));
         let replay = prepare_startup_replay(
             &journal,
