@@ -260,8 +260,25 @@ class DispatcherTests(unittest.TestCase):
         normalized, _ = d.enrollment_snapshot(self.f["settings"], self.f["subscriptions"], 5, self.rpc)
         self.assertEqual(normalized, self.f["subscriptions"])
         self.rpc.extra_enrolled = [omitted] * 256
-        with self.assertRaisesRegex(s.Error, "capacity"):
+        with self.assertRaisesRegex(s.Error, "duplicate_enrollment_account"):
             d.enrollment_snapshot(self.f["settings"], self.f["subscriptions"], 5, self.rpc)
+
+    def test_enrollment_rpc_pages_correlate_results_and_support_single_call_providers(self):
+        rpc = d.Rpc("https://trusted.example/", self.network)
+        args = [(self.f["settings"]["sequencer"], 5, n) for n in (0, 1)]
+        query = (self.f["settings"]["registry"], "friSubscriberAt(address,uint64,uint256)", args, h(100))
+        responses = [{"jsonrpc": "2.0", "id": i, "result": "0x" + s.word(i).hex()} for i in (1, 2)]
+        self.network.responses = [(200, {}, responses[::-1])]
+        self.assertEqual(rpc.contract_page(*query), [s.word(1), s.word(2)])
+        requests = json.loads(self.network.calls[-1][2])
+        self.assertTrue(all(item["params"][1] == {"blockHash": h(100), "requireCanonical": True}
+                            for item in requests))
+        self.network.responses.append((200, {}, [responses[0], responses[0]]))
+        with self.assertRaisesRegex(s.Error, "invalid_enrollment_rpc_page"):
+            rpc.contract_page(*query)
+        self.network.responses.extend([(200, {}, {"jsonrpc": "2.0", "id": None, "error": {"code": -32005}}),
+                                       (200, {}, responses[0]), (200, {}, {**responses[1], "id": 1})])
+        self.assertEqual(rpc.contract_page(*query), [s.word(1), s.word(2)])
 
     def test_first_bootstrap_has_no_registry_vk_pin_but_active_lane_must_have_one(self):
         self.rpc.active = False

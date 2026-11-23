@@ -5,15 +5,58 @@ import copy
 import service as s
 
 
+ENROLLMENT_PAGE_SIZE = 32
+
+
 def fixed_word(raw):
     s.require(len(raw) == 32, "invalid_rpc_word")
     return int.from_bytes(raw, "big")
 
 
+def registry_view(rpc, registry, anchor, signature, *values):
+    if hasattr(rpc, "contract"):
+        return rpc.contract(registry, signature, values, anchor)
+    return s.raw_hex(rpc.call("eth_call", [{"to": registry,
+                     "data": s.cast("calldata", signature, *map(str, values))},
+                     {"blockHash": anchor, "requireCanonical": True}]))
+
+
+def registry_page(rpc, registry, anchor, signature, arguments):
+    if hasattr(rpc, "contract_page"):
+        return rpc.contract_page(registry, signature, arguments, anchor)
+    return [registry_view(rpc, registry, anchor, signature, *args) for args in arguments]
+
+
+def eligible_subscribers(rpc, settings, period, anchor):
+    registry, sequencer = settings["registry"], settings["sequencer"]
+    count = fixed_word(registry_view(rpc, registry, anchor, "friSubscriberCount(address,uint64)", sequencer, period))
+    seen = set()
+    for start in range(0, count, ENROLLMENT_PAGE_SIZE):
+        indices = range(start, min(start + ENROLLMENT_PAGE_SIZE, count))
+        encoded = registry_page(rpc, registry, anchor, "friSubscriberAt(address,uint64,uint256)",
+                                [(sequencer, period, index) for index in indices])
+        s.require(len(encoded) == len(indices), "incomplete_enrollment_page")
+        accounts = []
+        for word in encoded:
+            s.require(len(word) == 32 and word[:12] == bytes(12), "invalid_enrollment_account")
+            account = s.nonzero("0x" + word[12:].hex(), 20)
+            s.require(account not in seen, "duplicate_enrollment_account")
+            seen.add(account)
+            accounts.append(account)
+        flags = registry_page(rpc, registry, anchor, "isEligibleFriSubscriber(address,address,uint64)",
+                              [(account, sequencer, period) for account in accounts])
+        s.require(len(flags) == len(accounts), "incomplete_enrollment_page")
+        for account, word in zip(accounts, flags):
+            eligible = fixed_word(word)
+            s.require(eligible in (0, 1), "invalid_enrollment_eligibility")
+            if eligible:
+                yield account
+
+
 def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
     s.config(settings)
     s.uint(period, 64)
-    s.require(type(subscriptions) is list and len(subscriptions) <= 256, "invalid_subscription_count")
+    s.require(type(subscriptions) is list, "invalid_subscription_count")
     s.require(rpc.call("eth_chainId", []) == settings["registry_chain_id"], "wrong_rpc_chain")
     block = (rpc.call("eth_getBlockByHash", [s.nonzero(block_hash), False]) if block_hash is not None
              else rpc.call("eth_getBlockByNumber", ["finalized", False]))
@@ -23,11 +66,7 @@ def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
     timestamp = s.uint(block["timestamp"])
     registry = settings["registry"]
     def view(signature, *values):
-        if hasattr(rpc, "contract"):
-            return rpc.contract(registry, signature, values, anchor)
-        return s.raw_hex(rpc.call("eth_call", [{"to": registry,
-                         "data": s.cast("calldata", signature, *map(str, values))},
-                         {"blockHash": anchor, "requireCanonical": True}]))
+        return registry_view(rpc, registry, anchor, signature, *values)
     s.require(view("policyHash()") == s.raw_hex(settings["policy_hash"]), "registry_policy_mismatch")
     lane = view("supportedLane(uint256)", s.uint(settings["execution_chain_id"]))
     s.require(len(lane) == 64 and lane[:32] == b"\0" * 12 + s.raw_hex(settings["chain_address"]),
@@ -50,20 +89,7 @@ def enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=None):
         s.require(period == first and timestamp < start + first * seconds, "bootstrap_window_closed")
     s.require(subscriptions or phase == "bootstrap", "empty_snapshot_requires_bootstrap")
     end = start + (period + 1) * seconds if active else start + period * seconds
-    enrolled_count = fixed_word(view("friSubscriberCount(address,uint64)", settings["sequencer"], period))
-    s.require(enrolled_count <= 256, "enrollment_exceeds_dispatcher_capacity")
-    eligible_accounts, enumerated = set(), set()
-    for index in range(enrolled_count):
-        encoded = view("friSubscriberAt(address,uint64,uint256)", settings["sequencer"], period, index)
-        s.require(len(encoded) == 32 and encoded[:12] == bytes(12), "invalid_enrollment_account")
-        account = s.nonzero("0x" + encoded[12:].hex(), 20)
-        s.require(account not in enumerated, "duplicate_enrollment_account")
-        enumerated.add(account)
-        eligible = fixed_word(view("isEligibleFriSubscriber(address,address,uint64)", account,
-                                   settings["sequencer"], period))
-        s.require(eligible in (0, 1), "invalid_enrollment_eligibility")
-        if eligible:
-            eligible_accounts.add(account)
+    eligible_accounts = set(eligible_subscribers(rpc, settings, period, anchor))
     normalized, accounts, operators = [], set(), set()
     for signed in sorted(subscriptions, key=lambda entry: entry["subscription"]["account"]):
         s.exact(signed, ("subscription", "signature"))

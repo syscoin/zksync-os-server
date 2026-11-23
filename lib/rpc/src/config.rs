@@ -70,6 +70,7 @@ impl RateLimits {
 
 #[derive(Clone, Debug)]
 pub struct EdgeDaAdmissionConfig {
+    pub max_concurrent_checks: usize,
     pub commit_tx_target: Address,
     pub rpc_url: String,
     pub rpc_user: String,

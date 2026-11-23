@@ -440,7 +440,8 @@ pick/submit API. It is opt-in (`--execute` is required), runs on the trusted
 sequencer host, and never receives wallet private keys. Keep one protected journal
 per sequencer, period, and bootstrap/service phase. Never run competing journals
 or rewind a journal from a backup: the durable cursor and per-account slots are the
-allocation authority. The adapter supports up to 256 enrolled accounts; its
+allocation authority. The adapter enumerates all registered accounts in pages of
+32 at one finalized block, then checks the complete eligible roster. Its
 commands hold an exclusive process lock. Assignment and audit history continue
 on disk within the same period identity, without a lifetime assignment count
 cutoff. Large journals migrate from JSON to an indexed SQLite store, retaining
@@ -453,7 +454,7 @@ quota. Each signed streamed audit needs its own private artifact directory with
 an `audit-events/` subdirectory; keep that complete archive with the audit JSON
 when transporting or restoring it. Auditors currently replay from genesis using
 temporary disk indexes, so CPU and I/O work grow with the epoch history; this is
-not constant-time verification. The separate 256-account enrollment bound still applies. Fair
+not constant-time verification. Fair
 allocation assumes the trusted sequencer preserves authenticated
 readiness requests and delivers its signed offers; the journal does not prove
 that a malicious sequencer has withheld neither. This is a trusted dispatcher,
@@ -469,8 +470,8 @@ The supplied account list must exactly match the on-chain FRI subscriber
 enumeration at that block after explicit membership eligibility checks.
 Removed or otherwise ineligible entries need no supplied subscription. Every
 enrolled operator must subscribe to both services (`services: 3`); there is no separate wrapper-only
-pool. The 256-account bound applies
-to enumerated registrations, including ineligible ones.
+pool. A page boundary does not end enumeration. The immutable snapshot and
+exported artifacts still need to fit the dispatcher's file-size limits.
 
 The account snapshot is fixed for that journal, so finish bootstrap enrollment
 before initializing it. A later bootstrap applicant waits for the next assessment

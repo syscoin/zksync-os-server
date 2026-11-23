@@ -41,6 +41,7 @@ class Rpc:
     def __init__(self, url, network):
         self.url = sentry.endpoint_url(url)
         self.network = network
+        self.batch_reads = True
 
     def call(self, method, params):
         status, _, raw = self.network.request(self.url, "POST", s.canonical(
@@ -57,7 +58,29 @@ class Rpc:
                                       {"blockHash": anchor, "requireCanonical": True}])
         return s.raw_hex(result)
 
-
+    def contract_page(self, address, signature, arguments, anchor):
+        if len(arguments) == 1 or not self.batch_reads:
+            return [self.contract(address, signature, values, anchor) for values in arguments]
+        block = {"blockHash": anchor, "requireCanonical": True}
+        requests = [{"jsonrpc": "2.0", "id": index, "method": "eth_call",
+                     "params": [{"to": address, "data": s.cast("calldata", signature, *map(str, values))}, block]}
+                    for index, values in enumerate(arguments, start=1)]
+        status, _, raw = self.network.request(self.url, "POST", s.canonical(requests), maximum=s.MAX_FILE)
+        response = decode(raw) if status == 200 else None
+        # Existing operators may disable JSON-RPC batches or enforce a smaller provider limit.
+        if status in (400, 413) or (type(response) is dict and type(response.get("error")) is dict
+                                   and response["error"].get("code") in (-32600, -32005, -32010, -32011)):
+            self.batch_reads = False
+            return [s.raw_hex(self.call("eth_call", item["params"])) for item in requests]
+        s.require(status == 200 and type(response) is list and len(response) == len(requests),
+                  "invalid_enrollment_rpc_page")
+        by_id = {}
+        for item in response:
+            s.require(type(item) is dict and item.get("jsonrpc") == "2.0" and type(item.get("id")) is int
+                      and 1 <= item["id"] <= len(requests) and item["id"] not in by_id
+                      and "error" not in item and "result" in item, "invalid_enrollment_rpc_page")
+            by_id[item["id"]] = s.raw_hex(item["result"])
+        return [by_id[request["id"]] for request in requests]
 
 
 def initialize(root, settings, subscriptions, period, endpoint, rpc, gateway=None):

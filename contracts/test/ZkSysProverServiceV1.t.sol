@@ -703,11 +703,9 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         service.subscribe(sub, signature, operatorSignature);
     }
 
-    function testSubscriberCapacityIsPerPeriodAndMultiPeriodEnrollmentIsAtomic() public {
-        uint256 capacity = service.MAX_FRI_SUBSCRIBERS_PER_PERIOD();
-        assertEq(capacity, 256);
+    function testPeriodEnrollmentPreservesSubscribersBeyond256() public {
         address sequencer = vm.addr(SEQUENCER_KEY);
-        for (uint256 i; i < capacity; ++i) {
+        for (uint256 i; i < 256; ++i) {
             uint256 accountKey = 10_000 + i;
             uint256 operatorKey = 20_000 + i;
             _senior(accountKey, false);
@@ -717,28 +715,14 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             bytes32 digest = service.subscriptionDigest(sub);
             service.subscribe(sub, _sign(accountKey, digest), _sign(operatorKey, digest));
         }
-        assertEq(service.friSubscriberCount(sequencer, 1), capacity);
-
         ProverSubscriptionV1 memory extra = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
         extra.lastPeriod = 1;
         bytes32 extraDigest = service.subscriptionDigest(extra);
-        bytes memory accountSignature = _sign(ALICE_KEY, extraDigest);
-        bytes memory operatorSignature = _sign(ALICE_OPERATOR_KEY, extraDigest);
-        vm.expectRevert(
-            abi.encodeWithSelector(ZkSysProverServiceRegistryV1.SubscriberCapacityReached.selector, uint64(1))
-        );
-        service.subscribe(extra, accountSignature, operatorSignature);
-
-        assertEq(service.friSubscriberCount(sequencer, 1), capacity);
-        assertEq(service.friSubscriberCount(sequencer, 0), 0);
-        assertEq(service.subscriptionAt(extra.account, sequencer, 0), bytes32(0));
-        assertEq(service.operatorAccountAt(extra.operator, 0), address(0));
-        assertEq(service.nonces(extra.account), 0);
-
-        extra.lastPeriod = 0;
-        extraDigest = service.subscriptionDigest(extra);
         service.subscribe(extra, _sign(ALICE_KEY, extraDigest), _sign(ALICE_OPERATOR_KEY, extraDigest));
         assertEq(service.friSubscriberCount(sequencer, 0), 1);
+        assertEq(service.friSubscriberCount(sequencer, 1), 257);
+        assertEq(service.friSubscriberAt(sequencer, 1, 0), vm.addr(10_000));
+        assertEq(service.friSubscriberAt(sequencer, 1, 256), extra.account);
     }
 
     function _assertUnregistered(ProverSubscriptionV1 memory sub) internal view {
