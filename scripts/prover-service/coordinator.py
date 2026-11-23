@@ -162,7 +162,8 @@ class Coordinator:
                         state.database.close()
                 if not relevant:
                     continue
-                item = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc)
+                item = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc,
+                                             reuse_local_enrollment=False)
                 lane = item.state["lanes"].get(self.keeper["lane"])
                 s.require(lane is not None and lane["settings"] == self.settings
                           and lane["endpoint"] == sentry.endpoint_url(self.config["endpoint"]), "dispatcher_lane_changed")
@@ -243,6 +244,7 @@ class Coordinator:
             if self.registry_rpc is None:
                 self.registry_rpc = k.registry_rpc_for(self.keeper)
             dispatch = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc,
+                                               reuse_local_enrollment=False,
                                                enrollment=self.enrollment if type(self.enrollment) is s.EnrollmentAuthority else None)
             s.require(phase != "bootstrap" or dispatch.enrollment.anchor == s.canonical(state["enrollment"]),
                       "bootstrap_enrollment_authority_changed")
