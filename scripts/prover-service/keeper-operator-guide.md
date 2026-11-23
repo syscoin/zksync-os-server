@@ -349,9 +349,11 @@ state before proceeding. Simulation is a point-in-time check, not a reservation.
 * `refresh-priority --arguments empty.json`, with `{}`, prepares the sequencer's
   gate refresh call. The contract permits this only after the old work window
   expires. Renewal preserves the work identity, admitted range and wrapper schedule.
-* `activate-service --arguments empty.json` prepares the gate activation call once
-  the admission policy is installed and the gate sees the required roster and draw.
-  Reconcile all bootstrap reports and verify final activation delivery from both lanes.
+* After the [V1 activation hold](gate-deployment.md#proof-gate-deployment-stage)
+  is lifted, `activate-service --arguments empty.json` prepares the gate activation
+  call once the admission policy is installed and the gate sees the required roster
+  and draw. Reconcile all bootstrap reports and verify final activation delivery
+  from both lanes.
 
 For example:
 
@@ -367,16 +369,22 @@ contracts do not authenticate ChainLocks or guarantee that a keeper will run.
 
 ### Admit each native batch before commit
 
+This procedure requires the replacement multi-block producer, which is pending
+implementation and qualification. Keep V1 inactive until both lanes are ready.
+
 Use `priority-admission-status` to read the policy and current reservation at a
 canonical settlement head. With no reservation, simulate
 `reserve-priority --arguments empty.json` with `{}` as the file content. Submit
 that call from the sequencer through its established nonce supervisor.
 
-The protected node writes `<publication_dir>/priority-admission/candidate.json`.
-Keep the exact file and obtain Merkle paths for the reservation's frozen root and
-settlement snapshots. Supply `left_path`, `right_path`, `local_left_path`, and
-`local_right_path`. Use empty local paths when the snapshots match in root,
-height, start and total. Use four empty paths for zero priority operations.
+The keeper's candidate schema v2 expects the protected node to write
+`<publication_dir>/priority-admission/candidate.json` with inclusive
+`first_block_number` and `last_block_number` for the native batch. Keep the
+exact file and obtain Merkle paths for the reservation's frozen root and
+settlement snapshots. Supply `left_path`, `right_path`, `local_left_path`,
+and `local_right_path`. Use empty local paths when the snapshots match in root,
+height, start and total. A ready candidate with zero priority operations needs
+no paths or witness transaction.
 
 ```sh
 python3 scripts/prover-service/keeper.py --config /trusted/child-keeper.json \
@@ -393,9 +401,10 @@ transaction index. The keeper currently accepts supplied paths and simulates
 their verification. The existing replay-based executor proof builder does not
 export these two precommit snapshots.
 
-Confirm the witness call's canonical receipt. The node submits the native commit
-after the admission policy confirms the exact candidate. Proof work uses the
-admitted digest and range.
+For a candidate that requires a witness transaction, confirm its canonical
+receipt. In the qualified flow, the node submits the native commit after the
+admission policy confirms the exact candidate. Proof work uses the admitted
+digest and range.
 
 Pause the sequencer before considering `cancel-priority-reservation` and
 reconcile both the native commit and sequencer nonce journals. Pass

@@ -132,7 +132,6 @@ async fn partial_raft_resume(leader: bool, changed_boundary: bool, reset_timesta
         pipeline_gate: gate.subscribe(),
         leadership: LeadershipSignal::Watch(role_rx),
         produce_enabled: false,
-        priority_admission: None,
     };
     let (_input_tx, input_rx) = mpsc::channel(1);
     let (output_tx, mut output_rx) = mpsc::channel(4);
@@ -236,7 +235,6 @@ async fn leader_watermark_orders_production(promote_after_start: bool) {
         pipeline_gate: gate.subscribe(),
         leadership: LeadershipSignal::Watch(role_rx),
         produce_enabled: true,
-        priority_admission: None,
     };
     let (_input_tx, input_rx) = mpsc::channel(1);
     let (output_tx, mut output_rx) = mpsc::channel(4);

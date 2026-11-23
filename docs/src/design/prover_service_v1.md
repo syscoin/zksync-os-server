@@ -255,13 +255,16 @@ Only the next batch can use a reservation. Requests that become overdue after
 the reservation affect subsequent batches. The per-batch rule guarantees
 ordered progress under a backlog, which can take multiple proof groups to clear.
 
-V1 currently forms one L2 block per admitted native batch and waits for its
-native commitment to be confirmed before forming the next. This makes the
-reservation boundary reproducible from the native and local replay frontiers.
-The node retains the reservation identity next to the service publication
-journal. Preserve that journal with the sequencer WAL when recovering or moving
-an in-flight batch. V1 adds reservation and confirmation latency to production,
-so qualify the sustained throughput of both lanes before activation.
+The multi-block producer integration is pending. A reservation must cover the
+whole native batch. The node normally seals on block, transaction, pubdata,
+resource, interop and time limits. A resource cut can move the next already
+formed block to the following batch, so the production path must authorize
+that lookahead before canonization or classify the boundary before canonizing
+it. The integration must let ordinary blocks continue through batch formation
+without waiting for native commitment after each L2 block.
+
+V1 activation is held until the producer can supply that boundary and the
+admission paths are qualified on both settlement lanes.
 
 For a nonempty priority prefix, publish the ordered hashes and Merkle paths
 against the reserved root tree. If the settlement Mailbox tree differs, also

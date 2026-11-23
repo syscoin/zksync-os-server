@@ -151,41 +151,6 @@ alloy::sol! {
         function chain() external view returns (address);
         function policyHash() external view returns (bytes32);
         function maxPriorityPerPackage() external view returns (uint64);
-        function admission() external view returns (address);
-        function admissionCodeHash() external view returns (bytes32);
-    }
-
-    struct PriorityCommitReservationV1 {
-        uint64 id;
-        uint64 batchNumber;
-        uint64 priorityFrom;
-        uint64 requiredEnd;
-        uint64 rootTotal;
-        uint64 rootBlockNumber;
-        uint64 rootTreeStart;
-        uint64 rootTreeHeight;
-        bytes32 root;
-        uint64 localTotal;
-        uint64 localTreeStart;
-        uint64 localTreeHeight;
-        bytes32 localRoot;
-    }
-
-    #[sol(rpc)]
-    interface IZkSysPriorityCommitAdmissionV1 {
-        function chain() external view returns (address);
-        function policyHash() external view returns (bytes32);
-        function sequencer() external view returns (address);
-        function maxPriorityPerPackage() external view returns (uint64);
-        function reservation() external view returns (PriorityCommitReservationV1 memory);
-        function commitReady(uint64 batchNumber, bytes32 storedHash, uint256 priorityCount, bytes32 priorityHash)
-            external view returns (bool);
-    }
-
-    #[sol(rpc)]
-    interface IZkSysPriorityNativeAdmissionV1 {
-        function facetAddress(bytes4 selector) external view returns (address);
-        function getSyscoinPriorityCommitPolicy() external view returns (address);
     }
 
     #[sol(rpc)]

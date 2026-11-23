@@ -1,5 +1,12 @@
 # Proof gate deployment stage
 
+**V1 activation is on hold.** The replacement native batch producer and its
+multi-block admission path need qualification on both lanes. Keep
+`ZKSYS_ENABLE_PROVER_SERVICE_V1=false` and `service_publication.enabled: false`.
+Wait to install the native admission policy or transfer the prover role.
+Ordinary settlement continues at the node's configured block and batch cadence.
+The steps below describe the staged handoff for a qualified release.
+
 `deploy_gate.py` is a post-deployment stage for **one** settlement lane. Run it
 separately for the zkSYS gate on Gateway and the Gateway gate on NEVM, with a
 separate protected journal and signer for each lane. It deploys the lane's

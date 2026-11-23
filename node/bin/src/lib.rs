@@ -54,7 +54,6 @@ use crate::prover_api::fri_job_manager::FriJobManager;
 use crate::prover_api::fri_proving_pipeline_step::FriProvingPipelineStep;
 use crate::prover_api::gapless_committer::GaplessCommitter;
 use crate::prover_api::gapless_l1_proof_sender::GaplessL1ProofSender;
-use crate::prover_api::priority_admission::{PriorityAdmission, PriorityCommitGate};
 use crate::prover_api::proof_storage::ProofStorage;
 use crate::prover_api::prover_server;
 use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
@@ -90,10 +89,6 @@ use zksync_os_contract_interface::l1_discovery::{
     BatchVerificationSL, L1State, L2_BRIDGEHUB_ADDRESS,
 };
 use zksync_os_contract_interface::models::BatchDaInputMode;
-use zksync_os_contract_interface::prover_service_v1::{
-    IZkSysPriorityCommitAdmissionV1, IZkSysPriorityGuardV1, IZkSysPriorityNativeAdmissionV1,
-    IZkSysProofGateV1,
-};
 use zksync_os_contract_interface::{
     IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call, ZkChain,
 };
@@ -606,6 +601,10 @@ async fn authenticate_l1_archive_genesis_upgrade(
 }
 
 pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
+    assert!(
+        !config.service_publication_config.enabled,
+        "V1 activation requires a qualified multi-block priority admission producer"
+    );
     config
         .batcher_config
         .resolve_bitcoin_da_auth()
@@ -945,17 +944,6 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
         l1_provider.clone()
     } else {
         gateway_provider.clone().unwrap()
-    };
-    let v1_priority_policy = if node_role.is_main() && block_production_enabled(&config) {
-        tokio::time::timeout(
-            config.service_publication_config.rpc_timeout,
-            validate_service_priority_admission(&config, &l1_state, &sl_provider, chain_id),
-        )
-        .await
-        .expect("timed out validating V1 priority admission")
-        .expect("invalid deployed V1 priority admission")
-    } else {
-        None
     };
     // SYSCOIN: Settlement mode is discovered from the L1 diamond, not from the
     // optional Gateway provider config. A Gateway RPC may be configured before
@@ -1894,7 +1882,6 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
             genesis_replay_completed,
             startup_rebuild_target_gate_sender,
             archive_recovery_verification,
-            v1_priority_policy,
         )
         .await
     } else {
@@ -2164,102 +2151,6 @@ fn validate_deployed_verifier_prover_policy(
         "external real proving requires prover_api.proof_storage.batch_with_proof_capacity of at least 8 GiB"
     );
     Ok(())
-}
-
-/// Bind the production limit to the same settlement-chain gate and guard the service will use.
-async fn validate_service_priority_admission(
-    config: &Config,
-    l1_state: &L1State,
-    provider: &NodeProvider,
-    child_chain_id: u64,
-) -> anyhow::Result<Option<Address>> {
-    let service = &config.service_publication_config;
-    let settlement_block = provider
-        .get_block_by_number(l1_state.sl_block_number.into())
-        .await?
-        .context("settlement provider did not return the startup block")?;
-    let block = BlockId::hash_canonical(settlement_block.header.hash);
-    let chain_address = l1_state.diamond_proxy_address_sl();
-    let native = IZkSysPriorityNativeAdmissionV1::new(chain_address, provider.clone());
-    if !service.enabled {
-        // A legacy diamond can omit the selector. A failed policy read is not evidence of absence.
-        let selector =
-            IZkSysPriorityNativeAdmissionV1::getSyscoinPriorityCommitPolicyCall::SELECTOR;
-        let facet = native
-            .facetAddress(selector.into())
-            .block(block)
-            .call()
-            .await?;
-        anyhow::ensure!(
-            facet.is_zero()
-                || native
-                    .getSyscoinPriorityCommitPolicy()
-                    .block(block)
-                    .call()
-                    .await?
-                    .is_zero(),
-            "this settlement diamond already requires V1 priority admission"
-        );
-        return Ok(None);
-    }
-    let configured_limit = config
-        .batcher_config
-        .priority_package_limit
-        .context("service publication requires batcher.priority_package_limit")?;
-    anyhow::ensure!(
-        keccak256(provider.get_code_at(service.gate).block_id(block).await?)
-            == service.gate_code_hash,
-        "service gate runtime does not match reviewed pin"
-    );
-    let gate = IZkSysProofGateV1::new(service.gate, provider.clone());
-    anyhow::ensure!(
-        gate.chain().block(block).call().await? == chain_address
-            && gate.childChainId().block(block).call().await? == U256::from(child_chain_id)
-            && gate.timelock().block(block).call().await? == l1_state.validator_timelock_sl
-            && gate.policyHash().block(block).call().await? == service.policy_hash,
-        "service gate identity does not match the selected settlement chain"
-    );
-    let guard_address = gate.priorityGuard().block(block).call().await?;
-    let guard = IZkSysPriorityGuardV1::new(guard_address, provider.clone());
-    anyhow::ensure!(
-        guard.acceptanceGate().block(block).call().await? == service.gate
-            && guard.chain().block(block).call().await? == chain_address
-            && guard.policyHash().block(block).call().await? == service.policy_hash,
-        "service priority guard does not match the reviewed service gate"
-    );
-    let deployed_limit = guard.maxPriorityPerPackage().block(block).call().await?;
-    anyhow::ensure!(
-        deployed_limit == configured_limit,
-        "configured priority package limit {configured_limit} differs from deployed guard limit {deployed_limit}"
-    );
-    let admission_address = guard.admission().block(block).call().await?;
-    let admission = IZkSysPriorityCommitAdmissionV1::new(admission_address, provider.clone());
-    anyhow::ensure!(
-        !admission_address.is_zero()
-            && native
-                .getSyscoinPriorityCommitPolicy()
-                .block(block)
-                .call()
-                .await?
-                == admission_address
-            && keccak256(
-                provider
-                    .get_code_at(admission_address)
-                    .block_id(block)
-                    .await?
-            ) == guard.admissionCodeHash().block(block).call().await?
-            && admission.chain().block(block).call().await? == chain_address
-            && admission.policyHash().block(block).call().await? == service.policy_hash
-            && admission.sequencer().block(block).call().await? == service.sequencer
-            && admission
-                .maxPriorityPerPackage()
-                .block(block)
-                .call()
-                .await?
-                == configured_limit,
-        "V1 requires the guard's exact priority admission policy installed on the settlement diamond"
-    );
-    Ok(Some(admission_address))
 }
 
 /// SYSCOIN: Fetches and validates the verifier mode only for a main node whose batcher can create
@@ -2764,7 +2655,6 @@ async fn run_main_node_pipeline(
     // a startup rebuild. The applied-block frontier, not command enqueue, releases this barrier.
     startup_rebuild_target_gate: Option<oneshot::Sender<()>>,
     archive_recovery: Option<(ArchiveReplayRecovery, BlockReplayStorage)>,
-    v1_priority_policy: Option<Address>,
 ) -> PipelineHandles {
     let native_da = || {
         native_da_evidence_for_mode(
@@ -2824,20 +2714,6 @@ async fn run_main_node_pipeline(
         .expect("failed to initialize the pre-persistence compact Edge-DA target gate")
     });
 
-    let priority_admission = v1_priority_policy.map(|address| {
-        PriorityAdmission::new(
-            &config.service_publication_config,
-            sl_provider.clone(),
-            node_state_on_startup.l1_state.diamond_proxy_address_sl(),
-            zksync_os_l1_sender::config::ConfirmationPolicy::new(if settles_on_gateway {
-                config.gateway_sender_config.required_confirmations
-            } else {
-                config.l1_sender_config.required_confirmations
-            }),
-            finality.subscribe(),
-        )
-        .expect("failed to initialize V1 priority admission")
-    });
     let pipeline = Pipeline::new(runtime.clone())
         .pipe(ConsensusNodeCommandSource {
             block_replay_storage: block_replay_storage.clone(),
@@ -2847,7 +2723,6 @@ async fn run_main_node_pipeline(
             pipeline_gate,
             leadership,
             produce_enabled: block_production_enabled(config),
-            priority_admission: priority_admission.clone(),
         })
         .pipe(BlockExecutor {
             block_context_provider,
@@ -3212,7 +3087,6 @@ async fn run_main_node_pipeline(
             bitcoin_da_status_storage: bitcoin_da_status_storage.clone(),
             native_da: publication_native_da,
             merkle_tree: tree,
-            reserve_single_block_batches: priority_admission.is_some(),
         })
         .pipe(BatchVerificationPipelineStep::new(
             config.batch_verification_config.clone().into(),
@@ -3243,10 +3117,6 @@ async fn run_main_node_pipeline(
         )
         .pipe_opt(replay_archiver.map(|replay_archiver| {
             ReplayArchiveGateComponent::new(replay_archiver, block_replay_storage.clone())
-        }))
-        .pipe_opt(priority_admission.map(|admission| PriorityCommitGate {
-            admission,
-            replay: block_replay_storage.clone(),
         }))
         .pipe(L1Sender::<CommitCommand> {
             provider: sl_provider.clone(),

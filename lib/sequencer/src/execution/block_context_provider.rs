@@ -1,8 +1,7 @@
 use crate::execution::fee_provider::FeeProvider;
 use crate::execution::metrics::EXECUTION_METRICS;
 use crate::model::blocks::{
-    BlockCommand, InvalidTxPolicy, PreparedBlockCommand, PriorityFormation, RebuildCommand,
-    SealPolicy,
+    BlockCommand, InvalidTxPolicy, PreparedBlockCommand, RebuildCommand, SealPolicy,
 };
 use alloy::primitives::{Address, BlockHash, TxHash, U256};
 use anyhow::Context as _;
@@ -135,7 +134,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         block_command: BlockCommand,
     ) -> anyhow::Result<Option<PreparedBlockCommand<'_>>> {
         match block_command {
-            BlockCommand::Produce(command) => self.produce(command.priority_formation).await,
+            BlockCommand::Produce(_) => self.produce().await,
             // SYSCOIN: Canonized rebuilds consume the leader's exact context/transactions and
             // retain the expected output hash. Local rebuild transformations are not authorized.
             BlockCommand::Replay(record) | BlockCommand::CanonizedRebuild(record) => {
@@ -153,10 +152,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         }
     }
 
-    async fn produce(
-        &mut self,
-        priority_formation: Option<PriorityFormation>,
-    ) -> anyhow::Result<Option<PreparedBlockCommand<'_>>> {
+    async fn produce(&mut self) -> anyhow::Result<Option<PreparedBlockCommand<'_>>> {
         let LastBlock {
             record: previous_record,
             hash: previous_block_hash,
@@ -167,20 +163,6 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             .expect("tried to produce a block without replaying at least one record");
         self.ensure_pool_initialized(&previous_record).await;
         let block_number = previous_record.block_context.block_number + 1;
-        if let Some(formation) = priority_formation {
-            anyhow::ensure!(
-                formation.block_number == block_number
-                    && formation.priority_from == next_cursors.l1_priority_id
-                    && formation.priority_from <= formation.required_end
-                    && formation.required_end <= formation.reachable_end,
-                "priority admission does not match the canonical block and priority frontiers"
-            );
-        }
-        let required_priority_id = priority_formation
-            .filter(|formation| formation.required_end > formation.priority_from)
-            .map(|formation| formation.priority_from);
-        let reserved_empty_after =
-            priority_formation.map(|_| Instant::now() + self.config.interop_companion_idle_delay);
         let interop_companion_empty_after = interop_companion_empty_deadline(
             self.interop_companion_proving_version,
             self.settles_on_gateway(),
@@ -224,18 +206,11 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                         // so it may synthesize the bounded empty companion after the grace period.
                         empty_after: interop_companion_empty_after,
                     }
-                })
-                .or_else(|| {
-                    reserved_empty_after.map(|empty_after| InteropCompanionRequest {
-                        empty_after: Some(empty_after),
-                    })
                 });
             let best_txs_future = self.pool.best_transactions_stream(
                 self.next_interop_tx_allowed_after,
                 include_interop_traffic,
                 interop_companion,
-                required_priority_id,
-                priority_formation.map(|formation| formation.reachable_end),
             );
             let pending_context_sender = self.last_constructed_block_ctx_sender.clone();
             let best_txs = await_with_pending_context_refresh(

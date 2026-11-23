@@ -1,5 +1,10 @@
 # Node service publication mode
 
+**Keep this mode disabled.** V1 activation awaits the replacement native batch
+producer and qualification of multi-block admission on both settlement lanes.
+Ordinary settlement uses the existing node block and batch cadence. The flow
+below describes the intended service handoff after qualification.
+
 `service_publication.enabled: true` replaces the node's proof transaction sender
 with a protected handoff and canonical receipt observer. The native commit
 sender waits for an admitted reservation that matches its exact batch. Execution
@@ -15,12 +20,13 @@ frontier, then transfer prover authority and start producing with the same
 priority package limit as the guard. Service recovery requires a gate receipt
 and retained work for every proved-but-unexecuted range.
 
-The service-publication directory contains `priority-admission/formation.json`
-and `priority-admission/candidate.json` for pending native work. Preserve that
-directory with the replay WAL and native commit journal on restart or standby
-takeover. Pause the current sequencer and resolve outstanding wallet nonces
-before a standby takes ownership. A formed batch must be reconciled through
-its native commit before cancelling its reservation.
+The protected handoff uses `priority-admission/formation.json` and
+`priority-admission/candidate.json` for pending native work. The keeper expects
+candidate schema v2 with inclusive `first_block_number` and
+`last_block_number`. Preserve the service-publication directory with the replay
+WAL and native commit journal on restart or standby takeover. Pause the current
+sequencer and resolve outstanding wallet nonces before a standby takes ownership.
+Reconcile a formed batch through its native commit before cancelling its reservation.
 
 Enable this only on a main node with the batcher and real FRI/SNARK proving. Pin
 the reviewed proof gate address/runtime hash, service policy, production V8 VK,

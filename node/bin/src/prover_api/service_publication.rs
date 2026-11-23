@@ -663,7 +663,7 @@ impl Journal {
     }
 }
 
-pub(super) fn private_directory(path: &Path) -> anyhow::Result<()> {
+fn private_directory(path: &Path) -> anyhow::Result<()> {
     anyhow::ensure!(
         path.is_absolute(),
         "service publication path must be absolute"
@@ -745,7 +745,7 @@ fn open_private(path: &Path, create: bool) -> anyhow::Result<File> {
     Ok(file)
 }
 
-pub(super) fn read_private(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+fn read_private(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     let mut file = match open_private(path, false) {
         Ok(file) => file,
         Err(error)
@@ -772,7 +772,7 @@ pub(super) fn read_private(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let parent = path.parent().context("missing handoff directory")?;
     verify_private(&fs::symlink_metadata(parent)?, true)?;
     if path.symlink_metadata().is_ok() {

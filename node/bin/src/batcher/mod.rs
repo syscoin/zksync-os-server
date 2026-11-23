@@ -79,7 +79,6 @@ pub struct Batcher<ReadState> {
     pub bitcoin_da_status_storage: BitcoinDaStatusStorage,
     pub(crate) native_da: Option<Arc<NativeDaEvidenceProvider>>,
     pub merkle_tree: MerkleTree<RocksDBWrapper>,
-    pub(crate) reserve_single_block_batches: bool,
 }
 
 struct BitcoinDaChunkPublisher<'a> {
@@ -532,11 +531,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                             accumulator.add(&block.output, &block.record)?;
 
                             blocks.push(block);
-                            // The producer cannot issue another block until this batch commits.
-                            // Seal without waiting for the usual next-block resource lookahead.
-                            if self.reserve_single_block_batches {
-                                break;
-                            }
 
                             // SYSCOIN: An authenticated bundle must end its batch, and the first
                             // block after a bundle must end the next batch. This creates two

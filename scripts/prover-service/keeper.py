@@ -367,8 +367,11 @@ def priority_admission_status(config, rpc, now):
 
 
 def priority_witness_call(config, rpc, candidate, paths, now):
-    s.exact(candidate, ("schema_version", "chain", "admission", "reservation_id", "batch_number", "block_number",
-                       "stored_hash", "priority_hash", "item_hashes"))
+    s.exact(candidate, ("schema_version", "chain", "admission", "reservation_id", "batch_number",
+                       "first_block_number", "last_block_number", "stored_hash", "priority_hash", "item_hashes"))
+    first_block = s.uint(candidate["first_block_number"], 64)
+    last_block = s.uint(candidate["last_block_number"], 64)
+    s.require(first_block <= last_block, "invalid_priority_candidate_block_range")
     keys = ("left_path", "right_path", "local_left_path", "local_right_path")
     settings, limits = config["settings"], config["policy"]
     head, anchor, admission = priority_admission_context(config, rpc, now)
@@ -376,8 +379,7 @@ def priority_witness_call(config, rpc, candidate, paths, now):
     identifier = s.uint(candidate["reservation_id"], 64)
     batch_number = s.uint(candidate["batch_number"], 64)
     stored_hash = s.raw_hex(s.nonzero(candidate["stored_hash"]), 32)
-    s.uint(candidate["block_number"], 64)
-    s.require(type(candidate["schema_version"]) is int and candidate["schema_version"] == 1
+    s.require(type(candidate["schema_version"]) is int and candidate["schema_version"] == 2
               and candidate["chain"] == settings["chain_address"] and candidate["admission"] == admission
               and identifier != 0 and identifier == pending["id"]
               and batch_number == pending["batch_number"],

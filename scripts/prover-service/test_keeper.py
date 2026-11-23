@@ -40,6 +40,7 @@ class NativeRpc(FakeRpc):
         self.roster_count, self.status_overrides = 1, {}
         self.simulated = []
         self.priority_required_end, self.commit_ready = 6, False
+        self.commit_ready_calls = []
         self.local_priority_root = h(127)
 
     def priority_range(self):
@@ -72,6 +73,7 @@ class NativeRpc(FakeRpc):
                 return "0x" + (b"".join(s.word(value) for value in (1, 3, 5, self.priority_required_end, 9, 123, 0, 2)) + s.raw_hex(h(127))
                                + b"".join(s.word(value) for value in (9, 0, 2)) + s.raw_hex(self.local_priority_root)).hex()
             if selector == r.selector("commitReady(uint64,bytes32,uint256,bytes32)"):
+                self.commit_ready_calls.append(tx["data"])
                 return "0x" + s.word(int(self.commit_ready)).hex()
             if selector == r.selector("getSemverProtocolVersion()"):
                 return "0x" + (s.word(0) + s.word(32) + s.word(0)).hex()
@@ -314,9 +316,9 @@ class KeeperTests(unittest.TestCase):
     def test_commit_witness_binds_exact_staged_candidate_and_is_simulated(self):
         addresses = self.config["settings"]
         item_hash = h(155)
-        candidate = {"schema_version": 1, "chain": addresses["chain_address"], "admission": a(124),
-                     "reservation_id": 1, "batch_number": 3, "block_number": 10, "stored_hash": h(126),
-                     "priority_hash": s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(item_hash)),
+        candidate = {"schema_version": 2, "chain": addresses["chain_address"], "admission": a(124),
+                     "reservation_id": 1, "batch_number": 3, "first_block_number": 8, "last_block_number": 10,
+                     "stored_hash": h(126), "priority_hash": s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(item_hash)),
                      "item_hashes": [item_hash]}
         paths = {"left_path": [h(10), h(11)], "right_path": [h(13), h(14)],
                  "local_left_path": [], "local_right_path": []}
@@ -328,6 +330,9 @@ class KeeperTests(unittest.TestCase):
         self.assertEqual(result["transaction"]["to"], a(124))
         self.assertEqual(result["transaction"]["from"], addresses["sequencer"])
         self.assertIn(result["transaction"], self.rpc.simulated)
+        self.assertEqual(self.rpc.commit_ready_calls, [
+            s.cast("calldata", "commitReady(uint64,bytes32,uint256,bytes32)", "3", h(126), "1", candidate["priority_hash"]),
+        ])
 
         self.rpc.local_priority_root = h(128)
         with self.assertRaisesRegex(s.Error, "invalid_priority_range_paths"):
@@ -342,15 +347,22 @@ class KeeperTests(unittest.TestCase):
 
         with self.assertRaisesRegex(s.Error, "priority_commit_candidate_changed"):
             k.priority_witness_call(self.config, self.rpc, {**candidate, "reservation_id": 2}, paths, 1000)
+        with self.assertRaisesRegex(s.Error, "priority_commit_candidate_changed"):
+            k.priority_witness_call(self.config, self.rpc, {**candidate, "batch_number": 4}, paths, 1000)
         with self.assertRaisesRegex(s.Error, "priority_candidate_hash_mismatch"):
             k.priority_witness_call(self.config, self.rpc, {**candidate, "item_hashes": [h(156)]}, paths, 1000)
 
-
     def test_empty_candidate_can_ready_without_a_witness_only_when_no_prefix_is_owed(self):
         addresses = self.config["settings"]
-        candidate = {"schema_version": 1, "chain": addresses["chain_address"], "admission": a(124),
-                     "reservation_id": 1, "batch_number": 3, "block_number": 10, "stored_hash": h(126),
-                     "priority_hash": s.keccak(b""), "item_hashes": []}
+        candidate = {"schema_version": 2, "chain": addresses["chain_address"], "admission": a(124),
+                     "reservation_id": 1, "batch_number": 3, "first_block_number": 10, "last_block_number": 10,
+                     "stored_hash": h(126), "priority_hash": s.keccak(b""), "item_hashes": []}
+        with self.assertRaisesRegex(s.Error, "invalid_priority_candidate_block_range"):
+            k.priority_witness_call(self.config, self.rpc, {**candidate, "first_block_number": 11}, None, 1000)
+        legacy = {key: value for key, value in candidate.items()
+                  if key not in ("first_block_number", "last_block_number")}
+        with self.assertRaisesRegex(s.Error, "unexpected_or_missing_fields"):
+            k.priority_witness_call(self.config, self.rpc, {**legacy, "schema_version": 1, "block_number": 10}, None, 1000)
         self.rpc.priority_required_end, self.rpc.commit_ready = 5, True
         result = k.priority_witness_call(self.config, self.rpc, candidate, None, 1000)
         self.assertEqual(result["action"], "commitReady")

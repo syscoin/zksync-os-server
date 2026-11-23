@@ -42,16 +42,6 @@ class Wallet:
         raise AssertionError(method)
 
 
-class RangeProofRpc(ProofRpc):
-    def call(self, method, params):
-        value = super().call(method, params)
-        if method == "eth_call" and params[0]["data"] == "0x" + r.selector("work()").hex():
-            count = sum(s.uint(output["l1TxCount"]) for output in self.item["sidecar"]["batch_outputs"])
-            data = s.raw_hex(value)
-            value = "0x" + (data[:-96] + s.word(max(4, count)) + s.word(count) + s.word(count)).hex()
-        return value
-
-
 class CoordinatorTests(unittest.TestCase):
     setUpClass = classmethod(td.DispatcherTests.setUpClass.__func__)
     reload = td.DispatcherTests.reload
@@ -136,7 +126,7 @@ class CoordinatorTests(unittest.TestCase):
         self.registry_rpc = self.rpc
         keeper, _, item = setup(self.f)
         keeper["policy"]["expected_operator"] = self.f["settings"]["sequencer"]
-        self.rpc = RangeProofRpc(self.f, keeper, item)
+        self.rpc = ProofRpc(self.f, keeper, item)
         self.rpc.opened = False
         self.native = td.Network()
         self.config = {**self.config, "keeper": keeper, "dispatcher_dir": str(self.root)}

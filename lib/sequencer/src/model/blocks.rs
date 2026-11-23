@@ -115,19 +115,8 @@ impl HasBlockRangeEnd for AppliedBlock {
 }
 
 /// Command to produce a new block.
-#[derive(Clone, Debug, Default)]
-pub struct ProduceCommand {
-    pub priority_formation: Option<PriorityFormation>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct PriorityFormation {
-    pub batch_number: u64,
-    pub block_number: u64,
-    pub priority_from: u64,
-    pub required_end: u64,
-    pub reachable_end: u64,
-}
+#[derive(Clone, Debug)]
+pub struct ProduceCommand;
 
 /// Command to rebuild existing block.
 #[derive(Clone, Debug)]
