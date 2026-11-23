@@ -10,15 +10,18 @@ import tempfile
 import textwrap
 import unittest
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / '.github/workflows/docker.yml').read_text()
+IMAGE_JOBS = yaml.safe_load(WORKFLOW)['jobs']
 SBOM = (ROOT / '.github/workflows/sbom-analysis-reusable.yaml').read_text()
 SMOKE = (ROOT / '.github/workflows/server-image-build-check.yml').read_text()
 
 
 def command_block(step):
-    block = WORKFLOW.split(f'      - name: {step}\n', 1)[1].split('\n      - name:', 1)[0]
-    return textwrap.dedent(block.split('        run: |\n', 1)[1])
+    return next(item['run'] for job in IMAGE_JOBS.values() for item in job.get('steps', [])
+                if item.get('name') == step)
 
 
 class ServerImageWorkflowTests(unittest.TestCase):
@@ -85,17 +88,29 @@ class ServerImageWorkflowTests(unittest.TestCase):
         self.assertNotIn('matterlabs-infra', WORKFLOW)
         self.assertIn("github.ref == 'refs/heads/main' && inputs.tag_name == ''", WORKFLOW)
         self.assertIn('push-to-registry: true', WORKFLOW)
-        published_digest = "${{ steps.publish-versioned.outputs.digest || steps.build.outputs.digest }}"
-        self.assertIn(f'image_digest: {published_digest}', WORKFLOW)
-        self.assertIn(f'subject-digest: {published_digest}', WORKFLOW)
-        self.assertIn('image_digest: ${{ needs.build-images.outputs.image_digest }}', WORKFLOW)
+        build = IMAGE_JOBS['build-images']
+        publish = IMAGE_JOBS['publish-image']
+        self.assertEqual(build['permissions'], {'contents': 'read'})
+        self.assertEqual(build['outputs']['image_digest'], '${{ steps.build.outputs.digest }}')
+        self.assertEqual(build['outputs']['artifact_id'], '${{ steps.upload.outputs.artifact-id }}')
+        download = next(step for step in publish['steps']
+                        if step.get('uses', '').startswith('actions/download-artifact@'))
+        self.assertEqual(download['with']['artifact-ids'], '${{ needs.build-images.outputs.artifact_id }}')
+        promotion = next(step for step in publish['steps'] if step.get('id') == 'publish')
+        self.assertEqual(promotion['env']['EXPECTED_DIGEST'], '${{ needs.build-images.outputs.image_digest }}')
+        published_digest = '${{ steps.publish.outputs.digest }}'
+        self.assertEqual(publish['outputs']['image_digest'], published_digest)
+        attestation = next(step for step in publish['steps'] if step['name'] == 'Attest published image')
+        self.assertEqual(attestation['with']['subject-digest'], published_digest)
+        self.assertEqual(IMAGE_JOBS['sbom-generation']['with']['image_digest'],
+                         '${{ needs.publish-image.outputs.image_digest }}')
         self.assertIn('image: ${{ inputs.image_name }}@${{ inputs.image_digest }}', SBOM)
         self.assertIn("io.syscoin.server.image-digest", SBOM)
         self.assertIn("io.syscoin.server.source-sha", SBOM)
         self.assertIn('duplicate server identity', SBOM)
 
     def test_versioned_registry_publication_preserves_the_exported_manifest(self):
-        promotion = command_block("Publish qualified versioned image")
+        promotion = command_block("Publish verified image digest")
         self.assertIn("index.json", promotion)
         self.assertIn("sha256sum", promotion)
         self.assertIn("skopeo copy --all --preserve-digests", promotion)
@@ -107,14 +122,13 @@ class ServerImageWorkflowTests(unittest.TestCase):
         self.assertNotIn("docker load", promotion)
 
     def test_versioned_promotion_requires_matching_local_and_registry_manifests(self):
-        layout = self.directory / 'versioned-image'
+        layout = self.directory / 'server-image'
         blobs = layout / 'blobs' / 'sha256'
         blobs.mkdir(parents=True)
         manifest = b'{"schemaVersion":2,"manifests":[]}'
         digest = hashlib.sha256(manifest).hexdigest()
         indexed_digest = f'sha256:{digest}'
         (layout / 'index.json').write_text(json.dumps({'manifests': [{'digest': indexed_digest}]}))
-        (blobs / digest).write_bytes(manifest)
         remote = self.directory / 'registry-manifest'
         copies = self.directory / 'registry-copies'
         skopeo = self.directory / 'skopeo'
@@ -146,21 +160,28 @@ class ServerImageWorkflowTests(unittest.TestCase):
             'REGISTRY_MANIFEST': str(remote),
             'REGISTRY_COPIES': str(copies),
         }
-        for expected, manifest_bytes, copy_digest, copy_count, succeeds in (
-            (indexed_digest, manifest, indexed_digest, 1, True),
-            ('sha256:' + '0' * 64, manifest, indexed_digest, 0, False),
-            (indexed_digest, manifest, 'sha256:' + '0' * 64, 1, False),
-            (indexed_digest, b'foreign manifest', indexed_digest, 1, False),
+        versioned = 'docker://ghcr.io/syscoin/test-image:v1.2.3\n'
+        latest = 'docker://ghcr.io/syscoin/test-image:latest\n'
+        for expected, local, published, copy_digest, publish_latest, destinations, succeeds in (
+            (indexed_digest, manifest, manifest, indexed_digest, False, versioned, True),
+            (indexed_digest, manifest, manifest, indexed_digest, True, versioned + latest, True),
+            ('sha256:' + '0' * 64, manifest, manifest, indexed_digest, False, '', False),
+            (indexed_digest, b'foreign blob', manifest, indexed_digest, False, '', False),
+            (indexed_digest, manifest, manifest, 'sha256:' + '0' * 64, False, versioned, False),
+            (indexed_digest, manifest, b'foreign manifest', indexed_digest, True, versioned, False),
         ):
-            with self.subTest(expected=expected, copied=copy_digest, published=manifest_bytes):
+            with self.subTest(expected=expected, local=local, copied=copy_digest, published=published,
+                              publish_latest=publish_latest):
                 self.output.write_text('')
-                remote.write_bytes(manifest_bytes)
+                (blobs / digest).write_bytes(local)
+                remote.write_bytes(published)
                 copies.write_text('')
-                result = self.run_block('Publish qualified versioned image', **{
+                result = self.run_block('Publish verified image digest', **{
                     **values, 'EXPECTED_DIGEST': expected, 'COPY_DIGEST': copy_digest,
+                    'PUBLISH_LATEST': str(publish_latest).lower(),
                 })
                 self.assertEqual(result.returncode == 0, succeeds, result.stderr)
-                self.assertEqual(copies.read_text(), 'docker://ghcr.io/syscoin/test-image:v1.2.3\n' * copy_count)
+                self.assertEqual(copies.read_text(), destinations)
                 self.assertEqual(self.output.read_text(), f'digest={indexed_digest}\n' if succeeds else '')
 
     def test_provenance_binds_source_and_rejects_conflict(self):
