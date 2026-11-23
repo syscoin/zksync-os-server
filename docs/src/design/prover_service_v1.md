@@ -408,7 +408,7 @@ retain exact signed bytes across ambiguous sends, and the node still independent
 verifies the confirmed gate receipt before advancing execution. Maintenance and
 proof-relay transactions use separate nonce accounts.
 
-The [keeper operator guide](../../../scripts/prover-service/keeper-operator-guide.md)
+The [keeper operator guide](https://github.com/syscoin/zksync-os-server/blob/main/scripts/prover-service/keeper-operator-guide.md)
 documents configuration, automatic operation and manual recovery. Operators
 supply complete roster artifacts, independently pinned audit trust and
 authenticated inbox transport. Cross-chain capture and relay keepers carry
