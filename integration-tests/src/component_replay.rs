@@ -5,6 +5,7 @@ use crate::config::fixture_backend::{
     FileIdentity, ValidatedFixtureInventory, component::ComponentReplayArchive,
 };
 use alloy::primitives::B256;
+use alloy::providers::Provider;
 use anyhow::{Context, ensure};
 use reth_tasks::{RuntimeBuilder, RuntimeConfig, TokioConfig};
 use sha2::{Digest, Sha256};
@@ -263,10 +264,10 @@ pub async fn recover_replay(
 
 /// Both registered component fixtures and the generator's freshly imported WAL go through
 /// the production verification barrier. A fresh generator run has no WAL to verify.
-pub(crate) async fn verify_pending_replay(config: &Config) -> anyhow::Result<()> {
+pub(crate) async fn verify_pending_replay(config: &Config) -> anyhow::Result<Option<(u64, B256)>> {
     let wal_path = config.general_config.rocks_db_path.join("block_replay_wal");
     if !wal_path.join("CURRENT").try_exists()? {
-        return Ok(());
+        return Ok(None);
     }
     let chain_id = config
         .genesis_config
@@ -275,7 +276,7 @@ pub(crate) async fn verify_pending_replay(config: &Config) -> anyhow::Result<()>
     let pending =
         BlockReplayStorage::new_without_genesis(&wal_path, chain_id).archive_recovery()?;
     let Some(pending) = pending else {
-        return Ok(());
+        return Ok(None);
     };
 
     let mut replay = config.clone();
@@ -316,7 +317,29 @@ pub(crate) async fn verify_pending_replay(config: &Config) -> anyhow::Result<()>
             && wal.get_canonical_block_hash(pending.anchor_block) == Some(pending.anchor_hash),
         "component replay did not finish at its trusted archive anchor"
     );
-    Ok(())
+    Ok(Some((pending.anchor_block, pending.anchor_hash)))
+}
+
+/// Normal startup replays a configured window even when the archive has already been
+/// verified. Its RPC can initially report a height inside that window.
+pub(crate) async fn wait_for_anchor(
+    provider: &impl Provider,
+    (height, hash): (u64, B256),
+) -> anyhow::Result<()> {
+    loop {
+        if provider.get_block_number().await? >= height {
+            let block = provider
+                .get_block_by_number(height.into())
+                .await?
+                .context("verified fixture anchor missing from normal RPC")?;
+            ensure!(
+                block.header.hash == hash,
+                "normal fixture RPC disagrees with verified archive anchor {height}"
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(crate::assert_traits::POLL_INTERVAL).await;
+    }
 }
 
 pub async fn recover_registered(
