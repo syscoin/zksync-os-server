@@ -109,12 +109,8 @@ def regrouped_work(root, retained, settings, limits, rpc, now, payload, evidence
         # the native planner may legitimately issue a fresh lease with the same bounds.
         retired = frontier <= tip and (retained is not None or tip + 1 < start)
         if retired:
-            depth = max(limits["confirmations"], s.uint(work["required_confirmations"], 64), 1)
-            safe_number = s.uint(head["number"]) - depth + 1
-            s.require(safe_number >= 0, "regrouped_native_frontier_unconfirmed")
-            safe = rpc.call("eth_getBlockByNumber", [hex(safe_number), False])
-            s.require(isinstance(safe, dict) and s.uint(safe["number"]) == safe_number,
-                      "regrouped_native_anchor_unavailable")
+            safe = safe_block(rpc, limits, head, s.uint(work["required_confirmations"], 64))
+            s.require(safe is not None, "regrouped_native_frontier_unconfirmed")
             confirmed = {"blockHash": s.nonzero(safe["hash"]), "requireCanonical": True}
             s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, confirmed]))) == limits["gate_code_hash"]
                       and r.call_word(rpc, gate, "chain()", confirmed, kind="address") == chain, "gate_configuration_changed")
@@ -126,6 +122,107 @@ def regrouped_work(root, retained, settings, limits, rpc, now, payload, evidence
         if retired:
             return child
     return None
+
+
+def safe_block(rpc, limits, head, confirmations):
+    height = s.uint(head["number"]) - max(limits["confirmations"], confirmations, 1) + 1
+    if height < 0:
+        return None
+    block = rpc.call("eth_getBlockByNumber", [hex(height), False])
+    s.require(isinstance(block, dict) and s.uint(block["number"]) == height, "native_confirmation_block_unavailable")
+    s.nonzero(block["hash"])
+    return block
+
+
+def native_gap_end(rpc, gate, marker, first, safe_height):
+    # The Rust journal stores the observation block hash. Only an event from the
+    # reviewed gate can identify a native gap in a block that also settled service work.
+    block = rpc.call("eth_getBlockByHash", [marker, False])
+    s.require(isinstance(block, dict) and block["hash"] == marker, "superseded_observation_block_changed")
+    height = s.uint(block["number"])
+    if height > safe_height:
+        return None
+    canonical = rpc.call("eth_getBlockByNumber", [hex(height), False])
+    s.require(isinstance(canonical, dict) and canonical["hash"] == marker, "superseded_observation_block_changed")
+    topic = s.keccak(b"NativeSettlementAdvanced(uint64,uint64,bytes32)")
+    logs = rpc.call("eth_getLogs", [{"blockHash": marker, "address": gate, "topics": [topic]}])
+    s.require(isinstance(logs, list), "invalid_native_settlement_logs")
+    match = None
+    for log in logs:
+        topics = log.get("topics", []) if isinstance(log, dict) else []
+        s.require(len(topics) == 3 and topics[0] == topic and log.get("address", "").lower() == gate
+                  and not log.get("removed", False) and log.get("blockHash") == marker
+                  and s.uint(log.get("blockNumber")) == height, "superseded_native_event_mismatch")
+        start, end = (s.uint(int.from_bytes(s.raw_hex(word, 32), "big"), 64) for word in topics[1:])
+        s.require(0 < start <= end, "invalid_native_settlement_event_range")
+        if start <= first <= end:
+            s.require(match is None, "ambiguous_native_settlement_event")
+            match = (end, s.nonzero(log["data"]))
+    s.require(match is not None, "superseded_native_event_mismatch")
+    return match
+
+
+def superseded_work(root, retained, settings, limits, rpc, head, start, end, evidence, proof):
+    """Release an obsolete local slot after its retained first batch is confirmed natively."""
+    batches = evidence["batches"]
+    statements = s.validate_evidence(settings, evidence)
+    s.require(len(statements) == end - start + 1 and start in statements and end in statements,
+              "native_evidence_range_changed")
+    confirmations, timelock, marker = 0, None, None
+    if retained is not None:
+        directory = io.directory(retained)
+        s.require(directory.parent == io.directory(root), "publication_outside_configured_directory")
+        work = io.private_json(directory / "work.json", 2 * 1024 * 1024)
+        s.require(proof is not None, "superseded_publication_proof_missing")
+        expected = {**publication_pins(settings, limits), "batch_from": start, "batch_to": end,
+                    "proof_data": "0x" + s.proof_data(evidence, s.decode_proof(proof["proof"])).hex(),
+                    "batch_outputs": [batch["output"] for batch in batches]}
+        s.require(all(work.get(key) == value for key, value in expected.items()), "node_publication_work_mismatch")
+        confirmations = s.uint(work["required_confirmations"], 64)
+        timelock = s.nonzero(work["timelock"], 20)
+        marker_path = directory / "superseded.json"
+        if marker_path.exists():
+            marker = s.nonzero(io.private_json(marker_path))
+
+    safe = safe_block(rpc, limits, head, confirmations)
+    if safe is None:
+        return None
+    anchor = {"blockHash": safe["hash"], "requireCanonical": True}
+    gate, chain = settings["proof_gate"], settings["chain_address"]
+    observed = r.call_word(rpc, gate, "observedNativeBatch()", anchor)
+    verified = r.call_word(rpc, chain, "getTotalBatchesVerified()", anchor)
+    if min(observed, verified) < start:
+        return None
+    s.require(observed <= verified and s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, anchor]))) == limits["gate_code_hash"]
+              and r.call_word(rpc, gate, "chain()", anchor, kind="address") == chain
+              and r.call_word(rpc, gate, "childChainId()", anchor) == s.uint(settings["execution_chain_id"])
+              and r.call_word(rpc, gate, "policyHash()", anchor, kind="bytes32") == settings["policy_hash"]
+              and (timelock is None or r.call_word(rpc, gate, "timelock()", anchor, kind="address") == timelock),
+              "gate_configuration_changed")
+    status = "superseded"
+    if marker is not None:
+        match = native_gap_end(rpc, gate, marker, start, s.uint(safe["number"]))
+        if match is None:
+            return None
+        covered, native_hash = match
+        s.require(covered <= observed and r.call_word(rpc, chain, "storedBatchHash(uint256)", anchor,
+                  s.word(covered), "bytes32") == native_hash, "superseded_native_event_hash_changed")
+    else:
+        # A strict interior frontier rules out this atomic package. Full confirmed coverage
+        # frees the local slot too, while the relay still has to authenticate any service credit.
+        covered = min(verified, end)
+        if observed < covered:
+            return None
+        if covered == end:
+            status = "covered"
+    for number in sorted({start, min(covered, end)}):
+        stored = batches[number - start]["stored"]
+        expected = s.keccak(s.encode_fields(s.STORED, stored))
+        s.require(r.call_word(rpc, chain, "storedBatchHash(uint256)", anchor, s.word(number), "bytes32") == expected,
+                  "superseded_native_batch_hash_changed")
+    r.check_anchor(rpc, settings, safe)
+    r.check_anchor(rpc, settings, head)
+    return verified, status
 
 
 def publication_work(root, settings, limits, evidence, proof):

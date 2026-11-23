@@ -688,14 +688,34 @@ class Coordinator:
         if source is None:
             return None
         if execute:
-            op.update(status="regrouped", publication=str(source))
-            self.state["active"] = None
-            if op["relay"] or op["maintenance"]:
-                # The old job releases its proof slot immediately. Its wallet reservations
-                # keep their own receipt-only recovery until the original nonce is resolved.
-                self.state.setdefault("regrouped_pending", []).append(identifier)
-            self.save()
+            op["publication"] = str(source)
+            self.detach_native_work(identifier, "regrouped")
         return {"next_action": "pick_regrouped_native_range" if execute else "would_retire_regrouped_native_range"}
+
+    def detach_native_work(self, identifier, status):
+        op = self.state["operations"][identifier]
+        op["status"], self.state["active"] = status, None
+        if op["relay"] or op["maintenance"]:
+            # Releasing local proof ownership does not release either wallet's nonce.
+            self.state.setdefault("regrouped_pending", []).append(identifier)
+        self.save()
+
+    def retire_superseded(self, identifier, start, end, head, execute):
+        op, directory = self.state["operations"][identifier], self.directory(identifier)
+        evidence = io.private_json(directory / "evidence.json")
+        proof = None
+        if op["proof"] is not None:
+            proof = io.private_json(directory / "proof.json")
+            s.require(io.digest(proof) == op["proof"], "retained_proof_changed")
+        disposition = native_handoff.superseded_work(self.config["publication_dir"], op["publication"],
+            self.settings, self.config["relay_policy"], self.rpc, head, start, end, evidence, proof)
+        if disposition is None:
+            return None
+        verified, status = disposition
+        if execute:
+            self.detach_native_work(identifier, status)
+        action = "range_already_proven" if verified >= end else "native_advance_requires_new_range"
+        return {"next_action": action if execute else "would_retire_superseded_native_range"}
 
     def reconcile_regrouped(self, execute):
         for identifier in list(self.state.get("regrouped_pending", [])):
@@ -756,10 +776,19 @@ class Coordinator:
                     return retired
             result = self.relay(identifier, execute)
             if result is not None:
-                if (result.get("context") or {}).get("reason") == "range_already_proven":
-                    head, _ = r.anchored_head(self.rpc, self.settings, self.config["transaction_policy"], int(self.clock()))
-                    if transactions.observation_scope(self.rpc, self.settings, head) is not None:
-                        return self.observe_native(execute)
+                context = result.get("context")
+                acceptance = result.get("acceptance") or {}
+                if (context and context["reason"] in ("range_already_proven", "accepted_parent_changed", "package_already_accepted")
+                        and not acceptance.get("transaction_hash")):
+                    head = context["head"]
+                    anchor = {"blockHash": head["hash"], "requireCanonical": True}
+                    if (context["reason"] == "range_already_proven" or
+                            r.call_word(self.rpc, self.settings["chain_address"], "getTotalBatchesVerified()", anchor) >= context["batch_from"]):
+                        if transactions.observation_scope(self.rpc, self.settings, head) is not None:
+                            return self.observe_native(execute)
+                        retired = self.retire_superseded(identifier, context["batch_from"], context["batch_to"], head, execute)
+                        if retired:
+                            return retired
                 return result
         chain, roster = self.status()
         if chain["observed_native_batch"] + 1 < chain["next_native_batch"]:
@@ -792,6 +821,11 @@ class Coordinator:
                             self.save()
                         return {"next_action": "pick_after_expired_future_lease" if execute else "would_release_expired_future_lease"}
             if chain["next_native_batch"] > payload["from_batch_number"]:
+                if op["maintenance"] or op["relay"] or op["publication"]:
+                    head, _ = r.anchored_head(self.rpc, self.settings, self.config["relay_policy"], int(self.clock()))
+                    retired = self.retire_superseded(identifier, payload["from_batch_number"], payload["to_batch_number"],
+                                                     head, execute)
+                    return retired or {"next_action": "await_confirmed_native_disposition"}
                 if execute:
                     op["status"], self.state["active"] = "superseded", None
                     self.save()

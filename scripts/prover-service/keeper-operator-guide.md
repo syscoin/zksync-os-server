@@ -149,9 +149,11 @@ A native proof can supersede a frozen package. Compare the native verified heigh
 with the gate's `observedNativeBatch()`. Use `observe-native` to record a
 forward advance. A confirmed observation retires the overlapping service work
 and leaves its endorsements, service parent and wrapper sequence unspent.
-The coordinator can acquire replacement proof work while it reconciles an old
-signed transaction. Its wallet keeps the reserved nonce until reconciliation.
-The replacement package requires fresh endorsements for its exact range.
+The coordinator releases the original overlapping package and any following wrapper
+that the node must regroup. It can acquire the replacement range while a transaction
+for either old package still awaits a receipt. The relay keeps the original raw
+transaction and reserved nonce. Fresh endorsements bind the replacement package
+to its exact range.
 
 The maintenance and relay journals retain their history in an indexed SQLite
 store once they outgrow the small JSON form. Completed history does not impose

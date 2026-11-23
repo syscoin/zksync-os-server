@@ -252,6 +252,161 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(len(self.native.calls), 2)
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def publish_signed_three_batch_relay(self):
+        self.continuous_dispatch(batch_count=3)
+        identifier, _ = self.frozen()
+        prepared = self.returned(self.controller.step(True))
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        publication = self.publication(prepared)
+        self.rpc.item["digest"] = prepared["sequencer_request"]["digest"]
+        stage = self.controller_reload().step(True)
+        self.assertEqual(stage["next_action"], "relay_dual_endorsed_package")
+        relay = r.Relay(self.f["settings"], self.config["relay_policy"], self.rpc,
+                        store=r.Store(self.control_store.root / "relay"))
+        relay_id = stage["operation_id"]
+        self.rpc.item = relay.load_artifact(relay_id)
+        self.assertEqual(self.controller_reload().step(True)["status"], "broadcast")
+        return identifier, publication, relay.store, relay_id
+
+    def native_prefix_observation(self, publication):
+        self.rpc.advance(seconds=1)
+        event_block = copy.deepcopy(self.rpc.head)
+        self.now = self.rpc.now
+        self.rpc.opened = False
+        self.rpc.observed_native = self.rpc.native_proved = 2
+        gate = self.f["settings"]["proof_gate"]
+        self.rpc.status_overrides[(gate, "initialNativeBatch()")] = 0
+        signature = s.keccak(b"NativeSettlementAdvanced(uint64,uint64,bytes32)")
+        log = {"address": gate, "blockNumber": event_block["number"], "blockHash": event_block["hash"],
+               "topics": [signature, "0x" + s.word(1).hex(), "0x" + s.word(2).hex()],
+               "data": s.keccak(s.encode_fields(s.STORED, self.f["evidence"]["batches"][1]["stored"])),
+               "transactionHash": h(183), "logIndex": "0x0", "removed": False}
+        # Rust writes the canonical event block hash as a JSON string, independently
+        # of the service relay. Its NativeSettlementAdvanced event grants no duty credits.
+        io.immutable_json(publication / "superseded.json", event_block["hash"])
+        original = self.rpc.call
+        frontier_selectors = {"0x" + r.selector(signature).hex() for signature in
+                              ("getTotalBatchesVerified()", "observedNativeBatch()")}
+        def history(method, params):
+            if method == "eth_getBlockByHash":
+                return next((copy.deepcopy(b) for b in self.rpc.blocks.values() if b["hash"] == params[0]), None)
+            if method == "eth_getLogs" and params[0].get("topics", [None])[0] == signature:
+                self.assertEqual(params[0]["blockHash"], event_block["hash"])
+                self.assertEqual(params[0]["address"], gate)
+                return [copy.deepcopy(log)]
+            if method == "eth_call" and params[0]["data"] in frontier_selectors:
+                block = next(b for b in self.rpc.blocks.values() if b["hash"] == params[1]["blockHash"])
+                if s.uint(block["number"]) < s.uint(event_block["number"]):
+                    return "0x" + s.word(0).hex()
+            return original(method, params)
+        mock = patch.object(self.rpc, "call", side_effect=history)
+        mock.start()
+        self.addCleanup(mock.stop)
+        return log
+
+    def test_signed_relay_detaches_for_confirmed_native_prefix_and_picks_remaining_range(self):
+        old, publication, store, relay_id = self.publish_signed_three_batch_relay()
+        def relay_row():
+            return store.load(self.f["settings"], self.config["relay_policy"])["operations"][relay_id]
+        original = copy.deepcopy(relay_row())
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+        self.native_prefix_observation(publication)
+        self.rpc.advance()
+        self.now = self.rpc.now
+        result = self.controller_reload().step(True)
+        self.assertEqual(result["next_action"], "native_advance_requires_new_range")
+        controller = self.controller_reload()
+        self.assertEqual(controller.state["operations"][old]["status"], "superseded")
+        self.assertIsNone(controller.state["active"])
+        self.assertIn(old, controller.state["regrouped_pending"])
+        self.assertEqual(controller.step(False)["next_action"], "would_pick_native_snark")
+
+        native = fixture(batch_count=5)
+        payload = {**native["fri_payload"], "from_batch_number": 3, "fri_proofs": native["fri_payload"]["fri_proofs"][2:]}
+        full = native["evidence"]
+        evidence = {**full, "previous_batch": full["batches"][1]["stored"], "batches": full["batches"][2:]}
+        self.rpc.evidence = full
+        self.native.responses += [(200, {}, {**payload, "lease_token": h(191)}), (200, {}, evidence)]
+        # Stop at the endorsement stage so the next polling cycle must actually
+        # reserve the new slot, request the replacement and persist its evidence.
+        with patch.object(controller, "snapshot", return_value=None) as snapshot:
+            controller.step(True)
+        snapshot.assert_called_once()
+        new = controller.state["active"]
+        self.assertEqual(snapshot.call_args.args[0], new)
+        self.assertEqual(io.private_json(controller.directory(new) / "payload.json"), payload)
+        self.assertEqual(io.private_json(controller.directory(new) / "evidence.json"), evidence)
+        self.assertNotEqual(new, old)
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertIn(old, self.controller.state["regrouped_pending"])
+        self.rpc.accept_receipt(status=0)
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertEqual(self.controller_reload().state["active"], new)
+        self.assertNotIn(old, self.controller.state["regrouped_pending"])
+        row = relay_row()
+        for field in ("unsigned_transaction", "raw_transaction", "transaction_hash"):
+            self.assertEqual(row[field], original[field])
+        self.assertEqual(row["status"], "reverted")
+        self.assertIsNone(row["acceptance"])
+        self.assertFalse((publication / "relay.json").exists())
+        signed_transactions = [params[0] for method, params in self.relay_wallet.calls if method == "eth_signTransaction"]
+        self.assertEqual(signed_transactions, [original["unsigned_transaction"]])
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+
+    def test_superseded_marker_needs_confirmed_matching_native_event(self):
+        old, publication, store, relay_id = self.publish_signed_three_batch_relay()
+        signed = copy.deepcopy(self.rpc.sent)
+        log = self.native_prefix_observation(publication)
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "wait_for_receipt_no_resign")
+        self.assertEqual(self.controller_reload().state["active"], old)
+        self.rpc.advance()
+        self.now = self.rpc.now
+        log["data"] = h(208)
+        with self.assertRaisesRegex(s.Error, "superseded_native_event_hash_changed"):
+            self.controller.step(True)
+        self.assertEqual(self.controller_reload().state["active"], old)
+        self.assertNotIn(old, self.controller.state.get("regrouped_pending", []))
+        row = store.load(self.f["settings"], self.config["relay_policy"])["operations"][relay_id]
+        self.assertEqual(row["raw_transaction"], signed[0])
+        self.assertIsNone(row["acceptance"])
+        self.assertFalse((publication / "relay.json").exists())
+        self.assertEqual(self.rpc.sent, signed)
+
+    def test_fully_covered_signed_relay_exports_its_late_service_receipt_for_the_original_work(self):
+        old, publication, store, relay_id = self.publish_signed_three_batch_relay()
+        signed = copy.deepcopy(self.rpc.sent)
+        self.rpc.advance()
+        self.rpc.accept_receipt()
+        historical_receipt, self.rpc.receipt = self.rpc.receipt, None
+        # The node can see a subsequent service parent while the original transaction
+        # receipt is temporarily unavailable. It must assign any eventual credit to the
+        # original accepted publication and keep the newer active lease intact.
+        self.rpc.advance()
+        self.rpc.parent = h(209)
+        self.rpc.native_proved = self.rpc.observed_native = 5
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.assertFalse((publication / "superseded.json").exists())
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "range_already_proven")
+        controller = self.controller_reload()
+        self.assertEqual(controller.state["operations"][old]["status"], "covered")
+        self.assertIsNone(controller.state["active"])
+        self.assertIn(old, controller.state["regrouped_pending"])
+        self.assertFalse((publication / "relay.json").exists())
+        new = controller.reserve()
+        self.rpc.receipt = historical_receipt
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertEqual(self.controller_reload().state["active"], new)
+        self.assertEqual(self.controller.state["operations"][old]["status"], "settled")
+        self.assertNotIn(old, self.controller.state["regrouped_pending"])
+        row = store.load(self.f["settings"], self.config["relay_policy"])["operations"][relay_id]
+        self.assertEqual(io.private_json(publication / "relay.json")["transaction_hash"], row["transaction_hash"])
+        self.assertEqual(row["raw_transaction"], signed[0])
+        self.assertEqual(self.rpc.sent, signed)
+
     def regrouped_publication(self, retained):
         native = fixture(batch_count=5)
         full = native["evidence"]
