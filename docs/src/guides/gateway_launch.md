@@ -1366,7 +1366,10 @@ replay_archive:
 Do not treat `replay_archive: { type: Noop }` as sufficient for mainnet
 operations. Test recovery before relying on the archive: download the archive
 objects, rebuild `db/block_replay_wal` with `replay_archive_recovery`, and
-start a node from the recovered replay WAL using a known canonical anchor.
+verify the recovered WAL from a known canonical anchor before serving it. Keep
+the deployment's `database_identity.json` with the trusted recovery inventory.
+The [replay recovery guide](../../../lib/replay_archive/README.md#cli) describes
+the verification startup profile and restart behavior.
 
 <!-- SYSCOIN: Explicit release policy; the current non-Ethereum root-chain allowance is retained. -->
 Syscoin currently retains the pinned contracts' **30-day maximum commit age**, including on

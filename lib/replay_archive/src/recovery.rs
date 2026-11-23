@@ -146,8 +146,8 @@ pub async fn recover_replay_records_to_rocksdb(
 ///
 /// SYSCOIN: Import accepts legacy receiptless files and checks their linkage, not their executed
 /// block hashes. The operator must supply a trusted anchor; ordinary main-node replay validates the
-/// computed headers and immutable replay inputs before publishing state. Download receipts do
-/// not authenticate the archive writer and are not an import authorization mechanism.
+/// computed headers and immutable replay inputs before publishing state. The WAL records that
+/// verification is pending until the trusted anchor is reached.
 ///
 /// Records are decoded up to `decrypt_concurrency` blocks at a time. The canonical chain walk is
 /// inherently sequential (the parent hash lives inside the decrypted record), so it decodes
@@ -317,6 +317,7 @@ pub async fn recover_replay_records_to_rocksdb_for_sessions(
     canonical_chain.reverse();
     let recovered_count = canonical_chain.len();
     let replay_storage = BlockReplayStorage::new_without_genesis(replay_db_path, chain_id);
+    replay_storage.begin_archive_recovery(anchor_block_number, anchor_block_hash)?;
     tracing::info!(
         recovered_count,
         replay_db_path = %replay_db_path.display(),
@@ -1126,6 +1127,10 @@ mod tests {
         let replay_storage = BlockReplayStorage::new_without_genesis(replay_db.path(), 0);
         assert_eq!(recovered, 2);
         assert_eq!(replay_storage.latest_record(), 1);
+        let recovery = replay_storage.archive_recovery().unwrap().unwrap();
+        assert_eq!(recovery.anchor_block, 1);
+        assert_eq!(recovery.anchor_hash, block_hash);
+        assert_eq!(recovery.verified_through, None);
         assert_eq!(replay_storage.get_replay_record(0).unwrap(), genesis_record);
         assert_eq!(replay_storage.get_replay_record(1).unwrap(), block_record);
     }

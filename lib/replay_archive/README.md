@@ -203,6 +203,22 @@ Repeat the option for each trusted session needed to cover the full chain from t
 in the selected sessions must still agree. Use storage access controls that reserve each selected
 prefix to its corresponding writer.
 
+Recovery marks an imported WAL pending until the node replays it through the
+trusted anchor. Retain the deployment's `database_identity.json` from a healthy
+node or trusted backup. Put that file and the imported WAL in a fresh database
+root, then run a replay-only main
+node with `network.enabled`, `consensus.enabled`, `batcher.enabled` and
+`service_publication.enabled` set to `false`, `replay_archive.type` set to `Noop`,
+and `sequencer.rebuild` unset. The node checks configured genesis and starts RPC
+after the applier verifies the anchored replay. If interrupted, restart with the
+same database root and verification profile to resume.
+
+After the log reports that the imported replay reached its trusted anchor,
+restart with the intended production configuration. This check validates replay
+execution through the supplied anchor. Use trusted archive sources for the exact
+replay inputs. WALs imported by older releases lack this marker and require a
+fresh import to run this verification path.
+
 ## CLI
 
 The recovery utility binary is `replay_archive_recovery`.
