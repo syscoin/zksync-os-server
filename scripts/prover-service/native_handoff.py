@@ -134,6 +134,32 @@ def safe_block(rpc, limits, head, confirmations):
     return block
 
 
+def confirmed_observation(rpc, settings, limits, scope, now):
+    head, _ = r.anchored_head(rpc, settings, limits, now)
+    safe = safe_block(rpc, limits, head, 0)
+    if safe is None:
+        return False
+    gate, chain = settings["proof_gate"], settings["chain_address"]
+    batch = scope["native_batch"]
+    # A rewind between the confirmation block and the head can invalidate an old observation.
+    blocks = (safe,) if safe["hash"] == head["hash"] else (safe, head)
+    for block in blocks:
+        anchor = {"blockHash": block["hash"], "requireCanonical": True}
+        s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, anchor]))) == limits["gate_code_hash"]
+                  and r.call_word(rpc, gate, "chain()", anchor, kind="address") == chain,
+                  "gate_configuration_changed")
+        observed = r.call_word(rpc, gate, "observedNativeBatch()", anchor)
+        verified = r.call_word(rpc, chain, "getTotalBatchesVerified()", anchor)
+        s.require(observed <= verified, "native_verified_height_rewound")
+        if observed < batch:
+            return False
+        s.require(r.call_word(rpc, chain, "storedBatchHash(uint256)", anchor, s.word(batch), "bytes32")
+                  == scope["native_hash"], "native_observation_batch_hash_changed")
+    for block in blocks:
+        r.check_anchor(rpc, settings, block)
+    return True
+
+
 def native_gap_end(rpc, gate, marker, first, safe_height):
     # The Rust journal stores the observation block hash. Only an event from the
     # reviewed gate can identify a native gap in a block that also settled service work.

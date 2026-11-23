@@ -510,6 +510,8 @@ class Coordinator:
         op = self.state["operations"][identifier]
         if not execute:
             return "would_" + call["action"]
+        if op["maintenance"] is None and self.state.get("native_observation_receipt"):
+            return {"next_action": "wait_for_existing_wallet_reservation"}
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
             self.signing_wallet(), transactions.Store(self.store.root / "transactions"), self.clock)
         if op["maintenance"] is None:
@@ -732,6 +734,8 @@ class Coordinator:
             return k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()))
 
         pending = self.state.get("native_observation")
+        if not pending and self.state.get("native_observation_receipt"):
+            return {"next_action": "wait_for_existing_wallet_reservation"}
         if not pending and not execute:
             return {"next_action": "would_observe_native_settlement"}
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
@@ -759,10 +763,28 @@ class Coordinator:
                         or result["status"] == "stale_unsigned" and entry["unsigned_transaction"] is None):
             self.state.pop("native_observation", None)
             self.save()
+        elif (result["status"] in ("authorization_stale_reserved", "nonce_conflict") and entry.get("invocation")
+              and native_handoff.confirmed_observation(self.rpc, self.settings, self.config["transaction_policy"],
+                                                       entry["invocation"]["scope"], int(self.clock()))):
+            if execute:
+                # Move ownership in one journal write. The maintenance wallet still owns the nonce.
+                self.state.pop("native_observation")
+                self.state["native_observation_receipt"] = operation_id
+                self.save()
+            return {**result, "next_action": "resume_after_confirmed_native_observation" if execute
+                    else "would_resume_after_confirmed_native_observation"}
         return result
 
     def step(self, execute=False):
         s.require(type(execute) is bool, "invalid_execute_flag")
+        observation = self.state.get("native_observation_receipt")
+        if observation:
+            manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
+                store=transactions.Store(self.store.root / "transactions"), clock=self.clock)
+            receipt = manager.step(observation, execute, receipt_only=True)
+            if execute and receipt["status"] in transactions.TERMINAL:
+                self.state.pop("native_observation_receipt")
+                self.save()
         self.reconcile_regrouped(execute)
         identifier = self.state["active"]
         if self.state.get("native_observation"):

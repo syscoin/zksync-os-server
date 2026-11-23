@@ -124,6 +124,12 @@ height, retires superseded work and preserves that service parent. A rewind or
 a changed native hash at either recorded anchor stops automatic recovery.
 Reconciliation of rewritten service history requires separate qualification.
 
+If another keeper records the intended native advance first, the coordinator
+resumes proof acquisition once the batch height and hash have the configured
+confirmations. It continues tracking its own observation transaction across
+restarts. The maintenance wallet keeps that nonce reserved until its own
+receipt is confirmed.
+
 Each settlement chain runs its own `ZkSysProofGateV1` and wrapper coordinator.
 The NEVM gate has the same joint sequencer/wrapper
 authorization and native proof binding as the child's gate on Gateway. It is the

@@ -252,6 +252,124 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(len(self.native.calls), 2)
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def test_another_keeper_confirms_native_observation_and_restart_picks_new_proof_work(self):
+        self.continuous_dispatch(batch_count=4)
+        old = self.acquired()
+        self.rpc.native_proved = 2
+        self.assertEqual(self.controller.step(True)["status"], "broadcast")
+        observation = self.controller.state["native_observation"]
+        store = c.transactions.Store(self.control_store.root / "transactions")
+
+        def observation_row():
+            return store.load(self.f["settings"], self.config["transaction_policy"])["operations"][observation["operation_id"]]
+
+        original = observation_row()
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+        self.assertIsNone(original["receipt"])
+        before_external_observation = self.rpc.head["hash"]
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.rpc.observed_native = 2
+        observed_selector = "0x" + r.selector("observedNativeBatch()").hex()
+        original_call = self.rpc.call
+
+        def historical_call(method, params):
+            if (method == "eth_call" and params[0]["data"] == observed_selector
+                    and params[1]["blockHash"] == before_external_observation):
+                return "0x" + s.word(0).hex()
+            return original_call(method, params)
+
+        with patch.object(self.rpc, "call", side_effect=historical_call):
+            self.controller_reload().step(True)
+            self.assertEqual(self.controller.state["active"], old)
+            self.assertEqual(self.controller.state["native_observation"], observation)
+            self.assertEqual(len(self.native.calls), 2)
+
+        self.rpc.advance()
+        self.now = self.rpc.now
+        full = self.f["evidence"]
+        payload = {**self.f["fri_payload"], "from_batch_number": 3, "fri_proofs": self.f["fri_payload"]["fri_proofs"][2:]}
+        evidence = {**full, "previous_batch": full["batches"][1]["stored"], "batches": full["batches"][2:]}
+        self.native.responses += [(200, {}, {**payload, "lease_token": h(191)}), (200, {}, evidence)]
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "resume_after_confirmed_native_observation")
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "native_advance_requires_new_range")
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "wait_for_existing_wallet_reservation")
+        new = self.controller.state["active"]
+        self.assertNotEqual(new, old)
+        directory = self.controller.directory(new)
+        self.assertEqual(io.private_json(directory / "payload.json"), payload)
+        self.assertEqual(io.private_json(directory / "evidence.json"), evidence)
+        self.assertIsNotNone(self.controller.state["operations"][new]["bundle"])
+        self.assertIsNone(self.controller.state["operations"][new]["maintenance"])
+        self.assertEqual(len(self.native.calls), 4)
+        self.assertIsNone(observation_row()["receipt"])
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+
+        self.rpc.receipt = {"transactionHash": original["transaction_hash"], "from": self.f["settings"]["sequencer"],
+                            "to": self.f["settings"]["proof_gate"], "blockNumber": self.rpc.head["number"],
+                            "blockHash": self.rpc.head["hash"], "status": "0x1", "logs": []}
+        self.rpc.nonce = self.rpc.pending_nonce = 1
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "wait_for_existing_wallet_reservation")
+        self.assertEqual(observation_row()["status"], "mined_unconfirmed")
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.assertEqual(self.controller_reload().step(True)["status"], "broadcast")
+        row = observation_row()
+        self.assertEqual(row["status"], "confirmed")
+        self.assertEqual(self.controller_reload().state["active"], new)
+        for field in ("unsigned_transaction", "raw_transaction", "transaction_hash"):
+            self.assertEqual(row[field], original[field])
+        signatures = [params[0] for method, params in self.wallet.calls if method == "eth_signTransaction"]
+        self.assertEqual(len(signatures), 2)
+        self.assertEqual(signatures[0], original["unsigned_transaction"])
+        self.assertEqual(s.uint(signatures[1]["nonce"]), 1)
+        self.assertEqual(self.controller.state["operations"][new]["maintenance"]["call"]["action"], "openPackage")
+        self.assertEqual(len(self.rpc.sent), 2)
+        self.assertNotEqual(self.rpc.sent[1], original["raw_transaction"])
+
+    def test_reserved_observation_keeps_its_lease_on_changed_batch_hash_or_native_rewind(self):
+        old = self.acquired()
+        self.rpc.native_proved = 2
+        self.assertEqual(self.controller.step(True)["status"], "broadcast")
+        observation = self.controller.state["native_observation"]
+        store = c.transactions.Store(self.control_store.root / "transactions")
+        original = store.load(self.f["settings"], self.config["transaction_policy"])["operations"][observation["operation_id"]]
+        self.rpc.advance()
+        confirmed_hash = self.rpc.head["hash"]
+        self.rpc.observed_native = 2
+        self.rpc.advance()
+        self.now = self.rpc.now
+        original_call = self.rpc.call
+        stored_call = "0x" + (r.selector("storedBatchHash(uint256)") + s.word(2)).hex()
+        for block_hash in (confirmed_hash, self.rpc.head["hash"]):
+            with self.subTest(block_hash=block_hash):
+                def changed_hash(method, params):
+                    if (method == "eth_call" and params[0]["data"] == stored_call
+                            and params[1]["blockHash"] == block_hash):
+                        return h(205)
+                    return original_call(method, params)
+                with patch.object(self.rpc, "call", side_effect=changed_hash), self.assertRaisesRegex(
+                        s.Error, "native_observation_batch_hash_changed"):
+                    self.controller_reload().step(True)
+                self.assertEqual(self.controller_reload().state["native_observation"], observation)
+                self.assertEqual(self.controller.state["active"], old)
+
+        frontiers = {"0x" + r.selector(signature).hex() for signature in ("observedNativeBatch()", "getTotalBatchesVerified()")}
+        def rewound_tip(method, params):
+            if (method == "eth_call" and params[0]["data"] in frontiers
+                    and params[1]["blockHash"] == self.rpc.head["hash"]):
+                return "0x" + s.word(1).hex()
+            return original_call(method, params)
+        with patch.object(self.rpc, "call", side_effect=rewound_tip):
+            self.assertEqual(self.controller_reload().step(True)["status"], "authorization_stale_reserved")
+        self.assertEqual(self.controller_reload().state["native_observation"], observation)
+        self.assertEqual(self.controller.state["active"], old)
+        row = store.load(self.f["settings"], self.config["transaction_policy"])["operations"][observation["operation_id"]]
+        self.assertEqual(row["unsigned_transaction"], original["unsigned_transaction"])
+        self.assertEqual(row["raw_transaction"], original["raw_transaction"])
+        self.assertIsNone(row["receipt"])
+        self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
+
     def publish_signed_three_batch_relay(self):
         self.continuous_dispatch(batch_count=3)
         identifier, _ = self.frozen()

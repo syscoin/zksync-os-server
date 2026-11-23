@@ -304,18 +304,19 @@ class Transactions:
         return {"operation_id": operation_id, "action": op["call"]["action"], "next_action": action,
                 **{key: copy.deepcopy(op[key]) for key in ("status", "transaction_hash", "broadcast_attempts", "last_error", "receipt")}}
 
-    def step(self, operation_id, execute=False, preflight=None):
-        s.require(type(execute) is bool and callable(preflight), "maintenance_preflight_required")
+    def step(self, operation_id, execute=False, preflight=None, *, receipt_only=False):
+        s.require(type(execute) is bool and type(receipt_only) is bool and (receipt_only or callable(preflight)),
+                  "maintenance_preflight_required")
         with self.store.lock() if execute else nullcontext():
             self.state = self.store.load(self.settings, self.limits)
             s.require(operation_id in self.state["operations"], "unknown_transaction_operation")
             for identifier, op in self.state["operations"].items():
                 self._validate(identifier, op)
-            result = self._step(operation_id, execute, preflight)
+            result = self._step(operation_id, execute, preflight, receipt_only)
             self.save(execute)
             return result
 
-    def _step(self, operation_id, execute, preflight):
+    def _step(self, operation_id, execute, preflight, receipt_only):
         op = self.state["operations"][operation_id]
         now = int(self.clock())
         head, anchor = r.anchored_head(self.rpc, self.settings, self.limits, now)
@@ -327,6 +328,9 @@ class Transactions:
                 return self.summary(operation_id, "complete")
             op["status"] = "mined_unconfirmed"
             return self.summary(operation_id, "wait_for_confirmations")
+        if receipt_only:
+            r.check_anchor(self.rpc, self.settings, head)
+            return self.summary(operation_id, "wait_for_reserved_receipt")
         reservation = self._reservation_check(operation_id, head)
         if reservation is not None:
             return reservation
