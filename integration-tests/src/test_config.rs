@@ -297,6 +297,12 @@ pub async fn run_component_fixture_bootstrap(
             encryption: zksync_os_server::config::ReplayArchiveEncryptionConfig::Noop,
         };
     }
+    tokio::time::timeout(
+        Duration::from_secs(deadline_unix.saturating_sub(now())),
+        crate::component_replay::verify_pending_replay(&config),
+    )
+    .await
+    .context("component archive verification deadline")??;
     let runtime = RuntimeBuilder::new(
         RuntimeConfig::default().with_tokio(TokioConfig::existing_handle(Handle::current())),
     )

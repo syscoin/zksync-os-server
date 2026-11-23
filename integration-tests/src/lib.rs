@@ -776,6 +776,7 @@ impl Tester {
                 &config.general_config.rocks_db_path,
             )
             .await?;
+            component_replay::verify_pending_replay(&config).await?;
         }
         // In-process fake provers use job managers directly; keep the HTTP API only for tests
         // that can hand jobs to external prover workers.
