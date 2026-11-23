@@ -1,11 +1,12 @@
 //! Only newly generated, source-registered Anvil component replay records are
-//! recovered here. Ordinary node startup validates their computed block hashes;
+//! recovered here. A replay-only node verifies the anchor before normal fixture startup;
 //! no executed state, private database or canonical fixture is substituted.
 use crate::config::fixture_backend::{
     FileIdentity, ValidatedFixtureInventory, component::ComponentReplayArchive,
 };
 use alloy::primitives::B256;
 use anyhow::{Context, ensure};
+use reth_tasks::{RuntimeBuilder, RuntimeConfig, TokioConfig};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -15,6 +16,7 @@ use zksync_os_replay_archive::{
     DEFAULT_DECRYPT_CONCURRENCY, FileSystemReplayArchiveReader, ReplayArchiveStorageReader,
     recover_replay_records_to_rocksdb_with_optional_decryption,
 };
+use zksync_os_server::config::{Config, ReplayArchiveConfig};
 use zksync_os_storage::db::BlockReplayStorage;
 use zksync_os_storage_api::{ReadReplay, ReplayRecord};
 
@@ -184,7 +186,7 @@ pub async fn export_replay(
 }
 
 /// Source-registered descriptors bind every object byte and the canonical anchor.
-/// Recovery writes only a fresh WAL; ordinary startup reconstructs all other DBs.
+/// Recovery writes only a fresh WAL; the replay-only startup reconstructs derived state.
 pub async fn recover_replay(
     root: &Path,
     archive: &ComponentReplayArchive,
@@ -256,6 +258,64 @@ pub async fn recover_replay(
         "recovered canonical WAL anchor mismatch"
     );
     drop(wal);
+    Ok(())
+}
+
+/// Both registered component fixtures and the generator's freshly imported WAL go through
+/// the production verification barrier. A fresh generator run has no WAL to verify.
+pub(crate) async fn verify_pending_replay(config: &Config) -> anyhow::Result<()> {
+    let wal_path = config.general_config.rocks_db_path.join("block_replay_wal");
+    if !wal_path.join("CURRENT").try_exists()? {
+        return Ok(());
+    }
+    let chain_id = config
+        .genesis_config
+        .chain_id
+        .context("component chain ID")?;
+    let pending =
+        BlockReplayStorage::new_without_genesis(&wal_path, chain_id).archive_recovery()?;
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+
+    let mut replay = config.clone();
+    replay.network_config.enabled = false;
+    replay.consensus_config.enabled = false;
+    replay.batcher_config.enabled = false;
+    replay.service_publication_config.enabled = false;
+    replay.prover_api_config.enabled = false;
+    replay.sequencer_config.rebuild = None;
+    replay.replay_archive_config = ReplayArchiveConfig::Noop;
+    replay.rpc_config.address = "127.0.0.1:0".into();
+    replay.status_server_config.enabled = false;
+    let runtime = RuntimeBuilder::new(RuntimeConfig::default().with_tokio(
+        TokioConfig::existing_handle(tokio::runtime::Handle::current()),
+    ))
+    .build()
+    .context("component replay verification runtime")?;
+    let manager = runtime
+        .take_task_manager_handle()
+        .context("component replay task manager")?;
+    // run() returns only after reexecution reaches the anchor. A failed critical task can
+    // terminate the pipeline before then, so it must also interrupt the startup wait.
+    let verified = tokio::select! {
+        _ = zksync_os_server::run(&runtime, replay) => Ok(()),
+        result = manager => match result {
+            Ok(Err(error)) => Err(anyhow::anyhow!("component replay critical task failed: {error}")),
+            Ok(Ok(())) => Err(anyhow::anyhow!("component replay runtime stopped before verification")),
+            Err(error) => Err(anyhow::Error::new(error).context("component replay task manager join")),
+        }
+    };
+    crate::shutdown_runtime(runtime).await?;
+    verified?;
+
+    let wal = BlockReplayStorage::new_without_genesis(&wal_path, chain_id);
+    ensure!(
+        wal.archive_recovery()?.is_none()
+            && wal.latest_record() == pending.anchor_block
+            && wal.get_canonical_block_hash(pending.anchor_block) == Some(pending.anchor_hash),
+        "component replay did not finish at its trusted archive anchor"
+    );
     Ok(())
 }
 
