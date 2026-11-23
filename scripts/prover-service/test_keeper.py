@@ -277,7 +277,9 @@ class KeeperTests(unittest.TestCase):
         self.config["settings"]["coordinator"] = s.ZERO_ADDRESS
         self.config["policy"]["coordinator_code_hash"] = s.ZERO
         self.rpc = NativeRpc(self.f, self.config, item)
-        self.assertIsNone(self.permit()["state"]["deadline"])
+        permit = self.permit()
+        self.assertEqual(permit["state"]["deadline"], k.NO_TURN_DEADLINE)
+        self.assertEqual(min(1400, permit["state"]["deadline"]), 1400)
         self.rpc.frozen_bootstrap["batchTo"] = 3
         with self.assertRaisesRegex(s.Error, "bootstrap_package_repaired"):
             self.permit()

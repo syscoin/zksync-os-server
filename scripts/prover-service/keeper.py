@@ -13,6 +13,11 @@ import roster as rosters
 import service as s
 
 
+# The pinned rental pool takes the numeric minimum of the service and native lease deadlines.
+# Bootstrap has no wrapper turn, so only that independent native lease limits its compute window.
+NO_TURN_DEADLINE = (1 << 64) - 1
+
+
 def sha(value):
     return hashlib.sha256(s.canonical(value)).hexdigest()
 
@@ -220,7 +225,7 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True, *,
     s.require(call(gate, "lastAcceptedPackage()", kind="bytes32") == accepted["parent"], "accepted_parent_changed")
     active = call(gate, "serviceActive()", kind="bool")
     installed = call(gate, "coordinator()", kind="address")
-    deadline, control = None, False
+    deadline, control = NO_TURN_DEADLINE, False
     if mode == "bootstrap":
         s.require(not active and installed == s.ZERO_ADDRESS, "bootstrap_phase_closed")
         s.require(limits["expected_operator"] == settings["sequencer"], "bootstrap_requires_local_sequencer")
@@ -260,7 +265,7 @@ def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True, *,
         for period in {duty["period"] for duty in prepared["duties"]}:
             s.require(period <= accepted["period"], "future_duty_period")
             s.require(not s.round_closed(settings, registry_rpc, period), "closed_duty_period")
-    if require_open and deadline is not None:
+    if require_open:
         # Host wall time also consumes the work window when an RPC head is delayed.
         s.require(now + runtime + limits["reserve_seconds"] < deadline, "insufficient_compute_window")
     r.check_anchor(rpc, settings, head)

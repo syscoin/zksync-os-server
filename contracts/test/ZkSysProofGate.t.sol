@@ -463,6 +463,8 @@ contract ZkSysProofGateTest is Test {
         verifier.setFake(true);
         vm.expectRevert(ZkSysProofGateV1.SettlementConfigurationChanged.selector);
         gate.submitBootstrap(accepted, duties, outputs, proofData, signature);
+        vm.expectRevert(ZkSysProofGateV1.SettlementConfigurationChanged.selector);
+        gate.installCoordinator(ZkSysWrapperCoordinatorV1(address(0)));
         verifier.setFake(false);
         settlement.setRoleCount(2);
         vm.expectRevert(ZkSysProofGateV1.SettlementConfigurationChanged.selector);

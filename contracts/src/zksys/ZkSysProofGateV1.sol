@@ -157,6 +157,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     /// the final bootstrap parent and first batch. It cannot replace a live coordinator.
     function installCoordinator(ZkSysWrapperCoordinatorV1 coordinator_) external {
         if (msg.sender != deploymentAuthority) revert Unauthorized();
+        _checkVerifier();
         _observeNativeSettlement();
         if (address(coordinator) != address(0) || serviceActive || _bootstrapPackage.batchFrom != 0) {
             revert WrongPhase();

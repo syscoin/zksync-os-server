@@ -47,7 +47,9 @@ direct Gateway transactions. Preserve every native lease, pool and relay journal
 4. Obtain a permit with `keeper.py permit` for the exact request, evidence
    and native payload. Enqueue
    the SNARK in the pinned prover pool with that permit, preserving the original
-   lease deadline. Follow the pool's `export`, `launch`, and `complete` sequence
+   lease deadline. The V1 permit represents the absence of a bootstrap turn deadline
+   as the maximum uint64 value. The rental pool takes the earlier of that value and
+   the actual native lease expiry. Follow the pool's `export`, `launch`, and `complete` sequence
    in the [prover pool guide](../prover-rental/pool-README.md). Import the result
    and submit it through the original native lease as in the keeper guide. Neither
    a successful rental nor a native API acknowledgement alone verifies the proof.

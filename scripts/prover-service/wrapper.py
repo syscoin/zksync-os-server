@@ -294,9 +294,7 @@ class Wrapper:
             permit = k.permit(self.keeper, self.rpc, request, body["evidence"], payload, self.clock(), runtime,
                               enrollment=enrollment)
             io.immutable_json(permit_path, permit)
-        deadline = body["native_lease_deadline"]
-        if permit["state"]["deadline"] is not None:
-            deadline = min(deadline, permit["state"]["deadline"])
+        deadline = min(body["native_lease_deadline"], permit["state"]["deadline"])
         s.require(self.clock() + runtime + self.keeper["policy"]["reserve_seconds"] < deadline,
                   "native_lease_too_short_for_compute")
         # The pool's own durable job ID makes a crash between enqueue and save idempotent.
