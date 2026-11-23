@@ -1118,7 +1118,7 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
         last_l1_executed_block,
     };
 
-    node_startup_state.assert_consistency();
+    node_startup_state.assert_consistency(archive_recovery.map(|recovery| recovery.anchor_block));
     if let Some(recovery) = archive_recovery
         && recovery.verified_through.is_none()
     {

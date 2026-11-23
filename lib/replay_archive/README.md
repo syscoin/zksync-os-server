@@ -214,7 +214,10 @@ after the applier verifies the anchored replay. If interrupted, restart with the
 same database root and verification profile to resume.
 
 After the log reports that the imported replay reached its trusted anchor,
-restart with the intended production configuration. This check validates replay
+restart with the intended production configuration. An external node can then
+catch up from its trusted peers when settlement has advanced beyond the backup.
+Normal main-node startup requires its WAL to cover the latest committed L2 block.
+This check validates replay
 execution through the supplied anchor. Use trusted archive sources for the exact
 replay inputs. WALs imported by older releases lack this marker and require a
 fresh import to run this verification path.
