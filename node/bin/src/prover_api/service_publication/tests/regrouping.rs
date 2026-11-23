@@ -221,19 +221,26 @@ async fn journaled_wrappers(
 }
 
 #[tokio::test]
-async fn startup_finishes_parked_snark_unlink_after_restart_or_a_later_native_advance() {
+async fn startup_regroups_live_or_previously_parked_work_after_restart() {
     use crate::prover_api::{
         snark_proof_journal::SnarkProofJournal, snark_proving_pipeline_step::prepare_startup_replay,
     };
 
-    for frontier in [2, 3] {
+    for (frontier, already_parked) in [(2, false), (2, true), (3, true)] {
         let asserter = Asserter::new();
         let (publication, lane, _, _, temp) = fixture(&asserter, false).await;
         let old = command(&lane, 4, 5, 7);
         let (journal, _) = SnarkProofJournal::open(temp.path()).await.unwrap();
-        journaled_wrappers(&journal, &lane).await;
-        anchor(&asserter, &lane);
-        publication.regroup_unproved(&old, 2).await.unwrap();
+        assert_eq!(journaled_wrappers(&journal, &lane).await.len(), 2);
+        let (_, directory, _) = publication
+            .journal
+            .stage(&Work::new(&old, &publication).unwrap(), 64)
+            .unwrap();
+        assert!(!directory.join("regrouped.json").exists());
+        if already_parked {
+            anchor(&asserter, &lane);
+            publication.regroup_unproved(&old, 2).await.unwrap();
+        }
         drop(journal);
         let (journal, _) = SnarkProofJournal::open(temp.path()).await.unwrap();
         let validated = journaled_wrappers(&journal, &lane).await;
@@ -261,6 +268,17 @@ async fn startup_finishes_parked_snark_unlink_after_restart_or_a_later_native_ad
             vec![(frontier + 1, 5)]
         );
         assert_eq!(journal.record_count().await, 1);
+        let bytes = read_private(&directory.join("regrouped.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["native_proved"],
+            2
+        );
+        assert!(
+            !directory.join("superseded.json").exists()
+                && !directory.join("confirmed.json").exists()
+        );
     }
 }
 
