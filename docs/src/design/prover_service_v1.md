@@ -15,8 +15,8 @@ The audited issuance curve and supply cap are unchanged. There is no new fixed
 50% pool. Passive weight is native stake plus the existing 100,000 Sentry base
 weight. An authenticated membership observation must establish at least 210,240
 Core blocks of age before a Sentry can subscribe for proving service.
-Each period can accept up to 256 subscriptions, which bounds the complete
-enrollment snapshot the dispatcher reads.
+The dispatcher reads each period's complete enrollment in pages pinned to one
+finalized registry block. Eligibility and operator bindings use that same block.
 
 Registration and probation contribute **zero bonus weight** to the denominator.
 Completing the configured quota of distinct, accepted, nonempty canonical batch
@@ -331,8 +331,8 @@ queue.
 Only verifier-backed FRI acceptance or recovery of the identical retained proof
 and metadata can produce an accepted duty. Safe exports omit BasicAuth and lease
 capabilities. The adapter is an EOA/file-handoff workflow with one journal per
-sequencer/period/phase, not a public worker server. Its fixed snapshot is bounded
-to 256 enrolled accounts. Retained assignments and audit history continue in
+sequencer/period/phase, not a public worker server. A period's journal retains
+the complete eligible roster. Retained assignments and audit history continue in
 an indexed on-disk journal under the same period identity; there is no lifetime
 assignment count cutoff. Large JSON journals migrate to SQLite while preserving
 their exact cursors, nonces, credit slots and recovery records. The metadata file

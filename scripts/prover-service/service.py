@@ -590,7 +590,8 @@ def _validate_manifest_v1(settings, manifest, subscriptions, evidence, allow_emp
     uint(payload["period"], 64)
     nonzero(payload["previous_cursor"])
     minimum = 0 if allow_empty else 1
-    require(type(subscriptions) is list and minimum <= len(subscriptions) <= 1000, "invalid_subscription_snapshot")
+    require(type(subscriptions) is list and len(subscriptions) >= minimum
+            and (enrollment is not None or len(subscriptions) <= 1000), "invalid_subscription_snapshot")
     require(payload["subscription_snapshot_hash"] == keccak(canonical(subscriptions)), "subscription_snapshot_mismatch")
     if enrollment is not None:
         require(type(enrollment) is EnrollmentAuthority, "authenticated_enrollment_authority_required")
