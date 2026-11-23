@@ -226,6 +226,7 @@ impl SnarkProvingPipelineStep {
         sl_chain_id: u64,
         required_confirmations: u64,
         expected_vk_hash: B256,
+        priority_package_limit: Option<u64>,
         // SYSCOIN: Startup verifier policy already enforces an all-real or all-fake topology.
         fake_proving: bool,
     ) -> (
@@ -242,16 +243,19 @@ impl SnarkProvingPipelineStep {
             sl_chain_id,
             expected_vk_hash,
         ));
-        let snark_job_manager = Arc::new(SnarkJobManager::new_with_journal(
-            proof_commands_sender,
-            max_fris_per_snark,
-            target_fris_per_snark,
-            max_snark_batch_wait,
-            assignment_timeout,
-            max_assigned_batch_range,
-            journal.clone(),
-            preflight.clone(),
-        ));
+        let snark_job_manager = Arc::new(
+            SnarkJobManager::new_with_journal(
+                proof_commands_sender,
+                max_fris_per_snark,
+                target_fris_per_snark,
+                max_snark_batch_wait,
+                assignment_timeout,
+                max_assigned_batch_range,
+                journal.clone(),
+                preflight.clone(),
+            )
+            .with_priority_package_limit(priority_package_limit),
+        );
 
         let result = Self {
             service_publication: None,
@@ -1338,6 +1342,7 @@ mod tests {
             SL_CHAIN_ID,
             1,
             B256::ZERO,
+            None,
             true,
         );
 

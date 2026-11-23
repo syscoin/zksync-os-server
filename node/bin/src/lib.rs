@@ -63,7 +63,7 @@ use crate::provider::{ProviderKind, ProviderResponseByteBudget, build_node_provi
 use crate::tree_manager::TreeManager;
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Bytes, keccak256};
+use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Bytes, U256, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol_types::SolCall;
@@ -89,6 +89,7 @@ use zksync_os_contract_interface::l1_discovery::{
     BatchVerificationSL, L1State, L2_BRIDGEHUB_ADDRESS,
 };
 use zksync_os_contract_interface::models::BatchDaInputMode;
+use zksync_os_contract_interface::prover_service_v1::{IZkSysPriorityGuardV1, IZkSysProofGateV1};
 use zksync_os_contract_interface::{
     IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call, ZkChain,
 };
@@ -600,7 +601,11 @@ async fn authenticate_l1_archive_genesis_upgrade(
     })
 }
 
-pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
+pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
+    config
+        .batcher_config
+        .resolve_bitcoin_da_auth()
+        .expect("invalid Bitcoin DA RPC configuration");
     let BoundListeners {
         rpc: rpc_listener,
         status: prebound_status_listener,
@@ -908,6 +913,15 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     } else {
         gateway_provider.clone().unwrap()
     };
+    if config.service_publication_config.enabled {
+        tokio::time::timeout(
+            config.service_publication_config.rpc_timeout,
+            validate_service_priority_package_limit(&config, &l1_state, &sl_provider, chain_id),
+        )
+        .await
+        .expect("timed out validating the deployed service priority guard")
+        .expect("invalid deployed service priority guard or package limit");
+    }
     // SYSCOIN: Settlement mode is discovered from the L1 diamond, not from the
     // optional Gateway provider config. A Gateway RPC may be configured before
     // or after migration while the chain still settles directly on L1.
@@ -936,6 +950,21 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         .expect("configured pubdata mode does not match the canonical settlement topology");
     }
     if node_role.is_main() {
+        if block_production_enabled(&config)
+            && config.sequencer_config.max_blocks_to_produce != Some(0)
+        {
+            let recipient = config.sequencer_config.fee_collector_address;
+            let development_recipient =
+                alloy::primitives::address!("36615Cf349d7F6344891B1e7CA7C72883F5dc049");
+            assert!(
+                !recipient.is_zero(),
+                "block production requires `sequencer.fee_collector_address`"
+            );
+            assert!(
+                l1_state.l1_chain_id == 31337 || recipient != development_recipient,
+                "the development fee collector is only supported on the local development L1"
+            );
+        }
         // SYSCOIN: Enforce the effective on-chain batch-verification signer policy at startup.
         validate_batch_verification_startup_policy(
             &config.batch_verification_config,
@@ -1681,6 +1710,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             // Gateway-only empty interop companion fallback.
             interop_companion_idle_delay: config.sequencer_config.interop_companion_idle_delay,
             max_transactions_in_block: config.sequencer_config.max_transactions_in_block,
+            priority_tx_limit: config.batcher_config.priority_txs_per_batch_limit(),
             // We set the value to the same as for the batch, since it should be enforced by batcher, but don't want to exceed it for the block
             interop_roots_per_block: config.batcher_config.interop_roots_per_batch_limit,
         },
@@ -2064,6 +2094,53 @@ fn validate_deployed_verifier_prover_policy(
         prover_api_config.proof_storage.batch_with_proof_capacity.0
             >= MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY,
         "external real proving requires prover_api.proof_storage.batch_with_proof_capacity of at least 8 GiB"
+    );
+    Ok(())
+}
+
+/// Bind the production limit to the same settlement-chain gate and guard the service will use.
+async fn validate_service_priority_package_limit(
+    config: &Config,
+    l1_state: &L1State,
+    provider: &NodeProvider,
+    child_chain_id: u64,
+) -> anyhow::Result<()> {
+    let service = &config.service_publication_config;
+    let configured_limit = config
+        .batcher_config
+        .priority_package_limit
+        .context("service publication requires batcher.priority_package_limit")?;
+    let settlement_block = provider
+        .get_block_by_number(l1_state.sl_block_number.into())
+        .await?
+        .context("settlement provider did not return the startup block")?;
+    let block = BlockId::hash_canonical(settlement_block.header.hash);
+    let chain_address = l1_state.diamond_proxy_address_sl();
+    anyhow::ensure!(
+        keccak256(provider.get_code_at(service.gate).block_id(block).await?)
+            == service.gate_code_hash,
+        "service gate runtime does not match reviewed pin"
+    );
+    let gate = IZkSysProofGateV1::new(service.gate, provider.clone());
+    anyhow::ensure!(
+        gate.chain().block(block).call().await? == chain_address
+            && gate.childChainId().block(block).call().await? == U256::from(child_chain_id)
+            && gate.timelock().block(block).call().await? == l1_state.validator_timelock_sl
+            && gate.policyHash().block(block).call().await? == service.policy_hash,
+        "service gate identity does not match the selected settlement chain"
+    );
+    let guard_address = gate.priorityGuard().block(block).call().await?;
+    let guard = IZkSysPriorityGuardV1::new(guard_address, provider.clone());
+    anyhow::ensure!(
+        guard.acceptanceGate().block(block).call().await? == service.gate
+            && guard.chain().block(block).call().await? == chain_address
+            && guard.policyHash().block(block).call().await? == service.policy_hash,
+        "service priority guard does not match the reviewed service gate"
+    );
+    let deployed_limit = guard.maxPriorityPerPackage().block(block).call().await?;
+    anyhow::ensure!(
+        deployed_limit == configured_limit,
+        "configured priority package limit {configured_limit} differs from deployed guard limit {deployed_limit}"
     );
     Ok(())
 }
@@ -2762,6 +2839,7 @@ async fn run_main_node_pipeline(
             node_state_on_startup.l1_state.sl_chain_id,
             prove_required_confirmations,
             expected_v8_vk_hash,
+            config.batcher_config.priority_package_limit,
             // SYSCOIN: Bind restart recovery to the same fake/real lane validated at startup.
             config.prover_api_config.fake_snark_provers.enabled,
         );
@@ -2945,6 +3023,7 @@ async fn run_main_node_pipeline(
         .pipe(Batcher {
             startup_config: BatcherStartupConfig {
                 last_committed_batch: node_state_on_startup.l1_state.last_committed_batch,
+                last_proved_batch: node_state_on_startup.l1_state.last_proved_batch,
                 last_executed_batch: node_state_on_startup.l1_state.last_executed_batch,
                 last_persisted_block: node_state_on_startup.block_replay_storage_last_block,
             },
@@ -2972,6 +3051,7 @@ async fn run_main_node_pipeline(
         .pipe(GaplessCommitter {
             next_expected_batch_number: node_state_on_startup.l1_state.last_executed_batch + 1,
             last_committed_batch_number: node_state_on_startup.l1_state.last_committed_batch,
+            priority_txs_per_batch_limit: config.batcher_config.priority_txs_per_batch_limit(),
             proof_storage,
             batch_verification_l1_config: node_state_on_startup.l1_state.batch_verification.clone(),
         })

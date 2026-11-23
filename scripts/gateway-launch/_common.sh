@@ -3404,7 +3404,8 @@ PY
 }
 
 gl_validate_funder_signer_config() {
-  local funder_signer account_name keystore_path
+  local funder_signer account_name keystore_path private_key
+  local development_key=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
   if [ -z "${FUNDER_SIGNER:-}" ]; then
     if gl_l1_network_requires_external_signer; then
       FUNDER_SIGNER="account"
@@ -3429,7 +3430,17 @@ gl_validate_funder_signer_config() {
     if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
       gl_die "FUNDER_SIGNER=private-key is not allowed on ${L1_NETWORK}; import the funder into a Foundry account/keystore, use hardware/KMS signing, or set GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true for an explicit unsafe override"
     fi
-    export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+    if [ "${L1_NETWORK:-}:${L1_CHAIN_ID:-}" = localhost:31337 ]; then
+      FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-${development_key}}"
+    else
+      gl_require FUNDER_PRIVATE_KEY
+      private_key="$(gl_to_lower "${FUNDER_PRIVATE_KEY}")"
+      [[ "${private_key}" =~ ^(0x)?[0-9a-f]{64}$ ]] ||
+        gl_die "FUNDER_PRIVATE_KEY must be an explicit 32-byte private key"
+      [ "${private_key#0x}" != "${development_key#0x}" ] ||
+        gl_die "the Anvil development key cannot fund ${L1_NETWORK}"
+    fi
+    export FUNDER_PRIVATE_KEY
     ;;
   *)
     gl_die "unsupported FUNDER_SIGNER=${funder_signer}; expected account, keystore, ledger, trezor, aws, gcp, or private-key"
@@ -3652,6 +3663,8 @@ if check_only:
     raise SystemExit(0)
 
 funder = cast_check_output(["cast", "wallet", "address", *funder_wallet_args]).strip()
+if l1_network in {"tanenbaum", "mainnet"} and funder.lower() == "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266":
+    raise SystemExit("the Anvil development account cannot fund a public network")
 funder_balance = wei_balance(funder)
 starting_nonce = int(
     cast_check_output(
@@ -3757,96 +3770,48 @@ while pending_targets:
 PY
 }
 
-gl_resolve_syscoin_cookie_file() {
-  local cookie_file datadir network candidate
-  cookie_file="${BITCOIN_DA_COOKIE_FILE:-}"
-  if [ -n "${cookie_file}" ] && [ -f "${cookie_file}" ]; then
-    printf '%s\n' "${cookie_file}"
+gl_validate_bitcoin_da_credentials() {
+  if [ -n "${BITCOIN_DA_COOKIE_FILE:-}" ]; then
+    [ -z "${BITCOIN_DA_RPC_USER:-}" ] && [ -z "${BITCOIN_DA_RPC_PASSWORD:-}" ] ||
+      gl_die "choose either BITCOIN_DA_COOKIE_FILE or explicit Bitcoin DA RPC credentials"
+    [[ "${BITCOIN_DA_COOKIE_FILE}" = /* ]] || gl_die "BITCOIN_DA_COOKIE_FILE must be absolute"
+  elif [ -n "${BITCOIN_DA_RPC_URL:-}${BITCOIN_DA_RPC_USER:-}${BITCOIN_DA_RPC_PASSWORD:-}" ]; then
+    gl_require BITCOIN_DA_RPC_USER
+    gl_require BITCOIN_DA_RPC_PASSWORD
+  else
     return 0
   fi
 
-  datadir="${SYSCOIN_DATADIR:-${HOME}/.syscoin}"
-  network="${SYSCOIN_NETWORK:-}"
-  if [ -n "${network}" ]; then
-    candidate="${datadir}/${network}/.cookie"
-    if [ -f "${candidate}" ]; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
-  fi
+  gl_require BITCOIN_DA_RPC_URL
+  BITCOIN_DA_RPC_URL="${BITCOIN_DA_RPC_URL}" BITCOIN_DA_COOKIE_FILE="${BITCOIN_DA_COOKIE_FILE:-}" python3 - <<'PYVALIDATE'
+import ipaddress
+import os
+import urllib.parse
 
-  candidate="${datadir}/testnet3/.cookie"
-  if [ -f "${candidate}" ]; then
-    printf '%s\n' "${candidate}"
-    return 0
-  fi
-
-  return 1
-}
-
-gl_load_bitcoin_da_cookie_credentials() {
-  local cookie_file cookie
-  if [ -n "${BITCOIN_DA_RPC_USER:-}" ] && [ -n "${BITCOIN_DA_RPC_PASSWORD:-}" ]; then
-    return 0
-  fi
-
-  cookie_file="$(gl_resolve_syscoin_cookie_file || true)"
-  [ -n "${cookie_file}" ] || return 0
-  cookie="$(< "${cookie_file}")"
-  : "${BITCOIN_DA_RPC_USER:=${cookie%%:*}}"
-  : "${BITCOIN_DA_RPC_PASSWORD:=${cookie#*:}}"
-  export BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD
-}
-
-gl_refresh_bitcoin_da_config_from_cookie() {
-  local config_path="${1:?config path required}"
-  local cookie_file
-  [ -f "${config_path}" ] || gl_die "missing os-server config: ${config_path}"
-
-  cookie_file="$(gl_resolve_syscoin_cookie_file || true)"
-  if [ -z "${cookie_file}" ]; then
-    if grep -Eq '^[[:space:]]*bitcoin_da_rpc_(user|password):' "${config_path}"; then
-      echo "gateway-launch: Syscoin cookie not found; using existing Bitcoin DA RPC credentials in ${config_path}" >&2
-    fi
-    return 0
-  fi
-
-  python3 - "${config_path}" "${cookie_file}" <<'PY'
-import json
-import re
-import sys
-from pathlib import Path
-
-config_path = Path(sys.argv[1])
-cookie_path = Path(sys.argv[2])
-cookie = cookie_path.read_text(encoding="utf-8").rstrip("\r\n")
-rpc_user, separator, rpc_password = cookie.partition(":")
-if separator != ":" or not rpc_user or not rpc_password:
-    raise SystemExit(f"invalid Syscoin RPC cookie format in {cookie_path}")
-
-text = config_path.read_text(encoding="utf-8")
-text, user_count = re.subn(
-    r"^(\s*bitcoin_da_rpc_user:\s*).*$",
-    lambda m: f"{m.group(1)}{json.dumps(rpc_user)}",
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-text, password_count = re.subn(
-    r"^(\s*bitcoin_da_rpc_password:\s*).*$",
-    lambda m: f"{m.group(1)}{json.dumps(rpc_password)}",
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-if user_count == 0 and password_count == 0:
-    raise SystemExit(0)
-if user_count != 1 or password_count != 1:
-    raise SystemExit(f"failed to patch Syscoin RPC credentials in {config_path}")
-
-config_path.write_text(text, encoding="utf-8")
-print(f"gateway-launch: refreshed Syscoin RPC credentials in {config_path}")
-PY
+raw = os.environ["BITCOIN_DA_RPC_URL"]
+try:
+    url = urllib.parse.urlsplit(raw)
+    url.port
+    valid = (
+        raw.startswith(("http://", "https://"))
+        and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c == chr(92) for c in raw)
+        and url.hostname
+        and url.username is None
+        and url.password is None
+    )
+except ValueError:
+    valid = False
+if not valid:
+    raise SystemExit("invalid BITCOIN_DA_RPC_URL (expected an HTTP(S) URL without user information)")
+try:
+    loopback = ipaddress.ip_address(url.hostname).is_loopback
+except ValueError:
+    loopback = False
+if os.environ["BITCOIN_DA_COOKIE_FILE"] and not loopback:
+    raise SystemExit("BITCOIN_DA_COOKIE_FILE requires a loopback IP in BITCOIN_DA_RPC_URL")
+if url.scheme == "http" and not loopback:
+    raise SystemExit("Bitcoin DA RPC requires HTTPS for non-loopback endpoints")
+PYVALIDATE
 }
 
 gl_prepare_bitcoin_da_wallet() {
@@ -3854,10 +3819,8 @@ gl_prepare_bitcoin_da_wallet() {
   : "${BITCOIN_DA_ADDRESS_LABEL:=zksync-os-batcher}"
   : "${BITCOIN_DA_MIN_BALANCE_SYS:=0}"
   gl_require BITCOIN_DA_RPC_URL
-  gl_load_bitcoin_da_cookie_credentials
-  gl_require BITCOIN_DA_RPC_USER
-  gl_require BITCOIN_DA_RPC_PASSWORD
-  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD
+  gl_validate_bitcoin_da_credentials || return $?
+  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD BITCOIN_DA_COOKIE_FILE
   export BITCOIN_DA_WALLET_NAME BITCOIN_DA_ADDRESS_LABEL BITCOIN_DA_MIN_BALANCE_SYS
 
   python3 - <<'PY'
@@ -3869,6 +3832,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 
 class RpcError(Exception):
@@ -3879,8 +3843,21 @@ class RpcError(Exception):
 
 
 rpc_url = os.environ["BITCOIN_DA_RPC_URL"].rstrip("/")
-rpc_user = os.environ["BITCOIN_DA_RPC_USER"]
-rpc_password = os.environ["BITCOIN_DA_RPC_PASSWORD"]
+cookie_file = os.environ.get("BITCOIN_DA_COOKIE_FILE")
+if cookie_file:
+    try:
+        cookie_path = Path(cookie_file)
+        if not cookie_path.is_file():
+            raise OSError("cookie is not a regular file")
+        cookie = cookie_path.read_bytes().decode("utf-8").rstrip("\r\n")
+    except (OSError, UnicodeError):
+        raise SystemExit("could not read configured Bitcoin DA RPC cookie") from None
+    rpc_user, separator, rpc_password = cookie.partition(":")
+    if not separator or not rpc_user.strip() or not rpc_password.strip() or any(c in cookie for c in "\r\n\0"):
+        raise SystemExit("invalid configured Bitcoin DA RPC cookie")
+else:
+    rpc_user = os.environ["BITCOIN_DA_RPC_USER"]
+    rpc_password = os.environ["BITCOIN_DA_RPC_PASSWORD"]
 wallet_name = os.environ["BITCOIN_DA_WALLET_NAME"]
 address_label = os.environ["BITCOIN_DA_ADDRESS_LABEL"]
 
@@ -3890,6 +3867,18 @@ except (InvalidOperation, KeyError) as exc:
     raise SystemExit(f"invalid BITCOIN_DA_MIN_BALANCE_SYS: {exc}")
 if min_balance < 0:
     raise SystemExit("BITCOIN_DA_MIN_BALANCE_SYS must be >= 0")
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+# Keep the original RPC origin, and send local Core credentials directly.
+handlers = [NoRedirect()]
+if rpc_url.startswith("http://") or cookie_file:
+    handlers.append(urllib.request.ProxyHandler({}))
+rpc_opener = urllib.request.build_opener(*handlers)
 
 
 def rpc(method, params=None, wallet=None):
@@ -3911,7 +3900,7 @@ def rpc(method, params=None, wallet=None):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with rpc_opener.open(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")
     except urllib.error.HTTPError as err:
         body = err.read().decode("utf-8", errors="replace")

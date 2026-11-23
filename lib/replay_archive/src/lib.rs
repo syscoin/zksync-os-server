@@ -42,8 +42,10 @@ pub use kms::{GcpKmsClient, GcpKmsConfig, GcpKmsIdentity, GcpKmsRecipient};
 pub use reader::{ReplayArchiveKeyPage, ReplayArchiveStorageReader};
 pub use recovery::{
     ArchiveIdentity, DEFAULT_DECRYPT_CONCURRENCY, DEFAULT_DOWNLOAD_CONCURRENCY,
-    download_all_replay_archive_objects, parse_age_x25519_identity, read_age_x25519_identity,
-    recover_replay_records_to_rocksdb, recover_replay_records_to_rocksdb_with_optional_decryption,
+    download_all_replay_archive_objects, download_replay_archive_objects,
+    parse_age_x25519_identity, read_age_x25519_identity, recover_replay_records_to_rocksdb,
+    recover_replay_records_to_rocksdb_for_sessions,
+    recover_replay_records_to_rocksdb_with_optional_decryption,
 };
 pub use replay_record::ReplayRecordArchiver;
 pub use s3::{

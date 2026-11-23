@@ -50,6 +50,8 @@ def preview(config, rpc, now, lane, execution_id, settlement_id, directory, vk_h
     s.require(call(guard, 'acceptanceGate()', kind='address') == gate
               and call(guard, 'chain()', kind='address') == chain
               and call(guard, 'policyHash()', kind='bytes32') == settings['policy_hash'], 'priority_guard_changed')
+    priority_limit = call(guard, 'maxPriorityPerPackage()')
+    s.require(2 <= priority_limit <= 1024, 'unsupported_priority_package_limit')
     verifier = call(gate, 'productionVerifier()', kind='address')
     plonk = call(gate, 'plonkVerifier()', kind='address')
     s.require(call(chain, 'getVerifier()', kind='address') == verifier
@@ -67,7 +69,8 @@ def preview(config, rpc, now, lane, execution_id, settlement_id, directory, vk_h
               and call(timelock, 'getRoleMember(address,bytes32,uint256)', chain_word + role + s.word(0), 'address') == gate,
               'native_prover_authority_changed')
     r.check_anchor(rpc, settings, head)
-    return {'service_publication': {'enabled': True, 'directory': str(Path(directory)),
+    return {'batcher': {'priority_package_limit': priority_limit},
+            'service_publication': {'enabled': True, 'directory': str(Path(directory)),
             'gate': gate, 'gate_code_hash': pins['gate_code_hash'], 'coordinator': coordinator,
             'coordinator_code_hash': pins['coordinator_code_hash'], 'policy_hash': settings['policy_hash'],
             'production_vk_hash': vk_hash, 'sequencer': settings['sequencer'], 'poll_interval': '2s',

@@ -5,7 +5,8 @@
 # fund all discovered wallet files (deduped) plus optional explicit paths.
 # Funder signer: FUNDER_SIGNER=account|keystore|ledger|trezor|aws|gcp.
 # Local/dev fallback: FUNDER_SIGNER=private-key uses the Anvil dev key unless
-# FUNDER_PRIVATE_KEY is set. Real networks reject raw private-key argv by default.
+# FUNDER_PRIVATE_KEY is set. Public-network raw-key overrides require an explicit
+# private key and cannot use the development key.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null

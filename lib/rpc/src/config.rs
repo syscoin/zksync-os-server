@@ -159,7 +159,7 @@ pub struct RpcConfig {
     /// SYSCOIN: Shared maximum number of retained log, block, and pending-transaction filters.
     pub max_active_filters: NonZeroU32,
 
-    /// SYSCOIN: Maximum total address and topic alternatives retained by one installed log filter.
+    /// SYSCOIN: Maximum total address and topic alternatives retained by one log filter or subscription.
     pub max_filter_terms: NonZeroU32,
 
     /// Duration since the last filter poll, after which the filter is considered stale

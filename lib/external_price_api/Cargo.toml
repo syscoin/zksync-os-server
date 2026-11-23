@@ -15,7 +15,8 @@ anyhow.workspace = true
 url.workspace = true
 chrono = { workspace = true, default-features = false, features = ["now"] }
 serde.workspace = true
-reqwest = { workspace = true, features = ["json"] }
+serde_json.workspace = true
+reqwest.workspace = true
 rand.workspace = true
 tracing.workspace = true
 tokio.workspace = true
@@ -27,5 +28,4 @@ zksync_os_types.workspace = true
 
 [dev-dependencies]
 httpmock.workspace = true
-serde_json.workspace = true
 assert_matches.workspace = true

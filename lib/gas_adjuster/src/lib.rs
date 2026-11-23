@@ -4,17 +4,48 @@ use crate::statistics::GasStatistics;
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{U64, U256};
 use alloy::providers::{DynProvider, Provider};
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use bitcoin_da_client::SyscoinClient;
 use metrics::METRICS;
 use std::time::Duration;
 use tokio::sync::watch;
-use url::Url;
+use url::{Host, Url};
 use zksync_os_rpc_api::types::L2FeeHistory;
 use zksync_os_types::PubdataMode;
 
 mod metrics;
 mod statistics;
+
+/// Checks the origin before any authenticated Core DA request. Cookies bind to loopback.
+pub fn validate_bitcoin_da_rpc_url(raw: &str, cookie_auth: bool) -> anyhow::Result<()> {
+    const INVALID_URL: &str =
+        "invalid batcher.bitcoin_da_rpc_url (expected an HTTP(S) URL without user information)";
+
+    ensure!(
+        (raw.starts_with("http://") || raw.starts_with("https://"))
+            && !raw.contains(|c: char| c.is_whitespace() || c.is_ascii_control() || c == '\\'),
+        INVALID_URL
+    );
+    let url = Url::parse(raw).map_err(|_| anyhow::anyhow!(INVALID_URL))?;
+    ensure!(
+        url.has_host() && url.username().is_empty() && url.password().is_none(),
+        INVALID_URL
+    );
+    let loopback = match url.host() {
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    ensure!(
+        !cookie_auth || loopback,
+        "batcher.bitcoin_da_cookie_file requires a loopback IP in batcher.bitcoin_da_rpc_url"
+    );
+    ensure!(
+        url.scheme() == "https" || loopback,
+        "Bitcoin DA RPC requires HTTPS for non-loopback endpoints"
+    );
+    Ok(())
+}
 
 /// This component keeps track of the median `base_fee` from the last `max_base_fee_samples` blocks.
 ///
@@ -398,12 +429,7 @@ impl GasAdjuster {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .context("missing bitcoin_da_rpc_url for DA fee estimation")?;
-        let parsed_url =
-            Url::parse(rpc_url).context("invalid bitcoin_da_rpc_url for DA fee estimation")?;
-        anyhow::ensure!(
-            matches!(parsed_url.scheme(), "http" | "https"),
-            "invalid bitcoin_da_rpc_url scheme for DA fee estimation"
-        );
+        validate_bitcoin_da_rpc_url(rpc_url, false)?;
         config
             .bitcoin_da_rpc_user
             .as_deref()
@@ -644,6 +670,15 @@ mod tests {
 
         let err = GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap_err();
         assert!(err.to_string().contains("invalid bitcoin_da_rpc_url"));
+    }
+
+    #[test]
+    fn bitcoin_da_fee_config_requires_tls_outside_loopback() {
+        let mut config = gas_adjuster_config();
+        config.bitcoin_da_rpc_url = Some("http://core.example.com:8370".into());
+        assert!(GasAdjuster::validate_bitcoin_da_fee_config(&config).is_err());
+        config.bitcoin_da_rpc_url = Some("https://core.example.com:8370".into());
+        GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap();
     }
 
     #[test]

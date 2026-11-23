@@ -5,10 +5,12 @@ with a protected handoff and canonical receipt observer. Commit and execute
 senders retain their existing behavior. A service node does not construct or
 require `operator_prove_sk`; the external relayer owns proof transaction signing.
 The default is `false`, preserving the existing timelock proof sender.
-Before enabling it on an existing node, finish canonical execution of every
-ordinary proof already in flight. Service recovery requires a gate receipt and
-retained work for every proved-but-unexecuted range; it cannot adopt an earlier
-ordinary timelock proof without those records.
+Before enabling it on an existing node, pause production and settle the entire
+ordinary committed backlog and any locally pending batches. Drain the native
+priority queue. Deploy the guard at that shared committed, verified and executed
+frontier, then transfer prover authority and start producing with the same
+priority package limit as the guard. Service recovery requires a gate receipt
+and retained work for every proved-but-unexecuted range.
 
 Enable this only on a main node with the batcher and real FRI/SNARK proving. Pin
 the reviewed proof gate address/runtime hash, service policy, production V8 VK,
@@ -31,6 +33,8 @@ and canonical local-chain fixture acceptance remain separate requirements.
 Example overlay:
 
 ```yaml
+batcher:
+  priority_package_limit: 64
 service_publication:
   enabled: true
   directory: /secure/zksys/node-service-publication
@@ -45,6 +49,10 @@ service_publication:
   rpc_timeout: 30s
   max_records: 256
 ```
+
+The batcher and block producer limit each batch to half the configured package
+limit, so the minimum two-batch V8 range fits. Node startup compares this setting
+to `maxPriorityPerPackage()` on the pinned lane's guard.
 
 The directory must be absolute, with no symlink components. Its parent must
 exist. The node creates the directory with mode 0700, requires owner-only files,

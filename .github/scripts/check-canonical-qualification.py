@@ -2,7 +2,9 @@
 """Verify owned-host qualification without opening the private fixture."""
 
 import argparse
+import ast
 from functools import cache
+import hashlib
 import json
 import os
 import re
@@ -20,6 +22,14 @@ CONTEXTS = {
 }
 SHA = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+RELEASE_HELPER = "scripts/apply-era-contracts-syscoin-release.py"
+APP_SOURCE_PATHS = {
+    "lib/types/src/protocol/proving_version.rs",
+    "node/bin/src/prover_api/fri_proof_verifier.rs",
+}
+FIXTURE_IDENTITIES = {
+    "clean_boundary", "deployment_record", "proof_identities", "snapshot_manifest", "source_identities",
+}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -31,18 +41,75 @@ def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
+def blob(path):
+    return subprocess.check_output(["git", "show", f"HEAD:{path}"])
+
+
+def literal_dict(node):
+    if not isinstance(node, ast.Dict):
+        raise ValueError("expected a literal release binding dictionary")
+    result = {}
+    for key, value in zip(node.keys, node.values, strict=True):
+        if (not isinstance(key, ast.Constant) or not isinstance(key.value, str)
+                or key.value in result):
+            raise ValueError("invalid or duplicate release binding key")
+        if isinstance(value, ast.Dict):
+            result[key.value] = literal_dict(value)
+        elif (isinstance(value, ast.Constant) and isinstance(value.value, str)
+              and SHA256.fullmatch(value.value)):
+            result[key.value] = value.value
+        else:
+            raise ValueError("expected a literal release binding SHA-256")
+    return result
+
+
 def descriptor_hash():
-    result = subprocess.check_output(
-        [sys.executable, "-I", "-B", "scripts/apply-era-contracts-syscoin-release.py",
-         "--check-canonical-fixture-binding"],
-        text=True,
-    )
-    binding = json.loads(result)
+    marker = "local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED"
+    if git("ls-tree", "-r", "--name-only", "HEAD", "--", marker):
+        raise ValueError("canonical fixture regeneration marker is present")
+    # Publication runners must only read candidate source as data.
+    source = ast.parse(blob(RELEASE_HELPER), filename=RELEASE_HELPER)
+    assignments = {}
+    for node in source.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name) or target.id not in {"CANONICAL_BINDING", "APP_SOURCES"}:
+            continue
+        if target.id in assignments:
+            raise ValueError("ambiguous canonical fixture binding")
+        assignments[target.id] = literal_dict(node.value)
+
+    binding = assignments.get("CANONICAL_BINDING", {})
+    if (binding.keys() != {"descriptor_sha256", "versions_sha256", "identity_sha256"}
+            or not isinstance(binding["identity_sha256"], dict)
+            or binding["identity_sha256"].keys() != FIXTURE_IDENTITIES):
+        raise ValueError("invalid source-controlled canonical fixture binding")
     digest = binding["descriptor_sha256"]
-    if (binding.get("status") != "canonical_fixture_binding_checked"
-            or binding.get("fixture_mode") != "private" or not SHA256.fullmatch(digest)
+    if (not all(isinstance(value, str) for value in
+                (digest, binding["versions_sha256"], *binding["identity_sha256"].values()))
             or not int(digest, 16)):
         raise ValueError("invalid source-controlled canonical fixture binding")
+
+    registry = blob("integration-tests/src/fixture_backend.rs").decode("utf-8")
+    declarations = re.findall(
+        r"const TRUSTED_DESCRIPTORS:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];", registry, re.S,
+    )
+    if len(declarations) != 1:
+        raise ValueError("missing or ambiguous fixture registry")
+    entries = r'\(\s*"([^"\\\r\n]+)"\s*,\s*"([0-9a-f]{64})"\s*,?\s*\)'
+    rows = declarations[0].strip()
+    if not re.fullmatch(rf"{entries}(?:\s*,\s*{entries})*\s*,?", rows):
+        raise ValueError("nonliteral fixture registry")
+    if [value for version, value in re.findall(entries, rows) if version == "v32.0"] != [digest]:
+        raise ValueError("canonical descriptor is not in the consumer registry")
+
+    app_sources = assignments.get("APP_SOURCES", {})
+    if app_sources.keys() != APP_SOURCE_PATHS:
+        raise ValueError("invalid canonical fixture application source paths")
+    for path, expected in app_sources.items():
+        if hashlib.sha256(blob(path)).hexdigest() != expected:
+            raise ValueError(f"application source SHA-256 mismatch: {path}")
     return digest
 
 
@@ -118,5 +185,6 @@ if __name__ == "__main__":
         main()
     except URLError as error:
         sys.exit(f"error: GitHub qualification status request failed: {error.reason}")
-    except (AttributeError, KeyError, OSError, TypeError, ValueError, subprocess.CalledProcessError) as error:
+    except (AttributeError, KeyError, OSError, SyntaxError, TypeError, ValueError,
+            subprocess.CalledProcessError) as error:
         sys.exit(f"error: {error}")

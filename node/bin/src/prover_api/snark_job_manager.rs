@@ -118,6 +118,7 @@ pub struct SnarkJobManager {
     max_fris_per_snark: usize,
     target_fris_per_snark: usize,
     max_snark_batch_wait: Duration,
+    priority_package_limit: Option<u64>,
     #[cfg(test)]
     proof_decode_invocations: Arc<std::sync::atomic::AtomicUsize>,
     // SYSCOIN: Tests can pause the detached durable handoff after publication to prove that an
@@ -290,11 +291,17 @@ impl SnarkJobManager {
             max_fris_per_snark,
             target_fris_per_snark,
             max_snark_batch_wait,
+            priority_package_limit: None,
             #[cfg(test)]
             proof_decode_invocations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             post_persist_handoff_gate: None,
         }
+    }
+
+    pub(super) fn with_priority_package_limit(mut self, limit: Option<u64>) -> Self {
+        self.priority_package_limit = limit;
+        self
     }
 
     /// SYSCOIN: Live FRI admission enters the same ordered ownership map used by restart recovery.
@@ -436,6 +443,7 @@ impl SnarkJobManager {
             anyhow::bail!(message);
         };
         let mut worker_capacity_exceeded = false;
+        let mut priority_count = 0u64;
         let pick = self
             .jobs
             .pick_ready_snark_jobs_with_response_capacity(
@@ -455,6 +463,14 @@ impl SnarkJobManager {
                     }
                     if !matches!(job.batch_envelope.data, FriProof::Real(_)) {
                         return SnarkJobEligibility::Incompatible;
+                    }
+                    let next_priority_count = priority_count
+                        .saturating_add(job.batch_envelope.batch.batch_info.number_of_layer1_txs);
+                    if self
+                        .priority_package_limit
+                        .is_some_and(|limit| next_priority_count > limit)
+                    {
+                        return SnarkJobEligibility::PriorityBudgetExceeded;
                     }
                     let Some(next_proof_bytes) =
                         snark_pick_proof_wire_bytes(&job.batch_envelope.data)
@@ -482,6 +498,7 @@ impl SnarkJobManager {
                         };
                     }
                     encoded_proof_bytes = next_total;
+                    priority_count = next_priority_count;
                     SnarkJobEligibility::Eligible
                 },
             )
@@ -542,7 +559,7 @@ impl SnarkJobManager {
                 // SYSCOIN: No lease exists; advancing would strand an interior singleton and
                 // jumping a later planned range would violate settlement order.
                 let message = format!(
-                    "planned startup SNARK range {batch_from}-{batch_to} fits only \
+                    "SNARK range {batch_from}-{batch_to} fits only \
                      {fittable_fris} FRIs and would strand an interior singleton"
                 );
                 // SYSCOIN: A small advertised cap can create this split; another worker may fit.
@@ -1021,6 +1038,39 @@ mod tests {
 
     fn job_from_metadata(batch: &BatchMetadata, proof: FriProof) -> SignedBatchEnvelope<FriProof> {
         BatchEnvelope::new(batch.clone(), proof).with_signatures(BatchSignatureData::NotNeeded)
+    }
+
+    #[tokio::test]
+    async fn priority_budget_releases_fitting_snark_prefix() -> anyhow::Result<()> {
+        let (sender, _receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            4,
+            4,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            16,
+        )
+        .with_priority_package_limit(Some(4));
+        let mut previous = None;
+        for batch_number in 1..=4 {
+            let mut batch = create_test_batch_envelope_with_data(
+                batch_number,
+                ProtocolSemanticVersion::new(0, 32, 0),
+                real_fri_proof(),
+            );
+            batch.batch.batch_info.number_of_layer1_txs = 2;
+            if let Some(previous) = previous {
+                batch.batch.previous_stored_batch_info = previous;
+            }
+            previous = Some(batch.batch.batch_info.clone().into_stored());
+            assert_eq!(manager.add_job(batch).await, SnarkJobAdmission::Inserted);
+        }
+        let job = manager.pick_real_job("worker".into(), None).await?.unwrap();
+        assert_eq!(job.batches.len(), 2);
+        assert_eq!(job.batches[0].0.batch_number, 1);
+        assert_eq!(job.batches[1].0.batch_number, 2);
+        Ok(())
     }
 
     // SYSCOIN: Ownership checks must not weaken the fail-closed authoritative-metadata invariant

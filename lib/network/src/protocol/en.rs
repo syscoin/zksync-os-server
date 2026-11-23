@@ -184,12 +184,16 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
                         }
                     };
 
-                    // Never panic on remote data: a panic here is swallowed by the runtime and
-                    // leaves a zombie session with no inactivity monitoring. Stalling reconnects
-                    // instead — transient causes self-heal, persistent ones fail loudly (and the
-                    // sequencer pipeline still enforces the sequence as a hard backstop).
-                    let expected_next_block = *starting_block.read().unwrap();
+                    let Ok(permit) = replay_sender.reserve().await else {
+                        tracing::trace!("network replay channel is closed");
+                        return;
+                    };
+                    // Reserve before locking so admitting a record and advancing the shared
+                    // cursor are atomic across trusted replay sources, even under backpressure.
+                    let mut cursor = starting_block.write().unwrap();
+                    let expected_next_block = *cursor;
                     if block_number != expected_next_block {
+                        drop(cursor);
                         tracing::warn!(
                             block_number,
                             expected_next_block,
@@ -199,11 +203,8 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
                         return;
                     }
 
-                    if replay_sender.send(record).await.is_err() {
-                        tracing::trace!("network replay channel is closed");
-                        return;
-                    }
-                    *starting_block.write().unwrap() += 1;
+                    permit.send(record);
+                    *cursor += 1;
                     // SYSCOIN: only accepted replay progress extends the connection lifetime.
                     inactivity_deadline = Instant::now() + inactivity_timeout;
                 }

@@ -2,6 +2,8 @@
 pragma solidity ^0.8.26;
 
 import {EIP712} from "@openzeppelin/contracts-v4/utils/cryptography/EIP712.sol";
+import {ECDSA} from "@openzeppelin/contracts-v4/utils/cryptography/ECDSA.sol";
+import {IERC1271} from "@openzeppelin/contracts-v4/interfaces/IERC1271.sol";
 import {SignatureChecker} from "@openzeppelin/contracts-v4/utils/cryptography/SignatureChecker.sol";
 import {ZkSysMembershipRegistry} from "./ZkSysMembershipRegistry.sol";
 import {
@@ -27,6 +29,8 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     uint64 public constant FULL_SENIOR_AGE = 525_600;
     uint64 public constant MAX_SUBSCRIPTION_PERIODS = 64;
     uint16 public constant MAX_DUTIES_PER_ROUND = 64;
+    uint256 public constant MAX_FRI_SUBSCRIBERS_PER_PERIOD = 256;
+    uint256 public constant CONTRACT_DUTY_SIGNATURE_GAS = 100_000;
     uint32 public constant MAX_ROSTER_PAGE_SIZE = 64;
     bytes32 public constant ROSTER_DOMAIN = keccak256("ZKSYS_QUALIFIED_WRAPPER_ROSTER_V1");
     IZkSysL1MessengerV1 public constant L1_MESSENGER = IZkSysL1MessengerV1(address(0x8008));
@@ -59,8 +63,10 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     error InvalidSubscription();
     error ServiceNotVerified(address account, address sequencer);
     error InvalidSignature();
+    error InsufficientContractSignatureGas();
     error SubscriptionPeriodAlreadyUsed(address account, address sequencer, uint64 period);
     error OperatorAlreadyUsed(address operator, uint64 period);
+    error SubscriberCapacityReached(uint64 period);
     error InvalidPackage();
     error InvalidDuty();
     error DutyAlreadyCredited(uint64 batchNumber);
@@ -122,6 +128,9 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         uint64 batchNumber,
         uint16 slot,
         bool qualificationOnly
+    );
+    event ContractDutySignatureRejected(
+        bytes32 indexed packageHash, address indexed account, uint64 indexed batchNumber
     );
     event ProverAdmitted(address indexed account, uint64 indexed period, uint256 bonusWeight);
     event ServiceVerified(address indexed account, address indexed sequencer);
@@ -215,9 +224,12 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             if (operatorAccount != address(0) && operatorAccount != subscription_.account) {
                 revert OperatorAlreadyUsed(subscription_.operator, period);
             }
+            address[] storage subscribers = _friSubscribers[subscription_.sequencer][period];
+            // Enrollment snapshots enumerate the complete set within the dispatcher's capacity.
+            if (subscribers.length >= MAX_FRI_SUBSCRIBERS_PER_PERIOD) revert SubscriberCapacityReached(period);
             subscriptionAt[subscription_.account][subscription_.sequencer][period] = subscriptionHash;
             operatorAccountAt[subscription_.operator][period] = subscription_.account;
-            _friSubscribers[subscription_.sequencer][period].push(subscription_.account);
+            subscribers.push(subscription_.account);
             if (period == subscription_.lastPeriod) break;
         }
         emit Subscribed(subscriptionHash, subscription_.account, subscription_.operator);
@@ -281,13 +293,13 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         emit ServiceActivated(firstServicePeriod, vkHash, qualifiedRosterRoot);
     }
 
-    /// @dev Bootstrap must use the production verifier's canonical accepted-proof lane; the source
-    /// may call this only before enabling the joint wrapper gate. It cannot mint service credit.
+    /// @dev Source gates stop accepting bootstrap work when they install their coordinators.
+    /// Proven bootstrap receipts can arrive in either order with activation before the first period.
     function acceptBootstrapDuties(AcceptedPackageV1 calldata accepted, DutySuccessV1[] calldata duties)
         external
         onlyAcceptanceSource
     {
-        if (serviceActive || block.timestamp >= _periodStart(firstServicePeriod)) revert WrongServiceMode();
+        if (block.timestamp >= _periodStart(firstServicePeriod)) revert WrongServiceMode();
         if (accepted.wrapper != address(0) || accepted.wrapperBeneficiary != address(0)) revert InvalidPackage();
         if (accepted.chainId == block.chainid && bootstrapVkHash != bytes32(0) && accepted.vkHash != bootstrapVkHash) {
             revert InvalidPackage();
@@ -331,6 +343,7 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
         if (acceptedPackages[packageHash]) return;
         if (!qualificationOnly && block.timestamp < _periodStart(accepted.period)) revert InvalidPackage();
 
+        uint256 invalidContractSignatures;
         for (uint256 i; i < duties.length; ++i) {
             DutySuccessV1 calldata duty = duties[i];
             ProverSubscriptionV1 storage subscription_ = _subscriptions[duty.subscriptionHash];
@@ -349,8 +362,14 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             if (!qualificationOnly) {
                 if (block.timestamp < _periodStart(duty.period)) revert InvalidDuty();
             }
-            if (!subscription_.operator
-                    .isValidSignatureNow(_hashTypedDataV4(ZkSysServiceTypesV1.hashDuty(duty)), duty.operatorSignature)) revert InvalidSignature();
+            address operator = subscription_.operator;
+            bytes32 digest = _hashTypedDataV4(ZkSysServiceTypesV1.hashDuty(duty));
+            (address recovered, ECDSA.RecoverError error) = ECDSA.tryRecover(digest, duty.operatorSignature);
+            if (error == ECDSA.RecoverError.NoError && recovered == operator) continue;
+            if (operator.code.length == 0) revert InvalidSignature();
+            if (!_validContractDutySignature(operator, digest, duty.operatorSignature)) {
+                invalidContractSignatures |= uint256(1) << i;
+            }
         }
         if (qualificationOnly && isRoundFinalized(accepted.period)) revert RoundClosed(accepted.period);
         acceptedPackages[packageHash] = true;
@@ -367,6 +386,11 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             }
             if (creditedDuties[canonicalDuty] || _consumedDuties[canonicalDuty]) {
                 revert DutyAlreadyCredited(duty.batchNumber);
+            }
+            if (invalidContractSignatures & (uint256(1) << i) != 0) {
+                _consumedDuties[canonicalDuty] = true;
+                emit ContractDutySignatureRejected(packageHash, duty.account, duty.batchNumber);
+                continue;
             }
             uint64 bit = uint64(1) << duty.slot;
             uint64 slots = qualificationOnly ? bootstrapDutySlots[duty.account] : dutySlots[duty.account][duty.period];
@@ -392,6 +416,23 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
                 _admitForFuturePeriod(duty.account, subscription_);
             }
             emit DutyAccepted(packageHash, duty.account, duty.period, duty.batchNumber, duty.slot, qualificationOnly);
+        }
+    }
+
+    function _validContractDutySignature(address operator, bytes32 digest, bytes calldata signature)
+        private
+        view
+        returns (bool valid)
+    {
+        bytes memory callData = abi.encodeCall(IERC1271.isValidSignature, (digest, signature));
+        uint256 callGas = CONTRACT_DUTY_SIGNATURE_GAS;
+        // Allow for the EIP-150 forwarding limit and call overhead so a relayer cannot force rejection with low gas.
+        if (gasleft() < callGas + callGas / 63 + 5_000) revert InsufficientContractSignatureGas();
+        bytes32 magic = bytes32(IERC1271.isValidSignature.selector);
+        // Limit returndata copying so an operator cannot exhaust gas with an oversized response.
+        assembly ("memory-safe") {
+            let success := staticcall(callGas, operator, add(callData, 0x20), mload(callData), 0, 0x20)
+            valid := and(and(success, iszero(lt(returndatasize(), 0x20))), eq(mload(0), magic))
         }
     }
 

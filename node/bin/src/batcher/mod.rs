@@ -52,6 +52,7 @@ const BITCOIN_DA_ANCESTOR_LIMIT_ERRORS: &[&str] = &[
 /// Set of fields to define batcher's behavior on startup (when to replay, when to produce, etc.)
 pub struct BatcherStartupConfig {
     pub last_committed_batch: u64,
+    pub last_proved_batch: u64,
     pub last_executed_batch: u64,
     /// Last block number already known to this node. On startup, we'll replay all blocks until and including
     /// this - in other words, there will be no arbitrary delays until this block is passed through Batcher.
@@ -419,9 +420,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 
         let batch_number = prev_batch_info.batch_number + 1;
         let mut blocks = vec![];
+        let priority_txs_per_batch_limit = self.batcher_config.priority_txs_per_batch_limit();
         let mut accumulator = BatchInfoAccumulator::new(
             self.batcher_config.blocks_per_batch_limit,
             self.batcher_config.tx_per_batch_limit,
+            priority_txs_per_batch_limit,
             self.pubdata_limit_bytes,
             self.batcher_config.interop_roots_per_batch_limit,
             self.compact_edge_da_commit_target,
@@ -443,42 +446,40 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 
                 /* ---------- collect blocks ---------- */
                seal_decision = block_receiver.peek_recv(|item| {
-                    // SYSCOIN: Evaluate the canonical forwarded-ref parser and aggregate cap on a
-                    // cloned candidate so fallible cap errors fail closed without mutating the
-                    // accepted accumulator; the match below then distinguishes seal from an
-                    // intrinsically oversized first block.
-                    // determine if the block fits into the current batch
+                    // These bounds apply even to a single block. Keep the accepted batch intact
+                    // if a candidate belongs to the next batch or fails validation.
                     let mut candidate = accumulator.clone();
                     candidate.add(&item.output, &item.record)?;
-                    let exceeds_forwarded_da_refs_limit =
-                        candidate.exceeds_forwarded_da_refs_limit();
-                    let exceeds_standard_limit = candidate.should_seal();
-                    let contains_interop_bundle = block_contains_interop_bundle(&item.output);
+                    let should_seal = candidate.should_seal();
+                    if blocks.is_empty() {
+                        let block_number = item.record.block_context.block_number;
+                        anyhow::ensure!(
+                            !candidate.exceeds_forwarded_da_refs_limit(),
+                            "block {} exceeds the Gateway forwarded Bitcoin DA ref limit of {}",
+                            block_number,
+                            zksync_os_batch_types::SYSCOIN_DA_MAX_REFS_PER_BATCH,
+                        );
+                        if let Some(limit) = priority_txs_per_batch_limit {
+                            anyhow::ensure!(
+                                candidate.priority_tx_count <= limit,
+                                "block {block_number} has {} priority transactions, exceeding the batch limit of {limit}",
+                                candidate.priority_tx_count,
+                            );
+                        }
+                    }
                     Ok::<_, anyhow::Error>((
-                        exceeds_standard_limit,
-                        exceeds_forwarded_da_refs_limit,
-                        contains_interop_bundle,
-                        item.record.block_context.block_number,
+                        should_seal,
+                        block_contains_interop_bundle(&item.output),
                     ))
                 }) => {
                     state_reporter.enter_state(GenericComponentState::Active);
                     match seal_decision {
                         Some(Err(err)) => return Err(err),
-                        Some(Ok((true, _, _, _))) if !blocks.is_empty() => {
+                        Some(Ok((true, _))) if !blocks.is_empty() => {
                             // some of the limits was reached, start sealing the batch
                             break;
                         }
-                        Some(Ok((_, true, _, block_number))) => {
-                            // SYSCOIN: A block that alone forwards more than 32 openings can
-                            // never fit any batch; accepting it under the generic first-block
-                            // exception would create an unprovable and uncommittable batch.
-                            anyhow::bail!(
-                                "block {} exceeds the Gateway forwarded Bitcoin DA ref limit of {}",
-                                block_number,
-                                zksync_os_batch_types::SYSCOIN_DA_MAX_REFS_PER_BATCH,
-                            );
-                        }
-                        Some(Ok((exceeds_standard_limit, _, contains_interop_bundle, _))) => {
+                        Some(Ok((exceeds_standard_limit, contains_interop_bundle))) => {
                             // `exceeds_standard_limit` means the batch is still empty and the peeked
                             // block alone exceeds a seal limit. A batch must contain at least
                             // one block — refusing it would replay the same block forever — so
@@ -578,6 +579,10 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             .seal_batch_blocking(blocks, prev_batch_info.clone(), batch_number, pubdata_mode)
             .await?;
         let batch_envelope = sealed_batch.batch;
+        self.ensure_priority_batch_count(
+            batch_number,
+            batch_envelope.batch.batch_info.number_of_layer1_txs,
+        )?;
         // SYSCOIN: `RelayedL2Calldata` is a compact edge-DA reference mode when settling to
         // Gateway; it uses the same Bitcoin DA publication and hash-array commitment as blobs.
         if uses_syscoin_da {
@@ -596,6 +601,16 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             .await?;
         }
         Ok(Some(batch_envelope))
+    }
+
+    fn ensure_priority_batch_count(&self, batch_number: u64, count: u64) -> anyhow::Result<()> {
+        if let Some(limit) = self.batcher_config.priority_txs_per_batch_limit() {
+            anyhow::ensure!(
+                count <= limit,
+                "batch {batch_number} has {count} priority transactions, exceeding the batch limit of {limit}",
+            );
+        }
+        Ok(())
     }
 
     /// Runs [`batch_builder::seal_batch`] on a blocking thread: sealing runs batch PIG
@@ -639,6 +654,13 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         state_reporter: &ComponentStateReporter,
     ) -> anyhow::Result<Option<BatchForSigning<ProverInput>>> {
         let batch_number = existing_batch.number();
+        let needs_proof = batch_number > self.startup_config.last_proved_batch;
+        if needs_proof {
+            self.ensure_priority_batch_count(
+                batch_number,
+                existing_batch.batch_info.number_of_layer1_txs,
+            )?;
+        }
 
         tracing::info!(
             batch_number,
@@ -693,6 +715,12 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             )
             .await?
             .batch;
+        if needs_proof {
+            self.ensure_priority_batch_count(
+                batch_number,
+                rebuilt_batch.batch.batch_info.number_of_layer1_txs,
+            )?;
+        }
 
         // Verify that the rebuilt batch matches the stored batch by comparing hashes
         if self.batcher_config.assert_rebuilt_batch_hashes {

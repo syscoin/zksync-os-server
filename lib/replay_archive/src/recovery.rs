@@ -45,11 +45,25 @@ pub async fn download_all_replay_archive_objects<Reader>(
 where
     Reader: ReplayArchiveStorageReader + Sync,
 {
+    download_replay_archive_objects(reader, output_root, download_concurrency, &[]).await
+}
+
+/// Downloads archive objects from the exact sessions selected by the operator.
+/// An empty selection preserves whole-archive behavior.
+pub async fn download_replay_archive_objects<Reader>(
+    reader: &Reader,
+    output_root: &Path,
+    download_concurrency: NonZeroUsize,
+    trusted_sessions: &[ReplayArchiveSession],
+) -> anyhow::Result<usize>
+where
+    Reader: ReplayArchiveStorageReader + Sync,
+{
     tracing::info!(
         output_root = %output_root.display(),
         "Starting replay archive object download"
     );
-    let existing = scan_existing_downloaded_objects(output_root).await?;
+    let existing = scan_existing_downloaded_objects(output_root, trusted_sessions).await?;
     if !existing.is_empty() {
         tracing::info!(
             existing = existing.len(),
@@ -61,9 +75,13 @@ where
     // first listing page instead of waiting for a full listing of a large archive.
     let mut page_token = None;
     let mut downloaded = 0;
+    let mut found_keys = false;
 
     loop {
-        let page = reader.list_keys_page(page_token.take()).await?;
+        let mut page = reader.list_keys_page(page_token.take()).await?;
+        page.keys
+            .retain(|key| session_selected(trusted_sessions, &key.session));
+        found_keys |= !page.keys.is_empty();
 
         let mut objects = futures::stream::iter(
             page.keys
@@ -91,6 +109,10 @@ where
         }
     }
 
+    anyhow::ensure!(
+        trusted_sessions.is_empty() || found_keys,
+        "no replay archive objects found for the selected sessions"
+    );
     tracing::info!(downloaded, "Finished replay archive object download");
     Ok(downloaded)
 }
@@ -139,6 +161,29 @@ pub async fn recover_replay_records_to_rocksdb_with_optional_decryption(
     identity: Option<ArchiveIdentity>,
     decrypt_concurrency: NonZeroUsize,
 ) -> anyhow::Result<usize> {
+    recover_replay_records_to_rocksdb_for_sessions(
+        input_root,
+        replay_db_path,
+        anchor_block_number,
+        anchor_block_hash,
+        identity,
+        decrypt_concurrency,
+        &[],
+    )
+    .await
+}
+
+/// Recovers from exact operator-selected archive sessions and checks all selected copies agree.
+/// An empty selection preserves whole-archive behavior.
+pub async fn recover_replay_records_to_rocksdb_for_sessions(
+    input_root: &Path,
+    replay_db_path: &Path,
+    anchor_block_number: BlockNumber,
+    anchor_block_hash: BlockHash,
+    identity: Option<ArchiveIdentity>,
+    decrypt_concurrency: NonZeroUsize,
+    trusted_sessions: &[ReplayArchiveSession],
+) -> anyhow::Result<usize> {
     tracing::info!(
         input_root = %input_root.display(),
         replay_db_path = %replay_db_path.display(),
@@ -165,16 +210,19 @@ pub async fn recover_replay_records_to_rocksdb_with_optional_decryption(
     let window_size = (decrypt_concurrency.get() as u64) * 2;
 
     // The chain id is shared by all blocks; take it from the anchor record.
-    let chain_id =
-        read_verified_replay_record(input_root, anchor_block_number, anchor_block_hash, &decoder)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to recover replay record #{anchor_block_number}, {anchor_block_hash}"
-                )
-            })?
-            .block_context
-            .chain_id;
+    let chain_id = read_verified_replay_record(
+        input_root,
+        anchor_block_number,
+        anchor_block_hash,
+        &decoder,
+        trusted_sessions,
+    )
+    .await
+    .with_context(|| {
+        format!("failed to recover replay record #{anchor_block_number}, {anchor_block_hash}")
+    })?
+    .block_context
+    .chain_id;
 
     let mut canonical_chain = Vec::new();
     let mut window_top = anchor_block_number;
@@ -193,12 +241,16 @@ pub async fn recover_replay_records_to_rocksdb_with_optional_decryption(
                     let decoder = decoder.clone();
                     let input_root = input_root.to_path_buf();
                     async move {
-                        let candidates =
-                            read_candidate_records(&input_root, block_number, &decoder)
-                                .await
-                                .with_context(|| {
-                                    format!("failed to recover replay record #{block_number}")
-                                })?;
+                        let candidates = read_candidate_records(
+                            &input_root,
+                            block_number,
+                            &decoder,
+                            trusted_sessions,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!("failed to recover replay record #{block_number}")
+                        })?;
                         anyhow::Ok((block_number, candidates))
                     }
                 })
@@ -282,6 +334,7 @@ pub async fn recover_replay_records_to_rocksdb_with_optional_decryption(
                     block_number,
                     block_hash,
                     &decoder,
+                    trusted_sessions,
                 )
                 .await
                 .with_context(|| {
@@ -328,12 +381,20 @@ fn parse_downloaded_session_name(session_name: &std::ffi::OsStr) -> Option<Repla
     session_name.to_str()?.parse().ok()
 }
 
+fn session_selected(
+    trusted_sessions: &[ReplayArchiveSession],
+    session: &ReplayArchiveSession,
+) -> bool {
+    trusted_sessions.is_empty() || trusted_sessions.contains(session)
+}
+
 /// Scans an existing download output root for already-downloaded objects.
 ///
 /// Entries that do not parse as `<block_number>/<block_hash>/<session>` are ignored, including
 /// temporary files left behind by an interrupted write.
 async fn scan_existing_downloaded_objects(
     output_root: &Path,
+    trusted_sessions: &[ReplayArchiveSession],
 ) -> anyhow::Result<HashSet<ReplayArchiveKey>> {
     let mut existing = HashSet::new();
     if !tokio::fs::try_exists(output_root).await? {
@@ -370,15 +431,17 @@ async fn scan_existing_downloaded_objects(
             }
             let mut session_entries = tokio::fs::read_dir(hash_entry.path()).await?;
             while let Some(session_entry) = session_entries.next_entry().await? {
-                if !session_entry.file_type().await?.is_file() {
-                    continue;
-                }
                 let session_name = session_entry.file_name();
                 // SYSCOIN: Lossy filename decoding could normalize an invalid local path into a
                 // valid remote session key and make resume skip the object it still needs.
                 let Some(session) = parse_downloaded_session_name(&session_name) else {
                     continue;
                 };
+                if !session_selected(trusted_sessions, &session)
+                    || !session_entry.file_type().await?.is_file()
+                {
+                    continue;
+                }
                 let key = ReplayArchiveKey::new(session, block_number, block_hash);
                 if downloaded_object_is_complete(output_root, &key, &session_entry.path()).await? {
                     existing.insert(key);
@@ -550,6 +613,7 @@ async fn read_candidate_records(
     input_root: &Path,
     block_number: BlockNumber,
     decoder: &Arc<ReplayRecordDecoder>,
+    trusted_sessions: &[ReplayArchiveSession],
 ) -> anyhow::Result<Vec<(BlockHash, anyhow::Result<ReplayRecord>)>> {
     let block_dir = input_root.join(block_number.to_string());
     let mut entries = tokio::fs::read_dir(&block_dir).await.with_context(|| {
@@ -585,8 +649,14 @@ async fn read_candidate_records(
             }
             continue;
         };
-        let record =
-            read_verified_replay_record(input_root, block_number, block_hash, decoder).await;
+        let record = read_verified_replay_record(
+            input_root,
+            block_number,
+            block_hash,
+            decoder,
+            trusted_sessions,
+        )
+        .await;
         candidates.push((block_hash, record));
     }
     anyhow::ensure!(
@@ -601,6 +671,7 @@ async fn read_verified_replay_record(
     block_number: BlockNumber,
     block_hash: BlockHash,
     decoder: &Arc<ReplayRecordDecoder>,
+    trusted_sessions: &[ReplayArchiveSession],
 ) -> anyhow::Result<ReplayRecord> {
     let replay_record_dir = input_root
         .join(block_number.to_string())
@@ -623,21 +694,17 @@ async fn read_verified_replay_record(
             replay_record_dir.display()
         )
     })? {
-        if !entry.file_type().await?.is_file() {
-            continue;
-        }
         let file_name = entry.file_name();
-        if file_name
-            .to_str()
-            .and_then(|name| name.parse::<ReplayArchiveSession>().ok())
-            .is_none()
-        {
-            if !is_partial_download_name(&file_name) {
+        let Some(session) = parse_downloaded_session_name(&file_name) else {
+            if !is_partial_download_name(&file_name) && entry.file_type().await?.is_file() {
                 tracing::warn!(
                     path = %entry.path().display(),
                     "Skipping replay archive entry that is not a session"
                 );
             }
+            continue;
+        };
+        if !session_selected(trusted_sessions, &session) || !entry.file_type().await?.is_file() {
             continue;
         }
 
@@ -776,6 +843,50 @@ mod tests {
     use alloy::primitives::{B256, U256};
     use zksync_os_storage::db::BlockReplayStorage;
     use zksync_os_storage_api::ReadReplay;
+
+    #[tokio::test]
+    async fn download_uses_only_the_selected_session() {
+        let archive_root = tempfile::tempdir().unwrap();
+        let output_root = tempfile::tempdir().unwrap();
+        let block_hash = B256::with_last_byte(1);
+        let first = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let second = ReplayArchiveSession::new(43, "node-b").unwrap();
+        for session in [&first, &second] {
+            let storage = FileSystemReplayArchiveStorage::init(
+                archive_root.path().to_path_buf(),
+                session.clone(),
+            )
+            .await
+            .unwrap();
+            storage
+                .append_object(7, block_hash, session.folder_name().into_bytes())
+                .await
+                .unwrap();
+        }
+        let reader = FileSystemReplayArchiveReader::new(archive_root.path().to_path_buf());
+        let trusted_sessions = [first.clone()];
+        let download = || {
+            download_replay_archive_objects(
+                &reader,
+                output_root.path(),
+                DEFAULT_DOWNLOAD_CONCURRENCY,
+                &trusted_sessions,
+            )
+        };
+        assert_eq!(download().await.unwrap(), 1);
+        assert_eq!(download().await.unwrap(), 0);
+        let block = output_root
+            .path()
+            .join("7")
+            .join(format_block_hash(block_hash));
+        assert_eq!(
+            tokio::fs::read(block.join(first.folder_name()))
+                .await
+                .unwrap(),
+            first.folder_name().into_bytes(),
+        );
+        assert!(!block.join(second.folder_name()).exists());
+    }
 
     #[tokio::test]
     async fn restarted_download_skips_complete_objects_and_redownloads_partial_ones() {
@@ -1164,9 +1275,11 @@ mod tests {
         let replay_db = tempfile::tempdir().unwrap();
         let block_hash = B256::with_last_byte(1);
         let record = test_replay_record(0, B256::ZERO);
+        let first = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let second = ReplayArchiveSession::new(43, "node-b").unwrap();
         write_downloaded_replay_record_for_session(
             input_root.path(),
-            &ReplayArchiveSession::new(42, "node-a").unwrap(),
+            &first,
             0,
             block_hash,
             &record,
@@ -1176,7 +1289,7 @@ mod tests {
         poisoned.block_output_hash = B256::with_last_byte(2);
         write_downloaded_replay_record_for_session(
             input_root.path(),
-            &ReplayArchiveSession::new(43, "node-b").unwrap(),
+            &second,
             0,
             block_hash,
             &poisoned,
@@ -1191,6 +1304,33 @@ mod tests {
             format!("{err:#}").contains("differs between sessions"),
             "{err:#}"
         );
+
+        let trusted_sessions = [first, second];
+        let err = recover_replay_records_to_rocksdb_for_sessions(
+            input_root.path(),
+            replay_db.path(),
+            0,
+            block_hash,
+            None,
+            DEFAULT_DECRYPT_CONCURRENCY,
+            &trusted_sessions,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("differs between sessions"));
+
+        let restored = recover_replay_records_to_rocksdb_for_sessions(
+            input_root.path(),
+            replay_db.path(),
+            0,
+            block_hash,
+            None,
+            DEFAULT_DECRYPT_CONCURRENCY,
+            &trusted_sessions[..1],
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored, 1);
     }
 
     async fn write_downloaded_replay_record(

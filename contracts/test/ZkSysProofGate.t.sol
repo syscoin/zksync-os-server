@@ -137,6 +137,10 @@ contract GateSettlement is IZkSysNativeSettlementV1, IZkSysProverTimelockV1 {
         return verified;
     }
 
+    function getTotalBatchesCommitted() external view returns (uint256) {
+        return verified;
+    }
+
     function getTotalBatchesExecuted() external pure returns (uint256) {
         return 0;
     }

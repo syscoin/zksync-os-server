@@ -142,7 +142,13 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     let eth_filter = EthFilterNamespace::new(config.clone(), storage.clone(), mempool.clone());
     rpc.merge(eth_filter.clone().into_rpc())?;
     rpc.merge(
-        EthPubsubNamespace::new(storage.clone(), mempool.clone(), runtime.clone()).into_rpc(),
+        EthPubsubNamespace::new(
+            storage.clone(),
+            mempool.clone(),
+            runtime.clone(),
+            config.max_filter_terms,
+        )
+        .into_rpc(),
     )?;
     rpc.merge(
         ZksNamespace::new(
@@ -165,6 +171,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             eth_call_handler.clone(),
             // SYSCOIN: Apply the operator's pre-allocation/work ceiling at the shared IMT reader.
             config.max_imt_reconstruction_leaves,
+            config.max_response_size_bytes(),
         )
         .into_rpc(),
     )?;

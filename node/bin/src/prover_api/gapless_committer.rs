@@ -20,6 +20,7 @@ use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 pub struct GaplessCommitter {
     pub next_expected_batch_number: u64,
     pub last_committed_batch_number: u64,
+    pub priority_txs_per_batch_limit: Option<u64>,
     pub proof_storage: ProofStorage,
     pub batch_verification_l1_config: BatchVerificationSL,
 }
@@ -97,6 +98,18 @@ impl PipelineComponent for GaplessCommitter {
                             ready.last().unwrap().batch.batch_number()
                         );
                         for proven_batch in ready {
+                            let batch_number = proven_batch.batch.batch_number();
+                            // Durable FRI proofs can reenter here without passing the batcher.
+                            if batch_number > self.last_committed_batch_number
+                                && let Some(limit) = self.priority_txs_per_batch_limit
+                            {
+                                let count =
+                                    proven_batch.batch.batch.batch_info.number_of_layer1_txs;
+                                anyhow::ensure!(
+                                    count <= limit,
+                                    "pending batch {batch_number} has {count} priority transactions, exceeding the batch limit of {limit}"
+                                );
+                            }
                             let pending_proof_key = proven_batch.pending_proof_key;
                             let batch = proven_batch
                                 .batch

@@ -41,6 +41,7 @@ use zksync_os_raft::RaftConsensusConfig;
 use zksync_os_tx_validators::deployment_filter;
 use zksync_os_types::{NodeRole, PubdataMode};
 
+mod bitcoin_da_auth;
 mod build_external_config;
 mod cli;
 mod metrics;
@@ -1062,8 +1063,8 @@ pub struct SequencerConfig {
     #[config(default_t = "./db/block_dumps".into())]
     pub block_dump_path: PathBuf,
 
-    /// Address that receives the transaction fees.
-    #[config(with = Serde![str], default_t = "0x36615Cf349d7F6344891B1e7CA7C72883F5dc049".parse().unwrap())]
+    /// Operator-controlled fee recipient required when producing blocks.
+    #[config(with = Serde![str], default_t = Address::ZERO)]
     pub fee_collector_address: Address,
 
     /// Maximum number of blocks to produce.
@@ -1183,11 +1184,11 @@ pub struct DeploymentFilterConfig {
 #[config(derive(Default))]
 #[config(validate(
     Self::check_auth_required,
-    "auth_token is required when using `http://` transport"
+    "auth_token is required for TCP policy service transport"
 ))]
 pub struct PolicyServiceConfig {
-    /// `http://host:port` or `unix:///path/to/socket`.
-    #[config(with = Serde![str], validate(check_url_scheme, "URL must use scheme `http` or `unix`"))]
+    /// HTTPS, local loopback HTTP, or `unix:///path/to/socket`.
+    #[config(with = Serde![str], validate(check_policy_service_url, "invalid policy service URL"))]
     pub url: Option<url::Url>,
 
     /// Per-request timeout. Fail-closed on exceed.
@@ -1220,7 +1221,7 @@ pub struct PolicyServiceConfig {
     pub max_trace_frames: usize,
 
     /// Bearer token sent as `Authorization: Bearer <token>` on every request.
-    /// Required for `http://` transports. Ignored for `unix://` transports,
+    /// Required for TCP transports. Ignored for `unix://` transports,
     /// where socket-path filesystem permissions are the access control.
     #[config(secret)]
     pub auth_token: Option<SecretString>,
@@ -1856,6 +1857,15 @@ pub struct BatcherConfig {
     #[config(default_t = 10000)]
     pub tx_per_batch_limit: u64,
 
+    /// Protected priority guard's `maxPriorityPerPackage`. Native publication can set this
+    /// before cutover. Service publication must set it to the deployed guard's value.
+    /// Drain incompatible committed batches and local replay blocks before enabling the limit.
+    #[config_validate(custom(
+        |_root: &Config, value: &Option<u64>| value.is_none_or(|cap| (2..=1024).contains(&cap)),
+        "must be in 2..=1024 when configured"
+    ))]
+    pub priority_package_limit: Option<u64>,
+
     /// SYSCOIN: Maximum number of L2 blocks per batch. On a signing external node this is also
     /// the local native-replay admission ceiling; it must be at least the producing main node's
     /// value or legitimate larger batches will be refused.
@@ -1891,6 +1901,14 @@ pub struct BatcherConfig {
     /// Auth password for the Syscoin NEVM RPC endpoint.
     #[config(secret)]
     pub bitcoin_da_rpc_password: Option<SecretString>,
+
+    /// Absolute path to the rotating Core RPC cookie for a loopback IP endpoint.
+    /// Exclusive with `bitcoin_da_rpc_user` and `bitcoin_da_rpc_password`.
+    pub bitcoin_da_cookie_file: Option<PathBuf>,
+
+    /// Exact Core RPC URL bound to the cookie to guard against an endpoint-only overlay.
+    #[config(secret)]
+    pub bitcoin_da_cookie_rpc_url: Option<String>,
 
     /// PoDA gateway base URL used as a fallback read path and network preset.
     // SYSCOIN: Keep URL-like config values out of serialized metrics.
@@ -2744,21 +2762,17 @@ impl TxValidatorConfig {
     }
 }
 
-fn check_url_scheme(url: &url::Url) -> Result<(), ErrorWithOrigin> {
-    match url.scheme() {
-        "http" | "unix" => Ok(()),
-        other => Err(ErrorWithOrigin::custom(format!(
-            "unsupported URL scheme `{other}`; expected `http` or `unix`"
-        ))),
-    }
+fn check_policy_service_url(url: &url::Url) -> Result<(), ErrorWithOrigin> {
+    zksync_os_tx_validators::policy_client::validate_endpoint(url)
+        .map_err(|err| ErrorWithOrigin::custom(err.to_string()))
 }
 
 impl PolicyServiceConfig {
     fn check_auth_required(&self) -> Result<(), ErrorWithOrigin> {
         let Some(url) = &self.url else { return Ok(()) };
-        if url.scheme() == "http" && self.auth_token.is_none() {
+        if matches!(url.scheme(), "http" | "https") && self.auth_token.is_none() {
             return Err(ErrorWithOrigin::custom(
-                "auth_token is required when using `http://` transport",
+                "auth_token is required for TCP policy service transport",
             ));
         }
         Ok(())
@@ -2789,6 +2803,13 @@ impl PolicyServiceConfig {
             )
             .expect("failed to build PolicyClient from `policy_service`")
         })
+    }
+}
+
+impl BatcherConfig {
+    pub(crate) fn priority_txs_per_batch_limit(&self) -> Option<u64> {
+        // A protected package must be able to aggregate at least two adjacent batches.
+        self.priority_package_limit.map(|cap| cap / 2)
     }
 }
 
@@ -3780,6 +3801,22 @@ mod tests {
             &mut errors,
             "service_publication",
         );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("batcher.priority_package_limit"))
+        );
+        errors.clear();
+        config.batcher_config.priority_package_limit = Some(101);
+        assert_eq!(
+            config.batcher_config.priority_txs_per_batch_limit(),
+            Some(50)
+        );
+        config.service_publication_config.validate_conditional(
+            &config,
+            &mut errors,
+            "service_publication",
+        );
         Config::validate_operator_signers(&config, &config.l1_sender_config, &mut errors)
             .await
             .unwrap();
@@ -3812,6 +3849,36 @@ mod tests {
             "service_publication",
         );
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn priority_package_limit_supports_optional_preprovisioning() {
+        let mut config = base_config(NodeRole::MainNode);
+        assert_eq!(config.batcher_config.priority_txs_per_batch_limit(), None);
+        for (cap, batch_limit) in [(2, Some(1)), (3, Some(1)), (1024, Some(512))] {
+            config.batcher_config.priority_package_limit = Some(cap);
+            let mut errors = Vec::new();
+            config
+                .batcher_config
+                .validate_conditional(&config, &mut errors, "batcher");
+            assert!(errors.is_empty(), "{errors:?}");
+            assert_eq!(
+                config.batcher_config.priority_txs_per_batch_limit(),
+                batch_limit
+            );
+        }
+        for cap in [0, 1, 1025] {
+            config.batcher_config.priority_package_limit = Some(cap);
+            let mut errors = Vec::new();
+            config
+                .batcher_config
+                .validate_conditional(&config, &mut errors, "batcher");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.message.contains("2..=1024"))
+            );
+        }
     }
 
     fn set_bitcoin_da_credentials(
@@ -4337,23 +4404,24 @@ mod tests {
     }
 
     #[test]
-    fn policy_service_accepts_http_url_with_token() {
+    fn policy_service_accepts_https_url_with_token() {
         let result = parse_policy_service_config([
-            ("POLICY_SERVICE_URL", "http://policy.local:9000"),
+            ("POLICY_SERVICE_URL", "https://policy.local:9000"),
             ("POLICY_SERVICE_AUTH_TOKEN", "secret"),
         ]);
         assert!(
             result.is_ok(),
-            "http URL with token should be accepted, got: {:?}",
+            "HTTPS URL with token should be accepted, got: {:?}",
             result.unwrap_err()
         );
     }
 
     #[test]
-    fn policy_service_rejects_http_url_without_token() {
-        let err = parse_policy_service_config([("POLICY_SERVICE_URL", "http://policy.local:9000")])
-            .unwrap_err()
-            .to_string();
+    fn policy_service_rejects_https_url_without_token() {
+        let err =
+            parse_policy_service_config([("POLICY_SERVICE_URL", "https://policy.local:9000")])
+                .unwrap_err()
+                .to_string();
         assert!(
             err.contains("auth_token is required"),
             "expected token-required error, got: {err}"

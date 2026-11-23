@@ -1,4 +1,5 @@
 use crate::metrics::{METRICS, OperationResult, OperationResultLabels};
+use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{Ethereum, TransactionBuilder};
 use alloy::primitives::Address;
 use alloy::primitives::utils::format_ether;
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use zksync_os_contract_interface::{
     IChainAdminOwnable::{self, IChainAdminOwnableInstance},
-    IERC20,
+    IERC20, IZKChain,
     l1_discovery::L1State,
 };
 use zksync_os_external_price_api::cmc_api::CmcPriceApiClient;
@@ -87,7 +88,6 @@ pub struct BaseTokenPriceUpdater {
     sl_token: APIToken,
     price_api_client: Box<dyn PriceApiClient>,
     config: BaseTokenPriceUpdaterConfig,
-    last_l1_ratio: Ratio<BigUint>,
     chain_admin_contract: IChainAdminOwnableInstance<NodeProvider, Ethereum>,
     token_multiplier_setter_address: Option<Address>,
     zk_chain_address: Address,
@@ -234,14 +234,6 @@ impl BaseTokenPriceUpdater {
             )?) as Box<dyn PriceApiClient>,
         };
 
-        let l1_nominator = zk_chain_l1
-            .base_token_gas_price_multiplier_nominator()
-            .await?;
-        let l1_denominator = zk_chain_l1
-            .base_token_gas_price_multiplier_denominator()
-            .await?;
-        let last_l1_ratio = Ratio::new(BigUint::from(l1_nominator), BigUint::from(l1_denominator));
-
         let chain_admin_address = zk_chain_l1.get_admin().await?;
         let chain_admin_contract = IChainAdminOwnable::new(chain_admin_address, l1_provider);
         let token_multiplier_setter_on_l1 = chain_admin_contract
@@ -258,7 +250,7 @@ impl BaseTokenPriceUpdater {
         }
 
         tracing::info!(
-            ?token_multiplier_setter_address, %chain_admin_address, ?last_l1_ratio,
+            ?token_multiplier_setter_address, %chain_admin_address,
             "initialized base token price updater",
         );
 
@@ -271,7 +263,6 @@ impl BaseTokenPriceUpdater {
             sl_token,
             price_api_client,
             config: base_token_adjuster_config,
-            last_l1_ratio,
             chain_admin_contract,
             token_multiplier_setter_address,
             zk_chain_address: *zk_chain_l1.address(),
@@ -428,7 +419,23 @@ impl BaseTokenPriceUpdater {
             // No setter address configured, nothing to do.
             return Ok(());
         };
-        let old_ratio = self.last_l1_ratio.clone();
+        // The previous update may have been reorged out. Sample both values at one canonical
+        // block before comparing prices, including after another authorized operator updates them.
+        let provider = self.chain_admin_contract.provider();
+        let latest = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("settlement provider returned no latest block")?;
+        let at = BlockId::hash_canonical(latest.header.hash);
+        let chain = IZKChain::new(self.zk_chain_address, provider);
+        let numer = chain.baseTokenGasPriceMultiplierNominator().block(at);
+        let denom = chain.baseTokenGasPriceMultiplierDenominator().block(at);
+        let (numer, denom) = tokio::try_join!(numer.call(), denom.call())?;
+        anyhow::ensure!(numer != 0 && denom != 0, "invalid on-chain fee multiplier");
+        let old_ratio = Ratio::new(BigUint::from(numer), BigUint::from(denom));
+        if let Some(ratio) = old_ratio.to_f64() {
+            METRICS.ratio_l1.set(ratio);
+        }
 
         // Instead of converting to signed bigint it's easier to do an if-else here.
         let diff = if new_ratio > old_ratio {
@@ -506,7 +513,6 @@ impl BaseTokenPriceUpdater {
             .with_from(token_multiplier_setter_address)
             .with_max_fee_per_gas(self.config.max_fee_per_gas_wei)
             .with_max_priority_fee_per_gas(self.config.max_priority_fee_per_gas_wei);
-        let provider = self.chain_admin_contract.provider();
         let tx_handle = provider.send_transaction(tx_request).await?;
         let receipt = tx_handle
             // We are being optimistic with our transaction inclusion here. But, even if
@@ -537,8 +543,6 @@ impl BaseTokenPriceUpdater {
         if let Some(r) = new_ratio.to_f64() {
             METRICS.ratio_l1.set(r);
         }
-        self.last_l1_ratio = new_ratio;
-
         Ok(())
     }
 }

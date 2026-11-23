@@ -47,6 +47,10 @@ impl ConfigValidate for ServicePublicationConfig {
                 "requires a main node with the batcher enabled",
             ),
             (
+                root.batcher_config.priority_package_limit.is_some(),
+                "requires batcher.priority_package_limit to match the deployed priority guard",
+            ),
+            (
                 root.prover_api_config.enabled
                     && !root.prover_api_config.fake_fri_provers.enabled
                     && !root.prover_api_config.fake_snark_provers.enabled,

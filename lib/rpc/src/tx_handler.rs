@@ -37,6 +37,7 @@ const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(
 // SYSCOIN: bound attacker-influenced unavailable-ref caching. This cache is an optimization only;
 // if it is full, skipping a new entry is safer than allowing unbounded memory or mutex work.
 const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES: usize = 8192;
+const MAX_CONCURRENT_EDGE_DA_ADMISSION_CHECKS: usize = 4;
 
 /// JSON-RPC error code used by EIP-7966 to signal a sync-send timeout.
 const EIP_7966_TIMEOUT_CODE: i64 = 4;
@@ -66,6 +67,7 @@ pub struct TxHandler<RpcStorage, Mempool> {
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     tx_forwarder: Option<TxForwarder>,
     edge_da_unavailable_ref_cache: Arc<Mutex<HashMap<String, Instant>>>,
+    edge_da_admission_budget: Arc<Semaphore>,
     /// Optional policy client. When set, each incoming tx is simulated
     /// once with the validator wired in (admit + judge inline). Spares
     /// clients a `pending → no receipt` poll loop on a stable deny.
@@ -100,6 +102,9 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             acceptance_state,
             tx_forwarder,
             edge_da_unavailable_ref_cache: Arc::new(Mutex::new(HashMap::new())),
+            edge_da_admission_budget: Arc::new(Semaphore::new(
+                MAX_CONCURRENT_EDGE_DA_ADMISSION_CHECKS,
+            )),
             policy_client,
             blocking_rpcs_semaphore,
             last_constructed_block_context,
@@ -275,6 +280,12 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         let Some(config) = self.config.edge_da_admission.as_ref() else {
             return Ok(());
         };
+
+        // Availability is checked before insertion, so mempool rate limiting cannot bound it.
+        let _permit = self
+            .edge_da_admission_budget
+            .try_acquire()
+            .map_err(|_| EthSendRawTransactionError::EdgeDaAdmissionBusy)?;
 
         let client = SyscoinClient::new(
             &config.rpc_url,
@@ -664,6 +675,8 @@ pub enum EthSendRawTransactionError {
     BlacklistedTransaction,
     #[error("compact edge DA admission check failed: {0}")]
     EdgeDaAdmissionCheckFailed(String),
+    #[error("compact edge DA admission is busy")]
+    EdgeDaAdmissionBusy,
     /// The executed-gas rate limiter is exhausted; retriable.
     #[error(
         "transaction gas rate limit exceeded: node is at capacity, retry in ~{}ms",
@@ -691,7 +704,8 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::NotAcceptingTransactions(_) => Self::NotAccepting,
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
             EthSendRawTransactionError::BlacklistedTransaction => Self::BlacklistedTransaction,
-            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
+            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_)
+            | EthSendRawTransactionError::EdgeDaAdmissionBusy => Self::PoolOther,
             EthSendRawTransactionError::GasRateLimited { .. } => Self::GasRateLimited,
             EthSendRawTransactionError::ForwardError(err) => match err {
                 TxForwardError::Rpc(RpcError::ErrorResp(_)) => Self::ForwardRejected,

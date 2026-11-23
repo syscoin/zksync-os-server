@@ -429,7 +429,7 @@ fn event_scan_block_count(
 /// if there is not any.
 ///
 /// Batch `batch_number` MUST have been committed before `start_block_number`.
-async fn find_latest_l1_revert(
+pub(crate) async fn find_latest_l1_revert(
     zk_chain: &ZkChain<NodeProvider>,
     batch_number: u64,
     start_block_number: BlockNumber,
@@ -634,7 +634,7 @@ pub async fn fetch_stored_batch_data(
     batch_number: u64,
 ) -> anyhow::Result<Option<(DiscoveredCommittedBatch, TxHash)>> {
     let Some((commit_log, tx_hash)) =
-        find_commit_log(zk_chain, l1_block_number, batch_number).await?
+        find_commit_log(zk_chain, l1_block_number.into(), batch_number).await?
     else {
         return Ok(None);
     };
@@ -652,38 +652,43 @@ pub async fn fetch_stored_batch_data(
 }
 
 /// Finds the `ReportCommittedBatchRangeZKsyncOS` commit event for `batch_number` in
-/// `l1_block_number`, returning the decoded event together with the hash of the transaction that
+/// `l1_block`, returning the decoded event together with the hash of the transaction that
 /// emitted it, or `None` if no matching event is present in that block.
 pub(crate) async fn find_commit_log(
     zk_chain: &ZkChain<NodeProvider>,
-    l1_block_number: BlockNumber,
+    l1_block: BlockId,
     batch_number: u64,
 ) -> anyhow::Result<Option<(Log<ReportCommittedBatchRangeZKsyncOS>, TxHash)>> {
-    let logs = zk_chain
-        .provider()
-        .get_logs(
-            &Filter::new()
-                .address(*zk_chain.address())
-                .event_signature(ReportCommittedBatchRangeZKsyncOS::SIGNATURE_HASH)
-                .from_block(l1_block_number)
-                .to_block(l1_block_number),
-        )
-        .await?;
+    let filter = Filter::new()
+        .address(*zk_chain.address())
+        .event_signature(ReportCommittedBatchRangeZKsyncOS::SIGNATURE_HASH);
+    let filter = match l1_block {
+        BlockId::Hash(hash) => filter.at_block_hash(hash.block_hash),
+        BlockId::Number(number) => filter.from_block(number).to_block(number),
+    };
+    let logs = zk_chain.provider().get_logs(&filter).await?;
     // Take the last matching log: a batch may be committed, reverted, and recommitted in one L1
     // block, in which case only the final commit can match the block's resulting stored batch hash.
-    Ok(logs
-        .into_iter()
-        .filter_map(|log| {
-            let batch_log = ReportCommittedBatchRangeZKsyncOS::decode_log(&log.inner)
-                .expect("unable to decode `ReportCommittedBatchRangeZKsyncOS` log");
-            (batch_log.batchNumber == batch_number).then(|| {
-                (
-                    batch_log,
-                    log.transaction_hash.expect("indexed log without tx hash"),
-                )
-            })
-        })
-        .next_back())
+    for log in logs.into_iter().rev() {
+        anyhow::ensure!(
+            !log.removed && log.address() == *zk_chain.address(),
+            "removed settlement log or unexpected emitter"
+        );
+        if let BlockId::Hash(hash) = l1_block {
+            anyhow::ensure!(
+                log.block_hash == Some(hash.block_hash),
+                "settlement log returned for a different block than requested"
+            );
+        }
+        let batch_log = ReportCommittedBatchRangeZKsyncOS::decode_log(&log.inner)?;
+        if batch_log.batchNumber == batch_number {
+            let tx_hash = log
+                .transaction_hash
+                .context("indexed log without tx hash")?;
+            return Ok(Some((batch_log, tx_hash)));
+        }
+    }
+    Ok(None)
 }
 
 /// Fetches batch commit transaction and extra data from L1 required to construct `CommitedBatch`.

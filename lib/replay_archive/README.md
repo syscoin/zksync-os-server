@@ -165,7 +165,8 @@ AGE-SECRET-KEY-...
 ```
 
 Encryption is randomized, so the live gate verifies presence only inside its writer-owned session.
-Recovery decrypts every session copy and requires the decoded records for a block/hash to agree.
+Recovery decrypts every selected session copy and requires the decoded records for a block/hash
+to agree. The default selection includes every session.
 
 ## Recovery
 
@@ -192,9 +193,15 @@ If the archive was encrypted, recovery decrypts downloaded objects in memory whe
 version (`--kms-key-version`) or an age identity (`--identity-file` / `--age-secret-key`) is
 provided. Decrypted replay records are not written to disk.
 
-The recovery logic requires all session copies for each canonical block/hash to decode to the same
-replay record. It then starts from the anchor, extracts the previous block hash from each record,
+The recovery logic requires all selected session copies for each canonical block/hash to decode
+to the same replay record. It then starts from the anchor, extracts the previous block hash from each record,
 walks backward until block `0`, and writes the canonical chain into RocksDB from genesis upward.
+
+When recovering from a shared archive, use `--trusted-session` on both commands to scope the
+restore to exact session IDs recorded independently in trusted writer logs or a reviewed inventory.
+Repeat the option for each trusted session needed to cover the full chain from the anchor. Copies
+in the selected sessions must still agree. Use storage access controls that reserve each selected
+prefix to its corresponding writer.
 
 ## CLI
 
