@@ -474,7 +474,14 @@ mod tests {
             priority_transaction(0),
             SystemTxEnvelope::set_interop_fee(U256::ZERO, 1).into(),
         ];
-        let mut accumulator = BatchInfoAccumulator::new(100, 20, Some(2), 100, 100, Address::ZERO);
+        let mut accumulator = BatchInfoAccumulator::new(
+            100,
+            20,
+            Some(2),
+            super::COMMIT_TX_PUBDATA_OVERHEAD + 100,
+            100,
+            Address::ZERO,
+        );
         accumulator.add(&output, &replay).unwrap();
         assert_eq!(accumulator.priority_tx_count, 1);
         assert!(!accumulator.should_seal());
