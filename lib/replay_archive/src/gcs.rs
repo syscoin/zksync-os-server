@@ -375,11 +375,22 @@ impl ReplayArchiveStorageReader for GcsReplayArchiveReader {
         &self,
         page_token: Option<String>,
     ) -> anyhow::Result<ReplayArchiveKeyPage> {
+        self.list_keys_page_for_session(None, page_token).await
+    }
+
+    async fn list_keys_page_for_session(
+        &self,
+        session: Option<&ReplayArchiveSession>,
+        page_token: Option<String>,
+    ) -> anyhow::Result<ReplayArchiveKeyPage> {
         let mut request = self
             .clients
             .control
             .list_objects()
             .set_parent(self.config.bucket_resource());
+        if let Some(session) = session {
+            request = request.set_prefix(format!("{session}/"));
+        }
         if let Some(page_token) = page_token {
             request = request.set_page_token(page_token);
         }
@@ -439,7 +450,9 @@ mod tests {
     };
     use std::fmt;
 
-    struct IdempotencyCheckingControl;
+    struct IdempotencyCheckingControl {
+        list_prefix: String,
+    }
 
     const TEST_CLIENT_SECRET: &str = "credential-must-not-appear-in-debug";
     impl fmt::Debug for IdempotencyCheckingControl {
@@ -462,21 +475,22 @@ mod tests {
 
         async fn list_objects(
             &self,
-            _request: ListObjectsRequest,
+            request: ListObjectsRequest,
             options: RequestOptions,
         ) -> google_cloud_gax::Result<Response<ListObjectsResponse>> {
             assert_eq!(options.idempotent(), Some(true));
+            assert_eq!(request.prefix, self.list_prefix);
             Ok(Response::from(ListObjectsResponse::new()))
         }
     }
 
-    async fn idempotency_checking_clients() -> GcsClients {
+    async fn idempotency_checking_clients(list_prefix: String) -> GcsClients {
         let storage = Storage::builder()
             .with_credentials(anonymous::Builder::new().build())
             .build()
             .await
             .unwrap();
-        let control = StorageControl::from_stub(IdempotencyCheckingControl);
+        let control = StorageControl::from_stub(IdempotencyCheckingControl { list_prefix });
         GcsClients { storage, control }
     }
 
@@ -499,7 +513,7 @@ mod tests {
         let storage = GcsReplayArchiveStorage {
             config: GcsReplayArchiveConfig::anonymous("bucket"),
             session: ReplayArchiveSession::new(42, "node-a").unwrap(),
-            clients: idempotency_checking_clients().await,
+            clients: idempotency_checking_clients(String::new()).await,
             published_generations: PublishedObjectIdentities::default(),
         };
         storage
@@ -511,24 +525,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_keys_page_marks_request_idempotent() {
-        let reader = GcsReplayArchiveReader {
-            config: GcsReplayArchiveConfig::anonymous("bucket"),
-            clients: idempotency_checking_clients().await,
-        };
-
-        assert_eq!(
-            reader.list_keys_page(None).await.unwrap(),
-            ReplayArchiveKeyPage {
-                keys: Vec::new(),
-                next_page_token: None,
-            }
-        );
+    async fn list_keys_page_preserves_idempotency_and_exact_session_prefix() {
+        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
+        for scope in [None, Some(&session)] {
+            let reader = GcsReplayArchiveReader {
+                config: GcsReplayArchiveConfig::anonymous("bucket"),
+                clients: idempotency_checking_clients(
+                    scope.map(|s| format!("{s}/")).unwrap_or_default(),
+                )
+                .await,
+            };
+            assert_eq!(
+                reader
+                    .list_keys_page_for_session(scope, None)
+                    .await
+                    .unwrap(),
+                ReplayArchiveKeyPage {
+                    keys: Vec::new(),
+                    next_page_token: None,
+                }
+            );
+        }
     }
 
     #[tokio::test]
     async fn gcs_debug_does_not_include_client_details() {
-        let clients = idempotency_checking_clients().await;
+        let clients = idempotency_checking_clients(String::new()).await;
         let storage = GcsReplayArchiveStorage {
             config: GcsReplayArchiveConfig::anonymous("bucket"),
             session: ReplayArchiveSession::new(42, "node-a").unwrap(),

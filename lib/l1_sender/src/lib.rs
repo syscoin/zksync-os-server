@@ -734,7 +734,7 @@ where
                         %err,
                         ?elapsed,
                         retry_in = ?self.config.gateway_da_admission_retry_interval,
-                        "Gateway rejected commit because Bitcoin DA is not visible yet; retrying submission"
+                        "Gateway DA admission is temporarily unavailable; retrying commit submission"
                     );
                     tokio::time::sleep(self.config.gateway_da_admission_retry_interval).await;
                 }
@@ -1793,13 +1793,14 @@ fn is_already_known_error(err: &TransportError) -> bool {
 }
 
 // SYSCOIN: compact edge-DA admission happens before Gateway mempool insertion. The child
-// chain can publish Bitcoin DA before the Gateway node observes it, so only this narrow
-// rejection class is retried; unrelated admission failures remain fatal.
+// chain can publish DA before the Gateway observes it, and the Gateway can temporarily
+// exhaust its admission slots. Both conditions can clear without changing the signed commit.
 fn is_gateway_da_admission_error(err: &TransportError) -> bool {
     match err {
         TransportError::ErrorResp(payload) => {
             let message = payload.message.to_ascii_lowercase();
-            is_retryable_gateway_da_admission_message(&message)
+            (payload.code == -32009 && message == "compact edge da admission is busy")
+                || is_retryable_gateway_da_admission_message(&message)
         }
         _ => false,
     }
@@ -2113,6 +2114,22 @@ mod tests {
     use alloy::transports::mock::Asserter;
     use zksync_os_operator_signer::SignerConfig;
     use zksync_os_provider::NodeProvider;
+
+    #[test]
+    fn gateway_da_admission_retries_only_its_own_busy_response() {
+        for (code, message, expected) in [
+            (-32009, "compact edge DA admission is busy", true),
+            (-32009, "Policy simulation service is busy", false),
+            (-32602, "compact edge DA admission is busy", false),
+        ] {
+            let error = TransportError::ErrorResp(ErrorPayload {
+                code,
+                message: message.into(),
+                data: None,
+            });
+            assert_eq!(is_gateway_da_admission_error(&error), expected);
+        }
+    }
 
     fn mocked_header() -> Header {
         let block: Block = Block::default();

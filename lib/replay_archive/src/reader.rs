@@ -1,4 +1,4 @@
-use crate::ReplayArchiveKey;
+use crate::{ReplayArchiveKey, ReplayArchiveSession};
 use async_trait::async_trait;
 
 /// One page of listed replay archive keys.
@@ -25,6 +25,20 @@ pub trait ReplayArchiveStorageReader {
         &self,
         page_token: Option<String>,
     ) -> anyhow::Result<ReplayArchiveKeyPage>;
+
+    /// Lists one page under an exact writer prefix. A page token belongs to the same session.
+    /// Readers that only support whole-archive recovery must not silently broaden the request.
+    async fn list_keys_page_for_session(
+        &self,
+        session: Option<&ReplayArchiveSession>,
+        page_token: Option<String>,
+    ) -> anyhow::Result<ReplayArchiveKeyPage> {
+        anyhow::ensure!(
+            session.is_none(),
+            "archive reader does not support session-scoped listing"
+        );
+        self.list_keys_page(page_token).await
+    }
 
     /// Fetches the payload of a single archived object.
     async fn fetch_object(&self, key: &ReplayArchiveKey) -> anyhow::Result<Vec<u8>>;
