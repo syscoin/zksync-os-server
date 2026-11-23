@@ -17,7 +17,7 @@ use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 use zksync_os_storage_api::{OverlayBuffer, ReadStateHistory, WriteState};
 use zksync_os_tx_validators::deployment_filter;
 use zksync_os_tx_validators::policy_client::AccessType;
-use zksync_os_types::{NotAcceptingReason, TransactionAcceptanceState};
+use zksync_os_types::{NotAcceptingReason, TransactionAcceptanceState, ZkEnvelope};
 
 /// Executes blocks, while only updating local in-memory state (mempool, block context).
 /// Does not persist anything to disk.
@@ -84,6 +84,10 @@ where
             };
             tracing::info!("Command {cmd} received by BlockExecutor");
             let cmd_type = cmd.command_type();
+            let priority_formation = match &cmd {
+                BlockCommand::Produce(command) => command.priority_formation,
+                _ => None,
+            };
             let replayed_block_number = match &cmd {
                 // SYSCOIN: Both already-canonized commands retain replay semantics in execution.
                 BlockCommand::Replay(record) | BlockCommand::CanonizedRebuild(record) => {
@@ -193,6 +197,23 @@ where
                     error
                 })
                 .context("execute_block_in_vm")?;
+
+            if let Some(formation) = priority_formation {
+                let mut next = formation.priority_from;
+                for tx in &replay_record.transactions {
+                    if let ZkEnvelope::L1(priority) = tx.envelope() {
+                        anyhow::ensure!(
+                            priority.priority_id() == next && next < formation.reachable_end,
+                            "reserved block priority transactions differ from its admitted prefix"
+                        );
+                        next += 1;
+                    }
+                }
+                anyhow::ensure!(
+                    next >= formation.required_end,
+                    "reserved block did not execute its oldest due priority transaction"
+                );
+            }
 
             let time_since_last_block = last_processed_block_at
                 .map(|last_processed_block_at| last_processed_block_at.elapsed());

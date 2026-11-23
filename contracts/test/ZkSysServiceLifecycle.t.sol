@@ -3,9 +3,11 @@ pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts-v4/proxy/ERC1967/ERC1967Proxy.sol";
-import {GateVerifier, GateSettlement, GateMessenger, GatePriorityCheckpoint} from "./ZkSysProofGate.t.sol";
+import {GateVerifier, GateSettlement, GateMessenger} from "./ZkSysProofGate.t.sol";
 import {ServiceMessageVerifierMockV1} from "./ZkSysProverServiceV1.t.sol";
 import {RootDrawMailbox, RootDrawHub} from "./ZkSysRootDraw.t.sol";
+import {IZkSysPriorityCommitAdmissionV1} from "contracts/src/zksys/IZkSysPriorityCommitAdmissionV1.sol";
+import {PriorityAdmissionMock} from "./ZkSysPriorityGuard.t.sol";
 import {ZkSysPriorityGuardV1, IZkSysPriorityMailboxV1} from "contracts/src/zksys/ZkSysPriorityGuardV1.sol";
 import {ZkSysProofGateV1} from "contracts/src/zksys/ZkSysProofGateV1.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
@@ -85,10 +87,17 @@ contract ZkSysServiceLifecycleTest is Test {
         vm.chainId(GATEWAY);
         verifier = new GateVerifier();
         settlement = new GateSettlement(verifier);
-        GatePriorityCheckpoint checkpoint = new GatePriorityCheckpoint(POLICY);
+        PriorityAdmissionMock admission =
+            new PriorityAdmissionMock(address(settlement), POLICY, vm.addr(SEQUENCER_KEY), 64);
+        settlement.installAdmission(address(admission));
         address predictedGate = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZkSysPriorityGuardV1 guard = new ZkSysPriorityGuardV1(
-            predictedGate, IZkSysPriorityMailboxV1(address(settlement)), checkpoint, POLICY, 100, 600, 64
+            predictedGate,
+            IZkSysPriorityMailboxV1(address(settlement)),
+            IZkSysPriorityCommitAdmissionV1(address(admission)),
+            POLICY,
+            600,
+            64
         );
         gate = new ZkSysProofGateV1(
             settlement,
@@ -275,6 +284,7 @@ contract ZkSysServiceLifecycleTest is Test {
         uint256[] memory proof = new uint256[](46);
         proof[0] = 0x802;
         proof[2] = 123;
+        settlement.recordCommitments(batches);
         proofData = bytes.concat(hex"01", abi.encode(previous, batches, proof));
         delete accepted;
         accepted.domainVersion = 1;

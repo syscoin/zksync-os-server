@@ -49,6 +49,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     bytes32 public constant ACCEPTED_DOMAIN = keccak256("ZKSYS_ACCEPTED_SERVICE_V1");
     bytes32 public constant ACTIVATION_DOMAIN = keccak256("ZKSYS_SERVICE_ACTIVATION_V1");
     bytes32 private constant PROVER_ROLE = keccak256("PROVER_ROLE");
+    bytes32 private constant PRIORITY_RANGE_DOMAIN = keccak256("ZkSysPriorityRangeV1");
     uint256 private constant V8_PROOF_TYPE = 0x802;
     IZkSysL1MessengerV1 private constant MESSENGER = IZkSysL1MessengerV1(address(0x8008));
 
@@ -126,6 +127,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
                 || policyHash_ == bytes32(0) || productionVkHash_ == bytes32(0)
                 || address(priorityGuard_).code.length == 0 || priorityGuard_.acceptanceGate() != address(this)
                 || address(priorityGuard_.chain()) != address(chain_) || priorityGuard_.policyHash() != policyHash_
+                || priorityGuard_.admission().sequencer() != sequencer_
                 || (address(messageSink_) != address(0)
                     && (address(messageSink_).code.length == 0 || messageSink_.publisher() != address(this)))
         ) revert InvalidConfiguration();
@@ -220,6 +222,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     function repairBootstrapPackage(AcceptedPackageV1 calldata proposed) external nonReentrant {
         if (msg.sender != sequencer) revert Unauthorized();
         if (serviceActive || address(coordinator) != address(0) || priorityWorkId == bytes32(0)) revert WrongPhase();
+        _checkSettlement();
         AcceptedPackageV1 memory frozen = _bootstrapPackage;
         frozen.batchTo = proposed.batchTo;
         frozen.manifestHash = proposed.manifestHash;
@@ -229,6 +232,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
                 || proposed.manifestHash == bytes32(0)
                 || ZkSysServiceTypesV1.hashPackage(frozen) != ZkSysServiceTypesV1.hashPackage(proposed)
         ) revert InvalidPackage();
+        priorityGuard.repair(priorityWorkId, proposed.batchTo);
         _bootstrapPackage = proposed;
     }
 
@@ -245,7 +249,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     function _openPriorityWork(AcceptedPackageV1 calldata proposed) private {
         if (priorityWorkId != bytes32(0)) revert WrongPhase();
         priorityWorkId = keccak256(abi.encode(proposed.parent, proposed.batchFrom));
-        priorityGuard.open(priorityWorkId, proposed.batchFrom);
+        priorityGuard.open(priorityWorkId, proposed.batchFrom, proposed.batchTo);
     }
 
     function repairPackage(AcceptedPackageV1 calldata proposed) external nonReentrant {
@@ -255,6 +259,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         if (proposed.batchFrom != chain.getTotalBatchesVerified() + 1) revert InvalidPackage();
         if (transitionWork && proposed.reportHash != _emptyReportHash()) revert InvalidPackage();
         coordinator.repairPackage(proposed);
+        priorityGuard.repair(priorityWorkId, proposed.batchTo);
     }
 
     function submitBootstrap(
@@ -328,8 +333,9 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         ) revert InvalidProofData();
 
         bytes32[] memory statements = new bytes32[](batches.length);
-        uint256[] memory priorityCounts = new uint256[](batches.length);
-        bytes32[] memory priorityHashes = new bytes32[](batches.length);
+        bytes32 rangeDigest =
+            keccak256(abi.encode(PRIORITY_RANGE_DOMAIN, address(chain), accepted.batchFrom, accepted.batchTo));
+        uint256 priorityCount;
         for (uint256 i; i < batches.length; ++i) {
             StoredBatch memory batch = batches[i];
             BatchOutput calldata output = outputs[i];
@@ -342,8 +348,8 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
             ) revert InvalidProofData();
             statements[i] =
                 keccak256(abi.encodePacked(previous.batchHash, batch.batchHash, chainConfigHash, batch.commitment));
-            priorityCounts[i] = output.l1TxCount;
-            priorityHashes[i] = output.priorityOperationsHash;
+            rangeDigest = keccak256(abi.encode(rangeDigest, keccak256(abi.encode(batch))));
+            priorityCount += batch.numberOfLayer1Txs;
             previous = batch;
         }
         uint256 seen;
@@ -366,7 +372,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
             seen |= bit;
         }
 
-        priorityGuard.consume(priorityWorkId, accepted.batchTo, priorityCounts, priorityHashes);
+        priorityGuard.consume(priorityWorkId, accepted.batchTo, rangeDigest, priorityCount);
         // The native Executor checks committed batch hashes and invokes the production verifier.
         // Reversion also rolls back coordinator acceptance; a signature can never substitute for proof validity.
         timelock.proveBatchesSharedBridge(address(chain), accepted.batchFrom, accepted.batchTo, proofData);
@@ -412,6 +418,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         if (
             !chain.isValidator(address(timelock)) || timelock.getRoleMemberCount(address(chain), PROVER_ROLE) != 1
                 || timelock.getRoleMember(address(chain), PROVER_ROLE, 0) != address(this)
+                || !priorityGuard.isAdmissionActive(sequencer)
         ) revert SettlementConfigurationChanged();
     }
 

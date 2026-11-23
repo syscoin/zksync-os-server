@@ -2172,7 +2172,10 @@ gl_write_zkstack_cli_release_stamp() {
 gl_era_contracts_postimage() {
   gl_require ZKSYNC_ERA_PATH
   gl_require ZKSYNC_OS_SERVER_PATH
+  local service_v1
+  service_v1="$(gl_to_lower "${ZKSYS_ENABLE_PROVER_SERVICE_V1:-false}")"
   if gl_pending_v8_mock_launch_enabled; then
+    [ "${service_v1}" = false ] || gl_die "prover service V1 requires real proofs on all chains"
     # SYSCOIN: Preserve the sole reviewed pre-regeneration source-only lane.
     bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" \
       "$@" "${ZKSYNC_ERA_PATH}/contracts"
@@ -2184,8 +2187,12 @@ gl_era_contracts_postimage() {
     gl_die "generated Era release requires the existing real-proof modes without a mock verifier"
   # SYSCOIN: Attest the exact generated sources and app identity independently
   # of packaged-fixture qualification; live deployment identity checks follow.
-  python3 -B "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-release.py" \
-    "$@" "${ZKSYNC_ERA_PATH}/contracts"
+  ZKSYS_ENABLE_PROVER_SERVICE_V1="${service_v1}" \
+    python3 -B "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-release.py" \
+    "$@" "${ZKSYNC_ERA_PATH}/contracts" || return $?
+  if [ "${service_v1}" = true ]; then
+    gl_die "prover service V1 native facets and artifact inventory require release qualification"
+  fi
 }
 
 gl_ensure_era_contracts_syscoin_postimage() {

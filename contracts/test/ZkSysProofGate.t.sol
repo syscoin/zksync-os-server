@@ -19,12 +19,9 @@ import {
     IZkSysAuthenticatedRootSourceV1,
     IZkSysWrapperRosterSourceV1
 } from "contracts/src/zksys/ZkSysServiceTypesV1.sol";
-import {
-    ZkSysPriorityGuardV1,
-    IZkSysPriorityMailboxV1,
-    IZkSysPriorityCheckpointReceiverV1,
-    PriorityCheckpointV1
-} from "contracts/src/zksys/ZkSysPriorityGuardV1.sol";
+import {ZkSysPriorityGuardV1, IZkSysPriorityMailboxV1} from "contracts/src/zksys/ZkSysPriorityGuardV1.sol";
+import {IZkSysPriorityCommitAdmissionV1} from "contracts/src/zksys/IZkSysPriorityCommitAdmissionV1.sol";
+import {MockPriorityRange, PriorityAdmissionMock} from "./ZkSysPriorityGuard.t.sol";
 import {ZkSysWrapperCoordinatorV1} from "contracts/src/zksys/ZkSysWrapperCoordinatorV1.sol";
 
 contract GateDrawSource is IZkSysAuthenticatedRootSourceV1 {
@@ -99,9 +96,28 @@ contract GateSettlement is IZkSysNativeSettlementV1, IZkSysProverTimelockV1 {
     uint256 public roleCount = 1;
     bytes32 public validProofDataHash;
     bool public refuseProof;
+    address public getSyscoinPriorityCommitPolicy;
+    uint256 private committed;
+    mapping(uint256 => bytes32) private storedBatchHashes;
+    mapping(uint64 => MockPriorityRange) public committedPriorityRange;
 
     constructor(GateVerifier verifier_) {
         verifier = verifier_;
+        storedBatchHashes[0] = keccak256(abi.encode(uint256(0)));
+    }
+
+    function installAdmission(address admission) external {
+        getSyscoinPriorityCommitPolicy = admission;
+    }
+
+    function recordCommitments(ZkSysProofGateV1.StoredBatch[] memory batches) external {
+        for (uint256 i; i < batches.length; ++i) {
+            ZkSysProofGateV1.StoredBatch memory batch = batches[i];
+            uint64 from = committedPriorityRange[batch.batchNumber - 1].end;
+            committedPriorityRange[batch.batchNumber] = MockPriorityRange(from, from + uint64(batch.numberOfLayer1Txs));
+            storedBatchHashes[batch.batchNumber] = keccak256(abi.encode(batch));
+            if (batch.batchNumber > committed) committed = batch.batchNumber;
+        }
     }
 
     function configure(address gate_, bytes32 validHash) external {
@@ -138,7 +154,7 @@ contract GateSettlement is IZkSysNativeSettlementV1, IZkSysProverTimelockV1 {
     }
 
     function getTotalBatchesCommitted() external view returns (uint256) {
-        return verified;
+        return committed;
     }
 
     function getTotalBatchesExecuted() external pure returns (uint256) {
@@ -161,8 +177,8 @@ contract GateSettlement is IZkSysNativeSettlementV1, IZkSysProverTimelockV1 {
         return false;
     }
 
-    function storedBatchHash(uint256 batch) external pure returns (bytes32) {
-        return keccak256(abi.encode(batch));
+    function storedBatchHash(uint256 batch) external view returns (bytes32) {
+        return storedBatchHashes[batch];
     }
 
     function isValidator(address validator) external view returns (bool) {
@@ -186,43 +202,6 @@ contract GateSettlement is IZkSysNativeSettlementV1, IZkSysProverTimelockV1 {
     }
 }
 
-contract GatePriorityCheckpoint is IZkSysPriorityCheckpointReceiverV1 {
-    bytes32 public immutable policyHash;
-    uint256 public childChainId = 57;
-    uint64 public total;
-    uint64 public overdueEnd;
-    uint64 public height;
-    bytes32 public root = keccak256("");
-
-    constructor(bytes32 policy) {
-        policyHash = policy;
-    }
-
-    function setChainId(uint256 value) external {
-        childChainId = value;
-    }
-
-    function receiveCheckpoint(uint256, bytes32, PriorityCheckpointV1 calldata) external pure {
-        revert("mock only");
-    }
-
-    function setPriority(bytes32 root_, uint64 height_, uint64 total_, uint64 overdueEnd_) external {
-        root = root_;
-        height = height_;
-        total = total_;
-        overdueEnd = overdueEnd_;
-    }
-
-    function latestCheckpoint() external view returns (PriorityCheckpointV1 memory checkpoint) {
-        checkpoint.rootBlockNumber = 1;
-        checkpoint.rootTimestamp = uint64(block.timestamp);
-        checkpoint.root = root;
-        checkpoint.total = total;
-        checkpoint.overdueEnd = overdueEnd;
-        checkpoint.treeHeight = height;
-    }
-}
-
 contract GateMessenger {
     bytes public lastMessage;
 
@@ -236,7 +215,7 @@ contract ZkSysProofGateTest is Test {
     GateVerifier internal verifier;
     GateSettlement internal settlement;
     ZkSysProofGateV1 internal gate;
-    GatePriorityCheckpoint internal checkpoint;
+    PriorityAdmissionMock internal admission;
     ZkSysPriorityGuardV1 internal guard;
     uint256 internal constant SEQUENCER_KEY = 777;
     uint256 internal constant WRAPPER_KEY = 778;
@@ -250,10 +229,16 @@ contract ZkSysProofGateTest is Test {
         vm.chainId(5050);
         verifier = new GateVerifier();
         settlement = new GateSettlement(verifier);
-        checkpoint = new GatePriorityCheckpoint(POLICY);
+        admission = new PriorityAdmissionMock(address(settlement), POLICY, vm.addr(SEQUENCER_KEY), 64);
+        settlement.installAdmission(address(admission));
         address predictedGate = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         guard = new ZkSysPriorityGuardV1(
-            predictedGate, IZkSysPriorityMailboxV1(address(settlement)), checkpoint, POLICY, 100, 600, 64
+            predictedGate,
+            IZkSysPriorityMailboxV1(address(settlement)),
+            IZkSysPriorityCommitAdmissionV1(address(admission)),
+            POLICY,
+            600,
+            64
         );
         gate = new ZkSysProofGateV1(
             settlement,
@@ -310,6 +295,7 @@ contract ZkSysProofGateTest is Test {
         uint256[] memory proof = new uint256[](46);
         proof[0] = 0x802;
         proof[2] = 123;
+        settlement.recordCommitments(batches);
         proofData = bytes.concat(hex"01", abi.encode(previous, batches, proof));
         if (!allEmpty) {
             DutySuccessV1 memory duty;
@@ -360,35 +346,34 @@ contract ZkSysProofGateTest is Test {
         assertEq(GateMessenger(address(0x8008)).lastMessage(), abi.encode(gate.ACCEPTED_DOMAIN(), packageHash, true));
     }
 
-    function testBootstrapCannotBypassCheckpointFreeze() public {
+    function testBootstrapCannotBypassAdmissionBinding() public {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(SEQUENCER_KEY, gate.bootstrapDigest(accepted));
         vm.expectRevert(ZkSysProofGateV1.InvalidPackage.selector);
         gate.submitBootstrap(accepted, duties, outputs, proofData, abi.encodePacked(r, s, v));
     }
 
-    function testValidNativeProofCannotOmitOverdueRootPriority() public {
-        checkpoint.setPriority(keccak256("root-priority"), 0, 1, 1);
-        bytes memory signature = _signature();
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        gate.submitBootstrap(accepted, duties, outputs, proofData, signature);
-        assertEq(settlement.verified(), 0);
+    function testBootstrapRequiresInstalledNativeAdmission() public {
+        settlement.installAdmission(address(0));
+        AcceptedPackageV1 memory proposed = accepted;
+        proposed.proofHash = bytes32(0);
+        vm.prank(vm.addr(SEQUENCER_KEY));
+        vm.expectRevert(ZkSysProofGateV1.SettlementConfigurationChanged.selector);
+        gate.openBootstrapPackage(proposed);
     }
 
-    function testExpiredEmptyFreezeMustRefreshAndIncludeNewOverdueRequest() public {
+    function testExpiredEmptyRangeReopensWithoutChangingItsNativeAdmission() public {
         bytes memory signature = _signature();
         vm.warp(block.timestamp + 601);
-        checkpoint.setPriority(keccak256("root-priority"), 0, 1, 1);
         vm.expectRevert(ZkSysPriorityGuardV1.ExpiredWork.selector);
         gate.submitBootstrap(accepted, duties, outputs, proofData, signature);
         vm.prank(vm.addr(SEQUENCER_KEY));
         gate.refreshPriorityCheckpoint();
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
         gate.submitBootstrap(accepted, duties, outputs, proofData, signature);
+        assertEq(settlement.verified(), 2);
     }
 
     function testPriorityCursorAndFreezeRollbackWhenNativeProofFails() public {
         bytes32 item = keccak256("root-priority");
-        checkpoint.setPriority(item, 0, 1, 1);
         (
             ZkSysProofGateV1.StoredBatch memory previous,
             ZkSysProofGateV1.StoredBatch[] memory batches,
@@ -405,17 +390,13 @@ contract ZkSysProofGateTest is Test {
         duties[0].statementHash = keccak256(
             abi.encodePacked(previous.batchHash, batches[0].batchHash, gate.chainConfigHash(), batches[0].commitment)
         );
+        settlement.recordCommitments(batches);
         proofData = bytes.concat(hex"01", abi.encode(previous, batches, proof));
         accepted.proofHash = keccak256(proofData);
         accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
         settlement.configure(address(gate), keccak256(proofData));
         bytes memory signature = _signature();
-        uint256[] memory counts = new uint256[](2);
-        counts[0] = 1;
-        bytes32[] memory items = new bytes32[](1);
-        items[0] = item;
         bytes32 workId = gate.priorityWorkId();
-        guard.publishPrefixWitness(workId, counts, items, new bytes32[](0), new bytes32[](0));
         settlement.setRefuseProof(true);
         vm.expectRevert("native proof invalid");
         gate.submitBootstrap(accepted, duties, outputs, proofData, signature);

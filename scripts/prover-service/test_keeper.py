@@ -1,5 +1,8 @@
 import copy
+import json
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import keeper as k
@@ -36,6 +39,19 @@ class NativeRpc(FakeRpc):
         self.frozen_bootstrap = k.normalized(item["sidecar"]["accepted_package"])
         self.roster_count, self.status_overrides = 1, {}
         self.simulated = []
+        self.priority_required_end, self.commit_ready = 6, False
+        self.local_priority_root = h(127)
+
+    def priority_range(self):
+        batches = self.evidence["batches"]
+        first, last = (batch["stored"]["batchNumber"] for batch in (batches[0], batches[-1]))
+        domain = s.raw_hex(s.keccak(b"ZkSysPriorityRangeV1"))
+        address = bytes(12) + s.raw_hex(self.settings["chain_address"], 20)
+        digest = s.keccak(domain + address + s.word(first) + s.word(last))
+        for batch in batches:
+            stored_hash = s.keccak(s.encode_fields(s.STORED, batch["stored"]))
+            digest = s.keccak(s.raw_hex(digest) + s.raw_hex(stored_hash))
+        return digest, 0, sum(s.uint(batch["output"]["l1TxCount"]) for batch in batches)
 
     def call(self, method, params):
         if method == "eth_getCode":
@@ -52,6 +68,11 @@ class NativeRpc(FakeRpc):
             for (address, signature), value in self.status_overrides.items():
                 if target == address and selector == r.selector(signature):
                     return "0x" + (s.word(int(value)) if type(value) in (bool, int) else s.raw_hex(value).rjust(32, b"\0")).hex()
+            if selector == r.selector("reservation()"):
+                return "0x" + (b"".join(s.word(value) for value in (1, 3, 5, self.priority_required_end, 9, 123, 0, 2)) + s.raw_hex(h(127))
+                               + b"".join(s.word(value) for value in (9, 0, 2)) + s.raw_hex(self.local_priority_root)).hex()
+            if selector == r.selector("commitReady(uint64,bytes32,uint256,bytes32)"):
+                return "0x" + s.word(int(self.commit_ready)).hex()
             if selector == r.selector("getSemverProtocolVersion()"):
                 return "0x" + (s.word(0) + s.word(32) + s.word(0)).hex()
             if selector == r.selector("bootstrapPackage()"):
@@ -86,7 +107,8 @@ class NativeRpc(FakeRpc):
             actions = [name + "(" + r.abi_tuple(s.PACKAGE) + ")" for name in
                        ("openPackage", "repairPackage", "openBootstrapPackage", "repairBootstrapPackage")]
             actions += ["prepareRosterDraw(uint64)", "recordRosterDraw(uint64)", "captureDraw(bytes32)",
-                        "refreshPriorityCheckpoint()", "publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
+                        "refreshPriorityCheckpoint()", "activateService()", "reserve()", "cancelReservation(uint64)",
+                        "publishWitness(uint64,bytes32,bytes32[],bytes32[],bytes32[],bytes32[],bytes32[])",
                         "requestDraw(bytes32,uint256,uint256,uint16,bytes32[])", "relayDraw(bytes32,uint256,uint256,address)",
                         "relayCheckpoint(uint256,uint256,address)"]
             if selector in [r.selector(signature) for signature in actions]:
@@ -149,9 +171,9 @@ class KeeperTests(unittest.TestCase):
                     self.permit()
                 setattr(self.rpc, field, original)
 
-    def test_window_and_witness_checks_precede_rental(self):
-        for field, changed, reason in (("witness", False, "priority_prefix_witness_missing"),
-                                     ("guard_expired", True, "priority_checkpoint_needs_refresh"),
+    def test_window_and_admitted_range_checks_precede_rental(self):
+        for field, changed, reason in (("admitted_mismatch", True, "priority_admitted_range_mismatch"),
+                                     ("guard_expired", True, "priority_work_needs_refresh"),
                                      ("deadline", 1080, "insufficient_compute_window")):
             original = getattr(self.rpc, field)
             setattr(self.rpc, field, changed)
@@ -289,21 +311,86 @@ class KeeperTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "bootstrap_package_repaired"):
             self.permit()
 
-    def test_prefix_witness_binds_native_preimages_and_is_simulated(self):
-        witness = {"batch_item_preimages": [["0x0102"], ["0x0304"]], "left_path": [], "right_path": []}
-        for entry, batch in zip(witness["batch_item_preimages"], self.f["evidence"]["batches"]):
-            digest = s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(s.keccak(s.raw_hex(entry[0]))))
-            batch["output"]["priorityOperationsHash"] = batch["stored"]["priorityOperationsHash"] = digest
-            batch["stored"]["commitment"] = s.output_hash(batch["output"])
-        result = k.prefix_call(self.config, self.rpc, self.f["evidence"], witness, 1000)
-        hashes = [s.keccak(s.raw_hex(entry[0])) for entry in witness["batch_item_preimages"]]
-        work_id = s.keccak(s.raw_hex(self.request["proposal"]["accepted_package"]["parent"]) + s.word(1))
-        expected = s.cast("calldata", "publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
-                          work_id, "[1,1]", cast_value(hashes), "[]", "[]")
+    def test_commit_witness_binds_exact_staged_candidate_and_is_simulated(self):
+        addresses = self.config["settings"]
+        item_hash = h(155)
+        candidate = {"schema_version": 1, "chain": addresses["chain_address"], "admission": a(124),
+                     "reservation_id": 1, "batch_number": 3, "block_number": 10, "stored_hash": h(126),
+                     "priority_hash": s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(item_hash)),
+                     "item_hashes": [item_hash]}
+        paths = {"left_path": [h(10), h(11)], "right_path": [h(13), h(14)],
+                 "local_left_path": [], "local_right_path": []}
+        result = k.priority_witness_call(self.config, self.rpc, candidate, paths, 1000)
+        expected = s.cast("calldata", "publishWitness(uint64,bytes32,bytes32[],bytes32[],bytes32[],bytes32[],bytes32[])",
+                          "1", h(126), cast_value([item_hash]), cast_value(paths["left_path"]),
+                          cast_value(paths["right_path"]), "[]", "[]")
         self.assertEqual(result["transaction"]["data"], expected)
-        witness["batch_item_preimages"][0][0] = "0xff"
-        with self.assertRaisesRegex(s.Error, "priority_preimage_hash_mismatch"):
-            k.prefix_call(self.config, self.rpc, self.f["evidence"], witness, 1000)
+        self.assertEqual(result["transaction"]["to"], a(124))
+        self.assertEqual(result["transaction"]["from"], addresses["sequencer"])
+        self.assertIn(result["transaction"], self.rpc.simulated)
+
+        self.rpc.local_priority_root = h(128)
+        with self.assertRaisesRegex(s.Error, "invalid_priority_range_paths"):
+            k.priority_witness_call(self.config, self.rpc, candidate, paths, 1000)
+        paths.update(local_left_path=[h(15), h(16)], local_right_path=[h(17), h(18)])
+        result = k.priority_witness_call(self.config, self.rpc, candidate, paths, 1000)
+        expected = s.cast("calldata", "publishWitness(uint64,bytes32,bytes32[],bytes32[],bytes32[],bytes32[],bytes32[])",
+                          "1", h(126), cast_value([item_hash]), cast_value(paths["left_path"]),
+                          cast_value(paths["right_path"]), cast_value(paths["local_left_path"]),
+                          cast_value(paths["local_right_path"]))
+        self.assertEqual(result["transaction"]["data"], expected)
+
+        with self.assertRaisesRegex(s.Error, "priority_commit_candidate_changed"):
+            k.priority_witness_call(self.config, self.rpc, {**candidate, "reservation_id": 2}, paths, 1000)
+        with self.assertRaisesRegex(s.Error, "priority_candidate_hash_mismatch"):
+            k.priority_witness_call(self.config, self.rpc, {**candidate, "item_hashes": [h(156)]}, paths, 1000)
+
+
+    def test_empty_candidate_can_ready_without_a_witness_only_when_no_prefix_is_owed(self):
+        addresses = self.config["settings"]
+        candidate = {"schema_version": 1, "chain": addresses["chain_address"], "admission": a(124),
+                     "reservation_id": 1, "batch_number": 3, "block_number": 10, "stored_hash": h(126),
+                     "priority_hash": s.keccak(b""), "item_hashes": []}
+        self.rpc.priority_required_end, self.rpc.commit_ready = 5, True
+        result = k.priority_witness_call(self.config, self.rpc, candidate, None, 1000)
+        self.assertEqual(result["action"], "commitReady")
+        self.assertIsNone(result["transaction"])
+        self.assertFalse(self.rpc.simulated)
+        self.rpc.priority_required_end = 6
+        with self.assertRaisesRegex(s.Error, "priority_candidate_range_mismatch"):
+            k.priority_witness_call(self.config, self.rpc, candidate, None, 1000)
+        self.assertFalse(self.rpc.simulated)
+
+    def test_cancellation_refuses_a_matching_formation_before_simulation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            journal = root / "priority-admission"
+            journal.mkdir(mode=0o700)
+            args = {"reservation_id": 1, "publication_dir": str(root)}
+            self.assertEqual(k.maintenance(self.config, self.rpc, "cancel-priority-reservation", args, 1000)["action"],
+                             "cancelReservation")
+            self.rpc.simulated.clear()
+            formation = {"chain": self.config["settings"]["chain_address"], "admission": a(124),
+                         "reservation_id": 1, "reservation_hash": h(42), "batch_number": 3, "block_number": 10}
+            path = journal / "formation.json"
+            path.write_text(json.dumps(formation))
+            path.chmod(0o600)
+            with self.assertRaisesRegex(s.Error, "priority_reservation_already_in_formation"):
+                k.maintenance(self.config, self.rpc, "cancel-priority-reservation", args, 1000)
+            self.assertFalse(self.rpc.simulated)
+            path.write_text(json.dumps({**formation, "admission": a(125)}))
+            with self.assertRaisesRegex(s.Error, "priority_formation_identity_mismatch"):
+                k.maintenance(self.config, self.rpc, "cancel-priority-reservation", args, 1000)
+            self.assertFalse(self.rpc.simulated)
+
+    def test_activation_checks_the_installed_policy_before_simulating_the_gate(self):
+        result = k.maintenance(self.config, self.rpc, "activate-service", {}, 1000)
+        self.assertEqual(result["transaction"]["data"], s.cast("calldata", "activateService()"))
+        self.rpc.bad_admission = True
+        simulations = len(self.rpc.simulated)
+        with self.assertRaisesRegex(s.Error, "priority_admission_not_active"):
+            k.maintenance(self.config, self.rpc, "activate-service", {}, 1000)
+        self.assertEqual(len(self.rpc.simulated), simulations)
 
     def test_fixed_maintenance_calls_never_sign_or_broadcast(self):
         result = k.maintenance(self.config, self.rpc, "prepare-roster", {"period": 5}, 1000)

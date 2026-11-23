@@ -3,17 +3,12 @@ pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {ZkSysServiceGateDeploymentFactoryV1} from "../src/zksys/ZkSysServiceGateDeploymentFactoryV1.sol";
-import {ZkSysPriorityGuardV1, IZkSysPriorityMailboxV1} from "../src/zksys/ZkSysPriorityGuardV1.sol";
+import {PriorityAdmissionMock} from "./ZkSysPriorityGuard.t.sol";
+import {ZkSysPriorityGuardV1} from "../src/zksys/ZkSysPriorityGuardV1.sol";
 import {ZkSysProofGateV1} from "../src/zksys/ZkSysProofGateV1.sol";
 import {ZkSysWrapperCoordinatorV1} from "../src/zksys/ZkSysWrapperCoordinatorV1.sol";
 import {IZkSysAuthenticatedRootSourceV1, IZkSysWrapperRosterSourceV1} from "../src/zksys/ZkSysServiceTypesV1.sol";
-import {
-    GateVerifier,
-    GateSettlement,
-    GatePriorityCheckpoint,
-    GateDrawSource,
-    GateRosterSource
-} from "./ZkSysProofGate.t.sol";
+import {GateVerifier, GateSettlement, GateDrawSource, GateRosterSource} from "./ZkSysProofGate.t.sol";
 
 contract GateFactoryGuardStub {
     address public immutable acceptanceGate;
@@ -70,13 +65,14 @@ contract ZkSysServiceGateDeploymentFactoryV1Test is Test {
         bytes32 policy = keccak256("policy");
         GateVerifier verifier = new GateVerifier();
         GateSettlement settlement = new GateSettlement(verifier);
-        GatePriorityCheckpoint checkpoint = new GatePriorityCheckpoint(policy);
+        PriorityAdmissionMock admission = new PriorityAdmissionMock(address(settlement), policy, address(123), 64);
+        settlement.installAdmission(address(admission));
         ZkSysServiceGateDeploymentFactoryV1 factory = new ZkSysServiceGateDeploymentFactoryV1(address(this));
         address guardAddress = vm.computeCreateAddress(address(factory), 1);
         address gateAddress = vm.computeCreateAddress(address(factory), 2);
         bytes memory guardCode = abi.encodePacked(
             type(ZkSysPriorityGuardV1).creationCode,
-            abi.encode(gateAddress, IZkSysPriorityMailboxV1(address(settlement)), checkpoint, policy, 100, 600, 64)
+            abi.encode(gateAddress, address(settlement), address(admission), policy, uint64(600), uint64(64))
         );
         bytes memory gateCode = abi.encodePacked(
             type(ZkSysProofGateV1).creationCode,

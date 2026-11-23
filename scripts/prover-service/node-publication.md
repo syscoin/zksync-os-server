@@ -1,16 +1,26 @@
 # Node service publication mode
 
 `service_publication.enabled: true` replaces the node's proof transaction sender
-with a protected handoff and canonical receipt observer. Commit and execute
-senders retain their existing behavior. A service node does not construct or
-require `operator_prove_sk`; the external relayer owns proof transaction signing.
-The default is `false`, preserving the existing timelock proof sender.
+with a protected handoff and canonical receipt observer. The native commit
+sender waits for an admitted reservation that matches its exact batch. Execution
+still follows native proof acceptance. The external relayer signs proof
+transactions, so the service node needs no `operator_prove_sk`.
+The default is `false`, preserving the existing timelock proof sender. See the
+[keeper admission procedure](keeper-operator-guide.md#admit-each-native-batch-before-commit)
+for the reservation and candidate workflow.
 Before enabling it on an existing node, pause production and settle the entire
 ordinary committed backlog and any locally pending batches. Drain the native
 priority queue. Deploy the guard at that shared committed, verified and executed
 frontier, then transfer prover authority and start producing with the same
 priority package limit as the guard. Service recovery requires a gate receipt
 and retained work for every proved-but-unexecuted range.
+
+The service-publication directory contains `priority-admission/formation.json`
+and `priority-admission/candidate.json` for pending native work. Preserve that
+directory with the replay WAL and native commit journal on restart or standby
+takeover. Pause the current sequencer and resolve outstanding wallet nonces
+before a standby takes ownership. A formed batch must be reconciled through
+its native commit before cancelling its reservation.
 
 Enable this only on a main node with the batcher and real FRI/SNARK proving. Pin
 the reviewed proof gate address/runtime hash, service policy, production V8 VK,

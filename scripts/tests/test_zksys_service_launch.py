@@ -69,6 +69,35 @@ class ServiceLaunchTests(unittest.TestCase):
                 result = subprocess.run(['bash', '-c', command, 'test', str(SERVICE), first, second])
                 self.assertEqual(result.returncode, expected)
 
+    def test_service_bootstrap_requires_both_gate_admissions_before_configuring_accounting(self):
+        source = SERVICE.read_text()
+        setup = source[source.index("zksys_setup_service_v1() {"):]
+        self.assertLess(setup.index('zksys_assert_active_priority_admission gl_non_l1_cast'),
+                        setup.index('configureServiceAccounting'))
+        self.assertLess(setup.index('zksys_assert_active_priority_admission cast'),
+                        setup.index('configureServiceAccounting'))
+        command = '''source "$1"
+            gl_die() { echo "$*" >&2; exit 1; }
+            simulated_cast() {
+                case "$5" in
+                    'priorityGuard()(address)') printf '%s\n' 0x1234567890123456789012345678901234567890 ;;
+                    'isAdmissionActive(address)(bool)')
+                        [ "$4" = 0x1234567890123456789012345678901234567890 ] && [ "$6" = sequencer ] || return 2
+                        [ "$2" = --rpc-url ] || return 2
+                        if [ "$3" = "$TEST_BLOCKED_LANE" ]; then echo false; else echo true; fi ;;
+                    *) return 2 ;;
+                esac
+            }
+            zksys_assert_active_priority_admission simulated_cast gateway childgate sequencer "Gateway lane"
+            zksys_assert_active_priority_admission simulated_cast root rootgate sequencer "NEVM lane"
+            echo configured'''
+        for blocked, expected in [("", 0), ("gateway", 1), ("root", 1)]:
+            with self.subTest(blocked=blocked):
+                result = subprocess.run(["bash", "-ec", command, "test", str(SERVICE)], capture_output=True,
+                                        text=True, env={**os.environ, "TEST_BLOCKED_LANE": blocked})
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual("configured" in result.stdout, expected == 0)
+
     def test_bridge_mode_rejects_unconfigured_seniority(self):
         for mode, first, second, expected in [
             ("false", "0", "0", 0),

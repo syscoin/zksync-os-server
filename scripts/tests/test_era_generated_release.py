@@ -942,9 +942,19 @@ class TemporaryGitEngineTests(unittest.TestCase):
         self.git("add", "-f", "generated.sol")
         candidate = self.git("write-tree").strip()
         overlay_patch = self.git("diff", "--cached", source_tree)
+        self.git("read-tree", source_tree)
+        put(self.repo / "source.txt", b"reviewed priority source\n")
+        put(self.repo / "priority.sol", b"native admission code\n")
+        self.git("add", "source.txt")
+        self.git("add", "-f", "priority.sol")
+        service_source = self.git("write-tree").strip()
+        service_patch = self.git("diff", "--cached", "--binary", source_tree)
+        self.git("add", "-f", "generated.sol")
+        service_generated = self.git("write-tree").strip()
         self.git("read-tree", "HEAD")
         put(self.repo / "source.txt", b"upstream\n")
         (self.repo / "generated.sol").unlink()
+        (self.repo / "priority.sol").unlink()
         self.index_before = (self.repo / ".git/index").read_bytes()
         put(self.server / "scripts/patches/era-contracts-syscoin.patch", source_patch.encode())
         put(self.bundle / "generated-verifier-overlay.patch", overlay_patch.encode())
@@ -954,10 +964,17 @@ class TemporaryGitEngineTests(unittest.TestCase):
             "sha256": sha(b"exact generated public code\n")}}}
         self.manifest["paths"]["generated.sol"]["size"] = len(b"exact generated public code\n")
         self.addCleanup(patch.stopall)
+        patch.dict(os.environ, {"ZKSYS_ENABLE_PROVER_SERVICE_V1": "false"}).start()
         patch.object(M, "SERVER", self.server).start()
         patch.object(M, "BUNDLE", self.bundle).start()
         patch.object(M, "PREIMAGES", {"generated.sol": None}).start()
         patch.object(M, "load_bundle", return_value=(self.overlay, self.manifest)).start()
+        self.service_patch = self.server / M.SERVICE_V1_PATCH
+        put(self.service_patch, service_patch.encode())
+        patch.object(M, "SERVICE_V1_PATCH_SHA", sha(self.service_patch.read_bytes())).start()
+        patch.object(M, "SERVICE_V1_SOURCE_TREE", service_source).start()
+        patch.object(M, "SERVICE_V1_GENERATED_TREE", service_generated).start()
+        patch.object(M, "SERVICE_V1_PATHS", {"source.txt", "priority.sol"}).start()
         self.app_path = self.server / "lib/types/src/protocol/proving_version.rs"
         put(self.app_path, b"synthetic reviewed identity\n")
         patch.object(M, "APP_SOURCES", {
@@ -1002,6 +1019,52 @@ class TemporaryGitEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "assert-applied"):
             M.run(self.repo, assert_applied=True)
         self.assertEqual((self.repo / "source.txt").read_bytes(), b"upstream\n")
+
+    def test_service_candidate_materializes_without_authorizing_launch(self):
+        with patch.dict(os.environ, {"ZKSYS_ENABLE_PROVER_SERVICE_V1": "TRUE"}):
+            checked = M.run(self.repo, check_bundle_only=True)
+            self.assertEqual(checked["candidate_tree"], M.SERVICE_V1_GENERATED_TREE)
+            self.assertFalse(checked["target_mutated"])
+            self.assertFalse((self.repo / "priority.sol").exists())
+            self.assertFalse((self.repo / "generated.sol").exists())
+            result = M.run(self.repo)
+            self.assertEqual(result["tree"], M.SERVICE_V1_GENERATED_TREE)
+            self.assertTrue(result["target_mutated"])
+            self.assertFalse(result["canonical_launch_authorized"])
+            self.assertFalse(result["canonical_fixture_authorized"])
+            self.assertFalse(result["artifact_inventory_qualified"])
+            self.assertEqual((self.repo / "priority.sol").read_bytes(), b"native admission code\n")
+            with self.assertRaisesRegex(ValueError, "qualified facet, selector, and bytecode"):
+                M.run(self.repo, assert_applied=True)
+            self.assertFalse(M.run(self.repo)["target_mutated"])
+        with self.assertRaisesRegex(ValueError, "postimage"):
+            M.run(self.repo)
+        self.assertEqual((self.repo / ".git/index").read_bytes(), self.index_before)
+
+    def test_service_candidate_completes_native_source_postimage(self):
+        put(self.repo / "source.txt", b"reviewed priority source\n")
+        put(self.repo / "priority.sol", b"native admission code\n")
+        with patch.dict(os.environ, {"ZKSYS_ENABLE_PROVER_SERVICE_V1": "true"}):
+            self.assertEqual(M.run(self.repo)["tree"], M.SERVICE_V1_GENERATED_TREE)
+        self.assertEqual((self.repo / ".git/index").read_bytes(), self.index_before)
+
+    def test_service_overlay_pins_are_required_before_mutation(self):
+        with patch.dict(os.environ, {"ZKSYS_ENABLE_PROVER_SERVICE_V1": "true"}):
+            original_patch = self.service_patch.read_bytes()
+            self.service_patch.write_bytes(original_patch + b"\n")
+            with self.assertRaisesRegex(ValueError, "input SHA-256 mismatch"):
+                M.run(self.repo)
+            self.service_patch.write_bytes(original_patch)
+            with patch.object(M, "SERVICE_V1_PATHS", {"source.txt", "priority.sol", "extra.sol"}):
+                with self.assertRaisesRegex(ValueError, "priority overlay path mismatch"):
+                    M.run(self.repo)
+            with patch.object(M, "SERVICE_V1_GENERATED_TREE", "0" * 40):
+                with self.assertRaisesRegex(ValueError, "candidate tree mismatch"):
+                    M.run(self.repo)
+        self.assertEqual((self.repo / "source.txt").read_bytes(), b"upstream\n")
+        self.assertFalse((self.repo / "generated.sol").exists())
+        self.assertFalse((self.repo / "priority.sol").exists())
+        self.assertEqual((self.repo / ".git/index").read_bytes(), self.index_before)
 
     def test_partial_unrelated_staged_and_symlink_rejected(self):
         put(self.repo / "source.txt", b"unexpected edit\n")

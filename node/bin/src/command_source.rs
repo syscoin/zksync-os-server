@@ -1,3 +1,4 @@
+use crate::prover_api::priority_admission::PriorityAdmission;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -33,6 +34,7 @@ pub struct ConsensusNodeCommandSource<Replay> {
     pub leadership: LeadershipSignal,
     /// SYSCOIN: Disabled-batcher nodes are replay-only; they must not emit new Produce commands.
     pub produce_enabled: bool,
+    pub(crate) priority_admission: Option<PriorityAdmission>,
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +382,7 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
         let mut leadership = self.leadership.clone();
         let role = leadership.current_role();
         tracing::info!(?role, "Consensus role initialized");
+        let mut last_issued_batch = None;
 
         loop {
             // Drain any already-queued canonized replays while the gate is open.
@@ -437,11 +440,24 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                     }
                 }
                 _ = self.pipeline_gate.wait_until_open(), if !gate_open => {}
-                send_res = output.send(BlockCommand::Produce(ProduceCommand)), if can_produce => {
-                    if send_res.is_err() {
+                result = async {
+                    let priority_formation = match &self.priority_admission {
+                        Some(admission) => Some(admission.wait_for_formation(
+                            &self.block_replay_storage, last_issued_batch,
+                        ).await?),
+                        None => None,
+                    };
+                    let cmd = BlockCommand::Produce(ProduceCommand { priority_formation });
+                    if output.send(cmd).await.is_err() {
+                        return Ok::<_, anyhow::Error>(None);
+                    }
+                    Ok(Some(priority_formation.map(|formation| formation.batch_number)))
+                }, if can_produce => {
+                    let Some(issued_batch) = result? else {
                         tracing::info!("Command output channel closed, stopping source");
                         break;
-                    }
+                    };
+                    last_issued_batch = issued_batch;
                     // Advance watermark to the last sealed block so diff stays near 0.
                     let latest = self.block_replay_storage.latest_record();
                     if let Some(ctx) = self.block_replay_storage.get_context(latest) {

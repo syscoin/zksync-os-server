@@ -279,6 +279,8 @@ impl<T: L2Subpool> Pool<T> {
         next_interop_tx_allowed_after: Instant,
         include_interop_traffic: bool,
         interop_companion: Option<InteropCompanionRequest>,
+        required_priority_id: Option<u64>,
+        exclusive_priority_end: Option<u64>,
     ) -> anyhow::Result<Option<StreamOutcome<'a>>> {
         // SYSCOIN: Surface terminal interop cursor exhaustion through the sequencer component's
         // critical Result path instead of allowing an unfold callback to panic asynchronously.
@@ -301,7 +303,14 @@ impl<T: L2Subpool> Pool<T> {
             self.interop_fee_subpool.best_transactions_stream().await,
         );
 
-        let l1_stream = self.l1_subpool.best_transactions_stream().await;
+        if let Some(id) = required_priority_id {
+            self.l1_subpool.wait_for_priority_id(id).await?;
+        }
+        let l1_stream = self
+            .l1_subpool
+            .best_transactions_stream()
+            .await
+            .with_exclusive_end(exclusive_priority_end);
         let l2_stream = self.l2_subpool.best_transactions_stream();
         let l2_marker = l2_stream.marker();
         fn prio_left(_: &mut ()) -> PollNext {
@@ -382,7 +391,7 @@ impl<T: L2Subpool> Pool<T> {
                         stream: MarkingTxStream::unmarkable(sl_chain_id_stream),
                     }));
                 }
-                Some(_) = interop_related_stream.peek(), if include_interop_traffic => {
+                Some(_) = interop_related_stream.peek(), if include_interop_traffic && required_priority_id.is_none() => {
                     return Ok(Some(StreamOutcome {
                         kind: StreamOutcomeKind::Transactions,
                         upgrade_metadata,
@@ -409,7 +418,7 @@ impl<T: L2Subpool> Pool<T> {
                     if let Some(deadline) = interop_companion.and_then(|request| request.empty_after) {
                         tokio::time::sleep_until(deadline).await;
                     }
-                }, if interop_companion.and_then(|request| request.empty_after).is_some() => {
+                }, if required_priority_id.is_none() && interop_companion.and_then(|request| request.empty_after).is_some() => {
                     return Ok(Some(StreamOutcome {
                         kind: StreamOutcomeKind::InteropCompanionEmpty,
                         upgrade_metadata,

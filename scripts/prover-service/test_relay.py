@@ -80,7 +80,11 @@ class FakeRpc:
         self.turn = item["sidecar"]["accepted_package"]["turn"]
         self.selected, self.deadline, self.opened = 0, self.now + 200, True
         self.frozen_override, self.chain_override, self.reorg_anchor, self.stage_store = None, None, False, None
-        self.guard_work_missing, self.guard_expired, self.witness = False, False, True
+        self.guard_work_missing = self.guard_expired = self.admitted_mismatch = self.bad_admission = False
+
+    def priority_range(self):
+        counts = [s.uint(output["l1TxCount"]) for output in self.item["sidecar"]["batch_outputs"]]
+        return h(124), 0, sum(counts)
 
     def advance(self, seconds=30, blocks=1):
         self.now += seconds
@@ -143,10 +147,14 @@ class FakeRpc:
                 return "0x"
             accepted = self.item["sidecar"]["accepted_package"]
             work_id = s.keccak(s.raw_hex(accepted["parent"]) + s.word(accepted["batchFrom"]))
+            digest, start, end = self.priority_range()
             if tx["data"] == "0x" + r.selector("work()").hex():
-                return "0x" + (s.raw_hex(work_id) + s.raw_hex(h(124)) + s.raw_hex(h(125))
-                                + b"".join(s.word(value) for value in (accepted["batchFrom"], 1 if self.guard_expired else 1000,
-                                                                        0, 4, 2, 2))).hex()
+                return "0x" + (s.raw_hex(work_id) + s.raw_hex(digest)
+                                + b"".join(s.word(value) for value in (accepted["batchFrom"], accepted["batchTo"],
+                                    1 if self.guard_expired else 1000, start, end))).hex()
+            if tx["data"][:10] == "0x" + r.selector("admittedRange(uint64,uint64)").hex():
+                return "0x" + (s.raw_hex(h(155) if self.admitted_mismatch else digest)
+                                + s.word(start) + s.word(end)).hex()
             normalized = {**accepted, "turn": 0, "proofHash": s.ZERO, "wrapper": s.ZERO_ADDRESS, "wrapperBeneficiary": s.ZERO_ADDRESS}
             values = {
                 "chain()": self.settings["chain_address"], "childChainId()": s.uint(self.settings["execution_chain_id"]),
@@ -160,7 +168,8 @@ class FakeRpc:
                 "currentTurn()": self.turn, "selectedWrapperIndex()": self.selected, "turnDeadline()": self.deadline,
                 "rosterRoot()": accepted["rosterRoot"],
                 "priorityGuard()": a(123), "priorityWorkId()": s.ZERO if self.guard_work_missing else work_id,
-                "priorityCursor()": 0, "maxProofWorkSeconds()": 500, "prefixWitness(bytes32)": self.witness,
+                "admission()": a(124), "isAdmissionActive(address)": not self.bad_admission,
+                "maxProofWorkSeconds()": 500, "maxPriorityPerPackage()": 64,
                 "bootstrapDigest(" + r.abi_tuple(s.PACKAGE) + ")": self.item["digest"],
                 "packageDigest(" + r.abi_tuple(s.PACKAGE) + ")": self.item["digest"]}
             for signature, value in values.items():
@@ -559,15 +568,15 @@ class RelayTests(unittest.TestCase):
 
     def test_missing_expired_or_unsatisfied_priority_work_never_signs(self):
         for flag, value, reason in (("guard_work_missing", True, "priority_work_not_frozen"),
-                                    ("guard_expired", True, "priority_checkpoint_needs_refresh"),
-                                    ("witness", False, "priority_prefix_witness_missing")):
+                                    ("guard_expired", True, "priority_work_needs_refresh"),
+                                    ("admitted_mismatch", True, "priority_admitted_range_mismatch")):
             with self.subTest(flag=flag):
                 setattr(self.rpc, flag, value)
                 result = self.relayer().step(self.operation_id, execute=True)
                 self.assertEqual(result["context"]["reason"], reason)
                 self.assertEqual(self.signatures(), [])
                 self.rpc.guard_work_missing = self.rpc.guard_expired = False
-                self.rpc.witness = True
+                self.rpc.admitted_mismatch = False
 
 
 if __name__ == "__main__":

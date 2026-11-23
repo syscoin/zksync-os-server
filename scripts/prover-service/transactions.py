@@ -20,10 +20,8 @@ ACTIONS = {name: (name + PACKAGE_SIGNATURE, "gate", 4 + 32 * len(s.PACKAGE))
            for name in ("openPackage", "repairPackage", "openBootstrapPackage", "repairBootstrapPackage")}
 ACTIONS.update({"refreshPriorityCheckpoint": ("refreshPriorityCheckpoint()", "gate", 4),
                 "prepareRosterDraw": ("prepareRosterDraw(uint64)", "coordinator", 36),
-                "recordRosterDraw": ("recordRosterDraw(uint64)", "coordinator", 36),
-                "publishPrefixWitness": ("publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
-                                         "priority", None)})
-REPEATABLE = {"refreshPriorityCheckpoint", "publishPrefixWitness"}
+                "recordRosterDraw": ("recordRosterDraw(uint64)", "coordinator", 36)})
+REPEATABLE = {"refreshPriorityCheckpoint"}
 
 
 class Store(r.Store):
@@ -71,8 +69,7 @@ def intent(settings, limits, call, invocation=None):
     data = s.raw_hex(tx["data"])
     s.require(4 <= len(data) <= r.MAX_RPC and data[:4] == r.selector(signature)
               and (size is None or len(data) == size), "keeper_action_calldata_mismatch")
-    if target != "priority":
-        s.require(tx["to"] == settings["proof_gate" if target == "gate" else "coordinator"], "keeper_target_mismatch")
+    s.require(tx["to"] == settings["proof_gate" if target == "gate" else "coordinator"], "keeper_target_mismatch")
     if target == "gate":
         s.require(tx["from"] == settings["sequencer"], "keeper_requires_sequencer_wallet")
     frozen = {"chain_id": call["chain_id"], "action": call["action"], "transaction": copy.deepcopy(tx)}
@@ -81,29 +78,23 @@ def intent(settings, limits, call, invocation=None):
         s.exact(invocation, ("scope", "generation"))
         s.uint(invocation["generation"], 32)
         scope = invocation["scope"]
-        s.exact(scope, ("guard", "work_id", "checkpoint_hash"))
+        s.exact(scope, ("guard", "work_id", "range_digest", "opened_at"))
         s.nonzero(scope["guard"], 20)
         s.nonzero(scope["work_id"])
-        s.nonzero(scope["checkpoint_hash"])
+        s.nonzero(scope["range_digest"])
+        s.require(s.uint(scope["opened_at"], 64) > 0, "invalid_priority_work_clock")
         frozen["invocation"] = copy.deepcopy(invocation)
     return frozen
 
 
-def checkpoint_scope(rpc, settings, limits, head):
+def priority_work_scope(rpc, settings, limits, head):
     anchor = {"blockHash": head["hash"], "requireCanonical": True}
-    gate = settings["proof_gate"]
-    guard = r.call_word(rpc, gate, "priorityGuard()", anchor, kind="address")
-    s.nonzero(guard, 20)
-    code = s.raw_hex(rpc.call("eth_getCode", [guard, anchor]))
-    s.require(code and s.keccak(code) == limits["priority_guard_code_hash"], "priority_guard_code_changed")
-    for signature, kind, expected in (("acceptanceGate()", "address", gate),
-            ("chain()", "address", settings["chain_address"]), ("policyHash()", "bytes32", settings["policy_hash"])):
-        s.require(r.call_word(rpc, guard, signature, anchor, kind=kind) == expected, "priority_guard_configuration_changed")
-    work_id = r.call_word(rpc, gate, "priorityWorkId()", anchor, kind="bytes32")
-    raw = s.raw_hex(rpc.call("eth_call", [{"to": guard, "data": "0x" + r.selector("work()").hex()}, anchor]), 9 * 32)
-    if work_id == s.ZERO or raw[:32] != s.raw_hex(work_id) or int.from_bytes(raw[128:160], "big") == 0:
+    guard, _ = r.priority_configuration(rpc, settings, limits, anchor)
+    work_id = r.call_word(rpc, settings["proof_gate"], "priorityWorkId()", anchor, kind="bytes32")
+    work = r.priority_work(rpc, guard, anchor)
+    if work_id == s.ZERO or work["work_id"] != work_id or not work["opened_at"]:
         return None
-    return {"guard": guard, "work_id": work_id, "checkpoint_hash": "0x" + raw[32:64].hex()}
+    return {"guard": guard, **{field: work[field] for field in ("work_id", "range_digest", "opened_at")}}
 
 
 class Transactions:
@@ -138,7 +129,7 @@ class Transactions:
             invocation = None
             if call["action"] in REPEATABLE:
                 s.require(call["anchor"]["hash"] == head["hash"], "maintenance_anchor_changed")
-                scope = checkpoint_scope(self.rpc, self.settings, self.limits, head)
+                scope = priority_work_scope(self.rpc, self.settings, self.limits, head)
                 s.require(scope is not None, "priority_work_not_frozen")
                 invocation = {"scope": scope, "generation": 0}
                 matching = [(identifier, op) for identifier, op in self.state["operations"].items()
@@ -249,11 +240,7 @@ class Transactions:
             ("policyHash()", "bytes32", settings["policy_hash"]), ("productionVkHash()", "bytes32", settings["vk_hash"])):
             s.require(r.call_word(self.rpc, gate, signature, anchor, kind=kind) == expected, "gate_configuration_changed")
         target = ACTIONS[call["action"]][1]
-        if target == "priority":
-            expected = r.call_word(self.rpc, gate, "priorityGuard()", anchor, kind="address")
-            s.require(call["transaction"]["to"] == expected, "keeper_target_mismatch")
-            code_hash = limits["priority_guard_code_hash"]
-        elif target == "coordinator":
+        if target == "coordinator":
             s.require(r.call_word(self.rpc, gate, "coordinator()", anchor, kind="address") == settings["coordinator"],
                       "coordinator_configuration_changed")
             code_hash = limits["coordinator_code_hash"]
@@ -262,7 +249,7 @@ class Transactions:
         if target != "gate":
             code = s.raw_hex(self.rpc.call("eth_getCode", [call["transaction"]["to"], anchor]))
             s.require(code and s.keccak(code) == code_hash, "maintenance_target_code_changed")
-        if invocation is not None and checkpoint_scope(self.rpc, settings, limits, head) != invocation["scope"]:
+        if invocation is not None and priority_work_scope(self.rpc, settings, limits, head) != invocation["scope"]:
             r.check_anchor(self.rpc, settings, head)
             return False
         ready = preflight(copy.deepcopy(call), copy.deepcopy(head), copy.deepcopy(anchor))

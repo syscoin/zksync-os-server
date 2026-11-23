@@ -334,47 +334,73 @@ def check_anchor(rpc, settings, head):
               and s.uint(rpc.call("eth_chainId", [])) == s.uint(settings["settlement_chain_id"]), "rpc_reorg_or_chain_change")
 
 
+def priority_configuration(rpc, settings, limits, anchor):
+    gate = settings["proof_gate"]
+    guard = s.nonzero(call_word(rpc, gate, "priorityGuard()", anchor, kind="address"), 20)
+    code = s.raw_hex(rpc.call("eth_getCode", [guard, anchor]))
+    s.require(code and s.keccak(code) == limits["priority_guard_code_hash"], "priority_guard_code_changed")
+    for signature, kind, expected in (
+        ("acceptanceGate()", "address", gate), ("chain()", "address", settings["chain_address"]),
+        ("policyHash()", "bytes32", settings["policy_hash"]),
+    ):
+        s.require(call_word(rpc, guard, signature, anchor, kind=kind) == expected,
+                  "priority_guard_configuration_changed")
+    sequencer = bytes(12) + s.raw_hex(settings["sequencer"], 20)
+    s.require(call_word(rpc, guard, "isAdmissionActive(address)", anchor, sequencer, "bool"),
+              "priority_admission_not_active")
+    admission = s.nonzero(call_word(rpc, guard, "admission()", anchor, kind="address"), 20)
+    return guard, admission
+
+
+def priority_work(rpc, guard, anchor):
+    raw = s.raw_hex(rpc.call("eth_call", [{"to": guard, "data": "0x" + selector("work()").hex()}, anchor]), 7 * 32)
+    return {
+        "work_id": "0x" + raw[:32].hex(),
+        "range_digest": "0x" + raw[32:64].hex(),
+        **{key: s.uint(int.from_bytes(raw[index * 32:(index + 1) * 32], "big"), 64)
+           for index, key in enumerate(("batch_from", "batch_to", "opened_at", "priority_from", "priority_end"), 2)},
+    }
+
+
+def admitted_range(rpc, admission, batch_from, batch_to, anchor):
+    encoded = selector("admittedRange(uint64,uint64)") + s.word(s.uint(batch_from, 64)) + s.word(s.uint(batch_to, 64))
+    raw = s.raw_hex(rpc.call("eth_call", [{"to": admission, "data": "0x" + encoded.hex()}, anchor]), 96)
+    digest = s.nonzero("0x" + raw[:32].hex())
+    priority_from = s.uint(int.from_bytes(raw[32:64], "big"), 64)
+    priority_end = s.uint(int.from_bytes(raw[64:96], "big"), 64)
+    s.require(priority_from <= priority_end, "invalid_admitted_priority_range")
+    return digest, priority_from, priority_end
+
+
 def priority_context(rpc, settings, limits, item, head, anchor):
     gate, accepted = settings["proof_gate"], item["sidecar"]["accepted_package"]
-    guard = call_word(rpc, gate, "priorityGuard()", anchor, kind="address")
-    s.nonzero(guard, 20)
-    s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [guard, anchor]))) == limits["priority_guard_code_hash"],
-              "priority_guard_code_changed")
-    for signature, kind, expected in (("acceptanceGate()", "address", gate), ("chain()", "address", settings["chain_address"]),
-                                       ("policyHash()", "bytes32", settings["policy_hash"])):
-        s.require(call_word(rpc, guard, signature, anchor, kind=kind) == expected, "priority_guard_configuration_changed")
-    work_id = s.keccak(s.raw_hex(accepted["parent"]) + s.word(accepted["batchFrom"]))
+    guard, admission = priority_configuration(rpc, settings, limits, anchor)
+    work = priority_work(rpc, guard, anchor)
+    batch_from = s.uint(accepted["batchFrom"], 64)
+    batch_to = s.uint(accepted["batchTo"], 64)
+    expected_id = s.keccak(s.raw_hex(accepted["parent"]) + s.word(batch_from))
     current_id = call_word(rpc, gate, "priorityWorkId()", anchor, kind="bytes32")
-    data = s.raw_hex(rpc.call("eth_call", [{"to": guard, "data": "0x" + selector("work()").hex()}, anchor]), 9 * 32)
-    words = [data[i:i + 32] for i in range(0, len(data), 32)]
-    numbers = [s.uint(int.from_bytes(value, "big"), 64) for value in words[3:]]
-    batch_from, opened, _, _, required_end, max_end = numbers
-    cursor = call_word(rpc, guard, "priorityCursor()", anchor)
     maximum_seconds = call_word(rpc, guard, "maxProofWorkSeconds()", anchor)
-    deadline = opened + maximum_seconds
-    result = {"guard": guard, "work_id": current_id, "checkpoint_hash": "0x" + words[1].hex(),
-              "cursor": cursor, "required_end": required_end, "max_end": max_end, "deadline": deadline,
-              "reason": "ready"}
-    if current_id != work_id or words[0] != s.raw_hex(work_id) or batch_from != accepted["batchFrom"] or opened == 0:
+    deadline = work["opened_at"] + maximum_seconds
+    result = {"guard": guard, **work, "deadline": deadline, "reason": "ready"}
+    if (current_id != expected_id or work["work_id"] != expected_id or not work["opened_at"]
+            or work["batch_from"] != batch_from or work["batch_to"] != batch_to):
         result["reason"] = "priority_work_not_frozen"
         return result
-    if maximum_seconds == 0 or deadline - s.uint(head["timestamp"]) < limits["min_turn_seconds"]:
-        result["reason"] = "priority_checkpoint_needs_refresh"
-        return result
-    counts = [s.uint(output["l1TxCount"]) for output in item["sidecar"]["batch_outputs"]]
-    hashes = [output["priorityOperationsHash"] for output in item["sidecar"]["batch_outputs"]]
-    if not required_end <= cursor + sum(counts) <= max_end:
-        result["reason"] = "priority_prefix_range_mismatch"
-    elif sum(counts) == 0:
-        if any(value != s.keccak(b"") for value in hashes):
-            result["reason"] = "priority_empty_hash_mismatch"
-    else:
-        encoded = s.encode_dynamic_tuple([(s.raw_hex(work_id), False), (words[1], False),
-                                           (s.word(len(counts)) + b"".join(s.word(count) for count in counts), True),
-                                           (s.word(len(hashes)) + b"".join(s.raw_hex(value) for value in hashes), True)])
-        witness = call_word(rpc, guard, "prefixWitness(bytes32)", anchor, s.raw_hex(s.keccak(encoded)), "bool")
-        if not witness:
-            result["reason"] = "priority_prefix_witness_missing"
+
+    digest, priority_from, priority_end = admitted_range(
+        rpc, admission, batch_from, batch_to, anchor)
+    outputs = item["sidecar"]["batch_outputs"]
+    counts = [s.uint(output["l1TxCount"]) for output in outputs]
+    if ((digest, priority_from, priority_end) != (work["range_digest"], work["priority_from"], work["priority_end"])
+            or len(outputs) != batch_to - batch_from + 1
+            or priority_from + sum(counts) != priority_end):
+        result["reason"] = "priority_admitted_range_mismatch"
+    elif any(count == 0 and output["priorityOperationsHash"] != s.keccak(b"")
+             for count, output in zip(counts, outputs)):
+        result["reason"] = "priority_empty_hash_mismatch"
+    elif maximum_seconds == 0 or deadline - s.uint(head["timestamp"]) < limits["min_turn_seconds"]:
+        result["reason"] = "priority_work_needs_refresh"
     return result
 
 

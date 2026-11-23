@@ -49,6 +49,7 @@ pub enum ComponentId {
     BitcoinDaStatusCleanup,
     EnMigrationTrigger,
     ReplayArchiveGate,
+    PriorityCommitGate,
 }
 
 impl ComponentId {
@@ -86,6 +87,7 @@ impl ComponentId {
             Self::BitcoinDaStatusCleanup => "bitcoin_da_status_cleanup",
             Self::EnMigrationTrigger => "en_migration_trigger",
             Self::ReplayArchiveGate => "replay_archive_gate",
+            Self::PriorityCommitGate => "priority_commit_gate",
         }
     }
 }

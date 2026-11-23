@@ -34,7 +34,7 @@ from runpod import Store, atomic_json, read_private_json
 def configuration(value):
     s.exact(value, ("schema_version", "keeper", "endpoint", "native_auth_file", "release_file",
                     "native_lease_seconds", "dispatcher_dir", "roster_dir", "operator_inboxes",
-                    "priority_witness_dir", "publication_dir", "sequencer_wallet_file", "relay_wallet_file",
+                    "publication_dir", "sequencer_wallet_file", "relay_wallet_file",
                     "transaction_policy", "relay_policy", "sequencer_beneficiary", "poll_interval_seconds"))
     s.require(value["schema_version"] == 1, "unsupported_coordinator_configuration")
     k.configuration(value["keeper"])
@@ -42,7 +42,7 @@ def configuration(value):
     s.require(settings["coordinator"] != s.ZERO_ADDRESS and pins["expected_operator"] == settings["sequencer"],
               "coordinator_requires_sequencer_keeper")
     sentry.endpoint_url(value["endpoint"])
-    for name in ("dispatcher_dir", "roster_dir", "priority_witness_dir", "publication_dir"):
+    for name in ("dispatcher_dir", "roster_dir", "publication_dir"):
         io.directory(value[name])
     for name in ("native_auth_file", "release_file", "sequencer_wallet_file", "relay_wallet_file"):
         s.require(Path(value[name]).is_absolute(), "absolute_coordinator_file_required")
@@ -549,7 +549,7 @@ class Coordinator:
         def preflight(original, head, anchor):
             try:
                 action = original["action"]
-                # Legacy rows did not bind a checkpoint. A reserved nonce remains receipt-only recovery.
+                # A prior unscoped timer call must resolve without signing or rebroadcasting.
                 if action in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
                     return False
                 if action in ("openPackage", "repairPackage"):
@@ -558,10 +558,6 @@ class Coordinator:
                                           enrollment=self.enrollment_for(bundle["request"]))
                 elif action == "refreshPriorityCheckpoint":
                     call = k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
-                elif action == "publishPrefixWitness":
-                    work_id = r.call_word(self.rpc, self.settings["proof_gate"], "priorityWorkId()", anchor, kind="bytes32")
-                    witness = io.private_json(Path(self.config["priority_witness_dir"]) / (work_id[2:] + ".json"))
-                    call = k.prefix_call(self.keeper, self.rpc, evidence, witness, int(self.clock()))
                 else:
                     return False
                 return call["transaction"] == original["transaction"] and call["anchor"]["hash"] == head["hash"]
@@ -717,15 +713,8 @@ class Coordinator:
         priority = r.priority_context(self.rpc, self.settings, {**self.keeper["policy"], "min_turn_seconds": 1},
                      {"sidecar": prepared}, chain["head"], {"blockHash": chain["head"]["hash"], "requireCanonical": True})
         r.check_anchor(self.rpc, self.settings, chain["head"])
-        if priority["reason"] == "priority_checkpoint_needs_refresh":
+        if priority["reason"] == "priority_work_needs_refresh":
             produce = lambda: k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
-            return self.maintenance(identifier, produce(), produce, execute)
-        if priority["reason"] == "priority_prefix_witness_missing":
-            witness_path = Path(self.config["priority_witness_dir"]) / (priority["work_id"][2:] + ".json")
-            if not witness_path.exists():
-                return {"next_action": "await_authenticated_priority_witness", "work_id": priority["work_id"]}
-            witness = io.private_json(witness_path)
-            produce = lambda: k.prefix_call(self.keeper, self.rpc, evidence, witness, int(self.clock()))
             return self.maintenance(identifier, produce(), produce, execute)
         s.require(priority["reason"] == "ready", priority["reason"])
         result = self.result(identifier, execute)

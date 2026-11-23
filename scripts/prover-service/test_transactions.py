@@ -22,7 +22,8 @@ class Rpc:
         self.send_error, self.send_interrupt, self.reorg, self.bad_code = None, False, False, False
         self.chain = settings["settlement_chain_id"]
         self.store, self.operation_id = None, None
-        self.work_id, self.checkpoint_hash = h(150), h(151)
+        self.work_id, self.range_digest = h(150), h(151)
+        self.opened_at, self.bad_admission = 1000, False
         self.receipts = {}
 
     def advance(self):
@@ -82,10 +83,12 @@ class Rpc:
                       "sequencer()": self.settings["sequencer"], "policyHash()": self.settings["policy_hash"],
                       "productionVkHash()": self.settings["vk_hash"], "priorityGuard()": a(123),
                       "coordinator()": self.settings["coordinator"], "priorityWorkId()": self.work_id,
-                      "acceptanceGate()": self.settings["proof_gate"]}
+                      "acceptanceGate()": self.settings["proof_gate"], "admission()": a(124)}
+            if data[:4] == r.selector("isAdmissionActive(address)"):
+                return "0x" + s.word(int(not self.bad_admission)).hex()
             if data == r.selector("work()"):
-                return "0x" + (s.raw_hex(self.work_id) + s.raw_hex(self.checkpoint_hash) + bytes(32)
-                               + b"".join(s.word(value) for value in (1, 1000, 0, 0, 0, 0))).hex()
+                return "0x" + (s.raw_hex(self.work_id) + s.raw_hex(self.range_digest)
+                               + b"".join(s.word(value) for value in (1, 2, self.opened_at, 0, 0))).hex()
             for signature, value in values.items():
                 if data == r.selector(signature):
                     return "0x" + (s.word(value) if type(value) is int else s.raw_hex(value).rjust(32, b"\0")).hex()
@@ -175,10 +178,10 @@ class TransactionsTests(unittest.TestCase):
     def test_checkpoint_scope_repeats_refresh_after_restart_and_for_a_later_package(self):
         identifiers, raw = [], []
         for work_id, checkpoint in ((h(150), h(151)), (h(150), h(152)), (h(153), h(154))):
-            self.rpc.work_id, self.rpc.checkpoint_hash = work_id, checkpoint
+            self.rpc.work_id, self.rpc.range_digest = work_id, checkpoint
             descriptor = self.scoped()
             self.assertEqual(descriptor["invocation"], {"scope": {"guard": a(123), "work_id": work_id,
-                             "checkpoint_hash": checkpoint}, "generation": 0})
+                             "range_digest": checkpoint, "opened_at": self.rpc.opened_at}, "generation": 0})
             self.assertEqual(self.step()["status"], "broadcast")
             identifiers.append(self.identifier)
             raw.append(self.rpc.sent[-1])
@@ -191,22 +194,20 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual([s.uint(call[1][0]["nonce"]) for call in self.signatures()], [0, 1, 2])
         self.assertEqual(len(self.rpc.sent), 3)
 
-    def test_same_prefix_calldata_is_new_only_after_checkpoint_changes(self):
-        call = copy.deepcopy(self.call)
-        call["action"] = "publishPrefixWitness"
-        call["transaction"].update(to=a(123), data="0x" + (r.selector(t.ACTIONS[call["action"]][0])
-                                   + s.raw_hex(self.rpc.work_id) + bytes(128)).hex())
-        first = self.scoped(call)
+    def test_timer_renewal_keeps_the_range_and_scopes_a_new_invocation(self):
+        first = self.scoped()
         self.step()
         self.confirm()
-        self.rpc.checkpoint_hash = h(152)
-        second = self.scoped(call)
+        self.rpc.opened_at += 500
+        second = self.scoped()
         self.assertEqual(first["call"]["transaction"], second["call"]["transaction"])
+        self.assertEqual(first["invocation"]["scope"]["range_digest"], second["invocation"]["scope"]["range_digest"])
         self.assertNotEqual(first["operation_id"], second["operation_id"])
         self.step()
         self.confirm()
         self.assertEqual(len(self.signatures()), 2)
         self.assertEqual(len(self.rpc.sent), 2)
+
 
     def test_scoped_ambiguous_send_and_crash_recover_the_same_signature_and_bytes(self):
         descriptor = self.scoped()
@@ -225,13 +226,13 @@ class TransactionsTests(unittest.TestCase):
 
     def test_changed_checkpoint_cannot_reauthorize_reserved_or_unsigned_scope(self):
         descriptor = self.scoped()
-        self.rpc.checkpoint_hash = h(152)
+        self.rpc.range_digest = h(152)
         self.assertEqual(self.step()["status"], "stale_unsigned")
         self.assertEqual(self.signatures(), [])
-        self.rpc.checkpoint_hash = descriptor["invocation"]["scope"]["checkpoint_hash"]
+        self.rpc.range_digest = descriptor["invocation"]["scope"]["range_digest"]
         self.step()
         original = self.store.load(self.settings, self.limits)["operations"][self.identifier]
-        self.rpc.checkpoint_hash = h(152)
+        self.rpc.range_digest = h(152)
         self.rpc.advance()
         self.assertEqual(self.step()["status"], "authorization_stale_reserved")
         planned = self.runner().plan({**self.call, "anchor": copy.deepcopy(self.rpc.head)})
@@ -249,7 +250,7 @@ class TransactionsTests(unittest.TestCase):
             result = original(method, args)
             if method == "eth_signTransaction":
                 self.rpc.advance()
-                self.rpc.checkpoint_hash = h(152)
+                self.rpc.range_digest = h(152)
             return result
         with patch.object(self.wallet, "call", side_effect=changed):
             self.assertEqual(self.step()["status"], "authorization_stale_reserved")
@@ -364,7 +365,7 @@ class TransactionsTests(unittest.TestCase):
         original = self.store.load(self.settings, self.limits)["operations"][identifier]["call"]
         self.rpc.advance()
         self.assertEqual(self.runner().plan({**original, "anchor": copy.deepcopy(self.rpc.head)})["operation_id"], identifier)
-        invocation = {"scope": {"guard": a(123), "work_id": h(150), "checkpoint_hash": h(151)}, "generation": 0}
+        invocation = {"scope": {"guard": a(123), "work_id": h(150), "range_digest": h(151), "opened_at": 1000}, "generation": 0}
         with self.assertRaisesRegex(s.Error, "nonrepeatable_maintenance_invocation"):
             self.runner().stage(original, invocation)
 
@@ -550,14 +551,12 @@ class TransactionsTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "unsupported_keeper_action"):
             self.runner().stage(call)
 
-    def test_priority_target_is_authenticated_before_signing(self):
-        call = copy.deepcopy(self.call)
-        call["action"] = "publishPrefixWitness"
-        call["transaction"].update(to=a(99), data="0x" + r.selector(t.ACTIONS[call["action"]][0]).hex())
-        identifier = self.runner().stage(call)
-        with self.assertRaisesRegex(s.Error, "keeper_target_mismatch"):
-            self.step(identifier=identifier)
+    def test_priority_admission_is_authenticated_before_signing(self):
+        self.rpc.bad_admission = True
+        with self.assertRaisesRegex(s.Error, "priority_admission_not_active"):
+            self.scoped()
         self.assertEqual(self.wallet.calls, [])
+
 
     def test_policy_change_missing_preflight_and_external_pending_nonce_fail_closed(self):
         changed = {**self.limits, "max_broadcast_attempts": 4}

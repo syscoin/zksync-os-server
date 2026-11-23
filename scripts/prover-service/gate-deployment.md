@@ -4,10 +4,9 @@
 separately for the zkSYS gate on Gateway and the Gateway gate on NEVM, with a
 separate protected journal and signer for each lane. It deploys the lane's
 priority guard and proof gate together using the repository's actual constructor
-bytecode. It does not deploy the checkpoint source/receiver, root sink, roster
-receivers, draws, or coordinators, change timelock roles, or activate the service.
-The component stage below can provision those components; all bindings and
-remaining activation steps must still be verified separately.
+bytecode. Deploy and install the native priority admission policy first. The
+component stage provisions the checkpoint sources, receivers and message sink.
+Use the established administrator route for role changes after deployment.
 
 Create a private JSON config and an existing owner-only journal directory. The
 config is the complete object below; all addresses, hashes and values must come
@@ -24,15 +23,14 @@ it must be retained to install the coordinator after bootstrap.
   "chain_code_hash": "0x<32-byte runtime hash>",
   "timelock": "0x<native prover timelock>",
   "timelock_code_hash": "0x<32-byte runtime hash>",
-  "checkpoint": "0x<root priority source or Gateway checkpoint receiver>",
-  "checkpoint_code_hash": "0x<32-byte runtime hash>",
+  "admission": "0x<installed native priority commit admission policy>",
+  "admission_code_hash": "0x<32-byte runtime hash>",
   "message_sink": "0x<NEVM service sink, or zero address for Gateway gate>",
   "message_sink_code_hash": "0x<32-byte runtime hash, or zero for Gateway gate>",
   "sequencer": "0x<service sequencer>",
   "policy_hash": "0x<32-byte service policy hash>",
   "production_vk_hash": "0x<32-byte production VK hash for this lane>",
   "child_chain_id": 57001,
-  "max_snapshot_age": 600,
   "max_proof_work_seconds": 1200,
   "max_priority_per_package": 64,
   "factory_salt": "0x<unique 32-byte deployment salt>",
@@ -46,11 +44,9 @@ it must be retained to install the coordinator after bootstrap.
 
 The numbers above are examples, not deployed policy recommendations. For the
 Gateway lane, `chain_id` is the Gateway chain ID, `child_chain_id` is zkSYS,
-`chain` is the zkSYS diamond on Gateway, `checkpoint` is the Gateway receiver,
-and the sink address/hash are zero. For the NEVM lane, `chain_id` is the NEVM
+`chain` is the zkSYS diamond on Gateway, and the sink address/hash are zero. For the NEVM lane, `chain_id` is the NEVM
 chain ID, `child_chain_id` is Gateway, `chain` is the Gateway diamond on NEVM,
-`checkpoint` is its NEVM priority source, and `message_sink` is the NEVM service
-sink. Both lanes must use their own pinned native contracts, verifier and VK.
+and `message_sink` is the NEVM service sink. Both lanes must use their own pinned native contracts, verifier and VK.
 
 First compute the deterministic addresses without any on-chain action:
 
@@ -109,21 +105,29 @@ administrator may be the aliased L1 ChainAdmin, so use the existing authorized
 L1-to-Gateway administrator route and verify each finalized Gateway operation.
 No new cutover contract is required.
 
-## Commitment-time priority admission candidate
+## Install priority admission before the prover role handoff
 
-The [native Era overlay](../patches/era-contracts-syscoin-v1-priority-admission.patch)
-adds a policy callback before the diamond records each V32 commitment. It binds
-the callback to the exact stored batch hash, priority count and rolling hash.
-The existing ValidatorTimelock address and commit selectors are preserved.
-The policy is unset by default. Installation requires the chain admin, matching
-committed, verified and executed frontiers, and a drained native priority queue.
-The candidate rejects coexistence with native permissionless Priority Mode.
+The native Era priority-admission overlay checks the exact stored batch hash, priority
+count and rolling hash before recording a V32 commitment. The policy starts unset.
+Pause native production and drain the committed, verified and executed frontiers and
+native priority queue before deploying the policy. Complete this step for each lane.
+Use the reviewed native facet inventory and keep native Priority Mode disabled.
+A chain launched with the baseline Era facets needs the admission-capable facet
+upgrade before this handoff. A chain launched with the qualified admission-capable
+facets can run ordinary settlement with the policy unset until the administrator
+installs it.
 
-The full V1 cutover also requires the admission policy and producer to agree on
-an authenticated eligibility checkpoint before batch formation. Proof opening
-and retries must use the admitted batch commitments. Qualify the combined Era
-build, generated facet inventory and both lanes together before installing the
-policy.
+Deploy the `priority_admission` component with its own config and journal. Run
+`deploy_component.py --prepare-install` after the deployment journal has finalized.
+It checks the current native frontier against the deployed policy and produces a
+simulated administrator call. Submit that call using the native chain administrator
+route. For an aliased administrator, use the established L1-to-Gateway route and
+verify its finalized Gateway execution. Repeat the preview to verify `installed: true`
+and record the reviewed policy runtime hash in the proof gate configuration.
+
+Deploy the gate on the same settlement chain, then verify the attested gate and
+policy identities before rotating the sole prover role. Qualify both commit and
+proof paths before activation.
 
 ## Priority checkpoints and root message sink
 
@@ -165,6 +169,11 @@ Add exactly the fields for the selected kind:
   priority queue to be drained and all verified batches executed.
 - `gateway_checkpoint_receiver`, deployed on Gateway: `root_source` is the
   planned NEVM zkSYS priority source, and `child_chain_id` is zkSYS.
+- `priority_admission`, deployed on the lane's settlement chain: `chain`,
+  `chain_code_hash`, `checkpoint`, `checkpoint_code_hash`, `sequencer`,
+  `child_chain_id`, `max_snapshot_age`, and `max_priority_per_package`.
+  Pin the Gateway checkpoint receiver for the zkSYS lane and the NEVM priority
+  source for the Gateway lane.
 - `root_message_sink`, deployed on NEVM: `publisher` is the planned NEVM proof
   gate and `gateway_gate` is the planned Gateway proof gate; `bridgehub` and
   `bridgehub_code_hash` pin the root Bridgehub;

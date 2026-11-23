@@ -5,12 +5,14 @@ import argparse
 import copy
 import hashlib
 import os
+from pathlib import Path
 import sys
 import time
 
 import relay as r
 import roster as rosters
 import service as s
+import workflow_io as io
 
 
 def sha(value):
@@ -205,9 +207,22 @@ def base_context(config, rpc, evidence, now):
               and call(timelock, "getRoleMember(address,bytes32,uint256)", chain_word + role + s.word(0), "address") == gate,
               "native_prover_authority_changed")
     s.require(call(chain, "getTotalBatchesVerified()") == evidence["previous_batch"]["batchNumber"], "native_proved_frontier_changed")
-    for stored in [evidence["previous_batch"]] + [item["stored"] for item in evidence["batches"]]:
+    stored_batches = [item["stored"] for item in evidence["batches"]]
+    stored_hashes = []
+    for stored in [evidence["previous_batch"], *stored_batches]:
+        stored_hash = s.keccak(s.encode_fields(s.STORED, stored))
         s.require(call(chain, "storedBatchHash(uint256)", s.word(stored["batchNumber"]), "bytes32")
-                  == s.keccak(s.encode_fields(s.STORED, stored)), "native_stored_batch_changed")
+                  == stored_hash, "native_stored_batch_changed")
+        stored_hashes.append(stored_hash)
+    _, admission = r.priority_configuration(rpc, settings, limits, anchor)
+    batch_from, batch_to = stored_batches[0]["batchNumber"], stored_batches[-1]["batchNumber"]
+    digest, priority_from, priority_end = r.admitted_range(rpc, admission, batch_from, batch_to, anchor)
+    commitment = s.keccak(b"".join((s.raw_hex(s.keccak(b"ZkSysPriorityRangeV1")), chain_word,
+                                   s.word(batch_from), s.word(batch_to))))
+    for stored_hash in stored_hashes[1:]:
+        commitment = s.keccak(s.raw_hex(commitment) + s.raw_hex(stored_hash))
+    s.require(digest == commitment and priority_from + sum(s.uint(batch["output"]["l1TxCount"])
+              for batch in evidence["batches"]) == priority_end, "priority_admitted_range_mismatch")
     return head, anchor, call
 
 
@@ -294,7 +309,7 @@ def validate_permit(config, rpc, value, evidence, payload, now, runtime, *, enro
     current = permit(config, rpc, value["request"], evidence, payload, now, runtime, enrollment=enrollment)
     for field in ("frozen_package_hash", "deadline", "control_work"):
         s.require(value["state"][field] == current["state"][field], "compute_permit_state_changed")
-    s.require(value["state"]["priority"] == current["state"]["priority"], "compute_permit_checkpoint_changed")
+    s.require(value["state"]["priority"] == current["state"]["priority"], "compute_permit_priority_work_changed")
     return current
 
 
@@ -322,6 +337,101 @@ def package_call(config, rpc, request, evidence, payload, now, action, *, enroll
                          s.encode_fields(s.PACKAGE, normalized(prepared["accepted_package"])))
 
 
+def priority_reservation(rpc, admission, anchor):
+    raw = raw_call(rpc, admission, "reservation()", anchor, size=13 * 32)
+    fields = ("id", "batch_number", "priority_from", "required_end", "root_total", "root_block_number",
+              "root_tree_start", "root_tree_height", "root", "local_total", "local_tree_start",
+              "local_tree_height", "local_root")
+    words = [raw[index:index + 32] for index in range(0, len(raw), 32)]
+    return {
+        field: ("0x" + value.hex()) if field in ("root", "local_root") else s.uint(int.from_bytes(value, "big"), 64)
+        for field, value in zip(fields, words)
+    }
+
+
+def priority_admission_context(config, rpc, now):
+    settings, limits = config["settings"], config["policy"]
+    head, anchor = r.anchored_head(rpc, settings, limits, now)
+    check_code(rpc, settings["proof_gate"], limits["gate_code_hash"], anchor, "gate_code_changed")
+    _, admission = r.priority_configuration(rpc, settings, limits, anchor)
+    return head, anchor, admission
+
+
+def priority_admission_status(config, rpc, now):
+    head, anchor, admission = priority_admission_context(config, rpc, now)
+    reservation = priority_reservation(rpc, admission, anchor)
+    prepared = r.call_word(rpc, admission, "preparedCommitment()", anchor, kind="bytes32")
+    r.check_anchor(rpc, config["settings"], head)
+    return {"schema_version": 1, "head": head, "admission": admission, "reservation": reservation,
+            "prepared_commitment": prepared}
+
+
+def priority_witness_call(config, rpc, candidate, paths, now):
+    s.exact(candidate, ("schema_version", "chain", "admission", "reservation_id", "batch_number", "block_number",
+                       "stored_hash", "priority_hash", "item_hashes"))
+    keys = ("left_path", "right_path", "local_left_path", "local_right_path")
+    settings, limits = config["settings"], config["policy"]
+    head, anchor, admission = priority_admission_context(config, rpc, now)
+    pending = priority_reservation(rpc, admission, anchor)
+    identifier = s.uint(candidate["reservation_id"], 64)
+    batch_number = s.uint(candidate["batch_number"], 64)
+    stored_hash = s.raw_hex(s.nonzero(candidate["stored_hash"]), 32)
+    s.uint(candidate["block_number"], 64)
+    s.require(type(candidate["schema_version"]) is int and candidate["schema_version"] == 1
+              and candidate["chain"] == settings["chain_address"] and candidate["admission"] == admission
+              and identifier != 0 and identifier == pending["id"]
+              and batch_number == pending["batch_number"],
+              "priority_commit_candidate_changed")
+    hashes = candidate["item_hashes"]
+    maximum = r.call_word(rpc, admission, "maxPriorityPerPackage()", anchor)
+    s.require(type(hashes) is list and 2 <= maximum <= 1024 and len(hashes) <= maximum // 2,
+              "invalid_priority_item_hashes")
+    end = pending["priority_from"] + len(hashes)
+    s.require(pending["required_end"] <= end <= min(pending["root_total"], pending["local_total"]),
+              "priority_candidate_range_mismatch")
+    rolling = s.keccak(b"")
+    for hash_ in hashes:
+        rolling = s.keccak(s.raw_hex(rolling, 32) + s.raw_hex(hash_, 32))
+    s.require(rolling == candidate["priority_hash"], "priority_candidate_hash_mismatch")
+    commitment = s.word(batch_number) + stored_hash + s.word(len(hashes)) + s.raw_hex(rolling, 32)
+    if r.call_word(rpc, admission, "commitReady(uint64,bytes32,uint256,bytes32)", anchor, commitment, "bool"):
+        r.check_anchor(rpc, settings, head)
+        return {"schema_version": 1, "chain_id": settings["settlement_chain_id"], "anchor": head,
+                "action": "commitReady", "reservation_id": identifier, "batch_number": batch_number,
+                "transaction": None, "broadcast": False}
+    s.require(hashes, "empty_priority_candidate_not_ready")
+    s.exact(paths, keys)
+    root_height, local_height = pending["root_tree_height"], pending["local_tree_height"]
+    same_snapshot = all(pending[root] == pending[local] for root, local in (
+        ("root", "local_root"), ("root_total", "local_total"),
+        ("root_tree_start", "local_tree_start"), ("root_tree_height", "local_tree_height"),
+    ))
+    local_height = 0 if same_snapshot else local_height
+    heights = (root_height, root_height, local_height, local_height)
+    s.require(all(type(paths[key]) is list and len(paths[key]) == height <= 64
+                  for key, height in zip(keys, heights)), "invalid_priority_range_paths")
+    values = (hashes,) + tuple(paths[key] for key in keys)
+    arrays = [(s.word(len(items)) + b"".join(s.raw_hex(item, 32) for item in items), True) for items in values]
+    encoded = s.encode_dynamic_tuple([(s.word(identifier), False), (stored_hash, False)] + arrays)
+    return unsigned_call(rpc, settings, limits, head, anchor, settings["sequencer"], admission,
+                         "publishWitness(uint64,bytes32,bytes32[],bytes32[],bytes32[],bytes32[],bytes32[])", encoded)
+
+
+def check_no_priority_formation(publication_dir, chain, admission, reservation_id):
+    directory = io.directory(io.directory(publication_dir) / "priority-admission")
+    try:
+        formation = io.private_json(directory / "formation.json")
+    except FileNotFoundError:
+        return
+    s.exact(formation, ("chain", "admission", "reservation_id", "reservation_hash", "batch_number", "block_number"))
+    s.require(formation["chain"] == chain and formation["admission"] == admission,
+              "priority_formation_identity_mismatch")
+    s.nonzero(formation["reservation_hash"])
+    s.uint(formation["batch_number"], 64)
+    s.uint(formation["block_number"], 64)
+    s.require(s.uint(formation["reservation_id"], 64) < reservation_id, "priority_reservation_already_in_formation")
+
+
 def maintenance(config, rpc, action, args, now):
     """Only fixed contract methods are exposed; every returned call is simulated at its anchor."""
     settings, limits = config["settings"], config["policy"]
@@ -332,11 +442,31 @@ def maintenance(config, rpc, action, args, now):
         check_code(rpc, target, limits["coordinator_code_hash"], anchor, "coordinator_code_changed")
         signature = ("prepareRosterDraw" if action == "prepare-roster" else "recordRosterDraw") + "(uint64)"
         encoded = s.word(s.uint(args["period"], 64))
-    elif action == "refresh-priority":
+    elif action in ("reserve-priority", "cancel-priority-reservation"):
+        check_code(rpc, settings["proof_gate"], limits["gate_code_hash"], anchor, "gate_code_changed")
+        _, target = r.priority_configuration(rpc, settings, limits, anchor)
+        account = settings["sequencer"]
+        if action == "reserve-priority":
+            s.exact(args, ())
+            signature, encoded = "reserve()", b""
+        else:
+            s.require(type(args) is dict, "invalid_priority_cancellation")
+            fields = ("reservation_id", "publication_dir") if "publication_dir" in args else ("reservation_id",)
+            s.exact(args, fields)
+            identifier = s.uint(args["reservation_id"], 64)
+            s.require(identifier != 0 and identifier == priority_reservation(rpc, target, anchor)["id"],
+                      "priority_reservation_changed")
+            if "publication_dir" in args:
+                s.require(type(args["publication_dir"]) is str, "invalid_publication_directory")
+                check_no_priority_formation(args["publication_dir"], settings["chain_address"], target, identifier)
+            signature, encoded = "cancelReservation(uint64)", s.word(identifier)
+    elif action in ("refresh-priority", "activate-service"):
         s.exact(args, ())
         target, account = settings["proof_gate"], settings["sequencer"]
         check_code(rpc, target, limits["gate_code_hash"], anchor, "gate_code_changed")
-        signature, encoded = "refreshPriorityCheckpoint()", b""
+        r.priority_configuration(rpc, settings, limits, anchor)
+        signature = "refreshPriorityCheckpoint()" if action == "refresh-priority" else "activateService()"
+        encoded = b""
     elif action in ("request-draw", "capture-draw", "relay-draw", "relay-checkpoint"):
         fields = ("target", "code_hash", "value") + (() if action == "relay-checkpoint" else ("commitment",))
         if action == "request-draw":
@@ -366,40 +496,6 @@ def maintenance(config, rpc, action, args, now):
     else:
         raise s.Error("unknown_maintenance_action")
     return unsigned_call(rpc, settings, limits, head, anchor, account, target, signature, encoded, value)
-
-
-def prefix_call(config, rpc, evidence, witness, now):
-    s.validate_evidence(config["settings"], evidence)
-    s.exact(witness, ("batch_item_preimages", "left_path", "right_path"))
-    s.require(type(witness["batch_item_preimages"]) is list and len(witness["batch_item_preimages"]) == len(evidence["batches"]),
-              "invalid_prefix_batch_count")
-    counts, hashes = [], []
-    for entries, batch in zip(witness["batch_item_preimages"], evidence["batches"]):
-        s.require(type(entries) is list and len(entries) == s.uint(batch["output"]["l1TxCount"]), "invalid_prefix_count")
-        rolling = s.keccak(b"")
-        for preimage in entries:
-            raw = s.raw_hex(preimage)
-            s.require(raw and len(raw) <= s.MAX_FILE and len(hashes) < 4096, "invalid_priority_preimage")
-            digest = s.keccak(raw)
-            hashes.append(digest)
-            rolling = s.keccak(s.raw_hex(rolling) + s.raw_hex(digest))
-        s.require(rolling == batch["output"]["priorityOperationsHash"], "priority_preimage_hash_mismatch")
-        counts.append(len(entries))
-    for key in ("left_path", "right_path"):
-        s.require(type(witness[key]) is list and len(witness[key]) <= 64, "invalid_priority_path")
-    settings, limits = config["settings"], config["policy"]
-    head, anchor = r.anchored_head(rpc, settings, limits, now)
-    check_code(rpc, settings["proof_gate"], limits["gate_code_hash"], anchor, "gate_code_changed")
-    guard = r.call_word(rpc, settings["proof_gate"], "priorityGuard()", anchor, kind="address")
-    check_code(rpc, guard, limits["priority_guard_code_hash"], anchor, "priority_guard_code_changed")
-    work_id = r.call_word(rpc, settings["proof_gate"], "priorityWorkId()", anchor, kind="bytes32")
-    s.nonzero(work_id)
-    arrays = [(s.word(len(counts)) + b"".join(s.word(count) for count in counts), True)]
-    arrays += [(s.word(len(values)) + b"".join(s.raw_hex(value, 32) for value in values), True)
-               for values in (hashes, witness["left_path"], witness["right_path"])]
-    return unsigned_call(rpc, settings, limits, head, anchor, limits["expected_operator"], guard,
-                         "publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
-                         s.encode_dynamic_tuple([(s.raw_hex(work_id), False)] + arrays))
 
 
 def decode_package(raw):
@@ -565,23 +661,28 @@ def main():
             command.add_argument("--" + field, required=True)
         if name == "permit":
             command.add_argument("--runtime-seconds", type=int, required=True)
-    command = commands.add_parser("prefix-witness")
-    command.add_argument("--evidence", required=True)
-    command.add_argument("--witness", required=True)
-    for name in ("prepare-roster", "record-roster", "request-draw", "capture-draw", "relay-draw", "relay-checkpoint", "refresh-priority"):
+    commands.add_parser("priority-admission-status")
+    witness = commands.add_parser("prepare-priority-witness")
+    witness.add_argument("--candidate", required=True)
+    witness.add_argument("--paths", help="required when a nonempty candidate still needs a witness")
+    for name in ("prepare-roster", "record-roster", "request-draw", "capture-draw", "relay-draw", "relay-checkpoint",
+                 "refresh-priority", "reserve-priority", "cancel-priority-reservation", "activate-service"):
         commands.add_parser(name).add_argument("--arguments", required=True)
     args = parser.parse_args()
     config = configuration(s.read_json(args.config))
     rpc, now = rpc_for(config), time.time()
     if args.command == "status":
         result = status(config, rpc, now, s.read_json(args.roster) if args.roster else None)
+    elif args.command == "priority-admission-status":
+        result = priority_admission_status(config, rpc, now)
+    elif args.command == "prepare-priority-witness":
+        paths = s.read_json(args.paths) if args.paths else None
+        result = priority_witness_call(config, rpc, s.read_json(Path(args.candidate), private=True), paths, now)
     elif args.command in ("permit", "open", "repair"):
         request, evidence = s.read_json(args.request), s.read_json(args.evidence)
         payload = s.read_json(args.payload, maximum=256 * 1024 * 1024)
         result = permit(config, rpc, request, evidence, payload, now, args.runtime_seconds) if args.command == "permit" else package_call(
             config, rpc, request, evidence, payload, now, args.command)
-    elif args.command == "prefix-witness":
-        result = prefix_call(config, rpc, s.read_json(args.evidence), s.read_json(args.witness), now)
     else:
         result = maintenance(config, rpc, args.command, s.read_json(args.arguments), now)
     s.write_new(args.output, result)

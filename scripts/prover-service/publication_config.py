@@ -45,11 +45,7 @@ def preview(config, rpc, now, lane, execution_id, settlement_id, directory, vk_h
     anchor = {'blockHash': head['hash'], 'requireCanonical': True}
     gate, chain = settings['proof_gate'], settings['chain_address']
     call = lambda target, signature, encoded=b'', kind='uint': r.call_word(rpc, target, signature, anchor, encoded, kind)
-    guard = call(gate, 'priorityGuard()', kind='address')
-    k.check_code(rpc, guard, pins['priority_guard_code_hash'], anchor, 'priority_guard_code_changed')
-    s.require(call(guard, 'acceptanceGate()', kind='address') == gate
-              and call(guard, 'chain()', kind='address') == chain
-              and call(guard, 'policyHash()', kind='bytes32') == settings['policy_hash'], 'priority_guard_changed')
+    guard, _ = r.priority_configuration(rpc, settings, pins, anchor)
     priority_limit = call(guard, 'maxPriorityPerPackage()')
     s.require(2 <= priority_limit <= 1024, 'unsupported_priority_package_limit')
     verifier = call(gate, 'productionVerifier()', kind='address')

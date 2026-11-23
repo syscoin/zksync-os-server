@@ -5,7 +5,7 @@ and issues a bounded SNARK compute permit. The external SNARK path in
 [`pool.py`](../prover-rental/pool.py) independently revalidates that permit before
 renting. It checks the reviewed gate/coordinator/priority-guard code, production
 verifier and V8 key, native prover role, parent, committed native batch hashes,
-frozen package, selected wrapper and turn, priority prefix witness, and remaining
+frozen package, selected wrapper and turn, admitted priority range, and remaining
 runtime. Both child and Gateway work use this path with their own lane settings.
 
 The low-level `keeper.py` commands do not deploy, sign, broadcast, rent, or start
@@ -146,15 +146,12 @@ the package as more FRIs arrive. Unavailable ranges remain unleased and are retr
 A protocol-boundary constraint can require an explicit package repair through the
 existing keeper workflow; renewal never invents a different report.
 
-Priority refresh and prefix-witness transactions are scoped to the guard, work
-identity and frozen checkpoint. The coordinator persists each invocation before
-staging its transaction. A new checkpoint gets a new invocation even when the
-calldata is identical; retries of an unresolved invocation retain its nonce and
-signed transaction. A canonically confirmed revert permits a new retry generation.
-Keep the transaction journal and coordinator state together across restarts.
-Legacy refresh or witness records that already reserved a nonce without a
-checkpoint scope can recover their original receipt, but are not rebroadcast
-under a new checkpoint.
+Priority timer renewals are scoped to the guard, work identity, admitted range
+digest and original opening time. The coordinator persists each invocation before
+staging its transaction. Renewing the timer creates a new scope while retaining
+the admitted range. An unresolved invocation retains its nonce and signed bytes.
+Reconcile journals from earlier proof-witness deployments using their matching
+release and configuration before switching to a newly deployed gate.
 The maintenance and relay journals retain their history in an indexed SQLite
 store once they outgrow the small JSON form. Completed history does not impose
 a lifetime operation count cutoff. Migration preserves signed transaction bytes,
@@ -175,7 +172,7 @@ The automatic coordinator configuration has these exact top-level fields:
 | `endpoint`, `native_auth_file`, `release_file`, `native_lease_seconds` | Native prover API, private Basic Auth file, reviewed SNARK release, and a conservative lease duration matching the node. The API does not attest its lease duration. |
 | `dispatcher_dir`, `roster_dir` | The current shared dispatcher journal and complete authenticated roster files named `<period>.json`. |
 | `operator_inboxes` | Map of registered lowercase operator addresses to private handoff directories. |
-| `priority_witness_dir`, `publication_dir` | Authenticated priority witnesses named `<work_id_without_0x>.json`, and this lane's node service-publication directory. |
+| `publication_dir` | This lane's node service-publication directory. |
 | `sequencer_wallet_file`, `relay_wallet_file` | Private connection files for the sequencer signing/maintenance wallet and a separate proof-relay wallet. |
 | `transaction_policy`, `relay_policy` | Complete [relay-policy](relay-policy.example.json) objects with matching reviewed code pins and explicit gas/fee/confirmation limits. Maintenance uses the sequencer account; proof relay must use a different nonce account. |
 | `sequencer_beneficiary`, `poll_interval_seconds` | The fixed nonzero sequencer payee and a polling interval from 1 to 60 seconds. |
@@ -218,10 +215,8 @@ transport service is started by these scripts. Never synchronize the coordinator
 native authority, lease, credentials, transaction journal or signing files.
 
 Roster publication, both future-draw registrations and cross-chain deliveries,
-and priority checkpoint relayers remain external prerequisites. Supply actual
-native priority preimages and tree paths when the coordinator reports
-`await_authenticated_priority_witness`; it will validate and publish that witness,
-but cannot construct it from a transaction count. Rotate the dispatcher snapshot
+and priority checkpoint relayers remain external prerequisites. Protected native
+commits need a sequencer reservation and an ordered witness before the node commits. Rotate the dispatcher snapshot
 only under its period/phase rules and preserve outstanding journals; an old
 snapshot is not silently rewritten for a new period.
 
@@ -353,7 +348,10 @@ state before proceeding. Simulation is a point-in-time check, not a reservation.
   configuration whose settlement chain is NEVM for these root transactions.
 * `refresh-priority --arguments empty.json`, with `{}`, prepares the sequencer's
   gate refresh call. The contract permits this only after the old work window
-  expires and preserves the work identity; it does not reroll the wrapper turn.
+  expires. Renewal preserves the work identity, admitted range and wrapper schedule.
+* `activate-service --arguments empty.json` prepares the gate activation call once
+  the admission policy is installed and the gate sees the required roster and draw.
+  Reconcile all bootstrap reports and verify final activation delivery from both lanes.
 
 For example:
 
@@ -367,22 +365,47 @@ keepers withhold an unfavorable draw until blockhash expiry, recovery allows
 selective-abort bias. Native PoW block hashes also retain producer bias. These
 contracts do not authenticate ChainLocks or guarantee that a keeper will run.
 
-Before nonempty priority work can receive a permit, publish its ordered prefix
-witness. The witness file has `batch_item_preimages` (one array of exact native
-priority-item encoding hex strings per batch), `left_path`, and `right_path`.
-The keeper hashes those preimages, reconstructs every native batch's rolling
-priority hash, and simulates the contract's ordered tree-range proof:
+### Admit each native batch before commit
+
+Use `priority-admission-status` to read the policy and current reservation at a
+canonical settlement head. With no reservation, simulate
+`reserve-priority --arguments empty.json` with `{}` as the file content. Submit
+that call from the sequencer through its established nonce supervisor.
+
+The protected node writes `<publication_dir>/priority-admission/candidate.json`.
+Keep the exact file and obtain Merkle paths for the reservation's frozen root and
+settlement snapshots. Supply `left_path`, `right_path`, `local_left_path`, and
+`local_right_path`. Use empty local paths when the snapshots match in root,
+height, start and total. Use four empty paths for zero priority operations.
 
 ```sh
 python3 scripts/prover-service/keeper.py --config /trusted/child-keeper.json \
-  --output /trusted/prefix-call.json prefix-witness \
-  --evidence /trusted/native-evidence.json --witness /trusted/prefix-preimages.json
+  --output /trusted/priority-witness-call.json prepare-priority-witness \
+  --candidate /trusted/node-publication/priority-admission/candidate.json \
+  --paths /trusted/reservation-paths.json
 ```
 
-The caller must obtain native item preimages and paths from its authenticated
-chain data; the keeper does not invent or fetch them. Empty priority counts need
-the native empty rolling hash and no published witness. A stale checkpoint,
-missing overdue prefix, or missing nonempty witness refuses compute.
+Build paths from authenticated mailbox history and check each reconstructed root
+against the reservation. For distinct snapshots, use each chain's recorded
+tree start, height, and total. In particular a relayed Gateway mailbox event
+records the total after append, while a native request event includes its
+transaction index. The keeper currently accepts supplied paths and simulates
+their verification. The existing replay-based executor proof builder does not
+export these two precommit snapshots.
+
+Confirm the witness call's canonical receipt. The node submits the native commit
+after the admission policy confirms the exact candidate. Proof work uses the
+admitted digest and range.
+
+Pause the sequencer before considering `cancel-priority-reservation` and
+reconcile both the native commit and sequencer nonce journals. Pass
+`{"reservation_id": ..., "publication_dir": "/private/node-publication"}`
+when the keeper can access the node's protected directory. It refuses a
+matching `formation.json`. For a separate host, inspect the protected
+formation file on the node before issuing the cancellation. Preserve the
+formation and candidate directory, native command journals, and replay WAL
+for standby takeover. Fence the original sequencer and nonce accounts
+before starting a standby.
 
 ## Native proof checks for a manual handoff
 

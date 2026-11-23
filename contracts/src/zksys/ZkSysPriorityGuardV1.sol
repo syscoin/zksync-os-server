@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {IL1BridgehubMinimal} from "./ZkSysRegistryBridge.sol";
+import {IZkSysPriorityCommitAdmissionV1} from "./IZkSysPriorityCommitAdmissionV1.sol";
 
 interface IZkSysPriorityMailboxV1 {
     function getChainId() external view returns (uint256);
@@ -36,13 +37,20 @@ interface IZkSysPriorityCheckpointReceiverV1 {
     function policyHash() external view returns (bytes32);
 }
 
+interface IZkSysPriorityAdmissionChainV1 {
+    function getSyscoinPriorityCommitPolicy() external view returns (address);
+}
+
 interface IZkSysPriorityGuardV1 {
     function acceptanceGate() external view returns (address);
     function chain() external view returns (IZkSysPriorityMailboxV1);
+    function admission() external view returns (IZkSysPriorityCommitAdmissionV1);
     function policyHash() external view returns (bytes32);
-    function open(bytes32 workId, uint64 batchFrom) external;
+    function isAdmissionActive(address sequencer) external view returns (bool);
+    function open(bytes32 workId, uint64 batchFrom, uint64 batchTo) external;
+    function repair(bytes32 workId, uint64 batchTo) external;
     function refreshExpired(bytes32 workId) external;
-    function consume(bytes32 workId, uint64 batchTo, uint256[] calldata counts, bytes32[] calldata hashes) external;
+    function consume(bytes32 workId, uint64 batchTo, bytes32 rangeDigest, uint256 priorityCount) external;
 }
 
 /// @notice NEVM source of authenticated queue age and ordered priority-tree checkpoints.
@@ -206,59 +214,55 @@ contract ZkSysPriorityCheckpointReceiverV1 is IZkSysPriorityCheckpointReceiverV1
     }
 }
 
-/// @notice Requires each native proof package to consume the frozen, bounded overdue root prefix.
-/// @dev A proof cursor, separate from the native execution cursor, prevents delayed execution from
-/// crediting the same queue entries twice. Withholding checkpoints or root-to-Gateway delivery stops
-/// progress; this contract cannot make the parent Gateway include transactions or guarantee wall time.
+/// @notice Binds proof work to the exact priority range authenticated during native commitment.
+/// @dev The proof cursor advances independently of execution. Later requests affect subsequent
+/// admissions, while repairs and renewals can only reference native commitments that already exist.
 contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
     error Unauthorized();
     error InvalidConfiguration();
-    error InvalidCheckpoint();
     error InvalidWork();
     error ExpiredWork();
     error InvalidPrefix();
 
     struct Work {
         bytes32 id;
-        bytes32 checkpointHash;
-        bytes32 root;
+        bytes32 rangeDigest;
         uint64 batchFrom;
+        uint64 batchTo;
         uint64 openedAt;
-        uint64 treeStart;
-        uint64 treeHeight;
-        uint64 requiredEnd;
-        uint64 maxEnd;
+        uint64 priorityFrom;
+        uint64 priorityEnd;
     }
 
     address public immutable acceptanceGate;
     IZkSysPriorityMailboxV1 public immutable chain;
-    IZkSysPriorityCheckpointReceiverV1 public immutable checkpointReceiver;
+    IZkSysPriorityCommitAdmissionV1 public immutable admission;
+    bytes32 public immutable admissionCodeHash;
     bytes32 public immutable policyHash;
-    uint64 public immutable maxSnapshotAge;
     uint64 public immutable maxProofWorkSeconds;
     uint64 public immutable maxPriorityPerPackage;
     uint64 public priorityCursor;
     uint64 public lastVerifiedBatch;
     Work public work;
-    mapping(bytes32 => bool) public prefixWitness;
 
-    event WorkFrozen(bytes32 indexed workId, bytes32 indexed checkpointHash, uint64 cursor, uint64 requiredEnd);
+    event WorkBound(bytes32 indexed workId, bytes32 indexed rangeDigest, uint64 batchFrom, uint64 batchTo);
+    event WorkRenewed(bytes32 indexed workId, uint64 openedAt);
     event PrefixConsumed(bytes32 indexed workId, uint64 batchTo, uint64 cursor);
 
     constructor(
         address gate_,
         IZkSysPriorityMailboxV1 chain_,
-        IZkSysPriorityCheckpointReceiverV1 receiver_,
+        IZkSysPriorityCommitAdmissionV1 admission_,
         bytes32 policyHash_,
-        uint64 maxSnapshotAge_,
         uint64 maxProofWorkSeconds_,
         uint64 maxPriorityPerPackage_
     ) {
         if (
-            gate_ == address(0) || address(chain_).code.length == 0 || address(receiver_).code.length == 0
-                || policyHash_ == bytes32(0) || receiver_.policyHash() != policyHash_
-                || receiver_.childChainId() != chain_.getChainId() || maxSnapshotAge_ == 0 || maxProofWorkSeconds_ == 0
-                || maxPriorityPerPackage_ < 2 || maxPriorityPerPackage_ > 1024
+            gate_ == address(0) || address(chain_).code.length == 0 || address(admission_).code.length == 0
+                || policyHash_ == bytes32(0) || admission_.policyHash() != policyHash_
+                || admission_.chain() != address(chain_) || admission_.sequencer() == address(0)
+                || maxProofWorkSeconds_ == 0 || maxPriorityPerPackage_ < 2 || maxPriorityPerPackage_ > 1024
+                || admission_.maxPriorityPerPackage() != maxPriorityPerPackage_
         ) revert InvalidConfiguration();
         uint256 verified = chain_.getTotalBatchesVerified();
         uint256 cursor = chain_.getFirstUnprocessedPriorityTx();
@@ -269,9 +273,9 @@ contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
         ) revert InvalidConfiguration();
         acceptanceGate = gate_;
         chain = chain_;
-        checkpointReceiver = receiver_;
+        admission = admission_;
+        admissionCodeHash = address(admission_).codehash;
         policyHash = policyHash_;
-        maxSnapshotAge = maxSnapshotAge_;
         maxProofWorkSeconds = maxProofWorkSeconds_;
         maxPriorityPerPackage = maxPriorityPerPackage_;
         priorityCursor = uint64(cursor);
@@ -280,126 +284,85 @@ contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
 
     modifier onlyGate() {
         if (msg.sender != acceptanceGate) revert Unauthorized();
+        if (!_admissionInstalled()) revert InvalidConfiguration();
         _checkNativeCursor();
         _;
     }
 
-    function open(bytes32 workId, uint64 batchFrom) external onlyGate {
+    function isAdmissionActive(address sequencer) external view returns (bool) {
+        return _admissionInstalled() && admission.sequencer() == sequencer;
+    }
+
+    function _admissionInstalled() private view returns (bool) {
+        return address(admission).codehash == admissionCodeHash
+            && IZkSysPriorityAdmissionChainV1(address(chain)).getSyscoinPriorityCommitPolicy() == address(admission)
+            && admission.chain() == address(chain) && admission.policyHash() == policyHash
+            && admission.maxPriorityPerPackage() == maxPriorityPerPackage;
+    }
+
+    function open(bytes32 workId, uint64 batchFrom, uint64 batchTo) external onlyGate {
         if (work.id != bytes32(0) || workId == bytes32(0) || uint256(batchFrom) != uint256(lastVerifiedBatch) + 1) {
             revert InvalidWork();
         }
-        PriorityCheckpointV1 memory checkpoint = _checkpoint();
-        uint256 cap = uint256(priorityCursor) + maxPriorityPerPackage;
-        uint64 requiredEnd = checkpoint.overdueEnd > priorityCursor ? checkpoint.overdueEnd : priorityCursor;
-        if (requiredEnd > cap) requiredEnd = uint64(cap);
-        _freeze(workId, batchFrom, checkpoint, requiredEnd);
+        (bytes32 digest, uint64 from, uint64 end) = _admittedRange(batchFrom, batchTo);
+        work = Work({
+            id: workId,
+            rangeDigest: digest,
+            batchFrom: batchFrom,
+            batchTo: batchTo,
+            openedAt: _clock(),
+            priorityFrom: from,
+            priorityEnd: end
+        });
+        emit WorkBound(workId, digest, batchFrom, batchTo);
+    }
+
+    function repair(bytes32 workId, uint64 batchTo) external onlyGate {
+        Work memory pending = _work(workId);
+        (bytes32 digest, uint64 from, uint64 end) = _admittedRange(pending.batchFrom, batchTo);
+        if (from != pending.priorityFrom) revert InvalidPrefix();
+        work.rangeDigest = digest;
+        work.batchTo = batchTo;
+        work.priorityEnd = end;
+        emit WorkBound(workId, digest, pending.batchFrom, batchTo);
     }
 
     function refreshExpired(bytes32 workId) external onlyGate {
-        Work memory previous = work;
-        if (previous.id != workId || workId == bytes32(0)) revert InvalidWork();
-        if (block.timestamp <= uint256(previous.openedAt) + maxProofWorkSeconds) revert InvalidWork();
-        // A fresh root authenticates the witness after expiry. The already-open range keeps its
-        // inclusion obligation, since its committed batches cannot incorporate later requests.
-        _freeze(workId, previous.batchFrom, _checkpoint(), previous.requiredEnd);
+        Work memory pending = _work(workId);
+        if (block.timestamp <= uint256(pending.openedAt) + maxProofWorkSeconds) revert InvalidWork();
+        _checkAdmittedRange(pending);
+        work.openedAt = _clock();
+        emit WorkRenewed(workId, work.openedAt);
     }
 
-    function _checkpoint() private view returns (PriorityCheckpointV1 memory checkpoint) {
-        checkpoint = checkpointReceiver.latestCheckpoint();
+    function consume(bytes32 workId, uint64 batchTo, bytes32 rangeDigest, uint256 priorityCount) external onlyGate {
+        Work memory pending = _work(workId);
+        if (block.timestamp > uint256(pending.openedAt) + maxProofWorkSeconds) revert ExpiredWork();
         if (
-            checkpoint.rootBlockNumber == 0 || checkpoint.root == bytes32(0)
-                || checkpoint.rootTimestamp > block.timestamp
-                || block.timestamp - checkpoint.rootTimestamp > maxSnapshotAge
-                || checkpoint.trackingStart > priorityCursor || checkpoint.treeStart > priorityCursor
-                || checkpoint.treeStart != chain.getPriorityTreeStartIndex() || checkpoint.total < priorityCursor
-                || checkpoint.overdueEnd > checkpoint.total || checkpoint.treeHeight > 64
-                || block.timestamp > type(uint64).max
-        ) revert InvalidCheckpoint();
-    }
-
-    function _freeze(bytes32 workId, uint64 batchFrom, PriorityCheckpointV1 memory checkpoint, uint64 requiredEnd)
-        private
-    {
-        uint256 cap = uint256(priorityCursor) + maxPriorityPerPackage;
-        uint64 maxEnd = checkpoint.total;
-        if (maxEnd > cap) maxEnd = uint64(cap);
-        if (requiredEnd > maxEnd) revert InvalidCheckpoint();
-        work = Work({
-            id: workId,
-            checkpointHash: keccak256(abi.encode(checkpoint, block.timestamp)),
-            root: checkpoint.root,
-            batchFrom: batchFrom,
-            openedAt: uint64(block.timestamp),
-            treeStart: checkpoint.treeStart,
-            treeHeight: checkpoint.treeHeight,
-            requiredEnd: requiredEnd,
-            maxEnd: maxEnd
-        });
-        emit WorkFrozen(workId, work.checkpointHash, priorityCursor, requiredEnd);
-    }
-
-    function publishPrefixWitness(
-        bytes32 workId,
-        uint256[] calldata batchCounts,
-        bytes32[] calldata itemHashes,
-        bytes32[] calldata leftPath,
-        bytes32[] calldata rightPath
-    ) external {
-        Work memory pending = work;
-        _checkWork(pending, workId);
-        if (batchCounts.length < 2 || batchCounts.length > 100 || itemHashes.length > maxPriorityPerPackage) {
-            revert InvalidPrefix();
-        }
-        uint256 end = uint256(priorityCursor) + itemHashes.length;
-        if (end < pending.requiredEnd || end > pending.maxEnd) revert InvalidPrefix();
-        if (itemHashes.length == 0) {
-            if (leftPath.length != 0 || rightPath.length != 0) revert InvalidPrefix();
-        } else if (
-            leftPath.length != pending.treeHeight || rightPath.length != pending.treeHeight
-                || _rangeRoot(leftPath, rightPath, priorityCursor - pending.treeStart, itemHashes) != pending.root
-        ) {
-            revert InvalidPrefix();
-        }
-        bytes32[] memory hashes = new bytes32[](batchCounts.length);
-        uint256 offset;
-        for (uint256 i; i < batchCounts.length; ++i) {
-            uint256 count = batchCounts[i];
-            if (count > itemHashes.length - offset) revert InvalidPrefix();
-            bytes32 rolling = keccak256("");
-            for (uint256 j; j < count; ++j) {
-                rolling = keccak256(abi.encodePacked(rolling, itemHashes[offset++]));
-            }
-            hashes[i] = rolling;
-        }
-        if (offset != itemHashes.length) revert InvalidPrefix();
-        prefixWitness[keccak256(abi.encode(pending.id, pending.checkpointHash, batchCounts, hashes))] = true;
-    }
-
-    function consume(bytes32 workId, uint64 batchTo, uint256[] calldata counts, bytes32[] calldata hashes)
-        external
-        onlyGate
-    {
-        Work memory pending = work;
-        _checkWork(pending, workId);
-        if (
-            counts.length < 2 || counts.length > 100 || hashes.length != counts.length
-                || batchTo != uint256(pending.batchFrom) + counts.length - 1
+            batchTo != pending.batchTo || rangeDigest != pending.rangeDigest
+                || priorityCount != uint256(pending.priorityEnd) - pending.priorityFrom
         ) revert InvalidPrefix();
-        uint256 total;
-        for (uint256 i; i < counts.length; ++i) {
-            if (counts[i] > maxPriorityPerPackage || total + counts[i] > maxPriorityPerPackage) revert InvalidPrefix();
-            total += counts[i];
-            if (counts[i] == 0 && hashes[i] != keccak256("")) revert InvalidPrefix();
-        }
-        uint256 end = uint256(priorityCursor) + total;
-        if (end < pending.requiredEnd || end > pending.maxEnd) revert InvalidPrefix();
-        if (total != 0 && !prefixWitness[keccak256(abi.encode(pending.id, pending.checkpointHash, counts, hashes))]) {
-            revert InvalidPrefix();
-        }
-        priorityCursor = uint64(end);
+        _checkAdmittedRange(pending);
+        priorityCursor = pending.priorityEnd;
         lastVerifiedBatch = batchTo;
         delete work;
-        emit PrefixConsumed(workId, batchTo, uint64(end));
+        emit PrefixConsumed(workId, batchTo, pending.priorityEnd);
+    }
+
+    function _checkAdmittedRange(Work memory pending) private view {
+        (bytes32 digest, uint64 from, uint64 end) = _admittedRange(pending.batchFrom, pending.batchTo);
+        if (digest != pending.rangeDigest || from != pending.priorityFrom || end != pending.priorityEnd) {
+            revert InvalidPrefix();
+        }
+    }
+
+    function _admittedRange(uint64 batchFrom, uint64 batchTo) private view returns (bytes32, uint64, uint64) {
+        if (batchTo <= batchFrom || batchTo - batchFrom >= 100) revert InvalidPrefix();
+        (bytes32 digest, uint64 from, uint64 end) = admission.admittedRange(batchFrom, batchTo);
+        if (digest == bytes32(0) || from != priorityCursor || end < from || end - from > maxPriorityPerPackage) {
+            revert InvalidPrefix();
+        }
+        return (digest, from, end);
     }
 
     function _checkNativeCursor() private view {
@@ -410,33 +373,13 @@ contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
         ) revert InvalidWork();
     }
 
-    function _checkWork(Work memory pending, bytes32 workId) private view {
-        if (workId == bytes32(0) || pending.id != workId) revert InvalidWork();
-        if (block.timestamp > uint256(pending.openedAt) + maxProofWorkSeconds) revert ExpiredWork();
+    function _work(bytes32 id) private view returns (Work memory pending) {
+        pending = work;
+        if (id == bytes32(0) || id != pending.id) revert InvalidWork();
     }
 
-    /// @dev Ordered range construction mirrors native Merkle.calculateRootPaths. Exact authenticated
-    /// height is checked by the caller; accepting arbitrary shorter paths permits subtree substitution.
-    function _rangeRoot(
-        bytes32[] calldata leftPath,
-        bytes32[] calldata rightPath,
-        uint256 index,
-        bytes32[] memory items
-    ) private pure returns (bytes32) {
-        uint256 length = items.length;
-        if (index + length > uint256(1) << leftPath.length) revert InvalidPrefix();
-        for (uint256 level; level < leftPath.length; ++level) {
-            uint256 parity = index % 2;
-            uint256 nextLength = length / 2 + (parity | (length % 2));
-            for (uint256 i; i < nextLength; ++i) {
-                bytes32 lhs = (i == 0 && parity == 1) ? leftPath[level] : items[2 * i - parity];
-                bytes32 rhs =
-                    (i == nextLength - 1 && (length - parity) % 2 == 1) ? rightPath[level] : items[2 * i + 1 - parity];
-                items[i] = keccak256(abi.encodePacked(lhs, rhs));
-            }
-            length = nextLength;
-            index /= 2;
-        }
-        return items[0];
+    function _clock() private view returns (uint64) {
+        if (block.timestamp > type(uint64).max) revert InvalidWork();
+        return uint64(block.timestamp);
     }
 }

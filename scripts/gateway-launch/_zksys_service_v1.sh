@@ -15,6 +15,18 @@ zksys_assert_shared_bridgehub() {
     gl_die "root sink Bridgehub does not match the L1 registry bridge"
 }
 
+zksys_assert_active_priority_admission() {
+  local cast_command="${1:?cast command}" rpc="${2:?RPC}" gate="${3:?gate}"
+  local sequencer="${4:?sequencer}" lane="${5:?lane}" guard active
+  guard="$("${cast_command}" call --rpc-url "${rpc}" "${gate}" 'priorityGuard()(address)')" ||
+    gl_die "${lane} priority guard lookup failed"
+  [[ "${guard}" =~ ^0x[0-9a-fA-F]{40}$ ]] && [ "${guard}" != 0x0000000000000000000000000000000000000000 ] ||
+    gl_die "${lane} priority guard is invalid"
+  active="$("${cast_command}" call --rpc-url "${rpc}" "${guard}" 'isAdmissionActive(address)(bool)' "${sequencer}")" ||
+    gl_die "${lane} priority admission lookup failed"
+  [ "${active}" = true ] || gl_die "${lane} priority admission is not installed for the gate"
+}
+
 zksys_assert_staking_deferred() {
   local current
   current="$(call_l2 "${ZKSYS_L2_ISSUER_ADDRESS}" 'serviceStartPeriodPlusOne()(uint256)')"
@@ -152,6 +164,11 @@ zksys_setup_service_v1() {
   [ "$(gl_to_lower "${actual}")" = "${ZKSYS_SERVICE_POLICY_HASH}" ] || gl_die "root gate policy mismatch"
   actual="$(gl_non_l1_cast call --rpc-url "${gateway_rpc}" "${ZKSYS_SERVICE_GATEWAY_GATE}" 'childChainId()(uint256)')"
   [ "${actual%% *}" = "${edge_id}" ] || gl_die "Gateway gate child chain mismatch"
+
+  zksys_assert_active_priority_admission gl_non_l1_cast "${gateway_rpc}" "${ZKSYS_SERVICE_GATEWAY_GATE}" \
+    "${ZKSYS_SERVICE_SEQUENCER}" "Gateway lane"
+  zksys_assert_active_priority_admission cast "${L1_RPC_URL}" "${root_gate}" \
+    "${ZKSYS_SERVICE_SEQUENCER}" "NEVM lane"
 
   current="$(call_l2 "${ZKSYS_L2_ISSUER_ADDRESS}" 'serviceStartPeriodPlusOne()(uint256)')"
   if [ "${current}" = 0 ]; then

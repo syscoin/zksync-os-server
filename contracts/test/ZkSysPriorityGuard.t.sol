@@ -10,6 +10,7 @@ import {
     IZkSysPriorityCheckpointReceiverV1,
     PriorityCheckpointV1
 } from "contracts/src/zksys/ZkSysPriorityGuardV1.sol";
+import {IZkSysPriorityCommitAdmissionV1} from "contracts/src/zksys/IZkSysPriorityCommitAdmissionV1.sol";
 import {RootDrawHub} from "./ZkSysRootDraw.t.sol";
 
 contract PriorityMailboxMock is IZkSysPriorityMailboxV1 {
@@ -23,6 +24,19 @@ contract PriorityMailboxMock is IZkSysPriorityMailboxV1 {
     uint256 public executed;
     bool public legacy;
     mapping(uint256 => uint256) public requestedAt;
+    mapping(uint256 => bytes32) public storedBatchHash;
+    mapping(uint64 => MockPriorityRange) public committedPriorityRange;
+    address public getSyscoinPriorityCommitPolicy;
+
+    function installAdmission(address admission) external {
+        getSyscoinPriorityCommitPolicy = admission;
+    }
+
+    function setAdmittedBatch(uint64 batchNumber, uint64 from, uint64 end) external {
+        storedBatchHash[batchNumber] = keccak256(abi.encode(batchNumber, from, end));
+        committedPriorityRange[batchNumber] = MockPriorityRange(from, end);
+        if (batchNumber > committed) committed = batchNumber;
+    }
 
     function setTree(uint256 total_, uint256 height_, bytes32 root_) external {
         total = total_;
@@ -94,12 +108,55 @@ contract PriorityMailboxMock is IZkSysPriorityMailboxV1 {
     }
 }
 
+struct MockPriorityRange {
+    uint64 from;
+    uint64 end;
+}
+
+interface MockPriorityChain {
+    function storedBatchHash(uint256 batchNumber) external view returns (bytes32);
+    function committedPriorityRange(uint64 batchNumber) external view returns (uint64 from, uint64 end);
+}
+
+contract PriorityAdmissionMock {
+    address public immutable chain;
+    bytes32 public immutable policyHash;
+    address public immutable sequencer;
+    uint64 public immutable maxPriorityPerPackage;
+
+    constructor(address chain_, bytes32 policyHash_, address sequencer_, uint64 limit_) {
+        chain = chain_;
+        policyHash = policyHash_;
+        sequencer = sequencer_;
+        maxPriorityPerPackage = limit_;
+    }
+
+    function admittedRange(uint64 from, uint64 to)
+        external
+        view
+        returns (bytes32 digest, uint64 priorityFrom, uint64 priorityEnd)
+    {
+        MockPriorityChain native = MockPriorityChain(chain);
+        (priorityFrom,) = native.committedPriorityRange(from);
+        priorityEnd = priorityFrom;
+        digest = keccak256(abi.encode(keccak256("ZkSysPriorityRangeV1"), chain, from, to));
+        for (uint256 i = from; i <= to; ++i) {
+            bytes32 hash = native.storedBatchHash(i);
+            (uint64 start, uint64 end) = native.committedPriorityRange(uint64(i));
+            require(hash != bytes32(0) && start == priorityEnd && end >= start, "no exact admission");
+            priorityEnd = end;
+            digest = keccak256(abi.encode(digest, hash));
+        }
+    }
+}
+
 contract ZkSysPriorityGuardTest is Test {
     PriorityMailboxMock private mailbox;
     RootDrawHub private hub;
     ZkSysRootPrioritySourceV1 private source;
     ZkSysPriorityCheckpointReceiverV1 private receiver;
     ZkSysPriorityGuardV1 private guard;
+    PriorityAdmissionMock private admission;
     bytes32 private constant POLICY = keccak256("priority-policy");
     bytes32 private constant WORK = keccak256("parent-and-first-batch");
     bytes32[] private leaves;
@@ -112,7 +169,9 @@ contract ZkSysPriorityGuardTest is Test {
         address predictedReceiver = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         source = new ZkSysRootPrioritySourceV1(mailbox, hub, predictedReceiver, 5050, POLICY, 100);
         receiver = new ZkSysPriorityCheckpointReceiverV1(address(source), 57, POLICY);
-        guard = new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
+        admission = new PriorityAdmissionMock(address(mailbox), POLICY, address(this), 2);
+        guard = _newGuard();
+        mailbox.installAdmission(address(admission));
         for (uint256 i; i < 4; ++i) {
             leaves.push(keccak256(abi.encode("priority", i)));
         }
@@ -134,38 +193,6 @@ contract ZkSysPriorityGuardTest is Test {
         receiver.receiveCheckpoint(57, POLICY, checkpoint);
     }
 
-    function _counts(uint256 first, uint256 second) private pure returns (uint256[] memory counts) {
-        counts = new uint256[](2);
-        counts[0] = first;
-        counts[1] = second;
-    }
-
-    function _hashes(uint256 from, uint256 first, uint256 second) private view returns (bytes32[] memory hashes) {
-        hashes = new bytes32[](2);
-        hashes[0] = keccak256("");
-        hashes[1] = keccak256("");
-        uint256 cursor = from;
-        for (uint256 i; i < first; ++i) {
-            hashes[0] = _hash(hashes[0], leaves[cursor++]);
-        }
-        for (uint256 i; i < second; ++i) {
-            hashes[1] = _hash(hashes[1], leaves[cursor++]);
-        }
-    }
-
-    function _witness(uint256 from, uint256 first, uint256 second) private {
-        bytes32[] memory items = new bytes32[](2);
-        items[0] = leaves[from];
-        items[1] = leaves[from + 1];
-        bytes32[] memory left = new bytes32[](2);
-        bytes32[] memory right = new bytes32[](2);
-        left[0] = leaves[from + 1];
-        right[0] = leaves[from];
-        left[1] = from == 0 ? _hash(leaves[2], leaves[3]) : _hash(leaves[0], leaves[1]);
-        right[1] = left[1];
-        guard.publishPrefixWitness(WORK, _counts(first, second), items, left, right);
-    }
-
     function testRootAgeUsesNativeTimestampsAndBoundedPrefix() public view {
         PriorityCheckpointV1 memory checkpoint = source.capture();
         assertEq(checkpoint.trackingStart, 0);
@@ -173,183 +200,6 @@ contract ZkSysPriorityGuardTest is Test {
         assertEq(checkpoint.overdueEnd, 2);
         assertEq(checkpoint.rootTimestamp, 1_000);
         assertEq(checkpoint.treeHeight, 2);
-    }
-
-    function testRootSettlementReadsNativeSourceWithoutRelayOrCallerClock() public {
-        mailbox.setTree(0, 0, keccak256(""));
-        ZkSysRootPrioritySourceV1 direct = new ZkSysRootPrioritySourceV1(mailbox, hub, address(0), 0, POLICY, 100);
-        guard = new ZkSysPriorityGuardV1(
-            address(this), mailbox, IZkSysPriorityCheckpointReceiverV1(address(direct)), POLICY, 50, 200, 2
-        );
-        mailbox.setTree(4, 2, _hash(_hash(leaves[0], leaves[1]), _hash(leaves[2], leaves[3])));
-        vm.warp(1_100);
-        guard.open(WORK, 1);
-        _witness(0, 1, 1);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-        assertEq(guard.priorityCursor(), 2);
-        assertEq(direct.latestCheckpoint().overdueEnd, 4);
-        vm.expectRevert(ZkSysRootPrioritySourceV1.InvalidConfiguration.selector);
-        direct.relayCheckpoint(1_000_000, 800, address(this));
-    }
-
-    function testGuardRejectsOutstandingPriorityRequestsUntilQueueIsDrained() public {
-        ZkSysRootPrioritySourceV1 direct = new ZkSysRootPrioritySourceV1(mailbox, hub, address(0), 0, POLICY, 100);
-        assertEq(direct.trackingStart(), 4);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
-        new ZkSysPriorityGuardV1(
-            address(this), mailbox, IZkSysPriorityCheckpointReceiverV1(address(direct)), POLICY, 50, 200, 2
-        );
-
-        mailbox.setProgress(7, 7, 4);
-        guard = new ZkSysPriorityGuardV1(
-            address(this), mailbox, IZkSysPriorityCheckpointReceiverV1(address(direct)), POLICY, 50, 200, 2
-        );
-        assertEq(guard.priorityCursor(), 4);
-        assertEq(guard.lastVerifiedBatch(), 7);
-        guard.open(WORK, 8);
-        guard.consume(WORK, 9, _counts(0, 0), _hashes(0, 0, 0));
-        assertEq(guard.priorityCursor(), 4);
-        assertEq(guard.lastVerifiedBatch(), 9);
-    }
-
-    function testGuardRejectsPriorityCursorPastQueueAndUnexecutedVerifiedBatches() public {
-        mailbox.setProgress(0, 0, 5);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
-        new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
-        mailbox.setProgress(7, 7, 4);
-        mailbox.setCommitted(8);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
-        new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
-        mailbox.setProgress(7, 6, 4);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
-        new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
-    }
-
-    function testOverdueQueueRejectsAllEmptyPackage() public {
-        guard.open(WORK, 1);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        guard.consume(WORK, 2, _counts(0, 0), _hashes(0, 0, 0));
-    }
-
-    function testProofCursorAdvancesBeforeExecutionWithoutCountingPrefixTwice() public {
-        guard.open(WORK, 1);
-        _witness(0, 1, 1);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-        assertEq(guard.priorityCursor(), 2);
-        mailbox.setProgress(2, 0, 0);
-        vm.warp(1_100);
-        vm.roll(101);
-        _relay();
-        guard.open(WORK, 3);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        _witness(0, 1, 1);
-        _witness(2, 2, 0);
-        guard.consume(WORK, 4, _counts(2, 0), _hashes(2, 2, 0));
-        assertEq(guard.priorityCursor(), 4);
-    }
-
-    function testHashWitnessCannotSubstituteCountsOrBatchPartition() public {
-        guard.open(WORK, 1);
-        _witness(0, 1, 1);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        guard.consume(WORK, 2, _counts(2, 0), _hashes(0, 2, 0));
-        bytes32[] memory hashes = _hashes(0, 1, 1);
-        hashes[1] = bytes32(uint256(1));
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        guard.consume(WORK, 2, _counts(1, 1), hashes);
-    }
-
-    function testMissingWitnessAndUnboundedCountsRejected() public {
-        guard.open(WORK, 1);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        guard.consume(WORK, 2, _counts(3, 0), _hashes(0, 0, 0));
-    }
-
-    function testSkippedOrReorderedPriorityLeafCannotProvePrefix() public {
-        guard.open(WORK, 1);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        _witness(2, 1, 1);
-        bytes32 leaf = leaves[0];
-        leaves[0] = leaves[1];
-        leaves[1] = leaf;
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        _witness(0, 1, 1);
-    }
-
-    function testShorterSubtreeProofCannotReplaceLeafRange() public {
-        guard.open(WORK, 1);
-        bytes32[] memory items = new bytes32[](2);
-        items[0] = _hash(leaves[0], leaves[1]);
-        items[1] = _hash(leaves[2], leaves[3]);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        guard.publishPrefixWitness(WORK, _counts(1, 1), items, new bytes32[](1), new bytes32[](1));
-    }
-
-    function testLaterRootArrivalsCannotInvalidateInFlightPrefix() public {
-        guard.open(WORK, 1);
-        _witness(0, 1, 1);
-        vm.warp(1_110);
-        vm.roll(101);
-        _relay();
-        assertEq(source.capture().overdueEnd, 4);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-        assertEq(guard.priorityCursor(), 2);
-    }
-
-    function testExpiredWorkNeedsFreshCheckpointAndNewWitness() public {
-        guard.open(WORK, 1);
-        _witness(0, 1, 1);
-        vm.warp(1_201);
-        vm.expectRevert(ZkSysPriorityGuardV1.ExpiredWork.selector);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidCheckpoint.selector);
-        guard.refreshExpired(WORK);
-        vm.roll(101);
-        _relay();
-        guard.refreshExpired(WORK);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidPrefix.selector);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-        _witness(0, 1, 1);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-    }
-
-    function testRefreshKeepsOriginalPrefixAndNextWorkSeesNewOverdueRequests() public {
-        guard.open(WORK, 1);
-        _witness(0, 1, 1);
-        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
-        mailbox.setProgress(2, 0, 0);
-
-        guard.open(WORK, 3);
-        vm.warp(1_201);
-        vm.roll(101);
-        _relay();
-        guard.refreshExpired(WORK);
-        guard.consume(WORK, 4, _counts(0, 0), _hashes(0, 0, 0));
-        mailbox.setProgress(4, 0, 0);
-
-        guard.open(WORK, 5);
-        _witness(2, 1, 1);
-        guard.consume(WORK, 6, _counts(1, 1), _hashes(2, 1, 1));
-        assertEq(guard.priorityCursor(), 4);
-    }
-
-    function testFreshWorkCannotRefreshOrBeOverwritten() public {
-        guard.open(WORK, 1);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidWork.selector);
-        guard.refreshExpired(WORK);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidWork.selector);
-        guard.open(keccak256("reroll"), 1);
-    }
-
-    function testStaleOrFutureRootClockFailsClosed() public {
-        vm.warp(1_051);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidCheckpoint.selector);
-        guard.open(WORK, 1);
-        vm.warp(999);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidCheckpoint.selector);
-        guard.open(WORK, 1);
     }
 
     function testCallerCannotForgeCheckpointAndOldDeliveryCannotRollback() public {
@@ -393,60 +243,6 @@ contract ZkSysPriorityGuardTest is Test {
         );
     }
 
-    function testFuzzOrderedRangeProofMatchesNativeTree(uint8 startSeed, uint8 limitSeed) public {
-        uint256 from = bound(startSeed, 0, 3);
-        uint256 limit = bound(limitSeed, 1, 2);
-        uint256 count = 4 - from < limit ? 4 - from : limit;
-        mailbox.setProgress(0, 0, from);
-        bytes32 root = mailbox.getPriorityTreeRoot();
-        mailbox.setTree(from, 2, root);
-        guard = new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, uint64(limit));
-        mailbox.setTree(4, 2, root);
-        vm.warp(1_100);
-        vm.roll(101);
-        _relay();
-        guard.open(WORK, 1);
-        bytes32[] memory items = new bytes32[](count);
-        for (uint256 i; i < count; ++i) {
-            items[i] = leaves[from + i];
-        }
-        bytes32[] memory left = new bytes32[](2);
-        bytes32[] memory right = new bytes32[](2);
-        uint256 end = from + count - 1;
-        left[0] = leaves[from ^ 1];
-        right[0] = leaves[end ^ 1];
-        left[1] = from < 2 ? _hash(leaves[2], leaves[3]) : _hash(leaves[0], leaves[1]);
-        right[1] = end < 2 ? _hash(leaves[2], leaves[3]) : _hash(leaves[0], leaves[1]);
-        guard.publishPrefixWitness(WORK, _counts(count, 0), items, left, right);
-        guard.consume(WORK, 2, _counts(count, 0), _hashes(from, count, 0));
-        assertEq(guard.priorityCursor(), from + count);
-    }
-
-    function testNativeOutOfBandProofOrExecutionFailsClosed() public {
-        mailbox.setProgress(2, 0, 0);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidWork.selector);
-        guard.open(WORK, 1);
-        mailbox.setProgress(0, 0, 1);
-        vm.expectRevert(ZkSysPriorityGuardV1.InvalidWork.selector);
-        guard.open(WORK, 1);
-    }
-
-    function testNoPendingPriorityStillAllowsCanonicalEmptyProgress() public {
-        mailbox.setTimestamp(0, 990);
-        mailbox.setTimestamp(1, 990);
-        mailbox.setTimestamp(2, 990);
-        bytes32 root = mailbox.getPriorityTreeRoot();
-        mailbox.setTree(0, 0, keccak256(""));
-        receiver = new ZkSysPriorityCheckpointReceiverV1(address(source), 57, POLICY);
-        guard = new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
-        mailbox.setTree(4, 2, root);
-        vm.roll(101);
-        _relay();
-        guard.open(WORK, 1);
-        guard.consume(WORK, 2, _counts(0, 0), _hashes(0, 0, 0));
-        assertEq(guard.priorityCursor(), 0);
-    }
-
     function testRootSourceRejectsMissingTimestampAndIncorrectHeight() public {
         mailbox.setTimestamp(2, 0);
         vm.expectRevert(ZkSysRootPrioritySourceV1.InvalidQueue.selector);
@@ -456,13 +252,105 @@ contract ZkSysPriorityGuardTest is Test {
         source.capture();
     }
 
-    function testOnlyGateCanFreezeConsumeOrRefresh() public {
-        vm.prank(address(123));
-        vm.expectRevert(ZkSysPriorityGuardV1.Unauthorized.selector);
-        guard.open(WORK, 1);
-        guard.open(WORK, 1);
-        vm.prank(address(123));
-        vm.expectRevert(ZkSysPriorityGuardV1.Unauthorized.selector);
-        guard.consume(WORK, 2, _counts(0, 0), _hashes(0, 0, 0));
+    function _newGuard() private returns (ZkSysPriorityGuardV1) {
+        return new ZkSysPriorityGuardV1(
+            address(this), mailbox, IZkSysPriorityCommitAdmissionV1(address(admission)), POLICY, 200, 2
+        );
+    }
+
+    function testHistoricalRangesAdvanceAfterLaterPriorityRequestsBecomeDue() public {
+        mailbox.setAdmittedBatch(1, 0, 0);
+        mailbox.setAdmittedBatch(2, 0, 0);
+        mailbox.setAdmittedBatch(3, 0, 1);
+        mailbox.setAdmittedBatch(4, 1, 2);
+        vm.warp(1_400);
+        vm.roll(101);
+        _relay();
+        assertEq(receiver.latestCheckpoint().overdueEnd, 4);
+
+        (bytes32 oldDigest,,) = admission.admittedRange(1, 2);
+        guard.open(WORK, 1, 2);
+        vm.warp(1_601);
+        guard.refreshExpired(WORK);
+        (, bytes32 refreshed, uint64 from, uint64 to, uint64 opened, uint64 priorityFrom, uint64 priorityEnd) =
+            guard.work();
+        assertEq(refreshed, oldDigest);
+        assertEq(from, 1);
+        assertEq(to, 2);
+        assertEq(opened, 1_601);
+        assertEq(priorityFrom, 0);
+        assertEq(priorityEnd, 0);
+        guard.consume(WORK, 2, oldDigest, 0);
+
+        mailbox.setProgress(2, 0, 0);
+        mailbox.setCommitted(4);
+        (bytes32 nextDigest,,) = admission.admittedRange(3, 4);
+        guard.open(WORK, 3, 4);
+        guard.consume(WORK, 4, nextDigest, 2);
+        assertEq(guard.priorityCursor(), 2);
+        assertEq(guard.lastVerifiedBatch(), 4);
+    }
+
+    function testRepairKeepsStartAndClockAndUsesReplacementRange() public {
+        mailbox.setAdmittedBatch(1, 0, 0);
+        mailbox.setAdmittedBatch(2, 0, 1);
+        mailbox.setAdmittedBatch(3, 1, 2);
+        guard.open(WORK, 1, 2);
+        vm.warp(1_050);
+        guard.repair(WORK, 3);
+        (bytes32 expected,,) = admission.admittedRange(1, 3);
+        (bytes32 id, bytes32 digest, uint64 from, uint64 to, uint64 opened, uint64 priorityFrom, uint64 priorityEnd) =
+            guard.work();
+        assertEq(id, WORK);
+        assertEq(digest, expected);
+        assertEq(from, 1);
+        assertEq(to, 3);
+        assertEq(opened, 1_000);
+        assertEq(priorityFrom, 0);
+        assertEq(priorityEnd, 2);
+        guard.consume(WORK, 3, expected, 2);
+    }
+
+    function testConstructorRequiresDrainedNativeFrontier() public {
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        _newGuard();
+        mailbox.setProgress(7, 6, 4);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        _newGuard();
+        mailbox.setProgress(7, 7, 4);
+        mailbox.setCommitted(8);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        _newGuard();
+        mailbox.setCommitted(7);
+        assertEq(_newGuard().priorityCursor(), 4);
+    }
+
+    function testAdmissionMustBeInstalledAndMatchTheSequencer() public {
+        assertTrue(guard.isAdmissionActive(address(this)));
+        assertFalse(guard.isAdmissionActive(address(123)));
+        mailbox.installAdmission(address(123));
+        assertFalse(guard.isAdmissionActive(address(this)));
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        guard.open(WORK, 1, 2);
+    }
+
+    function testRenewalRequiresExpiryAndTheSameCanonicalRange() public {
+        mailbox.setAdmittedBatch(1, 0, 1);
+        mailbox.setAdmittedBatch(2, 1, 2);
+        guard.open(WORK, 1, 2);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidWork.selector);
+        guard.refreshExpired(WORK);
+        vm.warp(1_201);
+        (bytes32 digest,,) = admission.admittedRange(1, 2);
+        vm.expectRevert(ZkSysPriorityGuardV1.ExpiredWork.selector);
+        guard.consume(WORK, 2, digest, 2);
+        guard.refreshExpired(WORK);
+        guard.consume(WORK, 2, digest, 2);
+    }
+
+    function testNativeOutOfBandProofFailsClosed() public {
+        mailbox.setProgress(1, 0, 0);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidWork.selector);
+        guard.open(WORK, 1, 2);
     }
 }

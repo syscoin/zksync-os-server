@@ -44,8 +44,8 @@ direct Gateway transactions. Preserve every native lease, pool and relay journal
    evidence, or parent changes, obtain and review a fresh call; preserve any
    already-signed transaction until its nonce is resolved.
 
-4. Publish the required priority checkpoint and prefix witness, and use
-   `keeper.py permit` for the exact request, evidence and native payload. Enqueue
+4. Use `keeper.py permit` for the exact admitted request, evidence and native payload.
+   Each native commitment must already have passed priority admission. Enqueue
    the SNARK in the pinned prover pool with that permit, preserving the original
    lease deadline. Follow the pool's `export`, `launch`, and `complete` sequence
    in the [prover pool guide](../prover-rental/pool-README.md). Import the result

@@ -2,17 +2,13 @@
 pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
-import {
-    GateVerifier,
-    GateSettlement,
-    GatePriorityCheckpoint,
-    GateMessenger,
-    GateDrawSource
-} from "./ZkSysProofGate.t.sol";
+import {GateVerifier, GateSettlement, GateMessenger, GateDrawSource} from "./ZkSysProofGate.t.sol";
 import {RootDrawHub} from "./ZkSysRootDraw.t.sol";
 import {ServiceClockMockV1, ServiceMembershipMockV1, ServiceMessageVerifierMockV1} from "./ZkSysProverServiceV1.t.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
 import {ZkSysProofGateV1} from "contracts/src/zksys/ZkSysProofGateV1.sol";
+import {IZkSysPriorityCommitAdmissionV1} from "contracts/src/zksys/IZkSysPriorityCommitAdmissionV1.sol";
+import {PriorityAdmissionMock} from "./ZkSysPriorityGuard.t.sol";
 import {ZkSysPriorityGuardV1, IZkSysPriorityMailboxV1} from "contracts/src/zksys/ZkSysPriorityGuardV1.sol";
 import {ZkSysProverServiceRegistryV1} from "contracts/src/zksys/ZkSysProverServiceRegistryV1.sol";
 import {ZkSysWrapperCoordinatorV1} from "contracts/src/zksys/ZkSysWrapperCoordinatorV1.sol";
@@ -170,14 +166,22 @@ contract ZkSysGatewayServiceV1Test is Test {
         gateway.settlement = new GatewayMerkleSettlement(gateway.verifier);
         gateway.settlement.setChainId(GATEWAY);
         hub.setChain(GATEWAY, address(gateway.settlement));
-        GatePriorityCheckpoint childCheckpoint = new GatePriorityCheckpoint(POLICY);
-        GatePriorityCheckpoint rootCheckpoint = new GatePriorityCheckpoint(POLICY);
-        rootCheckpoint.setChainId(GATEWAY);
+        PriorityAdmissionMock childAdmission =
+            new PriorityAdmissionMock(address(child.settlement), POLICY, vm.addr(SEQUENCER_KEY), 64);
+        PriorityAdmissionMock rootAdmission =
+            new PriorityAdmissionMock(address(gateway.settlement), POLICY, vm.addr(SEQUENCER_KEY), 64);
+        child.settlement.installAdmission(address(childAdmission));
+        gateway.settlement.installAdmission(address(rootAdmission));
 
         vm.chainId(GATEWAY);
         address predictedGate = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         ZkSysPriorityGuardV1 guard = new ZkSysPriorityGuardV1(
-            predictedGate, IZkSysPriorityMailboxV1(address(child.settlement)), childCheckpoint, POLICY, 100, 600, 64
+            predictedGate,
+            IZkSysPriorityMailboxV1(address(child.settlement)),
+            IZkSysPriorityCommitAdmissionV1(address(childAdmission)),
+            POLICY,
+            600,
+            64
         );
         child.gate = new ZkSysProofGateV1(
             child.settlement,
@@ -207,7 +211,12 @@ contract ZkSysGatewayServiceV1Test is Test {
             })
         );
         guard = new ZkSysPriorityGuardV1(
-            predictedGate, IZkSysPriorityMailboxV1(address(gateway.settlement)), rootCheckpoint, POLICY, 100, 600, 64
+            predictedGate,
+            IZkSysPriorityMailboxV1(address(gateway.settlement)),
+            IZkSysPriorityCommitAdmissionV1(address(rootAdmission)),
+            POLICY,
+            600,
+            64
         );
         gateway.gate = new ZkSysProofGateV1(
             gateway.settlement, gateway.settlement, vm.addr(SEQUENCER_KEY), POLICY, ROOT_VK, guard, sink
@@ -295,6 +304,7 @@ contract ZkSysGatewayServiceV1Test is Test {
         uint256[] memory proof = new uint256[](46);
         proof[0] = 0x802;
         proof[2] = 123;
+        lane.settlement.recordCommitments(batches);
         p.proofData = bytes.concat(hex"01", abi.encode(previous, batches, proof));
         p.duties = new DutySuccessV1[](positive ? 1 : 0);
         if (positive) {
@@ -1018,6 +1028,7 @@ contract ZkSysGatewayServiceV1Test is Test {
         uint256[] memory proof = new uint256[](46);
         proof[0] = 0x802;
         proof[2] = 123;
+        child.settlement.recordCommitments(batches);
         p.proofData = bytes.concat(hex"01", abi.encode(previous, batches, proof));
         p.accepted.period = 6;
         p.accepted.rosterRoot = rosterRoot;

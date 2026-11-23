@@ -237,41 +237,58 @@ which requires the native priority cursor to equal the total request count and
 the committed, verified and executed frontiers to agree. Timestamp coverage begins at the source's
 immutable deployment cursor.
 
-The mandatory `ZkSysPriorityGuardV1` freezes a fresh authenticated checkpoint when
-the sequencer opens each bootstrap or service package. Bootstrap submission now
-requires `openBootstrapPackage` with a zero proof hash before proving. The guard
-requires the next bounded overdue prefix, capped by its immutable package limit,
-and permits younger requests already covered by that checkpoint. A permissionless
-`publishPrefixWitness` call proves the contiguous priority-tree leaves and binds
-their exact per-batch counts and native rolling hashes. The gate compares those
-bindings with the existing native BatchOutput preimages, then calls native proof
-verification once. Failed native verification rolls back both guard and wrapper
-acceptance. The guard advances a separate verified priority cursor so delayed
-execution cannot credit the same prefix again.
+The lane's administrator installs `ZkSysPriorityCommitAdmissionV1` at a drained
+native frontier before handing the prover role to the gate. The native setter
+checks the policy's initial batch, stored batch hash and priority cursor
+against the same state transactionally. V1 startup and gate operations require
+the exact installed contract. Ordinary settlement can run before this handoff.
+Activate after final settlement-layer placement and after native migration and
+upgrade work is drained. A later topology migration needs a coordinated upgrade
+that carries or reinitializes the admission state.
 
-Later queue arrivals do not invalidate an in-flight proof. Work expires after the
-immutable proof window; `refreshPriorityCheckpoint` then requires a fresh root
-checkpoint and new prefix witness while retaining the original required prefix,
-wrapper clock and selection. Subsequent packages use the newer overdue frontier.
-An empty package remains legal only when the frozen overdue requirement is empty.
-Snapshot freshness, inclusion delay, proof duration, and the per-package cap are
-explicit deployment policy. A backlog drains in ordered bounded chunks as packages
-are proved; this is a progress condition, not a wall-clock inclusion guarantee.
-The rule covers root priority requests, not ordinary off-chain mempool submissions.
+Before forming a batch, the designated sequencer reserves the next native batch
+against a fresh authenticated root checkpoint and the settlement Mailbox's local
+tree. If the oldest outstanding request is already overdue, the batch must
+include it. It may include a longer contiguous prefix up to half the package
+cap, leaving capacity for the second batch required by native aggregation.
+Only the next batch can use a reservation. Requests that become overdue after
+the reservation affect subsequent batches. The per-batch rule guarantees
+ordered progress under a backlog, which can take multiple proof groups to clear.
 
-The Gateway gate's guard reads a second `ZkSysRootPrioritySourceV1` directly on
-NEVM, scoped to Gateway's own canonical Mailbox. The child guard continues to use
-the authenticated checkpoint receiver on Gateway. Each lane has its own verified
-cursor, native tree witness and bounded overdue prefix; the shared reward quota
-does not merge priority queues or duplicate native verification.
+V1 currently forms one L2 block per admitted native batch and waits for its
+native commitment to be confirmed before forming the next. This makes the
+reservation boundary reproducible from the native and local replay frontiers.
+The node retains the reservation identity next to the service publication
+journal. Preserve that journal with the sequencer WAL when recovering or moving
+an in-flight batch. V1 adds reservation and confirmation latency to production,
+so qualify the sustained throughput of both lanes before activation.
 
-In the Gateway topology, root priority requests may be overdue before Gateway has
-forwarded them to the child Mailbox. The guard sees the root checkpoint and stops
-child proof progress until a valid prefix can be included. It cannot compel the
-parent Gateway sequencer to forward requests or checkpoints. Missing keepers,
-withheld checkpoints, unavailable root proofs, and unavailable Gateway delivery
-therefore fail closed. Production qualification must exercise these message paths
-and the oldest-request backlog under real root/Gateway delays.
+For a nonempty priority prefix, publish the ordered hashes and Merkle paths
+against the reserved root tree. If the settlement Mailbox tree differs, also
+authenticate the same ordered hashes against its reserved local root. The
+native commit hook checks the exact stored batch hash, priority count and rolling
+hash, then records the canonical batch and resulting priority cursor. Reverting
+an unverified native tail rewinds this cursor and invalidates any pending
+reservation.
+
+The proof guard opens against the exact already-admitted native range. Bootstrap
+still opens `openBootstrapPackage` with a zero proof hash before proving.
+`refreshPriorityCheckpoint` renews the guard's proof-work window using the same
+admitted range and preserves the wrapper's clock and selection. Repair can
+replace the range end with one backed by current native admissions. The proof
+gate compares the exact range with the existing BatchOutput preimages and
+calls native verification once. Native verification failure rolls back guard
+and wrapper acceptance. The guard advances a verified priority cursor separately
+from the native execution cursor.
+
+The Gateway gate's admission policy reads its root source directly on NEVM. The
+zkSYS gate's admission policy reads the authenticated checkpoint receiver on
+Gateway. Each lane has its own admitted and verified cursors. An overdue root
+request may take time to reach the Gateway-settled child Mailbox. If the oldest
+due request is unavailable locally, new reservations wait for delivery. Work
+already admitted can still be proved using its retained native records.
+Production qualification must cover both relays, backlog, restart recovery
+and native settlement finality.
 
 The gate requires itself to be the only timelock `PROVER_ROLE` member. That is
 **not** a proof that the diamond has no other validators: its validator mapping

@@ -93,17 +93,13 @@ block hash, and the block/chain are rechecked after dependent calls. The
 deployment code hashes, chain ID, child-chain address, sequencer, policy, VK,
 signing domain, frozen package commitment, roster root and current candidate
 must match. The full gate call is simulated with the configured gas limit.
-The status also shows the priority guard's frozen work, checkpoint hash, cursor,
-required/capped prefix end and expiry. Missing freeze, expired work, mismatched
-prefix counts or a missing prefix witness prevent signing.
+The status also shows the priority guard's work ID, admitted range digest,
+priority cursor interval and expiry. The relay compares frozen work against the
+installed admission policy and exact native batch range before signing.
 
-For service mode, the sequencer must already have opened the exact normalized
-package. For bootstrap, it must have frozen bootstrap work through
-`openBootstrapPackage` before submission. The mandatory priority guard must
-have the required current checkpoint and prefix witness. Those operations are
-separate authenticated workflows; missing or expired guard state makes the
-exact gate simulation refuse signing. Repairs and checkpoint refreshes must
-preserve the coordinator's schedule as the contracts require.
+For service mode, the sequencer must open the exact normalized package. For
+bootstrap, use `openBootstrapPackage` for the corresponding work. A timer renewal
+preserves the admitted range and wrapper schedule.
 
 Stage the immutable artifact under its package hash:
 

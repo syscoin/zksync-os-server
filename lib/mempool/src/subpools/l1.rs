@@ -45,6 +45,26 @@ impl L1Subpool {
         L1TransactionsStream {
             receiver: ReceiverStream::new(receiver),
             pending_txs: inner.pending_txs.clone(),
+            exclusive_end: None,
+        }
+    }
+
+    pub(crate) async fn wait_for_priority_id(&self, expected: L1TxSerialId) -> anyhow::Result<()> {
+        loop {
+            let notified = self.notify.notified();
+            if let Some(tx) = self.inner.read().await.pending_txs.back() {
+                anyhow::ensure!(
+                    tx.priority_id() == expected,
+                    "oldest pending priority transaction differs from its reservation"
+                );
+                return Ok(());
+            }
+            if tokio::time::timeout(EMPTY_POOL_WARN_INTERVAL, notified)
+                .await
+                .is_err()
+            {
+                tracing::warn!(expected, "waiting for the reserved priority request");
+            }
         }
     }
 
@@ -106,20 +126,36 @@ impl L1Subpool {
 pub struct L1TransactionsStream {
     receiver: ReceiverStream<Arc<L1PriorityEnvelope>>,
     pending_txs: VecDeque<Arc<L1PriorityEnvelope>>,
+    exclusive_end: Option<L1TxSerialId>,
+}
+
+impl L1TransactionsStream {
+    pub(crate) fn with_exclusive_end(mut self, end: Option<L1TxSerialId>) -> Self {
+        self.exclusive_end = end;
+        self
+    }
 }
 
 impl Stream for L1TransactionsStream {
     type Item = ZkTransaction;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if let Some(tx) = self.pending_txs.pop_back() {
-            return Poll::Ready(Some(tx.as_ref().clone().into()));
+        let tx = match self.pending_txs.pop_back() {
+            Some(tx) => tx,
+            None => match self.receiver.poll_next_unpin(cx) {
+                Poll::Ready(Some(tx)) => tx,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            },
+        };
+        if self
+            .exclusive_end
+            .is_some_and(|end| tx.priority_id() >= end)
+        {
+            self.pending_txs.clear();
+            self.receiver.close();
+            return Poll::Ready(None);
         }
-
-        match self.receiver.poll_next_unpin(cx) {
-            Poll::Ready(Some(tx)) => Poll::Ready(Some(tx.as_ref().clone().into())),
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(_) => Poll::Ready(None),
-        }
+        Poll::Ready(Some(tx.as_ref().clone().into()))
     }
 }

@@ -79,7 +79,7 @@ class CoordinatorTests(unittest.TestCase):
         self.rpc = ProofRpc(self.f, keeper, item)
         self.rpc.opened = False
         self.native = td.Network()
-        for name in ("rosters", "inbox", "witnesses", "publications"):
+        for name in ("rosters", "inbox", "publications"):
             io.directory(self.base / name, create=True)
         io.immutable_json(self.base / "rosters" / "5.json", self.roster)
         snark_release = release("SNARK")
@@ -93,7 +93,7 @@ class CoordinatorTests(unittest.TestCase):
             "native_auth_file": str(self.base / "auth"), "release_file": str(self.base / "release.json"),
             "native_lease_seconds": 600, "dispatcher_dir": str(self.root.resolve()), "roster_dir": str(self.base / "rosters"),
             "operator_inboxes": {self.f["proposal"]["candidate"]["operator"]: str(self.base / "inbox")},
-            "priority_witness_dir": str(self.base / "witnesses"), "publication_dir": str(self.base / "publications"),
+            "publication_dir": str(self.base / "publications"),
             "sequencer_wallet_file": str(self.base / "sequencer-wallet"), "relay_wallet_file": str(self.base / "relay-wallet"),
             "transaction_policy": {**policy, "account": self.f["settings"]["sequencer"]}, "relay_policy": policy,
             "sequencer_beneficiary": self.f["proposal"]["accepted_package"]["sequencerBeneficiary"], "poll_interval_seconds": 1}
@@ -877,7 +877,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.base = Path(temporary.name).resolve()
         self.f = copy.deepcopy(self.base_fixture)
         keeper, policy = copy.deepcopy(self.base_keeper), copy.deepcopy(self.base_policy)
-        for name in ("dispatcher", "rosters", "inbox", "witnesses", "publications"):
+        for name in ("dispatcher", "rosters", "inbox", "publications"):
             io.directory(self.base / name, create=True)
         snark_release = release("SNARK")
         snark_release["vk_hash"] = self.f["settings"]["vk_hash"]
@@ -886,7 +886,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
             "native_auth_file": str(self.base / "auth"), "release_file": str(self.base / "release.json"),
             "native_lease_seconds": 600, "dispatcher_dir": str(self.base / "dispatcher"), "roster_dir": str(self.base / "rosters"),
             "operator_inboxes": {self.f["proposal"]["candidate"]["operator"]: str(self.base / "inbox")},
-            "priority_witness_dir": str(self.base / "witnesses"), "publication_dir": str(self.base / "publications"),
+            "publication_dir": str(self.base / "publications"),
             "sequencer_wallet_file": str(self.base / "sequencer-wallet"), "relay_wallet_file": str(self.base / "relay-wallet"),
             "transaction_policy": {**policy, "account": self.f["settings"]["sequencer"]}, "relay_policy": policy,
             "sequencer_beneficiary": self.f["proposal"]["accepted_package"]["sequencerBeneficiary"], "poll_interval_seconds": 1}
@@ -940,7 +940,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
     def test_successive_refreshes_and_later_package_survive_coordinator_restart(self):
         identifiers = []
         for work, checkpoint in ((h(150), h(151)), (h(150), h(152)), (h(153), h(154))):
-            self.rpc.work_id, self.rpc.checkpoint_hash = work, checkpoint
+            self.rpc.work_id, self.rpc.range_digest = work, checkpoint
             self.assertEqual(self.maintain()["status"], "broadcast")
             pending = copy.deepcopy(self.pending())
             identifiers.append(pending["operation_id"])
@@ -951,27 +951,21 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.assertEqual([s.uint(tx["nonce"]) for tx in self.signatures()], [0, 1, 2])
         self.assertEqual(len(self.rpc.sent), 3)
 
-    def test_identical_prefix_witness_is_published_again_after_refresh(self):
-        witness = {"batch_item_preimages": [["0x0102"], ["0x0304"]], "left_path": [], "right_path": []}
-        for entry, batch in zip(witness["batch_item_preimages"], self.f["evidence"]["batches"]):
-            digest = s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(s.keccak(s.raw_hex(entry[0]))))
-            batch["output"]["priorityOperationsHash"] = batch["stored"]["priorityOperationsHash"] = digest
-            batch["stored"]["commitment"] = s.output_hash(batch["output"])
-        io.immutable_json(self.base / "witnesses" / (self.rpc.work_id[2:] + ".json"), witness)
-        producer = lambda: k.prefix_call(self.config["keeper"], self.rpc, self.f["evidence"], witness, self.rpc.now)
-        self.assertEqual(self.maintain(producer)["status"], "broadcast")
+    def test_successive_timer_renewals_keep_the_admitted_range(self):
+        self.assertEqual(self.maintain()["status"], "broadcast")
         first = copy.deepcopy(self.pending())
         self.confirm()
+        self.rpc.opened_at += 500
+        self.reload()
         self.assertEqual(self.maintain()["status"], "broadcast")
-        self.rpc.checkpoint_hash = h(152)
-        self.confirm()
-        self.assertEqual(self.maintain(producer)["status"], "broadcast")
         second = copy.deepcopy(self.pending())
         self.assertEqual(first["call"]["transaction"], second["call"]["transaction"])
+        self.assertEqual(first["invocation"]["scope"]["range_digest"], second["invocation"]["scope"]["range_digest"])
         self.assertNotEqual(first["operation_id"], second["operation_id"])
         self.confirm()
-        self.assertEqual(len(self.signatures()), 3)
-        self.assertEqual(len(self.rpc.sent), 3)
+        self.assertEqual(len(self.signatures()), 2)
+        self.assertEqual(len(self.rpc.sent), 2)
+
 
     def test_descriptor_is_durable_before_stage_and_reconstructs_after_either_crash(self):
         original_stage = c.transactions.Transactions.stage
@@ -1006,7 +1000,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         with patch.object(c.transactions.Transactions, "stage", side_effect=KeyboardInterrupt()), self.assertRaises(KeyboardInterrupt):
             self.controller.maintenance(self.identifier, self.refresh(), self.refresh, True)
         old = copy.deepcopy(self.pending())
-        self.rpc.checkpoint_hash = h(152)
+        self.rpc.range_digest = h(152)
         self.reload()
         self.assertIsNone(self.recover())
         self.assertEqual(self.signatures(), [])
@@ -1022,7 +1016,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
         self.rpc.send_error = s.Error("rpc_transport_failure")
         self.assertEqual(self.maintain()["status"], "send_uncertain")
         pending = copy.deepcopy(self.pending())
-        self.rpc.send_error, self.rpc.checkpoint_hash = None, h(152)
+        self.rpc.send_error, self.rpc.range_digest = None, h(152)
         self.rpc.advance()
         self.reload()
         self.assertEqual(self.recover()["status"], "authorization_stale_reserved")
@@ -1044,7 +1038,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
                 self.assertEqual(manager.step(legacy, True, lambda *args: True)["status"], "broadcast")
                 self.controller.state["operations"][self.identifier]["maintenance"] = legacy if pointed else None
                 self.controller.save()
-                self.rpc.checkpoint_hash = h(152)
+                self.rpc.range_digest = h(152)
                 self.rpc.advance()
                 self.reload()
                 result = self.recover() if pointed else self.maintain()

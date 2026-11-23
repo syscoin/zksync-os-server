@@ -32,6 +32,8 @@ def component_config(raw):
         'root_priority_source': {'mailbox', 'mailbox_code_hash', 'bridgehub', 'bridgehub_code_hash',
                                  'child_chain_id', 'gateway_receiver', 'gateway_chain_id', 'inclusion_delay'},
         'gateway_checkpoint_receiver': {'root_source', 'child_chain_id'},
+        'priority_admission': {'chain', 'chain_code_hash', 'checkpoint', 'checkpoint_code_hash',
+                               'sequencer', 'child_chain_id', 'max_snapshot_age', 'max_priority_per_package'},
         'root_message_sink': {'publisher', 'gateway_gate', 'bridgehub', 'bridgehub_code_hash', 'gateway_chain_id',
                               'gateway_chain_address', 'gateway_chain_code_hash', 'registry_chain_id',
                               'registry_receiver'},
@@ -55,10 +57,11 @@ def component_config(raw):
     addresses = ('sender', 'mailbox', 'bridgehub', 'gateway_receiver', 'root_source', 'publisher', 'gateway_gate',
                  'gateway_chain_address', 'registry_receiver', 'child_registry', 'message_sender',
                  'gateway_coordinator', 'coordinator', 'gate', 'roster_source', 'sequencer',
-                 'child_chain_address')
+                 'child_chain_address', 'chain', 'checkpoint')
     hashes = ('genesis_hash', 'factory_salt', 'create2_code_hash', 'policy_hash', 'mailbox_code_hash',
               'bridgehub_code_hash', 'gateway_chain_code_hash', 'gate_code_hash', 'root_source_code_hash',
-              'roster_source_code_hash', 'child_chain_code_hash', 'production_vk_hash', 'initial_parent')
+              'roster_source_code_hash', 'child_chain_code_hash', 'production_vk_hash', 'initial_parent',
+              'chain_code_hash', 'checkpoint_code_hash')
     for key in addresses:
         if key not in value:
             continue
@@ -89,6 +92,12 @@ def component_config(raw):
                     'invalid Gateway chain')
     elif value['kind'] == 'gateway_checkpoint_receiver':
         require(value['child_chain_id'] != value['chain_id'], 'invalid child chain')
+    elif value['kind'] == 'priority_admission':
+        require(value['child_chain_id'] != value['chain_id'], 'invalid child chain')
+        require(type(value['max_snapshot_age']) is int and 0 < value['max_snapshot_age'] < 2**64,
+                'invalid checkpoint age')
+        require(type(value['max_priority_per_package']) is int and 2 <= value['max_priority_per_package'] <= 1024,
+                'invalid priority package limit')
     elif value['kind'] == 'root_message_sink':
         require(value['gateway_chain_id'] > 0 and len({value['chain_id'], value['gateway_chain_id'],
                                                        value['registry_chain_id']}) == 3, 'invalid lane chain ids')
@@ -139,6 +148,10 @@ def build(cfg):
     elif kind == 'gateway_checkpoint_receiver':
         init = component_bytecode('ZkSysPriorityGuardV1', 'ZkSysPriorityCheckpointReceiverV1') + common.encode(
             'constructor(address,uint256,bytes32)', cfg['root_source'], cfg['child_chain_id'], cfg['policy_hash'])
+    elif kind == 'priority_admission':
+        init = component_bytecode('ZkSysPriorityCommitAdmissionV1', 'ZkSysPriorityCommitAdmissionV1') + common.encode(
+            'constructor(address,address,address,bytes32,uint64,uint64)', cfg['chain'], cfg['checkpoint'],
+            cfg['sequencer'], cfg['policy_hash'], cfg['max_snapshot_age'], cfg['max_priority_per_package'])
     elif kind == 'root_message_sink':
         args = '(' + ','.join(str(cfg[key]) for key in ('publisher', 'gateway_gate', 'bridgehub', 'gateway_chain_id',
                     'gateway_chain_address', 'registry_chain_id', 'registry_receiver', 'policy_hash')) + ')'
@@ -178,7 +191,8 @@ def verify_inputs(rpc, cfg):
     for name, hash_name in (('mailbox', 'mailbox_code_hash'), ('bridgehub', 'bridgehub_code_hash'),
                             ('gateway_chain_address', 'gateway_chain_code_hash'), ('gate', 'gate_code_hash'),
                             ('root_source', 'root_source_code_hash'), ('roster_source', 'roster_source_code_hash'),
-                            ('child_chain_address', 'child_chain_code_hash')):
+                            ('child_chain_address', 'child_chain_code_hash'),
+                            ('chain', 'chain_code_hash'), ('checkpoint', 'checkpoint_code_hash')):
         if hash_name in cfg:
             pins.append((cfg[name], cfg[hash_name]))
     for address, expected in pins:
@@ -187,6 +201,13 @@ def verify_inputs(rpc, cfg):
     if cfg['kind'] == 'root_priority_source':
         actual = int(common.call_word(rpc, cfg['mailbox'], 'getChainId()'), 16)
         require(actual == cfg['child_chain_id'], 'mailbox child chain mismatch')
+    elif cfg['kind'] == 'priority_admission':
+        require(int(common.call_word(rpc, cfg['chain'], 'getChainId()'), 16) == cfg['child_chain_id'],
+                'native chain mismatch')
+        require(int(common.call_word(rpc, cfg['checkpoint'], 'childChainId()'), 16) == cfg['child_chain_id'],
+                'checkpoint child chain mismatch')
+        require(common.call_word(rpc, cfg['checkpoint'], 'policyHash()') == cfg['policy_hash'],
+                'checkpoint policy mismatch')
     elif cfg['kind'] == 'root_message_sink':
         actual = int(common.call_word(rpc, cfg['gateway_chain_address'], 'getChainId()'), 16)
         require(actual == cfg['gateway_chain_id'], 'gateway chain mismatch')
@@ -200,6 +221,7 @@ def verify_inputs(rpc, cfg):
         require(actual == expected, 'roster or draw mailbox chain mismatch')
     elif cfg['kind'] == 'coordinator':
         gate = cfg['gate']
+        common.verify_active_admission(rpc, gate, cfg['sequencer'])
         for field, selector in [('child_chain_address', 'chain()'), ('sequencer', 'sequencer()')]:
             common.assert_address(rpc, gate, selector, cfg[field])
         for field, selector in [('child_chain_id', 'childChainId()')]:
@@ -219,9 +241,11 @@ def verify_inputs(rpc, cfg):
 
 
 def verify_source_drained(rpc, cfg):
-    if cfg['kind'] != 'root_priority_source':
-        return
-    common.verify_queue_drained(rpc, {'chain': cfg['mailbox']})
+    if cfg['kind'] == 'root_priority_source':
+        common.verify_queue_drained(rpc, {'chain': cfg['mailbox']})
+    elif cfg['kind'] == 'priority_admission':
+        common.verify_queue_drained(rpc, cfg)
+        common.assert_address(rpc, cfg['chain'], 'getSyscoinPriorityCommitPolicy()', ZERO)
 
 
 def verify_coordinator_parent(rpc, cfg, plan):
@@ -261,6 +285,11 @@ def attest_component(rpc, cfg, plan):
         common.assert_address(rpc, address, 'aliasedRootSource()', '0x' + format(alias, '040x'))
         require(int(common.call_word(rpc, address, 'childChainId()'), 16) == cfg['child_chain_id'],
                 'receiver child chain mismatch')
+    elif cfg['kind'] == 'priority_admission':
+        for field, selector in [('chain', 'chain()'), ('checkpoint', 'checkpointReceiver()'), ('sequencer', 'sequencer()')]:
+            common.assert_address(rpc, address, selector, cfg[field])
+        for field, selector in [('max_snapshot_age', 'maxSnapshotAge()'), ('max_priority_per_package', 'maxPriorityPerPackage()')]:
+            require(int(common.call_word(rpc, address, selector), 16) == cfg[field], selector + ' mismatch')
     elif cfg['kind'] == 'root_message_sink':
         for field, selector in [('publisher', 'publisher()'), ('gateway_gate', 'gatewayGate()'), ('bridgehub', 'bridgehub()'),
                                 ('gateway_chain_address', 'gatewayChainAddress()'),
@@ -304,6 +333,33 @@ def attest_component(rpc, cfg, plan):
     return True
 
 
+def prepare_admission_install(rpc, cfg, plan):
+    chain, admission = cfg['chain'], plan['component']
+    installed = common.call_address(rpc, chain, 'getSyscoinPriorityCommitPolicy()')
+    require(installed in (ZERO, admission), 'a different priority admission is already installed')
+    result = {'chain_id': cfg['chain_id'], 'admission': admission,
+              'admission_code_hash': common.digest(common.rpc_code(rpc, admission)),
+              'installed': installed == admission, 'broadcast': False, 'transaction': None}
+    if installed == ZERO:
+        common.verify_queue_drained(rpc, cfg)
+        batch = int(common.call_word(rpc, chain, 'getTotalBatchesCommitted()'), 16)
+        cursor = common.call_word(rpc, chain, 'getFirstUnprocessedPriorityTx()')
+        require(int(common.call_word(rpc, admission, 'initialBatch()'), 16) == batch
+                and common.call_word(rpc, admission, 'initialPriorityCursor()') == cursor,
+                'priority admission deployment frontier changed')
+        selector = relay.selector('storedBatchHash(uint256)') + service.word(batch)
+        stored_hash = rpc.call('eth_call', [{'to': chain, 'data': '0x' + selector.hex()}, 'latest'])
+        require(stored_hash == common.call_word(rpc, admission, 'initialStoredHash()'),
+                'priority admission initial batch hash changed')
+        admin = common.call_address(rpc, chain, 'getAdmin()')
+        require(admin != ZERO, 'native chain administrator missing')
+        data = relay.selector('setSyscoinPriorityCommitPolicy(address)') + bytes(12) + service.raw_hex(admission, 20)
+        tx = {'from': admin, 'to': chain, 'data': '0x' + data.hex(), 'value': '0x0'}
+        require(rpc.call('eth_call', [tx, 'latest']) == '0x', 'priority admission installation simulation failed')
+        result['transaction'] = tx
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, help='private JSON component configuration')
@@ -311,9 +367,13 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--plan', action='store_true', help='compute address without checking any chain')
     mode.add_argument('--send', action='store_true', help='sign and submit one stage')
+    mode.add_argument('--prepare-install', action='store_true',
+                      help='preview the native administrator call for the deployed priority admission policy')
     args = parser.parse_args()
     cfg = component_config(service.read_json(Path(args.config), private=True))
     plan = build(cfg)
+    require(not args.prepare_install or cfg['kind'] == 'priority_admission',
+            'installation preview is only applicable to priority admission')
     if args.plan:
         print(json.dumps({'status': 'unverified_plan', 'kind': cfg['kind'], 'factory': plan['factory'],
                           'component': plan['component'], 'commitment': plan['commitment']}, sort_keys=True))
@@ -342,6 +402,11 @@ def main():
         journal = {'version': 1, 'fingerprint': fingerprint, 'transactions': {}}
     save = lambda obj: relay.atomic_json(path, obj)
     factory_exists = common.attest_factory(rpc, cfg, plan)
+    if args.prepare_install:
+        require(factory_exists and attest_component(rpc, cfg, plan) and not journal['transactions'],
+                'priority admission deployment must finish before installation')
+        print(json.dumps(prepare_admission_install(rpc, cfg, plan), sort_keys=True))
+        return
     if not args.send:
         print(json.dumps({'factory': plan['factory'], 'component': plan['component'], 'kind': cfg['kind'],
                           'factory_exists': factory_exists,

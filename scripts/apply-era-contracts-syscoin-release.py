@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exact generated Era release materialization; not fixture or deployment approval."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -15,6 +16,20 @@ SERVER = Path(__file__).resolve().parent.parent
 BUNDLE = SERVER / "scripts/releases/era-v32"
 CHECKER_SHA = "fc4aaf67ef302f72f2111da5b0e05e003da36786df78e5fab676f0a49d1139a7"
 MANIFEST_SHA = "e0ca2e991a4c7777f25e3cb59991681ce5772b7573cb27bb0c9d965f71d9ebe0"
+SERVICE_V1_PATCH = "scripts/patches/era-contracts-syscoin-v1-priority-admission.patch"
+SERVICE_V1_PATCH_SHA = "328553d4f6a431442024cfed2f00ef1d1344365a15f51c9639978db7bc9bcf9b"
+SERVICE_V1_SOURCE_TREE = "461d140c68be1809efa5304e7d47e883ba071cb6"
+SERVICE_V1_GENERATED_TREE = "dae4e1c22eaf5f670c09221f21633f97bf12fc60"
+SERVICE_V1_PATHS = {
+    "l1-contracts/contracts/state-transition/chain-deps/ZKChainStorage.sol",
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol",
+    "l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol",
+    "l1-contracts/contracts/state-transition/chain-deps/facets/ZKChainBase.sol",
+    "l1-contracts/contracts/state-transition/chain-interfaces/IAdmin.sol",
+    "l1-contracts/contracts/state-transition/chain-interfaces/ISyscoinPriorityCommitPolicy.sol",
+    "l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol",
+    "l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol",
+}
 VK = "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990"
 PREIMAGES = {
     "AllContractsHashes.json": {"size": 160049,
@@ -262,7 +277,20 @@ def git(repo, env, *args):
                                    stderr=subprocess.PIPE)
 
 
-def inspect_worktree(repo, overlay):
+@contextmanager
+def private_index(repo, env, prefix):
+    objects = Path(git(repo, env, "rev-parse", "--git-path", "objects").decode().strip())
+    if not objects.is_absolute():
+        objects = repo / objects
+    with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
+        tmp = Path(tmp)
+        (tmp / "objects").mkdir()
+        yield dict(env, GIT_INDEX_FILE=str(tmp / "index"),
+                   GIT_OBJECT_DIRECTORY=str(tmp / "objects"),
+                   GIT_ALTERNATE_OBJECT_DIRECTORIES=str(objects.resolve()))
+
+
+def inspect_worktree(repo, overlay, service_v1=False):
     require(repo.is_absolute() and repo.resolve() == repo, "noncanonical Era repository path")
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_OPTIONAL_LOCKS"] = "0"
@@ -275,17 +303,11 @@ def inspect_worktree(repo, overlay):
     paths = set(git(repo, env, "apply", "--numstat", "--unidiff-zero",
                     str(SERVER / "scripts/patches/era-contracts-syscoin.patch")).decode().splitlines())
     paths = {row.split("\t")[2] for row in paths} | overlay.PATHS
+    if service_v1:
+        paths |= SERVICE_V1_PATHS
     untracked = set(git(repo, env, "ls-files", "--others", "--exclude-standard").decode().splitlines())
     require(untracked <= paths, "unrelated Era worktree changes")
-    objects = Path(git(repo, env, "rev-parse", "--git-path", "objects").decode().strip())
-    if not objects.is_absolute():
-        objects = repo / objects
-    with tempfile.TemporaryDirectory(prefix="era-generated-tree-") as tmp:
-        tmp = Path(tmp)
-        (tmp / "objects").mkdir()
-        private = dict(env, GIT_INDEX_FILE=str(tmp / "index"),
-                       GIT_OBJECT_DIRECTORY=str(tmp / "objects"),
-                       GIT_ALTERNATE_OBJECT_DIRECTORIES=str(objects.resolve()))
+    with private_index(repo, env, "era-generated-tree-") as private:
         git(repo, private, "read-tree", "HEAD")
         git(repo, private, "add", "-u", "--", ".")
         changed = set(git(repo, private, "diff", "--cached", "--name-only", "HEAD").decode().splitlines())
@@ -297,9 +319,28 @@ def inspect_worktree(repo, overlay):
                 git(repo, private, "add", "-f", "--", rel)
         tree = git(repo, private, "write-tree").decode().strip()
     base_tree = git(repo, env, "rev-parse", "HEAD^{tree}").decode().strip()
-    require(tree in {base_tree, overlay.SOURCE, overlay.CANDIDATE},
-            "partial, modified, or unreviewed Era postimage")
+    allowed_trees = {base_tree, overlay.SOURCE, overlay.CANDIDATE}
+    if service_v1:
+        allowed_trees |= {SERVICE_V1_SOURCE_TREE, SERVICE_V1_GENERATED_TREE}
+    require(tree in allowed_trees, "partial, modified, or unreviewed Era postimage")
     return tree, base_tree, env
+
+
+def check_service_v1_overlay(repo, env, overlay, source_patch, generated_patch, service_patch):
+    exact(service_patch, SERVICE_V1_PATCH_SHA)
+    require(not SERVICE_V1_PATHS & overlay.PATHS,
+            "prover service V1 priority overlay must preserve the generated verifier sources")
+    with private_index(repo, env, "era-priority-admission-") as private:
+        git(repo, private, "read-tree", "HEAD")
+        for path, expected in ((source_patch, overlay.SOURCE), (service_patch, SERVICE_V1_SOURCE_TREE),
+                               (generated_patch, SERVICE_V1_GENERATED_TREE)):
+            git(repo, private, "apply", "--cached", "--unidiff-zero", "--whitespace=error-all", str(path))
+            require(git(repo, private, "write-tree").decode().strip() == expected,
+                    "prover service V1 source candidate tree mismatch")
+        changes = git(repo, private, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                      overlay.SOURCE, SERVICE_V1_SOURCE_TREE)
+        require(set(changes.decode().splitlines()) == SERVICE_V1_PATHS,
+                "prover service V1 priority overlay path mismatch")
 
 
 def require_dependencies(repo, env):
@@ -315,21 +356,18 @@ def require_dependencies(repo, env):
 def apply_patches(repo, env, patches):
     # Even worktree-only git apply can refresh stat data in the real index.
     # Use a disposable index/object store for its internal bookkeeping too.
-    objects = Path(git(repo, env, "rev-parse", "--git-path", "objects").decode().strip())
-    if not objects.is_absolute():
-        objects = repo / objects
-    with tempfile.TemporaryDirectory(prefix="era-generated-apply-") as tmp:
-        tmp = Path(tmp)
-        (tmp / "objects").mkdir()
-        private = dict(env, GIT_INDEX_FILE=str(tmp / "index"),
-                       GIT_OBJECT_DIRECTORY=str(tmp / "objects"),
-                       GIT_ALTERNATE_OBJECT_DIRECTORIES=str(objects.resolve()))
+    with private_index(repo, env, "era-generated-apply-") as private:
         git(repo, private, "read-tree", "HEAD")
         for path in patches:
             git(repo, private, "apply", "--unidiff-zero", "--whitespace=error-all", str(path))
 
 
 def run(repo, assert_applied=False, check_bundle_only=False):
+    service_flag = (os.environ.get("ZKSYS_ENABLE_PROVER_SERVICE_V1") or "false").lower()
+    require(service_flag in {"true", "false"}, "ZKSYS_ENABLE_PROVER_SERVICE_V1 must be true or false")
+    service_v1 = service_flag == "true"
+    require(not (service_v1 and assert_applied),
+            "prover service V1 Era candidate needs qualified facet, selector, and bytecode inventories")
     # Source identity is required before mutation; deployment cannot depend on
     # a fixture that can only be captured after that deployment has completed.
     check_app_sources(SERVER)
@@ -338,33 +376,53 @@ def run(repo, assert_applied=False, check_bundle_only=False):
     source_applicator = SERVER / "scripts/apply-era-contracts-syscoin-patch.sh"
     patch = BUNDLE / "generated-verifier-overlay.patch"
     overlay.check_bundle(repo, source_patch, source_applicator, patch)
-    tree, base_tree, env = inspect_worktree(repo, overlay)
+    tree, base_tree, env = inspect_worktree(repo, overlay, service_v1)
+    service_patch = SERVER / SERVICE_V1_PATCH
+    if service_v1:
+        check_service_v1_overlay(repo, env, overlay, source_patch, patch, service_patch)
     if check_bundle_only:
-        return {"status": "bundle_and_worktree_checked", "tree": tree,
-                "target_mutated": False, "canonical_launch_authorized": False,
-                "canonical_fixture_authorized": False}
+        result = {"status": "bundle_and_worktree_checked", "tree": tree,
+                  "target_mutated": False, "canonical_launch_authorized": False,
+                  "canonical_fixture_authorized": False}
+        if service_v1:
+            result.update(candidate_tree=SERVICE_V1_GENERATED_TREE, artifact_inventory_qualified=False)
+        return result
     require_dependencies(repo, env)
     require(not assert_applied or tree == overlay.CANDIDATE,
             "assert-applied refuses source or upstream tree")
-    if tree != overlay.CANDIDATE:
+    target_tree = SERVICE_V1_GENERATED_TREE if service_v1 else overlay.CANDIDATE
+    initial_tree = tree
+    if tree not in {overlay.CANDIDATE, target_tree}:
         # Earlier private-index reconstruction checked both exact transformations.
         # Keep source application separate; no source-only exception is invoked.
         if tree == base_tree:
             apply_patches(repo, env, [source_patch])
-        require(inspect_worktree(repo, overlay)[0] == overlay.SOURCE, "source preimage tree mismatch")
+        native_priority_applied = service_v1 and tree == SERVICE_V1_SOURCE_TREE
+        source_tree = SERVICE_V1_SOURCE_TREE if native_priority_applied else overlay.SOURCE
+        require(inspect_worktree(repo, overlay, service_v1)[0] == source_tree, "source preimage tree mismatch")
         for rel, row in PREIMAGES.items():
             if row is None:
                 require(not os.path.lexists(repo / rel), "generated-only preimage must be absent")
             else:
                 file_identity(repo, dict(row, path=rel))
         apply_patches(repo, env, [patch])
-    require(inspect_worktree(repo, overlay)[0] == overlay.CANDIDATE, "release postimage mismatch")
+        tree = SERVICE_V1_GENERATED_TREE if native_priority_applied else overlay.CANDIDATE
+    if service_v1 and tree != target_tree:
+        require(inspect_worktree(repo, overlay, service_v1)[0] == overlay.CANDIDATE,
+                "generated verifier postimage mismatch")
+        apply_patches(repo, env, [service_patch])
+    require(inspect_worktree(repo, overlay, service_v1)[0] == target_tree, "release postimage mismatch")
     for rel, row in manifest["paths"].items():
         file_identity(repo, dict(row, path=rel))
     require_dependencies(repo, env)
     check_app_sources(SERVER)
+    if service_v1:
+        return {"status": "exact_prover_service_v1_source_candidate", "tree": target_tree,
+                "target_mutated": initial_tree != target_tree, "artifact_inventory_qualified": False,
+                "canonical_launch_authorized": False, "canonical_fixture_authorized": False,
+                "deployed": False, "fixture_restore_executed": False}
     return {"status": "exact_generated_release_postimage", "tree": overlay.CANDIDATE,
-            "canonical_fixture_authorized": False, "target_mutated": tree != overlay.CANDIDATE,
+            "canonical_fixture_authorized": False, "target_mutated": initial_tree != target_tree,
             "deployed": False, "fixture_restore_executed": False}
 
 

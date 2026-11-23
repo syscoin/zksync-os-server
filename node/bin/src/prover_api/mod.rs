@@ -5,6 +5,7 @@ pub mod fri_proving_pipeline_step;
 pub mod gapless_committer;
 pub mod gapless_l1_proof_sender;
 mod metrics;
+pub(crate) mod priority_admission;
 pub mod proof_storage;
 mod prover_job_map;
 pub mod prover_server;
