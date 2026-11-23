@@ -97,6 +97,8 @@ class FakeRpc:
         self.nonce = self.pending_nonce = 1
         if status:
             self.parent = self.item["package_hash"]
+            self.opened = False
+            self.native_proved = self.observed_native = self.item["sidecar"]["accepted_package"]["batchTo"]
 
     def call(self, method, params):
         self.calls.append((method, copy.deepcopy(params)))

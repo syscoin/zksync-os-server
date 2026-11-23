@@ -400,6 +400,8 @@ class CoordinatorTests(unittest.TestCase):
         self.rpc.item = relay.load_artifact(staged["operation_id"])
         self.assertEqual(self.controller_reload().step(True)["status"], "broadcast")
         self.rpc.accept_receipt()
+        # Receipt export must finish even while the operator restores the roster for new work.
+        (self.base / "rosters" / "5.json").unlink()
         self.assertEqual(self.controller_reload().step(True)["status"], "mined_unconfirmed")
         self.rpc.advance()
         self.now = self.rpc.now
