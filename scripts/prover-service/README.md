@@ -514,8 +514,18 @@ operator review.
 
 Every subsequent dispatcher command requires
 `--registry-rpc https://trusted-child-rpc.example/` before the subcommand.
-It authenticates the journal's exact snapshot at its retained
-canonical enrollment block. Low-level `service.py duty`, `offered-duty`, and
+The dispatcher records successful enrollment verification in the private journal
+as `verified-enrollment.json`. Subsequent commands check the exact roster, both
+lane configurations, period and enrollment anchor against that receipt. They
+check the RPC chain ID and read the registry policy at the pinned canonical
+block. This avoids fetching every subscription again for each ready message or
+pick. Period and phase changes create a separately verified journal.
+
+The receipt is trusted through the dispatcher's private host storage. When
+restoring a trusted journal, omit any receipt whose provenance is unknown.
+The dispatcher then verifies enrollment against the registry on first use. Older journals follow
+the same path. The coordinator and wrapper independently verify their evidence.
+Low-level `service.py duty`, `offered-duty`, and
 `package` commands can use the same boundary with both `--registry-rpc-file` and
 `--enrollment-block-hash` before their subcommand; the RPC connection file has
 exactly `url` and `authorization` fields and must be private. These trusted inputs
