@@ -29,7 +29,6 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     uint64 public constant FULL_SENIOR_AGE = 525_600;
     uint64 public constant MAX_SUBSCRIPTION_PERIODS = 64;
     uint16 public constant MAX_DUTIES_PER_ROUND = 64;
-    uint256 public constant MAX_FRI_SUBSCRIBERS_PER_PERIOD = 256;
     uint256 public constant CONTRACT_DUTY_SIGNATURE_GAS = 100_000;
     uint32 public constant MAX_ROSTER_PAGE_SIZE = 64;
     bytes32 public constant ROSTER_DOMAIN = keccak256("ZKSYS_QUALIFIED_WRAPPER_ROSTER_V1");
@@ -66,7 +65,6 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
     error InsufficientContractSignatureGas();
     error SubscriptionPeriodAlreadyUsed(address account, address sequencer, uint64 period);
     error OperatorAlreadyUsed(address operator, uint64 period);
-    error SubscriberCapacityReached(uint64 period);
     error InvalidPackage();
     error InvalidDuty();
     error DutyAlreadyCredited(uint64 batchNumber);
@@ -224,12 +222,9 @@ contract ZkSysProverServiceRegistryV1 is EIP712 {
             if (operatorAccount != address(0) && operatorAccount != subscription_.account) {
                 revert OperatorAlreadyUsed(subscription_.operator, period);
             }
-            address[] storage subscribers = _friSubscribers[subscription_.sequencer][period];
-            // Enrollment snapshots enumerate the complete set within the dispatcher's capacity.
-            if (subscribers.length >= MAX_FRI_SUBSCRIBERS_PER_PERIOD) revert SubscriberCapacityReached(period);
             subscriptionAt[subscription_.account][subscription_.sequencer][period] = subscriptionHash;
             operatorAccountAt[subscription_.operator][period] = subscription_.account;
-            subscribers.push(subscription_.account);
+            _friSubscribers[subscription_.sequencer][period].push(subscription_.account);
             if (period == subscription_.lastPeriod) break;
         }
         emit Subscribed(subscriptionHash, subscription_.account, subscription_.operator);

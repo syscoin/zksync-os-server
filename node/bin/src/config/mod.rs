@@ -19,7 +19,7 @@ use smart_config::{
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 // SYSCOIN: Parse remote prover Basic Auth credentials and validated socket addresses.
 use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
@@ -1282,6 +1282,10 @@ pub struct RpcConfig {
     /// SYSCOIN: Maximum number of concurrent resource-heavy blocking RPC executions.
     #[config(default_t = 128)]
     pub max_concurrent_blocking_rpcs: u32,
+
+    /// Maximum distinct compact edge DA availability lookups in flight at this Gateway RPC node.
+    #[config(default_t = NonZeroU16::new(4).unwrap())]
+    pub max_concurrent_edge_da_checks: NonZeroU16,
 
     /// SYSCOIN: Maximum historical IMT leaves replayed by one proof/lookup RPC. Operators may
     /// raise this after capacity testing; reaching it signals that indexed proofs are required.
