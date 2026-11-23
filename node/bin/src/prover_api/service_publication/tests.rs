@@ -393,27 +393,21 @@ fn handoff_rejects_symlinks_hardlinks_and_unknown_fields() {
     );
 }
 
-#[tokio::test]
-async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_on_activation() {
-    use crate::prover_api::{
-        snark_proof_journal::SnarkProofJournal, test_util::create_test_batch_envelope_with_data,
-    };
-    use zksync_os_batch_types::batcher_model::{BatchSignatureData, RealSnarkProof, SnarkProof};
+fn publication_batches(work: &Work, from: u64, to: u64) -> Vec<SignedBatchEnvelope<FriProof>> {
+    use crate::prover_api::test_util::create_test_batch_envelope_with_data;
+    use zksync_os_batch_types::batcher_model::BatchSignatureData;
     use zksync_os_types::ProtocolSemanticVersion;
-
-    let asserter = Asserter::new();
-    let (mut publication, old_work, mut handoff, _, temporary) = fixture(&asserter, true).await;
     let mut batches = Vec::new();
     let mut previous = None;
-    for number in 1..=2 {
+    for number in from..=to {
         let mut batch = create_test_batch_envelope_with_data(
             number,
             ProtocolSemanticVersion::new(0, 32, 0),
             FriProof::AlreadySubmittedToL1,
         );
-        batch.batch.chain_address = old_work.chain_address;
-        batch.batch.batch_info.commit_info.chain_id = old_work.execution_chain_id.to::<u64>();
-        batch.batch.batch_info.commit_info.sl_chain_id = old_work.settlement_chain_id.to::<u64>();
+        batch.batch.chain_address = work.chain_address;
+        batch.batch.batch_info.commit_info.chain_id = work.execution_chain_id.to::<u64>();
+        batch.batch.batch_info.commit_info.sl_chain_id = work.settlement_chain_id.to::<u64>();
         batch.signature_data = BatchSignatureData::AlreadyCommitted;
         if let Some(previous) = previous {
             batch.batch.previous_stored_batch_info = previous
@@ -421,6 +415,20 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         previous = Some(batch.batch.batch_info.clone().into_stored());
         batches.push(batch);
     }
+    batches
+}
+
+#[tokio::test]
+async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_on_activation() {
+    use crate::prover_api::{
+        snark_proof_journal::SnarkProofJournal, test_util::create_test_batch_envelope_with_data,
+    };
+    use zksync_os_batch_types::batcher_model::{RealSnarkProof, SnarkProof};
+    use zksync_os_types::ProtocolSemanticVersion;
+
+    let asserter = Asserter::new();
+    let (mut publication, old_work, mut handoff, _, temporary) = fixture(&asserter, true).await;
+    let batches = publication_batches(&old_work, 1, 2);
     let (native, _confirmations) = SnarkProofJournal::open(temporary.path()).await.unwrap();
     native
         .persist(
@@ -505,6 +513,7 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         publication
             .journal
             .work_for_batch(&command.as_ref()[0], &publication)
+            .await
             .unwrap(),
         Some(work)
     );
@@ -519,6 +528,7 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         publication
             .journal
             .work_for_batch(&wrong, &publication)
+            .await
             .is_err()
     );
     let fake = ProofCommand::new(vec![wrong], SnarkProof::Fake);
@@ -665,3 +675,5 @@ async fn native_observations_authorize_only_the_matching_batch() {
         assert!(!directory.join("confirmed.json").exists());
     }
 }
+
+mod regrouping;

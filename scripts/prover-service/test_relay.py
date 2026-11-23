@@ -424,6 +424,30 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(len(self.signatures()), 1)
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def test_regrouped_publication_reconciles_existing_nonce_and_authenticated_receipt(self):
+        self.relayer().step(self.operation_id, True)
+        self.rpc.advance()
+        old = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(old["status"], "authorization_stale_inflight")
+        self.assertIsNone(old["acceptance"])
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.rpc.accept_receipt()
+        self.rpc.advance()
+        settled = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(settled["status"], "accepted")
+        self.assertEqual(settled["acceptance"]["source"], "receipt_event")
+        self.assertEqual(len(self.signatures()), 1)
+
+    def test_regrouped_publication_preserves_interrupted_wallet_reservation(self):
+        self.wallet.interrupt = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.relayer().step(self.operation_id, True)
+        retired = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(retired["status"], "authorization_stale_inflight")
+        self.assertEqual(retired["next_action"], "wait_for_receipt_no_resign")
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertFalse(self.rpc.sent)
+
     def test_unknown_consumed_nonce_does_not_replace_authorization(self):
         self.relayer().step(self.operation_id, execute=True)
         self.rpc.nonce = self.rpc.pending_nonce = 1

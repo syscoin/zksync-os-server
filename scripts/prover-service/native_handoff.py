@@ -3,6 +3,7 @@
 from pathlib import Path
 import sys
 
+import relay as r
 import service as s
 import workflow_io as io
 
@@ -44,29 +45,85 @@ def submit(directory, proof, auth, network):
     return authority["status"]
 
 
-def publication_work(root, settings, limits, evidence, proof):
-    """A work file is only a handoff candidate; the node later authenticates settlement."""
+def publication_directories(root):
     root = io.directory(root)
-    expected_data = "0x" + s.proof_data(evidence, s.decode_proof(proof["proof"])).hex()
-    matches = []
     entries = sorted(root.iterdir())
     s.require(len(entries) <= 1024, "publication_scan_capacity")
-    for child in entries:
-        if child.name.startswith(".") or not child.is_dir() or child.is_symlink():
+    return [child for child in entries if not child.name.startswith(".") and child.is_dir() and not child.is_symlink()]
+
+
+def publication_pins(settings, limits):
+    return {"schema_version": 1, "execution_chain_id": settings["execution_chain_id"],
+            "settlement_chain_id": settings["settlement_chain_id"], "chain_address": settings["chain_address"],
+            "gate": settings["proof_gate"], "gate_code_hash": limits["gate_code_hash"],
+            "coordinator": settings["coordinator"], "coordinator_code_hash": limits["coordinator_code_hash"],
+            "policy_hash": settings["policy_hash"], "production_vk_hash": settings["vk_hash"],
+            "sequencer": settings["sequencer"]}
+
+
+def regrouped_work(root, retained, settings, limits, rpc, now, payload, evidence=None, proof=None):
+    """A node disposition retires local work. Only the pinned native chain supplies its frontier."""
+    root = io.directory(root)
+    if retained is not None:
+        pinned_dir = io.directory(retained)
+        s.require(pinned_dir.parent == root, "publication_outside_configured_directory")
+        candidates = [pinned_dir]
+    else:
+        candidates = publication_directories(root)
+    start, end = payload["from_batch_number"], payload["to_batch_number"]
+    pins = publication_pins(settings, limits)
+    for child in candidates:
+        marker_file = child / "regrouped.json"
+        if not marker_file.exists():
             continue
+        io.directory(child)
+        work_file = child / "work.json"
+        s.require(work_file.lstat().st_nlink == 1, "linked_handoff_file_forbidden")
+        data = s.read(work_file, private=True, maximum=2 * 1024 * 1024)
+        work = s.decode_json(data)
+        if (work.get("batch_from"), work.get("batch_to")) != (start, end):
+            continue
+        s.require(all(work.get(key) == value for key, value in pins.items()), "node_publication_work_mismatch")
+        if evidence is not None and work["batch_outputs"] != [batch["output"] for batch in evidence["batches"]]:
+            continue
+        if proof is not None and work["proof_data"] != "0x" + s.proof_data(evidence, s.decode_proof(proof["proof"])).hex():
+            continue
+        disposition = io.private_json(marker_file)
+        s.exact(disposition, ("schema_version", "work_hash", "native_proved", "native_batch_hash"))
+        s.require(disposition["schema_version"] == 1 and disposition["work_hash"] == s.keccak(data), "regrouped_work_binding_changed")
+        frontier = s.uint(disposition["native_proved"], 64)
+        s.require(frontier + 1 < start, "invalid_regrouped_frontier")
+        head, anchor = r.anchored_head(rpc, settings, limits, now)
+        chain = settings["chain_address"]
+        gate = settings["proof_gate"]
+        s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, anchor]))) == limits["gate_code_hash"]
+                  and r.call_word(rpc, gate, "chain()", anchor, kind="address") == chain, "gate_configuration_changed")
+        tip = r.call_word(rpc, chain, "getTotalBatchesVerified()", anchor)
+        # A later advance can overtake the marker. Once this exact range is next,
+        # the native planner may legitimately issue a fresh lease with the same bounds.
+        retired = frontier <= tip and (retained is not None or tip + 1 < start)
+        if retired:
+            s.require(r.call_word(rpc, chain, "storedBatchHash(uint256)", anchor, s.word(frontier), "bytes32")
+                      == s.nonzero(disposition["native_batch_hash"]), "regrouped_native_hash_changed")
+        r.check_anchor(rpc, settings, head)
+        if retired:
+            return child
+    return None
+
+
+def publication_work(root, settings, limits, evidence, proof):
+    """A work file is only a handoff candidate; the node later authenticates settlement."""
+    expected_data = "0x" + s.proof_data(evidence, s.decode_proof(proof["proof"])).hex()
+    matches = []
+    for child in publication_directories(root):
         path = child / "work.json"
-        if not path.exists() or (child / "superseded.json").exists():
+        if not path.exists() or (child / "superseded.json").exists() or (child / "regrouped.json").exists():
             continue
         io.directory(child)
         work = io.private_json(path, 2 * 1024 * 1024)
         if work.get("batch_from") != proof["from_batch_number"] or work.get("batch_to") != proof["to_batch_number"]:
             continue
-        expected = {"schema_version": 1, "execution_chain_id": settings["execution_chain_id"],
-                    "settlement_chain_id": settings["settlement_chain_id"], "chain_address": settings["chain_address"],
-                    "gate": settings["proof_gate"], "gate_code_hash": limits["gate_code_hash"],
-                    "coordinator": settings["coordinator"], "coordinator_code_hash": limits["coordinator_code_hash"],
-                    "policy_hash": settings["policy_hash"], "production_vk_hash": settings["vk_hash"],
-                    "sequencer": settings["sequencer"], "proof_data": expected_data,
+        expected = {**publication_pins(settings, limits), "proof_data": expected_data,
                     "batch_outputs": [batch["output"] for batch in evidence["batches"]]}
         s.require(all(work.get(key) == value for key, value in expected.items()), "node_publication_work_mismatch")
         s.require(s.uint(work["required_confirmations"], 64) <= limits["confirmations"],

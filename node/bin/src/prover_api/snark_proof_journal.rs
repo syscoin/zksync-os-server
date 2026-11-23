@@ -463,12 +463,6 @@ impl JournaledProof {
         )
     }
 
-    /// SYSCOIN: Recovered wrappers are preflighted in place before ownership moves into the L1
-    /// pipeline; exposing immutable inputs avoids cloning proof bytes or bypassing journal state.
-    pub(super) fn preflight_inputs(&self) -> (&[SignedBatchEnvelope<FriProof>], &SnarkProof) {
-        (&self.batches, &self.proof)
-    }
-
     pub(super) fn into_command(
         self,
         confirmation_sender: mpsc::UnboundedSender<String>,

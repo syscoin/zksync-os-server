@@ -34,6 +34,7 @@ use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 use zksync_os_provider::NodeProvider;
 
 mod native_settlement;
+mod regrouping;
 use native_settlement::{NativeBatch, NativeObservation};
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -267,7 +268,11 @@ impl PipelineComponent for ProofPublication {
             reporter.enter_state(GenericComponentState::Active);
             match command {
                 L1SenderCommand::Passthrough(mut batch) => {
-                    if let Some(work) = publication.journal.work_for_batch(&batch, &publication)? {
+                    if let Some(work) = publication
+                        .journal
+                        .work_for_batch(&batch, &publication)
+                        .await?
+                    {
                         let work_hash = keccak256(serde_json::to_vec(&work)?);
                         if !confirmed_work_hashes.contains(&work_hash) {
                             let native =
@@ -335,10 +340,11 @@ impl ServicePublication {
     /// Startup must authenticate covered wrappers before the ordinary recovery frontier can
     /// retire them. This path never resubmits or recomputes an already accepted native proof.
     pub(super) async fn confirm_command(&self, command: &ProofCommand) -> anyhow::Result<()> {
-        let work = self
+        let (work, directory, work_hash) = self
             .journal
-            .stage(&Work::new(command, self)?, self.config.max_records)?
-            .0;
+            .stage(&Work::new(command, self)?, self.config.max_records)?;
+        self.reactivate_if_next(&work, &directory, work_hash)
+            .await?;
         let native = NativeBatch::from_work(&work, work.batch_from)?;
         anyhow::ensure!(
             !self.wait_for_work(&work, Some(command), &native).await?,
@@ -645,23 +651,14 @@ impl Journal {
         })
     }
 
-    fn work_for_batch(
+    async fn work_for_batch(
         &self,
         batch: &SignedBatchEnvelope<FriProof>,
         publication: &ServicePublication,
     ) -> anyhow::Result<Option<Work>> {
         let mut found = None;
-        let entries = fs::read_dir(&self.directory)?
-            .take(publication.config.max_records + 2)
-            .collect::<Result<Vec<_>, _>>()?;
-        anyhow::ensure!(
-            entries.len() <= publication.config.max_records + 1,
-            "service publication journal is over capacity"
-        );
-        for entry in entries {
-            if entry.file_name() == ".lock" {
-                continue;
-            }
+        let mut receipt_work = None;
+        for entry in self.entries(publication.config.max_records)? {
             private_directory(&entry.path())?;
             if read_private(&entry.path().join("superseded.json"))?.is_some() {
                 continue;
@@ -673,14 +670,28 @@ impl Journal {
             if batch.batch_number() < work.batch_from || batch.batch_number() > work.batch_to {
                 continue;
             }
+            let work_hash = keccak256(&bytes);
+            let target = if self.regrouped(&entry.path(), &work, work_hash)?.is_some() {
+                // A formerly parked proof can be accepted when its exact range becomes current.
+                // A matching receipt takes it back through the ordinary authentication path.
+                if !publication
+                    .has_acceptance_hint(&entry.path(), &work, work_hash)
+                    .await?
+                {
+                    continue;
+                }
+                &mut receipt_work
+            } else {
+                &mut found
+            };
             work.matches_batch(batch, publication)?;
             anyhow::ensure!(
-                found.is_none(),
+                target.is_none(),
                 "ambiguous service work for passthrough batch"
             );
-            found = Some(work);
+            *target = Some(work);
         }
-        Ok(found)
+        Ok(receipt_work.or(found))
     }
 
     fn stage(&self, work: &Work, max_records: usize) -> anyhow::Result<(Work, PathBuf, B256)> {
@@ -690,14 +701,7 @@ impl Journal {
             "service work exceeds durable bound"
         );
         let work_hash = keccak256(&encoded);
-        let name = format!(
-            "{}-{}-{}-{:x}",
-            work.execution_chain_id,
-            work.batch_from,
-            work.batch_to,
-            keccak256(&work.proof_data)
-        );
-        let directory = self.directory.join(name);
+        let directory = self.work_directory(work);
         if !directory.try_exists()? {
             let count = fs::read_dir(&self.directory)?.try_fold(
                 0,

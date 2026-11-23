@@ -167,6 +167,10 @@ impl ProofCommand {
         Ok(self.to_calldata_suffix().into())
     }
 
+    pub fn preflight_inputs(&self) -> (&[SignedBatchEnvelope<FriProof>], &SnarkProof) {
+        (&self.batches, &self.proof)
+    }
+
     pub fn service_batch_outputs(&self) -> Vec<BatchOutput> {
         self.batches
             .iter()

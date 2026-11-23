@@ -539,16 +539,18 @@ class Coordinator:
             s.require(manager.stage(pending["call"], pending["invocation"]) == expected, "maintenance_descriptor_changed")
         return expected
 
-    def recover_maintenance(self, identifier, execute, bundle, evidence, payload):
+    def recover_maintenance(self, identifier, execute, bundle, evidence, payload, *, receipt_only=False):
         op = self.state["operations"][identifier]
         if op["maintenance"] is None:
             return None
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
-            self.signing_wallet() if execute else None, transactions.Store(self.store.root / "transactions"), self.clock)
+            self.signing_wallet() if execute and not receipt_only else None, transactions.Store(self.store.root / "transactions"), self.clock)
         operation_id = self.stage_maintenance(op["maintenance"], manager, execute)
         if operation_id not in manager.state["operations"]:
             return {"next_action": "would_stage_maintenance", "operation_id": operation_id}
         def preflight(original, head, anchor):
+            if receipt_only:
+                return False
             try:
                 action = original["action"]
                 # Legacy rows did not bind a native observation. A reserved nonce remains receipt-only recovery.
@@ -615,13 +617,13 @@ class Coordinator:
             self.save()
         return None
 
-    def relay(self, identifier, execute):
+    def relay(self, identifier, execute, *, receipt_only=False):
         op = self.state["operations"][identifier]
         if op["relay"] is None:
             return None
         store = r.Store(self.store.root / "relay")
         wallet = (self.relay_wallet or io.wallet_connection(self.config["relay_wallet_file"],
-                   self.keeper["policy"]["rpc_timeout_seconds"])) if execute else None
+                   self.keeper["policy"]["rpc_timeout_seconds"])) if execute and not receipt_only else None
         with store.lock() if execute else nullcontext():
             relay = r.Relay(self.settings, self.config["relay_policy"], self.rpc, wallet, store, self.clock)
             entry = relay.state["operations"][op["relay"]]
@@ -630,7 +632,8 @@ class Coordinator:
                     op["relay"] = None
                     self.save()
                 return None
-            if entry["unsigned_transaction"] is None and entry["raw_transaction"] is None and entry["status"] not in r.TERMINAL:
+            if (not receipt_only and entry["unsigned_transaction"] is None and entry["raw_transaction"] is None
+                    and entry["status"] not in r.TERMINAL):
                 bundle = io.private_json(self.directory(identifier) / op.get("bundle_file", "bundle.json"))
                 s.require(io.digest(bundle) == op["bundle"], "frozen_bundle_changed")
                 preview = relay.step(op["relay"], False)
@@ -644,12 +647,16 @@ class Coordinator:
                     op["relay"] = None
                     self.save()
                     return None
-            result = relay.step(op["relay"], execute)
+            result = relay.step(op["relay"], execute, receipt_only=receipt_only)
             if result["status"] in ("accepted", "accepted_elsewhere"):
+                if not result["acceptance"].get("transaction_hash"):
+                    return {**result, "next_action": "wait_for_acceptance_transaction"}
                 s.require(op["publication"] is not None, "native_publication_missing")
                 handoff = relay.export_handoff(op["relay"], op["publication"], execute)
                 if execute:
-                    op["status"], self.state["active"] = "settled", None
+                    op["status"] = "settled"
+                    if self.state["active"] == identifier:
+                        self.state["active"] = None
                     self.save()
                 return handoff
             entry = relay.state["operations"][op["relay"]]
@@ -660,6 +667,39 @@ class Coordinator:
                     self.save()
                 return None
             return result
+
+    def retire_regrouped(self, identifier, payload, execute):
+        op = self.state["operations"][identifier]
+        directory = self.directory(identifier)
+        evidence_file = directory / "evidence.json"
+        evidence = io.private_json(evidence_file) if evidence_file.exists() else None
+        proof = None
+        if op["proof"] is not None:
+            proof = io.private_json(directory / "proof.json")
+            s.require(evidence is not None and io.digest(proof) == op["proof"], "retained_proof_changed")
+        source = native_handoff.regrouped_work(self.config["publication_dir"], op["publication"], self.settings,
+            self.config["relay_policy"], self.rpc, int(self.clock()), payload, evidence, proof)
+        if source is None:
+            return None
+        if execute:
+            op.update(status="regrouped", publication=str(source))
+            self.state["active"] = None
+            if op["relay"] or op["maintenance"]:
+                # The old job releases its proof slot immediately. Its wallet reservations
+                # keep their own receipt-only recovery until the original nonce is resolved.
+                self.state.setdefault("regrouped_pending", []).append(identifier)
+            self.save()
+        return {"next_action": "pick_regrouped_native_range" if execute else "would_retire_regrouped_native_range"}
+
+    def reconcile_regrouped(self, execute):
+        for identifier in list(self.state.get("regrouped_pending", [])):
+            op = self.state["operations"][identifier]
+            self.recover_maintenance(identifier, execute, None, None, None, receipt_only=True)
+            if op["status"] != "settled":
+                self.relay(identifier, execute, receipt_only=True)
+            if execute and not op["maintenance"] and (not op["relay"] or op["status"] == "settled"):
+                self.state["regrouped_pending"].remove(identifier)
+                self.save()
 
     def observe_native(self, execute):
         def observation():
@@ -697,10 +737,17 @@ class Coordinator:
 
     def step(self, execute=False):
         s.require(type(execute) is bool, "invalid_execute_flag")
+        self.reconcile_regrouped(execute)
         identifier = self.state["active"]
         if self.state.get("native_observation"):
             return self.observe_native(execute)
         if identifier is not None:
+            op = self.state["operations"][identifier]
+            if op["publication"] and (Path(op["publication"]) / "regrouped.json").exists():
+                payload = io.private_json(self.directory(identifier) / "payload.json", io.MAX_PAYLOAD)
+                retired = self.retire_regrouped(identifier, payload, execute)
+                if retired:
+                    return retired
             result = self.relay(identifier, execute)
             if result is not None:
                 if (result.get("context") or {}).get("reason") == "range_already_proven":
@@ -721,6 +768,10 @@ class Coordinator:
         if payload_path.exists():
             # A restart may have persisted the pick just before its old evidence became unavailable.
             payload = io.private_json(payload_path, io.MAX_PAYLOAD)
+            if chain["next_native_batch"] < payload["from_batch_number"] and op["publication"] is None:
+                retired = self.retire_regrouped(identifier, payload, execute)
+                if retired:
+                    return retired
             if chain["next_native_batch"] > payload["from_batch_number"]:
                 if execute:
                     op["status"], self.state["active"] = "superseded", None

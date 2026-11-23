@@ -104,12 +104,16 @@ def read(path, private=False, maximum=MAX_FILE):
     return data
 
 
-def read_json(path, private=False, maximum=MAX_FILE):
+def decode_json(data):
     try:
-        return json.loads(read(path, private, maximum), object_pairs_hook=_unique,
+        return json.loads(data, object_pairs_hook=_unique,
                           parse_constant=lambda _: require(False, "nonfinite_json_value"))
     except (ValueError, UnicodeError):
         raise Error("invalid_json") from None
+
+
+def read_json(path, private=False, maximum=MAX_FILE):
+    return decode_json(read(path, private, maximum))
 
 
 def write_new(path, value):

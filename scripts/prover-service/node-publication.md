@@ -130,6 +130,14 @@ Rebuild the remaining unverified suffix from its native batches and obtain a
 fresh package. A local `superseded.json` records disposition for recovery.
 Service credit still requires an authenticated service acceptance.
 
+If native settlement cuts through a wrapper, startup can also retire a following
+unproved wrapper to form a legal proof range. For example, when native settlement
+proves batches 1–2 and the journal holds 1–3 and 4–5, recovery can rebuild 3–5
+as one wrapper when the configured capacity permits three batches. The node saves
+`regrouped.json` against the exact old work and confirmed native batch hash before
+removing the wrapper. Keep that record across restarts. The replacement package
+needs fresh endorsements. Only a confirmed service acceptance can earn credit.
+
 A bootstrap receipt remains valid when coordinator installation follows it in
 the same block. The successful exact `submitBootstrap` call proves the bootstrap
 phase at execution time. On a later service restart, original zero-coordinator

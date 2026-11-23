@@ -252,6 +252,102 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(len(self.native.calls), 2)
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def regrouped_publication(self, retained):
+        native = fixture(batch_count=5)
+        full = native["evidence"]
+        self.rpc.evidence = full
+        self.rpc.native_proved = self.rpc.observed_native = 2
+        identifier = self.controller.reserve()
+        directory = self.controller.directory(identifier)
+        payload = {**native["fri_payload"], "from_batch_number": 4, "fri_proofs": native["fri_payload"]["fri_proofs"][3:]}
+        io.immutable_json(directory / "payload.json", payload)
+        evidence = {**full, "previous_batch": full["batches"][2]["stored"], "batches": full["batches"][3:]}
+        proof = {**native["snark"], "from_batch_number": 4}
+        root = io.directory(self.base / "publications" / "old-4-5", create=True)
+        work = {**c.native_handoff.publication_pins(self.f["settings"], self.config["relay_policy"]),
+                "batch_from": 4, "batch_to": 5, "timelock": a(132), "required_confirmations": 2,
+                "proof_data": "0x" + s.proof_data(evidence, s.decode_proof(proof["proof"])).hex(),
+                "batch_outputs": [b["output"] for b in evidence["batches"]]}
+        io.immutable_json(root / "work.json", work)
+        io.immutable_json(root / "regrouped.json", {"schema_version": 1, "work_hash": s.keccak(s.canonical(work)),
+            "native_proved": 2, "native_batch_hash": s.keccak(s.encode_fields(s.STORED, full["batches"][1]["stored"]))})
+        if retained:
+            io.immutable_json(directory / "evidence.json", evidence)
+            io.immutable_json(directory / "proof.json", proof)
+            self.controller.state["operations"][identifier].update(publication=str(root), proof=io.digest(proof))
+            self.controller.save()
+        return identifier, native, root
+
+    def test_regrouped_published_proof_restarts_with_new_three_batch_lease(self):
+        old, native, root = self.regrouped_publication(retained=True)
+        self.assertEqual(self.controller_reload().step(False)["next_action"], "would_retire_regrouped_native_range")
+        self.assertEqual(self.controller_reload().state["active"], old)
+        self.assertEqual(self.controller.step(True)["next_action"], "pick_regrouped_native_range")
+        self.assertEqual(self.controller_reload().state["operations"][old]["status"], "regrouped")
+        self.assertEqual(self.controller.step(False)["next_action"], "would_pick_native_snark")
+        self.assertFalse((root / "relay.json").exists())
+        self.assertFalse(self.wallet.calls or self.relay_wallet.calls or self.rpc.sent)
+        payload = {**native["fri_payload"], "from_batch_number": 3, "fri_proofs": native["fri_payload"]["fri_proofs"][2:]}
+        full = native["evidence"]
+        evidence = {**full, "previous_batch": full["batches"][1]["stored"], "batches": full["batches"][2:]}
+        self.native.responses += [(200, {}, {**payload, "lease_token": h(191)}), (200, {}, evidence)]
+        new = self.controller.reserve()
+        self.assertIsNone(self.controller.acquire(new, True))
+        self.assertEqual(io.private_json(self.controller.directory(new) / "payload.json"), payload)
+        self.assertIsNone(self.controller.state["operations"][new]["bundle"])
+        self.assertEqual(self.controller.state["operations"][new]["works"], {})
+
+    def test_unpublished_regrouped_lease_requires_canonical_marker_after_restart(self):
+        old, _, root = self.regrouped_publication(retained=False)
+        self.rpc.bad_stored = True
+        with self.assertRaisesRegex(s.Error, "regrouped_native_hash_changed"):
+            self.controller_reload().step(True)
+        self.assertEqual(self.controller_reload().state["active"], old)
+        self.rpc.bad_stored = False
+        self.assertEqual(self.controller.step(True)["next_action"], "pick_regrouped_native_range")
+        self.assertEqual(self.controller_reload().state["operations"][old]["publication"], str(root))
+        self.assertFalse(self.native.calls or self.rpc.sent)
+
+    def test_regroup_marker_distinguishes_old_publication_from_newly_eligible_lease(self):
+        old, _, root = self.regrouped_publication(retained=False)
+        self.rpc.native_proved = self.rpc.observed_native = 3
+        payload = io.private_json(self.controller.directory(old) / "payload.json")
+        self.assertIsNone(self.controller.retire_regrouped(old, payload, False))
+        self.controller.state["operations"][old]["publication"] = str(root)
+        self.controller.save()
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "pick_regrouped_native_range")
+
+    def test_regrouped_relay_receipt_after_restart_keeps_the_new_operation_active(self):
+        old = self.controller.reserve()
+        settings = self.f["settings"]
+        prepared = s.prepare_package(settings, self.f["evidence"], self.f["manifest"], self.f["subscriptions"],
+                                     self.f["duties"], self.f["proposal"], self.f["snark"], self.f["fri_payload"])
+        publication = self.publication(prepared)
+        sidecar = s.complete_package(settings, prepared, sign(prepared["sequencer_request"], "sequencer"),
+                                     sign(prepared["wrapper_request"], "wrapper"))
+        self.rpc.item = r.artifact(settings, sidecar, prepared["proof_data"])
+        self.rpc.opened = True
+        relay = r.Relay(settings, self.config["relay_policy"], self.rpc, self.relay_wallet,
+                        r.Store(self.control_store.root / "relay"), self.controller.clock)
+        relay_id = relay.stage(self.rpc.item)
+        self.assertEqual(relay.step(relay_id, True)["status"], "broadcast")
+        # Restart after the coordinator atomically detached an already signed relay.
+        self.controller.state["operations"][old].update(status="regrouped", publication=str(publication), relay=relay_id)
+        self.controller.state["regrouped_pending"] = [old]
+        new = self.controller.reserve()
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertFalse((publication / "relay.json").exists())
+        self.assertEqual(self.controller.state["regrouped_pending"], [old])
+        self.rpc.accept_receipt()
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertEqual(self.controller_reload().state["active"], new)
+        self.assertEqual(self.controller.state["operations"][old]["status"], "settled")
+        self.assertEqual(self.controller.state["regrouped_pending"], [])
+        self.assertEqual(io.private_json(publication / "relay.json")["transaction_hash"], self.rpc.receipt["transactionHash"])
+        self.assertEqual(len(self.rpc.sent), 1)
+
     def test_completed_operation_history_does_not_block_new_range(self):
         for index in range(1001):
             self.controller.state["operations"][str(index)] = {"status": "settled", "test": index}

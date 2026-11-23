@@ -333,7 +333,7 @@ def check_anchor(rpc, settings, head):
               and s.uint(rpc.call("eth_chainId", [])) == s.uint(settings["settlement_chain_id"]), "rpc_reorg_or_chain_change")
 
 
-def context(rpc, settings, limits, item, now, simulate=True):
+def context(rpc, settings, limits, item, now, simulate=True, *, receipt_only=False):
     head, anchor = anchored_head(rpc, settings, limits, now)
     gate, accepted = settings["proof_gate"], item["sidecar"]["accepted_package"]
     s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, anchor]))) == limits["gate_code_hash"], "gate_code_changed")
@@ -349,7 +349,9 @@ def context(rpc, settings, limits, item, now, simulate=True):
               "eligible": False, "reason": "unknown", "selected_wrapper_index": None, "current_turn": None, "turn_deadline": None,
               "period": accepted["period"], "batch_from": accepted["batchFrom"], "batch_to": accepted["batchTo"],
               "candidate_operator": accepted["wrapper"]}
-    if parent == item["package_hash"]:
+    if receipt_only:
+        result["reason"] = "publication_regrouped"
+    elif parent == item["package_hash"]:
         result["reason"] = "package_already_accepted"
     elif parent != accepted["parent"]:
         result["reason"] = "accepted_parent_changed"
@@ -600,12 +602,12 @@ class Relay:
         return {"package_hash": item["package_hash"], "mode": item["mode"], "context": observed,
                 "next_action": "stage_and_sign" if observed["eligible"] else "wait_or_refresh_authorization"}
 
-    def step(self, operation_id, execute=False):
+    def step(self, operation_id, execute=False, *, receipt_only=False):
         s.require(self.store is not None, "relay_store_required")
         item = self.load_artifact(operation_id)
         op = self.state["operations"][operation_id]
         now = int(self.clock())
-        observed = context(self.rpc, self.settings, self.limits, item, now, simulate=False)
+        observed = context(self.rpc, self.settings, self.limits, item, now, simulate=False, receipt_only=receipt_only)
         op["context"] = observed
         self._observe_receipt(op, item, observed)
         receipt, acceptance = op["receipt"], op["acceptance"]
@@ -621,7 +623,7 @@ class Relay:
             self.save(execute)
             return self.summary(operation_id, action)
         if acceptance:
-            if op["raw_transaction"]:
+            if op["unsigned_transaction"]:
                 op["status"], action = "accepted_with_pending_nonce", "wait_for_own_nonce_receipt"
             elif self._confirmations(acceptance["block_number"], observed["head"]) >= confirmations:
                 op["status"], action = "accepted_elsewhere", "complete"
@@ -638,11 +640,11 @@ class Relay:
                 return self.summary(operation_id, "investigate_nonce_without_receipt")
             s.require(latest_nonce == s.uint(op["unsigned_transaction"]["nonce"]), "reserved_nonce_ahead_of_chain")
         if not observed["eligible"]:
-            if op["raw_transaction"]:
+            if op["unsigned_transaction"]:
                 op["status"] = "authorization_stale_inflight"
                 action = "wait_for_receipt_no_resign"
             elif observed["reason"] in ("stale_wrapper_turn", "frozen_package_repaired", "accepted_parent_changed", "bootstrap_phase_closed",
-                                       "range_already_proven", "bootstrap_package_repaired"):
+                                       "range_already_proven", "bootstrap_package_repaired", "publication_regrouped"):
                 op["status"] = "stale_unsigned"
                 action = "new_artifact_requires_fresh_endorsements"
             else:

@@ -17,7 +17,7 @@ MAX_ROWS = 512
 MAX_INLINE_EVENTS = 1024
 MAX_INLINE_BYTES = 8 * 1024 * 1024
 MAX_CACHE = 32
-TERMINAL_ROWS = {"accepted", "accepted_elsewhere", "reverted", "confirmed", "settled", "superseded", "complete",
+TERMINAL_ROWS = {"accepted", "accepted_elsewhere", "reverted", "confirmed", "settled", "superseded", "regrouped", "complete",
                  "returned", "expired", "obsolete", "rejected", "unexported_pick_abandoned", "no_job"}
 
 
