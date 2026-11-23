@@ -389,6 +389,7 @@ fn edge_da_admission_config(
     }
 
     Ok(Some(zksync_os_rpc::EdgeDaAdmissionConfig {
+        max_concurrent_checks: usize::from(config.rpc_config.max_concurrent_edge_da_checks.get()),
         commit_tx_target,
         rpc_url: rpc_url
             .context(
