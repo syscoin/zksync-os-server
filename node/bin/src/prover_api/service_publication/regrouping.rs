@@ -64,7 +64,9 @@ impl Journal {
 }
 
 impl ServicePublication {
-    pub(super) fn regrouped_candidates(&self) -> anyhow::Result<BTreeSet<(u64, u64)>> {
+    pub(in crate::prover_api) fn regrouped_candidates(
+        &self,
+    ) -> anyhow::Result<BTreeSet<(u64, u64)>> {
         let mut ranges = BTreeSet::new();
         for entry in self.journal.entries(self.config.max_records)? {
             let directory = entry.path();
@@ -87,7 +89,10 @@ impl ServicePublication {
         Ok(ranges)
     }
 
-    pub(super) async fn is_regrouped(&self, command: &ProofCommand) -> anyhow::Result<bool> {
+    pub(in crate::prover_api) async fn is_regrouped(
+        &self,
+        command: &ProofCommand,
+    ) -> anyhow::Result<bool> {
         let work = Work::new(command, self)?;
         let directory = self.journal.work_directory(&work);
         if !directory.join("regrouped.json").try_exists()? {
@@ -111,7 +116,7 @@ impl ServicePublication {
         Ok(true)
     }
 
-    pub(super) async fn regroup_unproved(
+    pub(in crate::prover_api) async fn regroup_unproved(
         &self,
         command: &ProofCommand,
         native_proved: u64,
