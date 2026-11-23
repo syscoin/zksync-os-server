@@ -277,8 +277,8 @@ class BundleAndLauncherTests(unittest.TestCase):
         receipt_file = ROOT / evidence["evm_receipt_path"]
         self.assertEqual(sha(receipt_file.read_bytes()), evidence["evm_receipt_sha256"])
         receipt = json.loads(receipt_file.read_text())
-        self.assertEqual(generation["candidate_tree"], module.CANDIDATE)
-        self.assertEqual(generation["reviewed_source_tree"], module.SOURCE)
+        self.assertEqual(generation["candidate_tree"], manifest["gateway_priority_recovery"]["previous_candidate_tree"])
+        self.assertEqual(generation["reviewed_source_tree"], manifest["gateway_priority_recovery"]["previous_reviewed_source_tree"])
         self.assertEqual(generation["unchanged_inventory_rows"], 276)
         self.assertEqual(set(generation["changed_inventory_rows"]), module.ROWS)
         self.assertEqual(prover["plonk_domain_log2"], 22)
@@ -401,8 +401,8 @@ class BundleAndLauncherTests(unittest.TestCase):
     def test_copied_bundle_and_unactivated_source(self):
         module, manifest = M.load_bundle()
         self.assertEqual(module.BASE, "8fb7c29a4e3174335c6480b23f57822e054f9d5f")
-        self.assertEqual(module.SOURCE, "5272679a1c09acf82cfc45a2899cca04bb4c745b")
-        self.assertEqual(module.CANDIDATE, "6dcc2d41e75b3207bcf81250279cec72d813c86a")
+        self.assertEqual(module.SOURCE, "bdb50a9f012bdcd1761149b5729d0cecb89a9eb2")
+        self.assertEqual(module.CANDIDATE, "1dc3f74ad1f73d076beb506719e5ef9fe698e51f")
         self.assertEqual(manifest["candidate_tree"], module.CANDIDATE)
         self.assertEqual(manifest["verification_key_hash"],
                          "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990")
@@ -423,11 +423,25 @@ class BundleAndLauncherTests(unittest.TestCase):
         else:
             self.assertEqual(M.check_source_binding(ROOT), M.CANONICAL_BINDING)
 
+    def test_gateway_priority_recovery_inventory_binds_both_compiler_profiles(self):
+        _, manifest = M.load_bundle()
+        recovery = manifest["gateway_priority_recovery"]
+        self.assertEqual(recovery["changed_inventory_rows"], ["l1-contracts/PermissionlessValidator"])
+        self.assertEqual(recovery["unchanged_inventory_rows"], 277)
+        self.assertEqual(recovery["settlement_selector"], "0x08e4d8d3")
+        self.assertEqual(recovery["commit_pair_tag"], "0x53595001")
+        self.assertEqual(manifest["verification_key_hash"],
+                         manifest["contract_generation_provenance"]["verification_key_hash"])
+        source_patch = (ROOT / "scripts/patches/era-contracts-syscoin.patch").read_text()
+        for field in ("zk_bytecode_hash", "evm_creation_hash", "evm_runtime_hash"):
+            self.assertIn(recovery[field], source_patch)
+        self.assertIn("PRIORITY_PAIR_V1 = 0x53595001", source_patch)
+
     def test_current_contract_generation_binds_actual_normal_profile_postimages(self):
         module, manifest = M.load_bundle()
         paths = manifest["paths"]
         self.assertEqual(paths["AllContractsHashes.json"], {
-            "size": 160049, "sha256": "62c82391c2859be37633faabebe5e1f8a6bd0992623c32bdd1eaf9cb158ffdc5"})
+            "size": 160049, "sha256": "f5eb2ada35663bde3477364288ac28d1040549bb1653ed2e5d0f754484225ad8"})
         for rel in ("l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",
                     "tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol"):
             self.assertEqual(paths[rel], {
@@ -629,8 +643,8 @@ class BundleAndLauncherTests(unittest.TestCase):
             ROOT / "scripts/apply-era-contracts-syscoin-patch.sh",
             M.BUNDLE / "generated-verifier-overlay.patch")
         self.assertEqual(result["status"], "exact_overlay_bundle_validated")
-        self.assertEqual(result["source_tree"], "5272679a1c09acf82cfc45a2899cca04bb4c745b")
-        self.assertEqual(result["candidate_tree"], "6dcc2d41e75b3207bcf81250279cec72d813c86a")
+        self.assertEqual(result["source_tree"], "bdb50a9f012bdcd1761149b5729d0cecb89a9eb2")
+        self.assertEqual(result["candidate_tree"], "1dc3f74ad1f73d076beb506719e5ef9fe698e51f")
         self.assertEqual(result["generated_paths"], sorted(module.PATHS))
         self.assertFalse(result["checkout_mutated"])
         self.assertFalse(result["canonical_fixture_activated"])

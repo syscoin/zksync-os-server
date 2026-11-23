@@ -2,11 +2,11 @@
   "schema": "syscoin-era-generated-verifier-overlay-v1",
   "status": "task_local_not_activated",
   "base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-  "reviewed_source_tree": "5272679a1c09acf82cfc45a2899cca04bb4c745b",
-  "candidate_tree": "6dcc2d41e75b3207bcf81250279cec72d813c86a",
-  "source_patch_sha256": "3801dc86c405cc57b20b4463300e5f7deb9122a22cb816b157ed220456033f93",
-  "source_applicator_sha256": "ebc47c804c3683c64e69d9f09b0047a5c57cc7668e5c5a913d6347ab29f0f6c4",
-  "overlay_sha256": "5da6f0e6ac0549f3c9e8db37157e08648b870c66b9f7b7d89c2870b051413f3d",
+  "reviewed_source_tree": "bdb50a9f012bdcd1761149b5729d0cecb89a9eb2",
+  "candidate_tree": "1dc3f74ad1f73d076beb506719e5ef9fe698e51f",
+  "source_patch_sha256": "7d74ea2dc6521e36f204c71bfb0a8e826e5f786d034767920d33b9f4aa979f7e",
+  "source_applicator_sha256": "20d58338e9aa3bec04730e335eabc6bf0ec569eb76ef7f62dee20145a9c007bf",
+  "overlay_sha256": "ade3f2a00e599a79f179b5500001936eba3789b7fb842b1fb6c3a927cadb120e",
   "overlay_size": 120693,
   "verification_key_hash": "0x8e6285da659dac3cfff56dbae3bf445e1524b9f08a9270f19d3361a97f8ce990",
   "inventory_rows": 278,
@@ -17,7 +17,7 @@
   "paths": {
     "AllContractsHashes.json": {
       "size": 160049,
-      "sha256": "62c82391c2859be37633faabebe5e1f8a6bd0992623c32bdd1eaf9cb158ffdc5"
+      "sha256": "f5eb2ada35663bde3477364288ac28d1040549bb1653ed2e5d0f754484225ad8"
     },
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol": {
       "size": 95216,
@@ -844,5 +844,21 @@
     "evm_receipt_sha256": "f0b3462cdd4464f0c65d3083b6ab4d6f6cd7655353ad6be781d99cca47e151a4",
     "comparison_path": "docs/audits/syscoin-v32-final-worker-comparison-2026-11-18.json",
     "comparison_sha256": "28c312e7d166149e2c3dec5c59ae3eda80e41718a771f1d529470b07d98171ba"
+  },
+  "gateway_priority_recovery": {
+    "contracts_commit": "2e2c7061e5f9d2b9ab9349b803c9bf2d0fb570d7",
+    "previous_contracts_commit": "abd00da17a0b48ecef6a67595f32a56a3b4690b1",
+    "previous_candidate_tree": "6dcc2d41e75b3207bcf81250279cec72d813c86a",
+    "previous_reviewed_source_tree": "5272679a1c09acf82cfc45a2899cca04bb4c745b",
+    "changed_inventory_rows": [
+      "l1-contracts/PermissionlessValidator"
+    ],
+    "unchanged_inventory_rows": 277,
+    "settlement_selector": "0x08e4d8d3",
+    "commit_pair_tag": "0x53595001",
+    "zk_bytecode_hash": "0x0100011751934abf209eeabfb0437f5cbca4104122c1a92c5ecc01954060fa6d",
+    "evm_creation_hash": "0x2c394b28ef4200190a7992c1dec8d4fd2db49de2c148df04813199d10f5c85f4",
+    "evm_runtime_hash": "0x4f8794f8d2cc92d74bddbb9950e6f3345fe4988ff82ba61a04b61fc3f6c459b8",
+    "evm_runtime_size": 3213
   }
 }

@@ -53,7 +53,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
 HISTORICAL_KEYGEN_ZKSYNC_OS_TREE = "6935489bdbc7b1ed31e608677d1b2418b10691b5"
 REGISTERED_GUEST_ZKSYNC_OS_TREE = "8c42bef28b5be792bc2b0438531dc7ab1a862547"
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "517840e73c263575889ff5b73a7eec79d4a03613"
-PUBLISHED_ERA_PATCHED_TREE = "5272679a1c09acf82cfc45a2899cca04bb4c745b"
+PUBLISHED_ERA_PATCHED_TREE = "bdb50a9f012bdcd1761149b5729d0cecb89a9eb2"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -7707,10 +7707,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1534603"',
-            'EXPECTED_PATCH_SHA256="3801dc86c405cc57b20b4463300e5f7deb9122a22cb816b157ed220456033f93"',
-            'EXPECTED_PATCH_PATH_COUNT="98"',
-            'EXPECTED_PATCH_PATHS_SHA256="432f6de4d171e10d6702dfed2452261e87d8ec64b71cd1ec1e9e0013f189b762"',
+            'EXPECTED_PATCH_SIZE="1546221"',
+            'EXPECTED_PATCH_SHA256="7d74ea2dc6521e36f204c71bfb0a8e826e5f786d034767920d33b9f4aa979f7e"',
+            'EXPECTED_PATCH_PATH_COUNT="99"',
+            'EXPECTED_PATCH_PATHS_SHA256="96d486f55ce252bcd9e2f2ce026014f104d5c020b40fe5086fd497763cca1b6e"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -7761,18 +7761,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 98)
+        self.assertEqual(len(patch_paths), 99)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "432f6de4d171e10d6702dfed2452261e87d8ec64b71cd1ec1e9e0013f189b762",
+            "96d486f55ce252bcd9e2f2ce026014f104d5c020b40fe5086fd497763cca1b6e",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 98)
+        self.assertEqual(len(manifest_entries), 99)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)

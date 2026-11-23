@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1534603"
-EXPECTED_PATCH_SHA256="3801dc86c405cc57b20b4463300e5f7deb9122a22cb816b157ed220456033f93"
-EXPECTED_PATCH_PATH_COUNT="98"
-EXPECTED_PATCH_PATHS_SHA256="432f6de4d171e10d6702dfed2452261e87d8ec64b71cd1ec1e9e0013f189b762"
+EXPECTED_PATCH_SIZE="1546221"
+EXPECTED_PATCH_SHA256="7d74ea2dc6521e36f204c71bfb0a8e826e5f786d034767920d33b9f4aa979f7e"
+EXPECTED_PATCH_PATH_COUNT="99"
+EXPECTED_PATCH_PATHS_SHA256="96d486f55ce252bcd9e2f2ce026014f104d5c020b40fe5086fd497763cca1b6e"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="5272679a1c09acf82cfc45a2899cca04bb4c745b"
+EXPECTED_PATCHED_TREE="bdb50a9f012bdcd1761149b5729d0cecb89a9eb2"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -166,7 +166,7 @@ verify_postimage_manifest() {
     manifest_paths+="${relative_path}"$'\n'
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
-160049 c0a1cdeafb595ef1503d73f33949b977edb61bf55df7e49724c90e72ff90e731 AllContractsHashes.json
+160049 ac3feeba44c202ee082b855424007591de5f2031daeccb5991cb7f2e529d5368 AllContractsHashes.json
 557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
@@ -192,6 +192,7 @@ verify_postimage_manifest() {
 4261 ca781b332ae1461d93fd89902f0e59c40f1db6f2846b511533a2e14aecba0c34 l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
 2727 c7f49220b06784bd67d73166fd9fb4e2329d7699d493b4342dfbcabfde683a10 l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
 2303 a7a77cf790b20e91573ab5d5c30458b4aa1dc06f550e211d74e7f4afb448c04f l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
+3729 5ab76d466fd9d8d9f28427a17cf6605a5dc7533bd307e85c9312e97b6ae3edc5 l1-contracts/contracts/state-transition/validators/PermissionlessValidator.sol
 10600 d73ab6ed056c8c037e55f5da44d3b54ce01c5444fbc79ed2435145822d827204 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 2210 99b2f630ccb303dc130e6010ae91ab2c462218a4cc813602ed307b9f05b95fe3 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 17587 45ab5b716efaec429ed8adf414e953145b09b8c69203058f444274479b9b2d85 l1-contracts/contracts/upgrades/BaseZkSyncUpgrade.sol
@@ -240,7 +241,7 @@ verify_postimage_manifest() {
 2107 b883f15aadd971a018771fcdab8b8e4bb3c9b54e64841ceaa536bc5a7ed3fa5a l1-contracts/test/foundry/l1/unit/concrete/Bridges/BridgeHelper/GetERC20Getters.t.sol
 6644 95dcdda7f99d970f1f40c46739eac83bbba3f9349fc96ecbe563f479da0c1fba l1-contracts/test/foundry/l1/unit/concrete/Bridges/BrigeHelper/BridgeHelper.t.sol
 19523 b297a578ddd72bcdb37bf1c78f3fff18ed583085d48ee8bfe2621bb0afc16571 l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
-8551 49fbb2681f61dc28956258b9f148b4c7f1a509d6428c0515bfe3cd1caef2e7c1 l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
+15864 c834bc48ae79054a69cb487c717c693016d4bafb326915528dc825853a724fd8 l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
 4828 3912fe8d417ec07ecb74a3a7e1e773907169bcafb56e4105cbdbfb0416f79da9 l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 37262 e6cb6d802f989a56ac8904a2b7d941a7203f664e8e2dbb8a3bf56f6dab74c069 l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 11293 a4f1df2bd9186d9a841d9c18f4c1235e6bbae7a705dbc2802871b60fb13a2832 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/AdminExtended.t.sol

@@ -6,7 +6,7 @@ index 7e1d9037d1af2b602eea82ae24fa9be43257d8b7..71702e655fcca420358e6bc76b63af47
 +# SYSCOIN: track the exact V32 compact Edge-DA relay deployment manifest.
 +!l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd182658c7022ea47a09af2e1771a077e3a..6f879bf3dc077f100ed6d45cbc856432185d0c0f 100644
+index a0200fd182658c7022ea47a09af2e1771a077e3a..d94a01b3769ad30d0492b28e3cecf5c1d6a5074d 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
@@ -747,15 +747,17 @@ index a0200fd182658c7022ea47a09af2e1771a077e3a..6f879bf3dc077f100ed6d45cbc856432
 +    "evmDeployedBytecodeBlakeHash": "0xd54486788abcdf94e39b89a3c1cca6126beea707e69ff153caeaf2bdbbc89362",
 @@ -1794 +1794 @@
 -    "zkBytecodeHash": "0x010000b990bf6b61edcd3929c0275905b275ea3f45e397a74d9196b5a83bb75e",
-+    "zkBytecodeHash": "0x010000b94c2091cc82dc3a2dc82759131b3af4a2140d561c2e74ed93ad748cbc",
++    "zkBytecodeHash": "0x0100011751934abf209eeabfb0437f5cbca4104122c1a92c5ecc01954060fa6d",
 @@ -1796 +1796 @@
 -    "evmBytecodeHash": "0xcf091c3aa1caf28e1cebb784ea47fc6061385ead833137ce9035ff90b343beb5",
-+    "evmBytecodeHash": "0x5908dda30dfc29ac7c6faa88b9fd16989f46063278f0fafdd6cb83e1e2ba78be",
-@@ -1798,2 +1798,2 @@
++    "evmBytecodeHash": "0x2c394b28ef4200190a7992c1dec8d4fd2db49de2c148df04813199d10f5c85f4",
+@@ -1798,3 +1798,3 @@
 -    "evmDeployedBytecodeHash": "0xa7779ff769c3e72270caa2a44c729391f8472873a19cb37ee870267cba74ede6",
 -    "evmDeployedBytecodeBlakeHash": "0xfcf5a8d669514bd9059736b5e0be96524e8c8276093b3852a8cc6c04411b7171",
-+    "evmDeployedBytecodeHash": "0x69493d1a3d8b2781920b1ed41d2cd78c770fdceda1443e936186a5dea8eab75c",
-+    "evmDeployedBytecodeBlakeHash": "0x2b0bbdaf7fd9bceb6dc0ad0f738de44911bf20e5633236bc10ecf643643090ef",
+-    "evmDeployedBytecodeLength": 1683
++    "evmDeployedBytecodeHash": "0x4f8794f8d2cc92d74bddbb9950e6f3345fe4988ff82ba61a04b61fc3f6c459b8",
++    "evmDeployedBytecodeBlakeHash": "0x56867ba81d4dc6bea38fba5f8f1707895f448be211a98c2b3806e94dbea0c3a6",
++    "evmDeployedBytecodeLength": 3213
 @@ -1814 +1814 @@
 -    "zkBytecodeHash": "0x010000078560e11b91b2e52587f859ed960d884689c0c8646223fcca9049261f",
 +    "zkBytecodeHash": "0x010000070002f00a0ebbf5522b1d305d04738c8a54e11009b6695b07581b75d5",
@@ -2126,6 +2128,43 @@ index 0000000000000000000000000000000000000000..6c320e5f0e9ba53c7da5f1dbe290b642
 +        emit DAPairUpdated(_l1DAValidator, _l2DACommitmentScheme, _status);
 +    }
 +}
+diff --git a/l1-contracts/contracts/state-transition/validators/PermissionlessValidator.sol b/l1-contracts/contracts/state-transition/validators/PermissionlessValidator.sol
+index c6785d413d31f3ecb0c276ec70498d65b83823cc..b51fa51bfb8d87f6068309cdc9ca989bc0866e1d 100644
+--- a/l1-contracts/contracts/state-transition/validators/PermissionlessValidator.sol
++++ b/l1-contracts/contracts/state-transition/validators/PermissionlessValidator.sol
+@@ -6,0 +7 @@ import {ICommitter} from "../chain-interfaces/ICommitter.sol";
++import {BatchDecoder} from "../libraries/BatchDecoder.sol";
+@@ -19,0 +21,3 @@ contract PermissionlessValidator is ReentrancyGuard, Initializable {
++    // SYSCOIN: V1 wrapper for two native zkOS commit blobs. Its first byte is outside both native encodings.
++    bytes4 private constant PRIORITY_PAIR_V1 = 0x53595001;
++
+@@ -32 +36 @@ contract PermissionlessValidator is ReentrancyGuard, Initializable {
+-    /// @param _commitData The calldata blob for the commit step.
++    /// @param _commitData Native commit data, or 0x53595001 followed by abi.encode(bytes[2]) for a zkOS pair.
+@@ -43,6 +47 @@ contract PermissionlessValidator is ReentrancyGuard, Initializable {
+-        ICommitter(_chainAddress).commitBatchesSharedBridge(
+-            _chainAddress,
+-            _processBatchFrom,
+-            _processBatchTo,
+-            _commitData
+-        );
++        _commit(_chainAddress, _processBatchFrom, _processBatchTo, _commitData);
+@@ -61,0 +61,15 @@ contract PermissionlessValidator is ReentrancyGuard, Initializable {
++
++    function _commit(address _chainAddress, uint256 _from, uint256 _to, bytes calldata _data) private {
++        ICommitter committer = ICommitter(_chainAddress);
++        if (_to > _from && _to - _from == 1 && _data.length >= 4 && bytes4(_data[:4]) == PRIORITY_PAIR_V1) {
++            bytes[2] memory commits = abi.decode(_data[4:], (bytes[2]));
++            bytes1 osVersion = bytes1(BatchDecoder.SUPPORTED_ENCODING_VERSION_COMMIT_ZKSYNC_OS);
++            if (bytes1(commits[0]) == osVersion && bytes1(commits[1]) == osVersion) {
++                // Native commits authenticate their predecessor and admit one batch at a time.
++                committer.commitBatchesSharedBridge(_chainAddress, _from, _from, commits[0]);
++                committer.commitBatchesSharedBridge(_chainAddress, _to, _to, commits[1]);
++                return;
++            }
++        }
++        committer.commitBatchesSharedBridge(_chainAddress, _from, _to, _data);
++    }
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..e4baf39dcd64b13549b1c08d9db505e31a07e805 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
@@ -5673,23 +5712,188 @@ index f6532b05c6d0999f82ff1c45a37af538057d7b8a..b02d240db416e95773fdcd07adad4173
 +        );
 +        assertTrue(results.verifiersResult.verifierPlonk != address(0), "zkOS PLONK must be deployed");
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol b/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
-index cf86562feabab983964f650d8682dcfa6d7b041d..57d8376006835dbc0866b454e4e1fe9bb226a93b 100644
+index cf86562feabab983964f650d8682dcfa6d7b041d..b1b2fe9dc4f983e532475fc25cc52edd81de3599 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/PermissionlessValidator/PermissionlessValidatorExecutorIntegrationTest.sol
-@@ -6 +6 @@ import {Utils} from "../Utils/Utils.sol";
+@@ -6 +6,8 @@ import {Utils} from "../Utils/Utils.sol";
 -import {IExecutor, TOTAL_BLOBS_IN_COMMITMENT} from "contracts/state-transition/chain-interfaces/IExecutor.sol";
++import {
++    IncorrectBatchBounds,
++    InvalidTxCountInPriorityMode,
++    Unauthorized,
++    UnsupportedCommitBatchEncoding
++} from "contracts/common/L1ContractErrors.sol";
++import {MismatchNumberOfLayer1Txs} from "contracts/state-transition/L1StateTransitionErrors.sol";
 +import {IExecutor} from "contracts/state-transition/chain-interfaces/IExecutor.sol";
-@@ -9,0 +10 @@ import {IL1DAValidator, L1DAValidatorOutput} from "contracts/state-transition/ch
+@@ -9,0 +17 @@ import {IL1DAValidator, L1DAValidatorOutput} from "contracts/state-transition/ch
 +import {SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME} from "contracts/common/SyscoinConfig.sol";
-@@ -97,2 +98,3 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+@@ -14,0 +23,2 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
++    bytes32 private firstPriorityHash;
++
+@@ -20 +30,5 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-        _activatePriorityMode();
++        vm.prank(address(dummyBridgehub));
++        messageRoot.addNewChain(l2ChainId, 0);
++        vm.prank(owner);
++        admin.makePermanentRollup();
++        firstPriorityHash = _enqueuePriorityRequest();
+@@ -23 +37 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-    function _activatePriorityMode() internal {
++    modifier inPriorityMode() {
+@@ -25 +39,7 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-        admin.makePermanentRollup();
++        admin.permanentlyAllowPriorityMode();
++        vm.warp(block.timestamp + PRIORITY_EXPIRATION + 1);
++        admin.activatePriorityMode();
++        _;
++    }
++
++    function _enqueuePriorityRequest() private returns (bytes32) {
+@@ -31 +51 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-        dummyBridgehub.requestL2TransactionDirect{value: baseCost}(
++        return dummyBridgehub.requestL2TransactionDirect{value: baseCost}(
+@@ -44,4 +63,0 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-        vm.prank(owner);
+-        admin.permanentlyAllowPriorityMode();
+-        vm.warp(block.timestamp + PRIORITY_EXPIRATION + 1);
+-        admin.activatePriorityMode();
+@@ -50 +66 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+-    function test_settleBatchesSharedBridge_withExecutor() public {
++    function test_settleBatchesSharedBridge_withExecutor() public inPriorityMode {
+@@ -77,0 +94,124 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
++    function test_settleBatchesSharedBridge_pair_processesBothPriorityRequests() public inPriorityMode {
++        (bytes[2] memory commits, bytes memory prove, bytes memory execute) = _pairData(0, true);
++        permissionlessValidator.settleBatchesSharedBridge(
++            address(executor), 1, 2, _pairEnvelope(commits), prove, execute
++        );
++
++        assertEq(getters.getTotalBatchesCommitted(), 2);
++        assertEq(getters.getTotalBatchesVerified(), 2);
++        assertEq(getters.getTotalBatchesExecuted(), 2);
++        assertEq(getters.getFirstUnprocessedPriorityTx(), 2);
++        assertEq(messageRoot.currentChainBatchNumber(l2ChainId), 2);
++        assertEq(messageRoot.chainBatchRoots(l2ChainId, 1), getters.l2LogsRootHash(1));
++        assertEq(messageRoot.chainBatchRoots(l2ChainId, 2), getters.l2LogsRootHash(2));
++        assertNotEq(getters.storedBatchHash(1), getters.storedBatchHash(2));
++    }
++
++    function test_settleBatchesSharedBridge_pair_ineligibleSecondBatchRollsBackFirstCommit() public inPriorityMode {
++        (bytes[2] memory commits, bytes memory prove, bytes memory execute) = _pairData(1, true);
++        vm.expectRevert(abi.encodeWithSelector(InvalidTxCountInPriorityMode.selector, 1, 1));
++        permissionlessValidator.settleBatchesSharedBridge(
++            address(executor), 1, 2, _pairEnvelope(commits), prove, execute
++        );
++        _assertPairRolledBack();
++    }
++
++    function test_settleBatchesSharedBridge_pair_failedExecutionRollsBackBothCommitsAndProof() public inPriorityMode {
++        (bytes[2] memory commits, bytes memory prove, bytes memory execute) = _pairData(0, false);
++        vm.expectRevert(abi.encodeWithSelector(MismatchNumberOfLayer1Txs.selector, 1, 0));
++        permissionlessValidator.settleBatchesSharedBridge(
++            address(executor), 1, 2, _pairEnvelope(commits), prove, execute
++        );
++        _assertPairRolledBack();
++    }
++
++    function test_settleBatchesSharedBridge_untaggedCommitKeepsNativeRangeChecks() public inPriorityMode {
++        (bytes[2] memory commits, bytes memory prove, bytes memory execute) = _pairData(0, true);
++        vm.expectRevert(abi.encodeWithSelector(IncorrectBatchBounds.selector, 1, 2, 1, 1));
++        permissionlessValidator.settleBatchesSharedBridge(address(executor), 1, 2, commits[0], prove, execute);
++        _assertPairRolledBack();
++    }
++
++    function test_settleBatchesSharedBridge_pairEnvelopeRequiresExactlyTwoBatches() public inPriorityMode {
++        (bytes[2] memory commits, bytes memory prove, bytes memory execute) = _pairData(0, true);
++        vm.expectRevert(abi.encodeWithSelector(UnsupportedCommitBatchEncoding.selector, 0x53));
++        permissionlessValidator.settleBatchesSharedBridge(
++            address(executor), 1, 3, _pairEnvelope(commits), prove, execute
++        );
++        _assertPairRolledBack();
++    }
++
++    function test_settleBatchesSharedBridge_pairEnvelopeRequiresNativeZKsyncOSCommits() public inPriorityMode {
++        (bytes[2] memory commits, bytes memory prove, bytes memory execute) = _pairData(0, true);
++        commits[1][0] = 0x01;
++        vm.expectRevert(abi.encodeWithSelector(UnsupportedCommitBatchEncoding.selector, 0x53));
++        permissionlessValidator.settleBatchesSharedBridge(
++            address(executor), 1, 2, _pairEnvelope(commits), prove, execute
++        );
++        _assertPairRolledBack();
++    }
++
++    function test_settleBatchesSharedBridge_pairRequiresNativeValidatorAuthorityBeforePriorityMode() public {
++        (bytes[2] memory commits, bytes memory prove, bytes memory execute) = _pairData(0, true);
++        address caller = makeAddr("publicRecoveryCaller");
++        assertFalse(getters.isValidator(caller));
++        assertFalse(getters.isValidator(address(permissionlessValidator)));
++
++        vm.expectRevert(abi.encodeWithSelector(Unauthorized.selector, address(permissionlessValidator)));
++        vm.prank(caller);
++        permissionlessValidator.settleBatchesSharedBridge(
++            address(executor), 1, 2, _pairEnvelope(commits), prove, execute
++        );
++        _assertPairRolledBack();
++    }
++
++    function _pairEnvelope(bytes[2] memory _commits) private pure returns (bytes memory) {
++        return bytes.concat(hex"53595001", abi.encode(_commits));
++    }
++
++    function _assertPairRolledBack() private view {
++        assertEq(getters.getTotalBatchesCommitted(), 0);
++        assertEq(getters.getTotalBatchesVerified(), 0);
++        assertEq(getters.getTotalBatchesExecuted(), 0);
++        assertEq(getters.getFirstUnprocessedPriorityTx(), 0);
++        assertEq(getters.getPriorityQueueSize(), 2);
++        assertEq(messageRoot.currentChainBatchNumber(l2ChainId), 0);
++        assertEq(getters.storedBatchHash(1), bytes32(0));
++        assertEq(getters.storedBatchHash(2), bytes32(0));
++    }
++
++    function _pairData(
++        uint256 _secondL2TxCount,
++        bool _includeSecondExecutionItem
++    ) private returns (bytes[2] memory commits, bytes memory prove, bytes memory execute) {
++        bytes32 secondPriorityHash = _enqueuePriorityRequest();
++        PriorityOpsBatchInfo[] memory ops = new PriorityOpsBatchInfo[](2);
++        IExecutor.StoredBatchInfo[] memory batches = new IExecutor.StoredBatchInfo[](2);
++        IExecutor.StoredBatchInfo memory previous = genesisStoredBatchInfo;
++        for (uint256 i = 0; i < 2; ++i) {
++            bytes32 item = i == 0 ? firstPriorityHash : secondPriorityHash;
++            ops[i].itemHashes = new bytes32[](1);
++            ops[i].itemHashes[0] = item;
++            ops[i].leftPath = new bytes32[](1);
++            ops[i].rightPath = new bytes32[](1);
++            if (i == 0) ops[i].rightPath[0] = secondPriorityHash;
++            else ops[i].leftPath[0] = firstPriorityHash;
++
++            CommitBatchInfoZKsyncOS[] memory commit = new CommitBatchInfoZKsyncOS[](1);
++            commit[0] = _buildCommitInfoZKsyncOS(_rollingHash(ops[i].itemHashes), 1);
++            commit[0].batchNumber = uint64(i + 1);
++            commit[0].firstBlockNumber = uint64(2 * i + 1);
++            commit[0].lastBlockNumber = uint64(2 * i + 2);
++            commit[0].newStateCommitment = keccak256(abi.encode(previous.batchHash, item));
++            commit[0].l2LogsTreeRoot = keccak256(abi.encode("priority batch logs", item));
++            if (i == 1) commit[0].numberOfLayer2Txs = _secondL2TxCount;
++            _mockDAValidator(commit[0].batchNumber);
++            (, , commits[i]) = Utils.encodeCommitBatchesDataZKsyncOS(previous, commit);
++            batches[i] = _buildStoredBatchInfoZKsyncOS(commit[0]);
++            previous = batches[i];
++        }
++        (, , prove) = Utils.encodeProveBatchesData(genesisStoredBatchInfo, batches, proofInput);
++        if (!_includeSecondExecutionItem) ops[1].itemHashes = new bytes32[](0);
++        (, , execute) = Utils.encodeExecuteBatchesDataZeroLogs(batches, ops);
++    }
++
+@@ -97,2 +237,3 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
 -        bytes32[] memory blobHashes = new bytes32[](TOTAL_BLOBS_IN_COMMITMENT);
 -        bytes32[] memory blobCommitments = new bytes32[](TOTAL_BLOBS_IN_COMMITMENT);
 +        // SYSCOIN: Compact edge DA commits to a reference root instead of KZG blob arrays.
 +        bytes32[] memory blobHashes = new bytes32[](0);
 +        bytes32[] memory blobCommitments = new bytes32[](0);
-@@ -142,0 +145 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+@@ -142,0 +284 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
 +        info.daCommitmentScheme = SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME;
-@@ -185 +188,2 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
+@@ -185 +327,2 @@ contract PermissionlessValidatorExecutorIntegrationTest is ExecutorTest {
 -                    c.slChainId
 +                    c.slChainId,
 +                    c.edgeDARefsRoot
