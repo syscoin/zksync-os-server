@@ -61,7 +61,7 @@ class CrossEpochCoordinatorTests(unittest.TestCase):
     acquired = tc.CoordinatorTests.acquired
     publication = tc.CoordinatorTests.publication
 
-    def handoff(self, timestamp=620, unready_peer=False):
+    def handoff(self, timestamp=620, unready_peer=False, retain_coordinator=False):
         self.registry_rpc = EpochRegistryRpc(self.f["settings"], self.f["subscriptions"])
         if unready_peer:
             peer = copy.deepcopy(self.f["subscription"])
@@ -77,7 +77,8 @@ class CrossEpochCoordinatorTests(unittest.TestCase):
         io.immutable_json(self.base / "rosters" / "6.json", self.roster)
         self.config = copy.deepcopy(self.config)
         self.config["dispatcher_dir"] = str(self.root.resolve())
-        self.config["keeper"]["enrollment"]["block_hash"] = h(101)
+        if not retain_coordinator:
+            self.config["keeper"]["enrollment"]["block_hash"] = h(101)
         self.rpc.opening_period = 6
         self.rpc.item["sidecar"]["accepted_package"]["period"] = 6
         self.rpc.item["sidecar"]["accepted_package"]["rosterRoot"] = self.roster["root"]
@@ -85,7 +86,8 @@ class CrossEpochCoordinatorTests(unittest.TestCase):
         self.rpc.head["timestamp"] = hex(self.now)
         self.rpc.blocks[self.rpc.head["number"]] = copy.deepcopy(self.rpc.head)
         self.rpc.deadline = self.now + 200
-        self.control_store = c.initialize(self.base / "cross-period-control", self.config)
+        if not retain_coordinator:
+            self.control_store = c.initialize(self.base / "cross-period-control", self.config)
         self.controller_reload()
 
     def frozen(self):
@@ -108,7 +110,8 @@ class CrossEpochCoordinatorTests(unittest.TestCase):
         return audit.verify_package(self.f["settings"], self.f["evidence"], request["manifest"],
                 request["subscriptions"], request["duties"], bundle["audit"], trust, self.registry_rpc,
                 fri_payload=self.f["fri_payload"], enrollment=self.controller.enrollment_for(request),
-                event_root=self.controller.directory(identifier) / "audit-events")
+                event_root=self.controller.directory(identifier)
+                    / self.controller.state["operations"][identifier].get("snapshot_directory", ".") / "audit-events")
 
     def returned(self, work):
         op = self.controller.state["operations"][self.controller.state["active"]]
@@ -157,6 +160,123 @@ class CrossEpochCoordinatorTests(unittest.TestCase):
         self.assertTrue(self.controller_reload().step(True)["written"])
         self.assertTrue((publication / "relay.json").is_file())
         self.assertEqual(self.controller.state["operations"][identifier]["status"], "settled")
+
+    def rollover_store(self):
+        self.registry_rpc = EpochRegistryRpc(self.f["settings"], self.f["subscriptions"])
+        self.now = self.rpc.now = 550
+        self.rpc.head["timestamp"] = hex(self.now)
+        self.rpc.blocks[self.rpc.head["number"]] = copy.deepcopy(self.rpc.head)
+        trust = io.directory(self.base / "audit-trust", create=True)
+        self.config["keeper"]["enrollment"]["audit_trust_dir"] = str(trust)
+        self.control_store = c.initialize(self.base / "rollover-control", self.config)
+        self.controller_reload()
+        return trust
+
+    def test_restart_after_freeze_requires_reviewed_new_roster_pin_and_keeps_credit(self):
+        trust = self.rollover_store()
+        with patch.object(journal, "MAX_INLINE_EVENTS", 1):
+            self.dispatcher.save()
+        identifier = self.acquired()
+        old = self.controller.snapshot(identifier, *self.controller.status(), True)
+        directory = self.controller.directory(identifier)
+        saved = (directory / "bundle.json").read_bytes()
+        lease = self.controller.state["operations"][identifier]["lease"]
+        self.handoff(retain_coordinator=True)
+        with self.assertRaisesRegex(s.Error, "unknown_period_journal|enrollment_authority_anchor_mismatch"):
+            self.controller.step(True)
+        io.immutable_json(trust / "period-6.json", {"schema_version": 1, "period": 6, "enrollment_block_hash": h(101)})
+        opening = self.controller_reload().step(True)
+        self.assertEqual(opening["status"], "broadcast")
+        op = self.controller.state["operations"][identifier]
+        revised = self.controller.snapshot(identifier, *self.controller.status(), True)
+        accepted = revised["request"]["proposal"]["accepted_package"]
+        self.assertEqual((accepted["period"], accepted["rosterRoot"]), (6, self.roster["root"]))
+        self.assertEqual(lease, op["lease"])
+        self.assertEqual(old["request"]["duties"], revised["request"]["duties"])
+        self.assertNotEqual(old["request"]["manifest"], revised["request"]["manifest"])
+        self.assertEqual((directory / "bundle.json").read_bytes(), saved)
+        self.assertEqual(self.check_audit(revised, identifier)["covered_batches"], [1, 2])
+        manager = transactions.Transactions(self.f["settings"], self.config["transaction_policy"], self.rpc,
+                self.wallet, transactions.Store(self.control_store.root / "transactions"), clock=lambda: self.now)
+        call = manager.state["operations"][opening["operation_id"]]["call"]
+        self.assertEqual(k.decode_package(s.raw_hex(call["transaction"]["data"])[4:])["period"], 6)
+        self.rpc.item["sidecar"] = self.controller.prepare(revised["request"], self.f["evidence"], self.f["fri_payload"])
+        self.rpc.opened = True
+        self.rpc.receipt = {"transactionHash": manager.state["operations"][opening["operation_id"]]["transaction_hash"],
+            "from": self.f["settings"]["sequencer"], "to": self.f["settings"]["proof_gate"],
+            "blockNumber": self.rpc.head["number"], "blockHash": self.rpc.head["hash"], "status": "0x1", "logs": []}
+        self.rpc.advance(seconds=1)
+        self.now = self.rpc.now
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_selected_wrapper")
+        self.rpc.item["sidecar"] = self.controller.prepare(old["request"], self.f["evidence"], self.f["fri_payload"])
+        before = copy.deepcopy(self.controller.state["operations"][identifier])
+        signatures = len(self.wallet.calls)
+        self.assertEqual(self.controller_reload().step(False)["next_action"], "would_deliver_selected_wrapper")
+        self.assertEqual(self.controller_reload().state["operations"][identifier], before)
+        self.assertEqual(len(self.wallet.calls), signatures)
+        restored = self.controller_reload().snapshot(identifier, *self.controller.status(), True)
+        self.assertEqual(restored, old)
+        self.assertEqual(self.controller.state["operations"][identifier]["snapshot_directory"], ".")
+
+    def test_legacy_period_directories_recover_old_snapshot_intent_and_credit(self):
+        journals = io.directory(self.base / "legacy-journals", create=True)
+        self.root = self.root.rename(journals / "5")
+        self.store = d.Store(self.root)
+        self.config["dispatcher_dir"] = str(journals)
+        trust = self.rollover_store()
+        identifier = self.acquired()
+        with patch.object(self.controller, "export_context_events", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.controller.snapshot(identifier, *self.controller.status(), True)
+        directory = self.controller.directory(identifier)
+        intent = (directory / "snapshot-intent.json").read_bytes()
+        old_registry = self.registry_rpc
+        self.handoff(retain_coordinator=True)
+        self.current_store.root.rename(journals / "6")
+        io.immutable_json(trust / "period-6.json", {"schema_version": 1, "period": 6, "enrollment_block_hash": h(101)})
+        retained = self.root.rename(journals / "retained")
+        d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 5,
+                     "https://trusted.example/", old_registry)
+        with self.assertRaisesRegex(s.Error, "rollover_audit_prefix_changed"):
+            self.controller_reload().step(True)
+        self.assertEqual(self.rpc.sent, [])
+        self.root.rename(journals / "empty")
+        retained.rename(self.root)
+        self.assertEqual(self.controller_reload().step(True)["status"], "broadcast")
+        revised = self.controller.snapshot(identifier, *self.controller.status(), True)
+        accepted = revised["request"]["proposal"]["accepted_package"]
+        self.assertEqual((accepted["period"], accepted["batchFrom"], accepted["batchTo"]), (6, 1, 2))
+        self.assertEqual([duty["period"] for duty in revised["request"]["duties"]], [5, 5])
+        self.assertEqual(self.check_audit(revised, identifier)["covered_batches"], [1, 2])
+        self.assertEqual((directory / "snapshot-intent.json").read_bytes(), intent)
+
+    def test_pending_old_open_preserves_nonce_then_reopens_after_confirmed_revert(self):
+        trust = self.rollover_store()
+        identifier = self.acquired()
+        opened = self.controller.step(True)
+        self.assertEqual(opened["status"], "broadcast")
+        def operation():
+            manager = transactions.Transactions(self.f["settings"], self.config["transaction_policy"], self.rpc,
+                self.wallet, transactions.Store(self.control_store.root / "transactions"), clock=lambda: self.now)
+            return manager.state["operations"][opened["operation_id"]]
+        original = operation()
+        self.handoff(retain_coordinator=True)
+        io.immutable_json(trust / "period-6.json", {"schema_version": 1, "period": 6, "enrollment_block_hash": h(101)})
+        result = self.controller_reload().step(True)
+        self.assertEqual(result["status"], "authorization_stale_reserved")
+        self.assertEqual(result["operation_id"], opened["operation_id"])
+        for key in ("unsigned_transaction", "raw_transaction", "transaction_hash", "broadcast_attempts"):
+            self.assertEqual(operation()[key], original[key])
+        self.rpc.receipt = {"transactionHash": original["transaction_hash"], "from": self.f["settings"]["sequencer"],
+            "to": self.f["settings"]["proof_gate"], "blockNumber": self.rpc.head["number"],
+            "blockHash": self.rpc.head["hash"], "status": "0x0", "logs": []}
+        self.rpc.advance(seconds=1)
+        self.now = self.rpc.now
+        self.rpc.nonce = self.rpc.pending_nonce = 1
+        result = self.controller_reload().step(True)
+        self.assertEqual(result["status"], "broadcast")
+        self.assertNotEqual(result["operation_id"], opened["operation_id"])
+        self.assertEqual(operation()["status"], "reverted")
+        self.assertEqual(self.controller.state["active"], identifier)
 
     def test_expired_old_credit_stays_in_coverage_with_zero_reward_report(self):
         self.handoff(timestamp=660)

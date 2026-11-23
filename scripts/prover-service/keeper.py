@@ -63,9 +63,27 @@ def registry_rpc_for(config):
                                          config["policy"]["rpc_timeout_seconds"])
 
 
+def enrollment_pin(config, period):
+    """Only independently provisioned period pins can extend the initial keeper pin."""
+    import workflow_io
+    from pathlib import Path
+    period = s.uint(period, 64)
+    pins = config["enrollment"]
+    if "audit_trust_dir" in pins:
+        path = workflow_io.directory(pins["audit_trust_dir"]) / f"period-{period}.json"
+        if os.path.lexists(path):
+            record = workflow_io.private_json(path)
+            s.exact(record, ("schema_version", "period", "enrollment_block_hash"))
+            s.require(record["schema_version"] == 1 and s.uint(record["period"], 64) == period,
+                      "enrollment_period_pin_mismatch")
+            return s.nonzero(record["enrollment_block_hash"])
+    return pins["block_hash"]
+
+
 def enrollment_for(config, request, registry_rpc=None, *, enrollment=None):
     configuration(config)
     payload = request["manifest"]["payload"]
+    current_pin = enrollment_pin(config, payload["period"])
     if payload.get("schema_version") == 2:
         if enrollment is None:
             import workflow_io
@@ -83,22 +101,22 @@ def enrollment_for(config, request, registry_rpc=None, *, enrollment=None):
                           "aggregate_audit_trust_identity_mismatch")
                 pin = s.nonzero(trust["enrollment_block_hash"])
                 if key == payload["current_journal_id"]:
-                    s.require(pin == config["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
+                    s.require(pin == current_pin, "enrollment_authority_anchor_mismatch")
                 authorities[key] = s.EnrollmentAuthority(config["settings"], context["subscriptions"],
                             context["manifest"]["payload"]["period"], connection, pin)
             enrollment = s.EnrollmentGroup(config["settings"], authorities, payload["current_journal_id"], connection)
         s.require(type(enrollment) is s.EnrollmentGroup, "authenticated_enrollment_group_required")
         enrollment.check_aggregate(config["settings"], payload["contexts"], payload["period"], payload["current_journal_id"])
-        s.require(enrollment.authorities[enrollment.current_journal_id].block_hash == config["enrollment"]["block_hash"],
+        s.require(enrollment.authorities[enrollment.current_journal_id].block_hash == current_pin,
                   "enrollment_authority_anchor_mismatch")
         return enrollment
     if enrollment is not None:
         s.require(type(enrollment) is s.EnrollmentAuthority, "configured_enrollment_authority_required")
-        s.require(enrollment.block_hash == config["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
+        s.require(enrollment.block_hash == current_pin, "enrollment_authority_anchor_mismatch")
         enrollment.check(config["settings"], request["subscriptions"], request["manifest"]["payload"]["period"])
         return enrollment
     return s.EnrollmentAuthority(config["settings"], request["subscriptions"], request["manifest"]["payload"]["period"],
-                                 registry_rpc or registry_rpc_for(config), config["enrollment"]["block_hash"])
+                                 registry_rpc or registry_rpc_for(config), current_pin)
 
 
 def normalized(accepted):

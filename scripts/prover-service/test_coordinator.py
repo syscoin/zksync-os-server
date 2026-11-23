@@ -1150,13 +1150,70 @@ class CoordinatorTests(unittest.TestCase):
         self.native.responses.append((200, {}, {**self.f["fri_payload"], "lease_token": h(181)}))
         self.assertIsNone(self.controller_reload().acquire(identifier, True))
         op = self.controller.state["operations"][identifier]
-        self.assertEqual(op["leases"][:-1], original_leases)
+        self.assertEqual(len(op["leases"]), 1)
+        self.assertEqual(io.private_json(directory / original_leases[0]["name"] / "attempt.json"), original_leases[0])
         self.assertNotIn(directory / op["lease"] / "attempt.json", archives)
         self.assertEqual(len(self.native.calls), 259)
         self.assertTrue(all(path.is_file() for path in archives))
         self.assertEqual(op["bundle"], io.digest(bundle))
         self.assertEqual(op["works"], original_works)
         self.assertEqual(io.private_json(directory / "payload.json"), self.f["fri_payload"])
+
+    def test_frozen_range_renews_after_256_granted_leases_expire_across_restart(self):
+        self.config["native_lease_seconds"] = 1
+        self.control_store = c.initialize(self.base / "short-lease-control", self.config)
+        self.controller_reload()
+        identifier, bundle = self.frozen()
+        directory = self.controller.directory(identifier)
+        chain, artifact = self.controller.status()
+        rebound = k.rebind_request(self.controller.settings, bundle["request"], chain, artifact)
+        # Keep the open package and wrapper turn fixed while real native leases roll over.
+        with patch.object(self.controller, "status", return_value=(chain, artifact)), \
+                patch.object(self.controller, "dispatcher_for", side_effect=lambda _: nullcontext()), \
+                patch.object(self.controller, "refresh_report", return_value=bundle), \
+                patch.object(k, "rebind_request", return_value=rebound), patch.object(self.controller, "prepare"):
+            for index in range(256):
+                if index:
+                    token = f"0x{4096 + index:064x}"
+                    self.native.responses.append((200, {}, {**self.f["fri_payload"], "lease_token": token}))
+                    self.assertIsNone(self.controller.acquire(identifier, True))
+                self.now += 1
+                self.assertEqual(self.controller.step(True)["next_action"], "renew_expired_native_lease_same_frozen_payload")
+
+        old_leases = self.controller.state["operations"][identifier]["leases"]
+        self.assertEqual(len(old_leases), 256)
+        original = {item["name"]: (directory / item["name"] / "authority.json").read_bytes() for item in old_leases}
+        self.rpc.advance(seconds=256)
+        self.rpc.deadline = 2000
+        self.rpc.status_overrides[(a(123), "maxProofWorkSeconds()")] = 2000
+        self.native.responses.append((200, {}, {**self.f["fri_payload"], "lease_token": h(181)}))
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_selected_wrapper")
+        op = self.controller.state["operations"][identifier]
+        self.assertEqual(len(op["leases"]), 1)
+        self.assertNotIn(op["lease"], original)
+        self.assertEqual(io.private_json(directory / op["lease"] / "authority.json")["lease_token"], h(181))
+        for attempt in old_leases:
+            lease = directory / attempt["name"]
+            self.assertEqual(io.private_json(lease / "attempt.json"), attempt)
+            self.assertEqual((lease / "authority.json").read_bytes(), original[attempt["name"]])
+        self.assertEqual(op["bundle"], io.digest(bundle))
+        self.assertEqual(io.private_json(directory / "payload.json"), self.f["fri_payload"])
+
+    def test_expired_rejected_lease_archives_only_for_its_frozen_range(self):
+        identifier = self.acquired()
+        attempt = self.controller.state["operations"][identifier]["leases"][0]
+        lease = self.controller.directory(identifier) / attempt["name"]
+        self.native.responses.append((422, {"x-syscoin-prover-disposition": "rejected"}, b""))
+        self.assertEqual(c.native_handoff.submit(lease, self.f["snark"], "private-auth", self.native), "rejected")
+        original = {name: (lease / name).read_bytes() for name in ("authority.json", "submission.json")}
+        self.assertFalse(self.controller.archive_finished_attempt(identifier, attempt, (1, 2)))
+        self.now = attempt["deadline"]
+        with self.assertRaisesRegex(s.Error, "archived_lease_range_changed"):
+            self.controller.archive_finished_attempt(identifier, attempt, (2, 3))
+        self.assertFalse((lease / "attempt.json").exists())
+        self.assertTrue(self.controller.archive_finished_attempt(identifier, attempt, (1, 2)))
+        self.assertEqual(io.private_json(lease / "attempt.json"), attempt)
+        self.assertEqual({name: (lease / name).read_bytes() for name in original}, original)
 
     def test_expired_uncertain_submission_retries_the_same_lease_and_bytes(self):
         identifier, _ = self.frozen()
@@ -1173,6 +1230,7 @@ class CoordinatorTests(unittest.TestCase):
         self.rpc.deadline = 2000
         self.rpc.status_overrides[(a(123), "maxProofWorkSeconds()")] = 2000
         self.now = self.rpc.now
+        self.assertFalse(self.controller.archive_finished_attempt(identifier, history[-1], (1, 2)))
         self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
         self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
         self.assertEqual(self.native.calls[-1], submitted)
@@ -1317,6 +1375,93 @@ class CoordinatorTests(unittest.TestCase):
             self.controller.snapshot(identifier, chain, artifact, True)
         self.assertFalse((self.controller.directory(identifier) / "snapshot.json").exists())
         self.assertEqual(self.wallet.calls, [])
+
+    def test_wrapper_journal_precedes_visible_work_and_retries_interrupted_delivery(self):
+        identifier, _ = self.frozen()
+        inbox = self.base / "inbox"
+        def interrupt(*args, **kwargs):
+            op = self.controller_reload().state["operations"][identifier]
+            self.assertEqual(len(op["works"]), 1)
+            source = Path(next(iter(op["works"].values()))["directory"])
+            self.assertEqual(source.parent, inbox)
+            self.assertFalse((source / "work.json").exists())
+            raise InterruptedError("before publication")
+        with patch.object(io, "publish_work", side_effect=interrupt):
+            with self.assertRaises(InterruptedError):
+                self.controller.step(True)
+        delivered = self.controller_reload().step(True)
+        op = self.controller.state["operations"][identifier]
+        self.assertEqual(list(op["works"]), [delivered["work_hash"]])
+        self.returned(delivered, bare=True)
+        self.rpc.turn += 1
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+
+    def test_257th_wrapper_request_is_delivered_and_its_response_survives_restart(self):
+        identifier, _ = self.frozen()
+        first = self.controller.step(True)
+        op = self.controller.state["operations"][identifier]
+        operator = first["operator"]
+        inbox = self.base / "inbox"
+        # Upgrade a full journal in the old on-disk format.
+        op.pop("wrapper_indexed")
+        for index in range(255):
+            work_hash = h(index)
+            op["works"][work_hash] = {"directory": str(inbox / work_hash[2:]), "operator": operator, "checked": False}
+        self.controller.save()
+        self.rpc.turn += 1
+        work = self.controller_reload().step(True)
+        op = self.controller.state["operations"][identifier]
+        self.assertEqual(list(op["works"]), [work["work_hash"]])
+        history = io.private_json(self.controller.directory(identifier) / "wrapper-work-0.json")
+        self.assertEqual(len(history), 256)
+        self.assertIn(first["work_hash"], history)
+        self.returned(work, bare=True)
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        self.assertTrue(self.controller.state["operations"][identifier]["works"][work["work_hash"]]["checked"])
+
+    def test_late_archived_wrapper_proof_is_checked_across_restart(self):
+        identifier, _ = self.frozen()
+        with patch.object(c, "WRAPPER_WORK_PAGE_SIZE", 1):
+            first = self.controller.step(True)
+            path = self.base / "inbox" / first["work_hash"][2:] / "result.json"
+            for _ in range(2):
+                self.rpc.turn += 1
+                self.controller_reload().step(True)
+            self.controller_reload().result(identifier, True)
+            op = self.controller.state["operations"][identifier]
+            self.assertEqual((op["work_pages"], op["work_cursor"]), (2, 1))
+            result = {"schema_version": 1, "work_hash": first["work_hash"], "proof": self.f["snark"],
+                      "prepared": None, "wrapper_signature": "0x"}
+            io.immutable_json(path, {"result": result, "operator_signature": sign(
+                io.result_request(self.f["settings"], first["work_hash"], result, first["operator"]), "wrapper")})
+            self.controller_reload().result(identifier, True)
+            self.assertIsNone(self.controller.state["operations"][identifier]["proof"])
+            self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+            self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+            history = io.private_json(self.controller.directory(identifier) / "wrapper-work-0.json")
+            self.assertTrue(history[first["work_hash"]]["checked"])
+
+    def test_upgrade_finds_signed_wrapper_result_missing_from_legacy_journal(self):
+        identifier, _ = self.frozen()
+        work = self.controller.step(True)
+        self.returned(work, bare=True)
+        op = self.controller.state["operations"][identifier]
+        op["works"].clear()
+        op.pop("wrapper_indexed")
+        self.controller.save()
+        source = self.base / "inbox" / work["work_hash"][2:]
+        envelope = io.private_json(source / "work.json")
+        envelope["body"]["native_lease_deadline"] += 1
+        other_hash = s.keccak(s.canonical(envelope["body"]))
+        other = io.directory(self.base / "inbox" / other_hash[2:], create=True)
+        io.immutable_json(other / "work.json", envelope)
+        self.rpc.turn += 1
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        self.assertTrue(self.controller.state["operations"][identifier]["works"][work["work_hash"]]["checked"])
+        self.assertNotIn(other_hash, self.controller.state["operations"][identifier]["works"])
 
     def test_invalid_old_result_cannot_starve_current_valid_proof(self):
         identifier, _ = self.frozen()

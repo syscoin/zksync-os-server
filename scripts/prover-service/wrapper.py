@@ -223,7 +223,7 @@ class Wrapper:
                 s.require(key not in authorities, "duplicate_manifest_context")
                 pin = self.audit_trust(key)["enrollment_block_hash"]
                 if key == payload["current_journal_id"]:
-                    s.require(pin == self.keeper["enrollment"]["block_hash"], "enrollment_authority_anchor_mismatch")
+                    s.require(pin == k.enrollment_pin(self.keeper, payload["period"]), "enrollment_authority_anchor_mismatch")
                 old = previous.authorities.get(key) if type(previous) is s.EnrollmentGroup else None
                 if old is not None and old.block_hash == pin:
                     old.check(self.settings, context["subscriptions"], context["manifest"]["payload"]["period"])
@@ -234,7 +234,7 @@ class Wrapper:
             group = s.EnrollmentGroup(self.settings, authorities, payload["current_journal_id"], self.registry_rpc)
             self.enrollment_authority = k.enrollment_for(self.keeper, request, self.registry_rpc, enrollment=group)
             return self.enrollment_authority
-        if type(self.enrollment_authority) is not s.EnrollmentAuthority:
+        if type(self.enrollment_authority) is not s.EnrollmentAuthority or self.enrollment_authority.period != payload["period"]:
             self.enrollment_authority = None
         self.enrollment_authority = k.enrollment_for(self.keeper, request, self.registry_rpc,
                                                     enrollment=self.enrollment_authority)

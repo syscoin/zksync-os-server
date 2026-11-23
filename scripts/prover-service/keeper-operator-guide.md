@@ -87,7 +87,14 @@ Cross-period wrapping requires `audit_trust_dir`: an absolute private directory
 containing independently provisioned trust files for every included journal.
 It must equal the wrapper's `audit_trust_dir` and remain available to the rental
 pool when it revalidates a saved compute permit. The current journal's trust pin
-must match `block_hash`; historical journals retain their own reviewed pins.
+must match the reviewed enrollment block for its period. By default this is
+`block_hash`. To roll a running service forward, provision `period-<number>.json`
+in the keeper's private `audit_trust_dir` on the coordinator, wrapper and pool.
+For example, the file for period 6 contains
+`{"schema_version":1,"period":6,"enrollment_block_hash":"0x<reviewed 32-byte hash>"}`.
+Use the independently verified canonical enrollment block for that period and
+the same hash in its journal's audit trust file. Historical journals retain
+their own reviewed pins.
 The pool rebuilds canonical enrollment authorities from these files, never from
 the work envelope's claimed anchors. Single-period configurations may omit it.
 Offline `service.py` helpers and `keeper.prepare` retain their EOA account-signature
@@ -261,12 +268,12 @@ work and taking its signed snapshot. Its keeper pin must match that journal.
 Retain older journals, coordinator/wrapper state, and pool configurations until
 their pending work and uncertain allocations are reconciled. The FRI dispatcher
 creates the next journal only from finalized registry time and complete eligible
-enrollment; operators sign fresh readiness for its new identity. For a new period,
-prepare new reviewed keeper,
-coordinator/wrapper and pool configurations in fresh state directories, and supply
-the matching independently reviewed audit trust pin to the operators. The
-immutable configuration does not adopt a new journal's pin automatically. Do not
-run competing dispatchers or rewind old state to change a pin.
+enrollment; operators sign fresh readiness for its new identity. Provision the
+new period's reviewed pin and journal trust before the opening roster changes.
+The same coordinator state can then rebuild an unopened proposal for that roster
+and retain historical duty evidence. Already-open packages continue under their
+frozen roster. A signed opening transaction keeps its nonce until its canonical
+receipt resolves. Keep the coordinator, wrapper and pool journals across restart.
 FRI handles from automatic handoff include their journal path, for example
 `periods/6-service/job-000000`; preserve that scope in follow-up commands.
 Use `--fixed-epoch` with the exact old dispatcher journal for pending-pick recovery
