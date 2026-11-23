@@ -137,6 +137,40 @@ class PeriodRoutingTests(unittest.TestCase):
         self.assertEqual(self.state(following)["period"], 6)
         self.assertEqual(set(self.rpc.actual_anchors), {h(101)})
 
+    def test_dual_lane_start_and_rollover_validate_one_complete_roster_at_one_block(self):
+        child = self.f["settings"]
+        gateway = {**child, "execution_chain_id": child["settlement_chain_id"], "settlement_chain_id": "0x39",
+                   "chain_address": td.a(117), "vk_hash": h(119)}
+        self.rpc.gateway = gateway
+        binding = {"settings": gateway, "endpoint": "https://gateway.example/"}
+
+        def assert_one_scan(anchor):
+            self.assertEqual(set(self.rpc.actual_anchors), {anchor})
+            self.assertEqual(self.rpc.views.count("supportedLane(uint256)"), 2)
+            for view in ("friSubscriberCount(address,uint64)", "friSubscriberAt(address,uint64,uint256)",
+                         "isEligibleFriSubscriber(address,address,uint64)", "subscriptionAt(address,address,uint64)",
+                         "subscription(bytes32)", "operatorAccountAt(address,uint64)", "seniorBonus(address)"):
+                self.assertEqual(self.rpc.views.count(view), 1, view)
+
+        self.rpc.views.clear()
+        self.rpc.actual_anchors.clear()
+        self.rpc.advance_on_finalized_read = (560, 101)
+        base = d.initialize(Path(self.tmp.name) / "two-lanes", child, self.f["subscriptions"], 5,
+                            "https://child.example/", self.rpc, gateway=binding)
+        assert_one_scan(h(100))
+        self.rpc.views.clear()
+        self.rpc.actual_anchors.clear()
+        self.rpc.finalize(620, 102)
+        rolled = p.current_store(base, self.rpc, 625)
+        assert_one_scan(h(102))
+        self.assertEqual(self.state(rolled)["subscriptions"][0]["signature"], "0x")
+
+        self.rpc.gateway = {**gateway, "vk_hash": h(120)}
+        self.rpc.finalize(720, 103)
+        with self.assertRaisesRegex(s.Error, "registry_vk_mismatch"):
+            p.current_store(base, self.rpc, 725)
+        self.assertFalse((base.root / "periods" / "7-service").exists())
+
     def test_missing_enrollment_or_changed_registry_binding_fails_without_new_journal(self):
         self.rpc.finalize(620, 101)
         self.rpc.ineligible.add(self.account)

@@ -150,17 +150,23 @@ class AuditEnrollmentCostTests(unittest.TestCase):
         rpc.contract_page = contract_page
         block_hash = self.anchor["block_hash"]
         pinned = period_routing.PinnedRpc(rpc, {"hash": block_hash, "timestamp": hex(self.anchor["timestamp"])})
-        rolled = period_routing._subscriptions(pinned, self.settings, 5, block_hash)
+        rolled, anchor = enrollment.registry_enrollment_snapshot(self.settings, 5, pinned, block_hash)
         with tempfile.TemporaryDirectory() as root:
-            store = dispatcher.initialize(Path(root) / "period", self.settings, rolled, 5, "https://child.example/", pinned)
+            store = dispatcher._initialize_from_snapshot(Path(root) / "period", self.settings, rolled, 5,
+                    "https://child.example/", pinned, anchor, {"settings": self.gateway, "endpoint": "https://gateway.example/"})
             journal = s.read_json(store.root / "state.json", private=True)
         self.assertEqual(journal["enrollment"], self.anchor)
         self.assertEqual(journal["cursor"], journal["journal_id"])
         self.assertEqual(set(journal["accounts"]), {entry["subscription"]["account"] for entry in expected})
         self.assertEqual([entry["subscription"] for entry in journal["subscriptions"]],
                          [entry["subscription"] for entry in expected])
-        sizes = [size for signature, size, _ in batches if signature.startswith("friSubscriberAt(")]
-        self.assertEqual(sizes, ([32] * 8 + [1]) * 2)
+        signatures = ["friSubscriberAt(address,uint64,uint256)", "isEligibleFriSubscriber(address,address,uint64)",
+                      "subscriptionAt(address,address,uint64)", "subscription(bytes32)", "operatorAccountAt(address,uint64)",
+                      "seniorBonus(address)"]
+        for signature in signatures:
+            self.assertEqual([size for name, size, _ in batches if name == signature], [32] * 8 + [1])
+        self.assertEqual([call[2] for call in rpc.calls if call[:2] == ("eth_call", "supportedLane(uint256)")],
+                         [(s.uint(self.settings["execution_chain_id"]),), (s.uint(self.gateway["execution_chain_id"]),)])
         self.assertEqual({anchor for _, _, anchor in batches}, {block_hash})
         with self.assertRaisesRegex(s.Error, "omits_or_adds"):
             enrollment.enrollment_snapshot(self.settings, rolled[:-1], 5, pinned)
