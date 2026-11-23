@@ -262,9 +262,9 @@ pub async fn recover_replay(
     Ok(())
 }
 
-/// Both registered component fixtures and the generator's freshly imported WAL go through
-/// the production verification barrier. A fresh generator run has no WAL to verify.
-pub(crate) async fn verify_pending_replay(config: &Config) -> anyhow::Result<Option<(u64, B256)>> {
+/// Reexecute a pending archive in a separate runtime and return its verified anchor.
+/// A newly generated chain or a previously verified WAL has no pending anchor.
+pub async fn verify_pending_replay(config: &Config) -> anyhow::Result<Option<(u64, B256)>> {
     let wal_path = config.general_config.rocks_db_path.join("block_replay_wal");
     if !wal_path.join("CURRENT").try_exists()? {
         return Ok(None);
