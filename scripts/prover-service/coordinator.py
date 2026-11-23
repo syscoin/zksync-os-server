@@ -31,6 +31,9 @@ import sentry
 from runpod import Store, atomic_json, read_private_json
 
 
+MAX_RETAINED_NATIVE_LEASES = 256
+
+
 def configuration(value):
     s.exact(value, ("schema_version", "keeper", "endpoint", "native_auth_file", "release_file",
                     "native_lease_seconds", "dispatcher_dir", "roster_dir", "operator_inboxes",
@@ -269,6 +272,22 @@ class Coordinator:
         self.save()
         return identifier
 
+    def archive_unleased_attempt(self, identifier, attempt):
+        lease = self.directory(identifier) / attempt["name"]
+        authority = lease / "authority.json"
+        if not authority.exists():
+            return False
+        record = read_private_json(authority)
+        if record["status"] != "no_job":
+            return False
+        s.require(record["job_id"] == identifier + ":" + attempt["name"]
+                  and record["endpoint"] == sentry.endpoint_url(self.config["endpoint"])
+                  and record["release_sha256"] == self.state["release_sha256"]
+                  and all(record[key] is None for key in ("lease_token", "manifest_sha256", "operation_id", "submission_sha256")),
+                  "native_unleased_authority_changed")
+        io.immutable_json(lease / "attempt.json", attempt)
+        return True
+
     def acquire(self, identifier, execute, *, next_native_batch=None):
         op, directory = self.state["operations"][identifier], self.directory(identifier)
         if not execute:
@@ -286,8 +305,13 @@ class Coordinator:
             with self.dispatcher_for(chain):
                 pass
         if op["lease"] is None:
-            s.require(len(op["leases"]) < 256, "native_lease_attempt_limit")
-            name = "lease-" + str(len(op["leases"]))
+            if len(op["leases"]) >= MAX_RETAINED_NATIVE_LEASES:
+                # Older journals counted every empty renewal. Keep all attempts whose
+                # private authority does not establish a definitive unleased response.
+                op["leases"] = [item for item in op["leases"] if not self.archive_unleased_attempt(identifier, item)]
+                s.require(len(op["leases"]) < MAX_RETAINED_NATIVE_LEASES, "native_lease_attempt_limit")
+            name = "lease-" + uuid.uuid4().hex
+            s.require(not os.path.lexists(directory / name), "native_lease_directory_already_exists")
             op["leases"].append({"name": name, "started_at": int(self.clock()),
                                  "deadline": int(self.clock()) + self.config["native_lease_seconds"]})
             op["lease"] = name
@@ -314,6 +338,9 @@ class Coordinator:
                 io.immutable_json(directory / "completed.json", op)
                 del self.state["operations"][identifier]
             else:
+                attempt = next(item for item in op["leases"] if item["name"] == op["lease"])
+                s.require(self.archive_unleased_attempt(identifier, attempt), "native_unleased_authority_changed")
+                op["leases"].remove(attempt)
                 op["lease"] = None
             self.save()
             return "native_queue_empty"
@@ -516,8 +543,10 @@ class Coordinator:
             return {"next_action": "wait_for_existing_wallet_reservation"}
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
             self.signing_wallet(), transactions.Store(self.store.root / "transactions"), self.clock)
+        if call["action"] == "observeNativeSettlement":
+            producer = self.native_observation_call
         if op["maintenance"] is None:
-            pending = manager.plan(call)
+            pending = manager.plan(producer if call["action"] in transactions.REPEATABLE else call)
             if (pending["call"]["action"] != call["action"] or
                     call["action"] not in transactions.REPEATABLE and pending["call"]["transaction"] != call["transaction"]):
                 return self.track_reserved_receipt(manager, pending["operation_id"], True)
@@ -528,7 +557,7 @@ class Coordinator:
             if original["action"] in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
                 return False
             try:
-                current = producer()
+                current = producer(head)
             except s.Error:
                 return False
             return current["transaction"] == original["transaction"] and current["anchor"]["hash"] == head["hash"]
@@ -591,9 +620,9 @@ class Coordinator:
                 if action in ("openPackage", "repairPackage"):
                     call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()),
                                           "open" if action == "openPackage" else "repair",
-                                          enrollment=self.enrollment_for(bundle["request"]))
+                                          enrollment=self.enrollment_for(bundle["request"]), at_head=head)
                 elif action == "observeNativeSettlement":
-                    call = k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()))
+                    call = self.native_observation_call(head)
                 else:
                     return False
                 return call["transaction"] == original["transaction"] and call["anchor"]["hash"] == head["hash"]
@@ -683,12 +712,28 @@ class Coordinator:
             entry = relay.state["operations"][op["relay"]]
             pending_nonce = relay.external_acceptance_with_pending_nonce(entry)
             if result["status"] in ("accepted", "accepted_elsewhere") or pending_nonce:
-                if not result["acceptance"].get("transaction_hash"):
+                accepted_tx = result["acceptance"].get("transaction_hash")
+                if not accepted_tx:
                     return {**result, "next_action": "wait_for_acceptance_transaction"}
                 s.require(op["publication"] is not None, "native_publication_missing")
-                handoff = relay.export_handoff(op["relay"], op["publication"], execute)
+                try:
+                    handoff = relay.export_handoff(op["relay"], op["publication"], execute)
+                except FileNotFoundError as error:
+                    if not receipt_only or error.filename != op["publication"]:
+                        raise
+                    # A delivered hint is bound to this frozen relay and its acceptance transaction.
+                    # An archived first or replacement handoff still needs its original publication.
+                    if op.get("handed_off_tx") != accepted_tx:
+                        if execute and op.get("handoff_restore_required") != accepted_tx:
+                            op["handoff_restore_required"] = accepted_tx
+                            self.save()
+                        return {**result, "next_action": "restore_publication_for_handoff"}
+                    handoff = result
                 status = "settled_with_pending_nonce" if pending_nonce else "settled"
-                if execute and (op["status"] != status or self.state["active"] == identifier):
+                if execute and (op["status"] != status or self.state["active"] == identifier
+                                or op.get("handed_off_tx") != accepted_tx or op.get("handoff_restore_required")):
+                    op["handed_off_tx"] = accepted_tx
+                    op.pop("handoff_restore_required", None)
                     op["status"] = status
                     if pending_nonce and identifier not in self.state.setdefault("regrouped_pending", []):
                         self.state["regrouped_pending"].append(identifier)
@@ -700,6 +745,7 @@ class Coordinator:
                     or result["status"] == "reverted"):
                 if execute:
                     op["relay"] = None
+                    op.pop("handoff_restore_required", None)
                     self.save()
                 return None
             return result
@@ -757,10 +803,10 @@ class Coordinator:
                 self.state["regrouped_pending"].remove(identifier)
                 self.save()
 
-    def observe_native(self, execute):
-        def observation():
-            return k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()))
+    def native_observation_call(self, head):
+        return k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()), at_head=head)
 
+    def observe_native(self, execute):
         pending = self.state.get("native_observation")
         if not pending and self.state.get("maintenance_receipt"):
             return {"next_action": "wait_for_existing_wallet_reservation"}
@@ -769,7 +815,7 @@ class Coordinator:
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
             self.signing_wallet() if execute else None, transactions.Store(self.store.root / "transactions"), self.clock)
         if not pending:
-            pending = manager.plan(observation())
+            pending = manager.plan(self.native_observation_call)
             if pending["call"]["action"] == "observeNativeSettlement" and pending["invocation"] is not None:
                 self.state["native_observation"] = pending
                 self.save()
@@ -786,7 +832,7 @@ class Coordinator:
 
         def preflight(original, head, anchor):
             try:
-                current = observation()
+                current = self.native_observation_call(head)
             except s.Error:
                 return False
             return current["transaction"] == original["transaction"] and current["anchor"]["hash"] == head["hash"]
@@ -910,12 +956,12 @@ class Coordinator:
                 expected = dict(chain["frozen_package"])
                 expected["reportHash"] = frozen["reportHash"]
                 s.require(frozen == expected, "report_repair_changed_frozen_work")
-                produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload,
-                                 int(self.clock()), "repair", enrollment=self.enrollment_for(bundle["request"]))
+                produce = lambda head=None: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload,
+                                 int(self.clock()), "repair", enrollment=self.enrollment_for(bundle["request"]), at_head=head)
                 return self.maintenance(identifier, produce(), produce, execute)
         if not chain["package_open"]:
-            produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open",
-                                             enrollment=self.enrollment_for(bundle["request"]))
+            produce = lambda head=None: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload,
+                                 int(self.clock()), "open", enrollment=self.enrollment_for(bundle["request"]), at_head=head)
             return self.maintenance(identifier, produce(), produce, execute)
         request = k.rebind_request(self.settings, bundle["request"], chain, roster)
         self.prepare(request, evidence, payload)

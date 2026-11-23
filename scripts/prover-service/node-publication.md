@@ -144,8 +144,14 @@ phase at execution time. On a later service restart, original zero-coordinator
 bootstrap work keeps its original bytes and hash; the node allows only that
 coordinator transition while all native/deployment pins remain identical.
 
-Completed publication records remain available for recovery and audit. Archive
-only ranges already executed on the canonical settlement chain, retaining an
-operator backup. Keep native metadata and the applicable service receipts or
+Completed publication records remain available for recovery and audit. Before
+moving a publication to backup, verify canonical execution through its last batch
+and check the coordinator journal. Neither its `active` operation nor any
+`regrouped_pending` operation may still reference that publication. Retain the
+backup. If an archived publication is needed to deliver an acceptance for the
+first time or with a different transaction hash, the coordinator records
+`handoff_restore_required` on that operation. Restore the original directory
+at its recorded path so the coordinator can deliver the authenticated handoff.
+Keep native metadata and the applicable service receipts or
 canonical native observation evidence for proved-but-unexecuted ranges. The bounded journal fails closed when `max_records` is
 exhausted. Confirmation depth is not a claim of Bitcoin ChainLock finality.

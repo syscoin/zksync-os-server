@@ -316,10 +316,13 @@ def call_word(rpc, address, signature, anchor, encoded=b"", kind="uint"):
     return result
 
 
-def anchored_head(rpc, settings, limits, now):
+def anchored_head(rpc, settings, limits, now, *, at_head=None):
     s.require(s.uint(rpc.call("eth_chainId", [])) == s.uint(settings["settlement_chain_id"]), "wrong_rpc_chain")
-    head = rpc.call("eth_getBlockByNumber", ["latest", False])
+    head = rpc.call("eth_getBlockByNumber", [at_head["number"] if at_head is not None else "latest", False])
     s.require(type(head) is dict, "missing_canonical_head")
+    if at_head is not None:
+        s.require(head.get("hash") == at_head["hash"] and s.uint(head.get("number")) == s.uint(at_head["number"]),
+                  "rpc_reorg_or_chain_change")
     s.nonzero(head.get("hash"))
     s.uint(head.get("number"))
     timestamp = s.uint(head.get("timestamp"))

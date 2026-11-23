@@ -114,8 +114,14 @@ class Transactions:
         return {"operation_id": operation_id, "call": copy.deepcopy(op["call"]),
                 "invocation": copy.deepcopy(op.get("invocation"))}
 
+    def _head_after_history(self, previous):
+        head, anchor = r.anchored_head(self.rpc, self.settings, self.limits, int(self.clock()))
+        r.check_anchor(self.rpc, self.settings, previous)
+        return head, anchor
+
     def plan(self, call):
-        frozen = intent(self.settings, self.limits, call)
+        producer = call if callable(call) else None
+        frozen = None if producer is not None else intent(self.settings, self.limits, call)
         with self.store.lock():
             self.state = self.store.load(self.settings, self.limits)
             for identifier, op in self.state["operations"].items():
@@ -126,11 +132,26 @@ class Transactions:
                 if op["unsigned_transaction"] is not None and not self._settled(op, head):
                     r.check_anchor(self.rpc, self.settings, head)
                     return self.descriptor(identifier)
+            if producer is not None or call["action"] in REPEATABLE:
+                # Select the call's block after signature validation and canonical receipt reads.
+                head, _ = self._head_after_history(head)
+            if producer is not None:
+                call = producer(copy.deepcopy(head))
+                frozen = intent(self.settings, self.limits, call)
+                s.require(all(call["anchor"][key] == head[key] for key in ("number", "hash", "timestamp")),
+                          "maintenance_anchor_changed")
             invocation = None
             if call["action"] in REPEATABLE:
-                s.require(call["anchor"]["hash"] == head["hash"], "maintenance_anchor_changed")
                 scope = observation_scope(self.rpc, self.settings, head)
                 s.require(scope is not None, "no_forward_native_advance")
+                if call["anchor"]["hash"] != head["hash"]:
+                    # A prebuilt call remains usable across successors only for the same native range and hash.
+                    original, _ = r.anchored_head(self.rpc, self.settings, self.limits, int(self.clock()), at_head=call["anchor"])
+                    s.require(s.uint(original["number"]) < s.uint(head["number"]) and
+                              observation_scope(self.rpc, self.settings, original) == scope, "maintenance_anchor_changed")
+                    r.check_anchor(self.rpc, self.settings, original)
+                    anchor = {"blockHash": head["hash"], "requireCanonical": True}
+                    s.require(self._eligible(call, head, anchor, lambda *_: True), "maintenance_call_no_longer_eligible")
                 invocation = {"scope": scope, "generation": 0}
                 matching = [(identifier, op) for identifier, op in self.state["operations"].items()
                             if op.get("invocation") is not None and op["invocation"]["scope"] == scope
@@ -281,23 +302,24 @@ class Transactions:
 
     def _reservation_check(self, operation_id, head):
         op = self.state["operations"][operation_id]
+        other = self._other_reservation(operation_id, head)
+        head, anchor = self._head_after_history(head)
         if op["unsigned_transaction"] is not None:
-            latest = s.uint(self.rpc.call("eth_getTransactionCount", [self.limits["account"],
-                              {"blockHash": head["hash"], "requireCanonical": True}]))
+            latest = s.uint(self.rpc.call("eth_getTransactionCount", [self.limits["account"], anchor]))
             if latest != s.uint(op["unsigned_transaction"]["nonce"]):
                 r.check_anchor(self.rpc, self.settings, head)
                 op["status"] = "nonce_conflict"
-                return self.summary(operation_id, "investigate_reserved_nonce_without_receipt")
-        if self._other_reservation(operation_id, head):
+                return head, anchor, self.summary(operation_id, "investigate_reserved_nonce_without_receipt")
+        if other:
             r.check_anchor(self.rpc, self.settings, head)
-            return self.summary(operation_id, "wait_for_existing_wallet_reservation")
+            return head, anchor, self.summary(operation_id, "wait_for_existing_wallet_reservation")
         invocation = op.get("invocation")
         if invocation is not None and invocation["generation"]:
             previous = {**invocation, "generation": invocation["generation"] - 1}
             predecessor = self.state["operations"].get(r.sha256(intent(self.settings, self.limits, op["call"], previous)))
             s.require(predecessor is not None and predecessor["status"] == "reverted" and self._settled(predecessor, head),
                       "maintenance_retry_requires_confirmed_revert")
-        return None
+        return head, anchor, None
 
     def summary(self, operation_id, action):
         op = self.state["operations"][operation_id]
@@ -331,7 +353,7 @@ class Transactions:
         if receipt_only:
             r.check_anchor(self.rpc, self.settings, head)
             return self.summary(operation_id, "wait_for_reserved_receipt")
-        reservation = self._reservation_check(operation_id, head)
+        head, anchor, reservation = self._reservation_check(operation_id, head)
         if reservation is not None:
             return reservation
         invocation = op.get("invocation")
@@ -362,7 +384,7 @@ class Transactions:
             op.update(raw_transaction=raw, transaction_hash=tx_hash, status="signed")
             self.save(True)
             head, anchor = r.anchored_head(self.rpc, self.settings, self.limits, int(self.clock()))
-            reservation = self._reservation_check(operation_id, head)
+            head, anchor, reservation = self._reservation_check(operation_id, head)
             if reservation is not None:
                 return reservation
             if not self._eligible(op["call"], head, anchor, preflight, invocation):

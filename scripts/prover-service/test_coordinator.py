@@ -1,5 +1,6 @@
 import base64
 import copy
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import tempfile
@@ -745,6 +746,49 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(io.private_json(publication / "relay.json")["transaction_hash"], self.rpc.receipt["transactionHash"])
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def test_archived_handoff_reconciles_own_receipt_and_requires_restore_for_unknown_delivery(self):
+        old, publication, store, relay_id = self.publish_signed_three_batch_relay()
+        signed = list(self.rpc.sent)
+        accepted_tx = h(90)
+        self.rpc.parent = self.rpc.item["package_hash"]
+        self.rpc.logs = [{"address": self.f["settings"]["proof_gate"], "topics": r.acceptance_topics(self.rpc.item),
+                          "data": "0x" + s.word(0).hex(), "transactionHash": accepted_tx,
+                          "blockNumber": self.rpc.head["number"], "blockHash": self.rpc.head["hash"]}]
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.assertEqual(self.controller_reload().step(True)["transaction_hash"], accepted_tx)
+        self.assertEqual(io.private_json(publication / "relay.json")["transaction_hash"], accepted_tx)
+        self.assertEqual(self.controller.state["operations"][old]["status"], "settled_with_pending_nonce")
+        archived = publication.rename(self.base / "archived-publication")
+        new = self.controller.reserve()
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertNotIn("handoff_restore_required", self.controller.state["operations"][old])
+        self.assertEqual(self.controller.state["active"], new)
+
+        # Older journals cannot establish which acceptance hint was delivered before archival.
+        del self.controller.state["operations"][old]["handed_off_tx"]
+        self.controller.save()
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertEqual(self.controller.state["operations"][old]["handoff_restore_required"], accepted_tx)
+        self.assertIn(old, self.controller.state["regrouped_pending"])
+        archived.rename(publication)
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertNotIn("handoff_restore_required", self.controller.state["operations"][old])
+        self.assertEqual(self.controller.state["operations"][old]["handed_off_tx"], accepted_tx)
+
+        publication.rename(archived)
+        self.rpc.accept_receipt(status=0, logs=False)
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertEqual(self.controller.state["operations"][old]["status"], "settled")
+        self.assertNotIn(old, self.controller.state["regrouped_pending"])
+        self.assertEqual(self.controller.state["active"], new)
+        row = store.load(self.f["settings"], self.config["relay_policy"])["operations"][relay_id]
+        self.assertEqual(row["raw_transaction"], signed[0])
+        self.assertEqual(row["receipt"]["status"], 0)
+        self.assertEqual(self.rpc.sent, signed)
+
     def test_completed_operation_history_does_not_block_new_range(self):
         for index in range(1001):
             self.controller.state["operations"][str(index)] = {"status": "settled", "test": index}
@@ -1064,6 +1108,77 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(len(op["leases"]), 2)
         self.assertEqual(op["bundle"], io.digest(bundle))
         self.assertEqual(io.private_json(self.controller.directory(identifier) / "payload.json"), self.f["fri_payload"])
+
+    def test_frozen_range_renews_after_256_empty_attempts_and_recovers_old_journal(self):
+        identifier, bundle = self.frozen()
+        self.controller.step(True)
+        op = self.controller.state["operations"][identifier]
+        original_leases, original_works = copy.deepcopy(op["leases"]), copy.deepcopy(op["works"])
+        directory = self.controller.directory(identifier)
+        self.rpc.advance(601)
+        self.rpc.deadline = 2000
+        self.rpc.status_overrides[(a(123), "maxProofWorkSeconds()")] = 2000
+        self.now = self.rpc.now
+        self.assertEqual(self.controller.step(True)["next_action"], "renew_expired_native_lease_same_frozen_payload")
+
+        self.native.responses += [(204, {"x-syscoin-prover-pick-outcome": "unleased"}, b"")] * 256
+        self.assertEqual(self.controller.acquire(identifier, True), "native_queue_empty")
+        # Keep the authenticated chain context fixed while exercising the durable pick path.
+        chain = self.controller.status()
+        with patch.object(self.controller, "status", return_value=chain), \
+                patch.object(self.controller, "dispatcher_for", side_effect=lambda _: nullcontext()):
+            for _ in range(255):
+                self.assertEqual(self.controller.acquire(identifier, True), "native_queue_empty")
+        self.assertEqual(op["leases"], original_leases)
+        self.assertIsNone(op["lease"])
+        archives = sorted(directory.glob("lease-*/attempt.json"))
+        self.assertEqual(len(archives), 256)
+        for path in archives:
+            authority = c.read_private_json(path.parent / "authority.json")
+            self.assertEqual(authority["status"], "no_job")
+            self.assertEqual(authority["job_id"], identifier + ":" + path.parent.name)
+            self.assertEqual(authority["expected_bounds"], {"from_batch_number": 1, "to_batch_number": 2})
+        for url, _, _, _ in self.native.calls[-256:]:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            self.assertEqual((query["snark_batch_from"], query["snark_batch_to"]), (["1"], ["2"]))
+
+        # Older coordinators retained empty attempts in this list and had no sidecar.
+        op["leases"].extend(io.private_json(path) for path in archives[:255])
+        for path in archives[:255]:
+            path.unlink()
+        self.controller.save()
+        self.native.responses.append((200, {}, {**self.f["fri_payload"], "lease_token": h(181)}))
+        self.assertIsNone(self.controller_reload().acquire(identifier, True))
+        op = self.controller.state["operations"][identifier]
+        self.assertEqual(op["leases"][:-1], original_leases)
+        self.assertNotIn(directory / op["lease"] / "attempt.json", archives)
+        self.assertEqual(len(self.native.calls), 259)
+        self.assertTrue(all(path.is_file() for path in archives))
+        self.assertEqual(op["bundle"], io.digest(bundle))
+        self.assertEqual(op["works"], original_works)
+        self.assertEqual(io.private_json(directory / "payload.json"), self.f["fri_payload"])
+
+    def test_expired_uncertain_submission_retries_the_same_lease_and_bytes(self):
+        identifier, _ = self.frozen()
+        self.returned(self.controller.step(True))
+        self.native.responses.append(OSError("lost response"))
+        with self.assertRaises(OSError):
+            self.controller_reload().step(True)
+        op = self.controller.state["operations"][identifier]
+        lease, history = op["lease"], copy.deepcopy(op["leases"])
+        directory = self.controller.directory(identifier) / lease
+        self.assertEqual(c.read_private_json(directory / "authority.json")["status"], "submission_pending")
+        submitted = self.native.calls[-1]
+        self.rpc.advance(601)
+        self.rpc.deadline = 2000
+        self.rpc.status_overrides[(a(123), "maxProofWorkSeconds()")] = 2000
+        self.now = self.rpc.now
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        self.assertEqual(self.native.calls[-1], submitted)
+        op = self.controller.state["operations"][identifier]
+        self.assertEqual((op["lease"], op["leases"]), (lease, history))
+        self.assertFalse((directory / "attempt.json").exists())
 
     def test_cached_work_signature_does_not_allow_dry_run_to_publish(self):
         identifier, _ = self.frozen()

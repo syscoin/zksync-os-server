@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import keeper as k
 import relay as r
 import service as s
 import transactions as t
@@ -23,9 +24,11 @@ class Rpc:
         self.chain = settings["settlement_chain_id"]
         self.store, self.operation_id = None, None
         self.observed_batch, self.native_batch, self.native_hash = 100, 110, h(151)
+        self.native_history = {}
         self.receipts = {}
 
     def advance(self):
+        self.native_history[self.head["hash"]] = (self.observed_batch, self.native_batch, self.native_hash)
         self.now += 30
         number = s.uint(self.head["number"]) + 1
         self.head = {"number": hex(number), "hash": h(110 + number - 20), "timestamp": hex(self.now)}
@@ -75,17 +78,21 @@ class Rpc:
             return s.keccak(s.raw_hex(params[0]))
         if method == "eth_call":
             tx, anchor = params
-            assert anchor == {"blockHash": self.head["hash"], "requireCanonical": True}
+            block_hash = anchor["blockHash"]
+            assert anchor == {"blockHash": block_hash, "requireCanonical": True}
+            assert any(block["hash"] == block_hash for block in self.blocks.values())
+            observed_batch, native_batch, native_hash = self.native_history.get(
+                block_hash, (self.observed_batch, self.native_batch, self.native_hash))
             data = s.raw_hex(tx["data"])
             values = {"chain()": self.settings["chain_address"], "childChainId()": s.uint(self.settings["execution_chain_id"]),
                       "sequencer()": self.settings["sequencer"], "policyHash()": self.settings["policy_hash"],
-                      "productionVkHash()": self.settings["vk_hash"], "observedNativeBatch()": self.observed_batch,
-                      "coordinator()": self.settings["coordinator"], "getTotalBatchesVerified()": self.native_batch,
+                      "productionVkHash()": self.settings["vk_hash"], "observedNativeBatch()": observed_batch,
+                      "coordinator()": self.settings["coordinator"], "getTotalBatchesVerified()": native_batch,
                       "acceptanceGate()": self.settings["proof_gate"]}
             if data[:4] == r.selector("storedBatchHash(uint256)"):
                 assert tx["to"] == self.settings["chain_address"]
-                assert int.from_bytes(data[4:], "big") == self.native_batch
-                return self.native_hash
+                assert int.from_bytes(data[4:], "big") == native_batch
+                return native_hash
             for signature, value in values.items():
                 if data == r.selector(signature):
                     return "0x" + (s.word(value) if type(value) is int else s.raw_hex(value).rjust(32, b"\0")).hex()
@@ -201,6 +208,74 @@ class TransactionsTests(unittest.TestCase):
         call = self.observation()
         self.rpc.native_batch += 1
         with self.assertRaisesRegex(s.Error, "invalid_native_observation"):
+            self.runner().plan(call)
+        self.assertEqual(self.signatures(), [])
+
+    def test_plans_native_observation_after_history_and_reservation_checks(self):
+        self.assertEqual(self.step()["status"], "broadcast")
+        self.confirm()
+        manager = self.runner()
+        validate, settled = manager._validate, manager._settled
+        def validate_history(identifier, op):
+            validate(identifier, op)
+            self.rpc.advance()
+        def check_reservation(op, head):
+            result = settled(op, head)
+            self.rpc.advance()
+            return result
+        def produce(head):
+            self.assertEqual(head, self.rpc.head)
+            config = {"settings": self.settings, "policy": {**self.limits, "expected_operator": self.limits["account"]}}
+            return k.maintenance(config, self.rpc, "observe-native", {}, self.rpc.now, at_head=head)
+        with patch.object(manager, "_validate", side_effect=validate_history), patch.object(manager, "_settled", side_effect=check_reservation):
+            planned = manager.plan(produce)
+        self.assertEqual(planned["call"]["anchor"], self.rpc.head)
+        self.assertEqual(planned["invocation"]["scope"], {"observed_batch": self.rpc.observed_batch,
+                         "native_batch": self.rpc.native_batch, "native_hash": self.rpc.native_hash})
+        self.rpc.operation_id = manager.stage(planned["call"], planned["invocation"])
+        self.rpc.receipt = None
+        self.assertEqual(self.rpc.operation_id, planned["operation_id"])
+        self.assertEqual(len(self.signatures()), 1)
+        other = manager._other_reservation
+        def scan_other(operation_id, head):
+            result = other(operation_id, head)
+            self.rpc.advance()
+            return result
+        def ready(original, head, anchor):
+            current = produce(head)
+            return current["transaction"] == original["transaction"] and current["anchor"]["hash"] == anchor["blockHash"]
+        with patch.object(manager, "_other_reservation", side_effect=scan_other):
+            self.assertEqual(manager.step(self.rpc.operation_id, True, ready)["status"], "broadcast")
+        self.assertEqual([s.uint(args[0]["nonce"]) for _, args in self.signatures()], [0, 1])
+
+    def test_deferred_plan_rechecks_canonical_anchor_and_recovers_reserved_call_first(self):
+        def reorg(head):
+            call = self.observation()
+            self.rpc.reorg = True
+            return call
+        with self.assertRaisesRegex(s.Error, "rpc_reorg_or_chain_change"):
+            self.runner().plan(reorg)
+        self.rpc.reorg = False
+        self.assertEqual(self.step()["status"], "broadcast")
+        recovered = self.runner().plan(lambda head: self.fail("an unresolved reservation must take precedence"))
+        self.assertEqual(recovered["operation_id"], self.identifier)
+        self.assertEqual(len(self.signatures()), 1)
+
+    def test_prebuilt_native_call_survives_only_unchanged_canonical_scope(self):
+        call = self.observation()
+        self.rpc.advance()
+        planned = self.runner().plan(call)
+        self.assertEqual(planned["call"], call)
+        self.assertEqual(planned["invocation"]["scope"]["native_hash"], self.rpc.native_hash)
+        self.rpc.bad_code = True
+        with self.assertRaisesRegex(s.Error, "gate_code_changed"):
+            self.runner().plan(call)
+        self.rpc.bad_code = False
+        self.rpc.native_hash = h(202)
+        with self.assertRaisesRegex(s.Error, "maintenance_anchor_changed"):
+            self.runner().plan(call)
+        self.rpc.blocks[call["anchor"]["number"]]["hash"] = h(203)
+        with self.assertRaisesRegex(s.Error, "rpc_reorg_or_chain_change"):
             self.runner().plan(call)
         self.assertEqual(self.signatures(), [])
 

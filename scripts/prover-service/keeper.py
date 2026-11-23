@@ -179,10 +179,10 @@ def check_code(rpc, address, expected, anchor, reason):
     s.require(code and s.keccak(code) == expected, reason)
 
 
-def base_context(config, rpc, evidence, now):
+def base_context(config, rpc, evidence, now, *, at_head=None):
     settings, limits = config["settings"], config["policy"]
     gate, chain = settings["proof_gate"], settings["chain_address"]
-    head, anchor = r.anchored_head(rpc, settings, limits, now)
+    head, anchor = r.anchored_head(rpc, settings, limits, now, at_head=at_head)
     check_code(rpc, gate, limits["gate_code_hash"], anchor, "gate_code_changed")
     call = lambda address, signature, encoded=b"", kind="uint": r.call_word(rpc, address, signature, anchor, encoded, kind)
     for signature, kind, value in (("chain()", "address", chain), ("childChainId()", "uint", s.uint(settings["execution_chain_id"])),
@@ -215,9 +215,9 @@ def base_context(config, rpc, evidence, now):
     return head, anchor, call
 
 
-def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True, *, enrollment=None):
+def inspect(config, rpc, prepared, evidence, now, runtime, require_open=True, *, enrollment=None, at_head=None):
     s.require(0 < s.uint(runtime, 32) <= 86400, "invalid_compute_runtime")
-    head, anchor, call = base_context(config, rpc, evidence, now)
+    head, anchor, call = base_context(config, rpc, evidence, now, at_head=at_head)
     settings, limits = config["settings"], config["policy"]
     accepted, mode = prepared["accepted_package"], prepared["mode"]
     gate, coordinator = settings["proof_gate"], settings["coordinator"]
@@ -306,24 +306,24 @@ def unsigned_call(rpc, settings, limits, head, anchor, account, target, signatur
             "transaction": tx, "action": signature.split("(")[0], "broadcast": False}
 
 
-def package_call(config, rpc, request, evidence, payload, now, action, *, enrollment=None):
+def package_call(config, rpc, request, evidence, payload, now, action, *, enrollment=None, at_head=None):
     s.require(action in ("open", "repair"), "invalid_package_action")
     enrollment = enrollment_for(config, request, enrollment=enrollment)
     prepared = prepare(config["settings"], request, evidence, payload, enrollment=enrollment)
     # Repairs preserve the old draw even if the clock has rolled to another roster.
     if action == "open":
-        inspect(config, rpc, prepared, evidence, now, 1, require_open=False, enrollment=enrollment)
-    head, anchor, _ = base_context(config, rpc, evidence, now)
+        inspect(config, rpc, prepared, evidence, now, 1, require_open=False, enrollment=enrollment, at_head=at_head)
+    head, anchor, _ = base_context(config, rpc, evidence, now, at_head=at_head)
     method = action + ("BootstrapPackage" if prepared["mode"] == "bootstrap" else "Package")
     return unsigned_call(rpc, config["settings"], config["policy"], head, anchor, config["settings"]["sequencer"],
                          config["settings"]["proof_gate"], method + "(" + r.abi_tuple(s.PACKAGE) + ")",
                          s.encode_fields(s.PACKAGE, normalized(prepared["accepted_package"])))
 
 
-def maintenance(config, rpc, action, args, now):
+def maintenance(config, rpc, action, args, now, *, at_head=None):
     """Only fixed contract methods are exposed; every returned call is simulated at its anchor."""
     settings, limits = config["settings"], config["policy"]
-    head, anchor = r.anchored_head(rpc, settings, limits, now)
+    head, anchor = r.anchored_head(rpc, settings, limits, now, at_head=at_head)
     account, target, value = limits["expected_operator"], settings["coordinator"], "0x0"
     if action in ("prepare-roster", "record-roster"):
         s.exact(args, ("period",))
