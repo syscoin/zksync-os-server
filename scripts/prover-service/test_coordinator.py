@@ -745,7 +745,7 @@ class CoordinatorTests(unittest.TestCase):
         old, publication, store, relay_id = self.publish_signed_three_batch_relay()
         signed = list(self.rpc.sent)
         accepted_tx = h(90)
-        self.rpc.parent = self.rpc.item["package_hash"]
+        self.rpc.accept_package()
         self.rpc.logs = [{"address": self.f["settings"]["proof_gate"], "topics": r.acceptance_topics(self.rpc.item),
                           "data": "0x" + s.word(0).hex(), "transactionHash": accepted_tx,
                           "blockNumber": self.rpc.head["number"], "blockHash": self.rpc.head["hash"]}]
@@ -1530,6 +1530,30 @@ class CoordinatorTests(unittest.TestCase):
         self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
         self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
         self.assertTrue(self.controller.state["operations"][identifier]["works"][old["work_hash"]]["ignored"])
+
+    def test_result_at_canonical_size_limit_is_retained_after_oversized_candidate(self):
+        identifier, _ = self.frozen()
+        valid = self.controller.step(True)
+        self.rpc.turn += 1
+        oversized = self.controller_reload().step(True)
+        self.returned(valid, bare=True)
+        self.returned(oversized)
+        inbox = self.base / "inbox"
+        result = io.private_json(inbox / valid["work_hash"][2:] / "result.json")["result"]
+        limit = len(s.canonical(result))
+        larger = io.private_json(inbox / oversized["work_hash"][2:] / "result.json")["result"]
+        self.assertGreater(len(s.canonical(larger)), limit)
+
+        with patch.object(s, "MAX_FILE", limit):
+            self.controller.result(identifier, True)
+        restarted = self.controller_reload()
+        op = restarted.state["operations"][identifier]
+        rejected = op["works"][oversized["work_hash"]]
+        self.assertTrue(rejected["checked"] and rejected["ignored"])
+        self.assertFalse((restarted.directory(identifier) / (oversized["work_hash"][2:] + ".result.json")).exists())
+        self.assertEqual(op["proof"]["work_hash"], valid["work_hash"])
+        restarted.result(identifier, True)
+        self.assertEqual(len(self.rpc.verifications), 1)
 
     def test_result_nesting_error_does_not_block_submission_or_recur_after_restart(self):
         identifier, _ = self.frozen()

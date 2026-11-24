@@ -110,6 +110,7 @@ class Runner(machine.ReceiptRunner):
             inbox = storage.read_descriptor(inbox_path, self.requests_identity)
             s.require(Path(inbox['claimJournal']) == claim_path and inbox['claimIdentity'] == self.claim_identity,
                       'native_request_inbox_changed')
+        root_reports = []
         with journal.snapshot(claim_path, map_fields=storage.CLAIM_MAPS, list_fields=storage.HISTORY) as source:
             s.require(source.get('version') == 1 and source.get('identity') == self.claim_identity,
                       'native_claim_journal_changed')
@@ -123,14 +124,20 @@ class Runner(machine.ReceiptRunner):
                 observed = source['records'].get(key)
                 if observed is not None:
                     records[key] = observed
-            self.bundled = set()
             if inbox:
-                for value in records.values():
+                for key, value in records.items():
                     report = value['report']
                     if report['fromRoot'] and report['kind'] in ('accepted', 'unresolved'):
-                        digest = s.keccak(receipts.report_message(report))
-                        if digest in source['rootRequestHashes']:
-                            self.bundled.add(digest)
+                        digest = '0x' + key.removeprefix('root:')
+                        root_reports.append((key, report, digest in source['rootRequestHashes']))
+        # Hashing a report calls Cast. Holding the claim snapshot here can block its writer's commit.
+        bundled = set()
+        for key, report, assigned in root_reports:
+            digest = s.keccak(receipts.report_message(report))
+            s.require(key == report['id'] == 'root:' + digest[2:], 'receipt_report_identity_changed')
+            if assigned:
+                bundled.add(digest)
+        self.bundled = bundled
         for key, existing in journal.status_items(self.journal['records'], ('pending',)):
             observed = records.get(key)
             if existing['status'] == 'pending' and observed and observed.get('status') == 'complete':

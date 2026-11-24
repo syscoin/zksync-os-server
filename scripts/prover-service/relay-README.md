@@ -42,7 +42,7 @@ relayer for investigation instead of inventing a replacement authorization.
 
 Copy `relay-rpc.example.json` into a mode-0600 file owned by the operator. Use an
 independently trusted settlement-node endpoint supporting EIP-1898 canonical
-block-hash reads, receipts and logs. The wallet endpoint must support the
+block-hash reads, historical gate state, receipts and logs. The wallet endpoint must support the
 **signing-only** `eth_signTransaction` method and return a signed EIP-1559 raw
 transaction. An endpoint that broadcasts as part of signing is unsupported:
 it breaks the durable-before-send boundary. Neither a plain browser
@@ -159,8 +159,11 @@ The signed raw bytes and transaction hash are fsynced before the first
 `eth_sendRawTransaction`. Send timeouts, provider rejection, malformed replies
 and process interruption keep the same durable record. An acceptance event or
 the gate's accepted-parent state can identify acceptance by another relayer;
-an advanced parent alone never proves this package was accepted. A successful
-own receipt must contain the exact gate event for the package/range/bootstrap
+an advanced parent alone never proves this package was accepted. To recover an
+external transaction hash, the relay locates the first canonical block where
+the gate observed the package's final batch and checks that block's exact
+acceptance event. This also covers a package staged locally after settlement.
+A successful own receipt must contain the exact gate event for the package/range/bootstrap
 mode. Existing canonical durable receipts survive transient RPC absence.
 
 Canonical block hashes are rechecked before confirmation. A reorg clears

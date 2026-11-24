@@ -67,6 +67,8 @@ class NativeRpc(FakeRpc):
                 stored = next(item for item in [self.evidence["previous_batch"]] + [b["stored"] for b in self.evidence["batches"]]
                               if item["batchNumber"] == number)
                 return h(99) if self.bad_stored else s.keccak(s.encode_fields(s.STORED, stored))
+            if selector == r.selector("observedNativeBatch()"):
+                return super().call(method, params)
             values = {"getChainId()": s.uint(self.settings["execution_chain_id"]),
                       "childChainAddress()": self.settings["chain_address"], "rosterCount()": self.roster_count,
                       "productionVerifier()": a(130),
@@ -76,7 +78,7 @@ class NativeRpc(FakeRpc):
                       "timelock()": a(132), "isValidator(address)": True,
                       "getRoleMemberCount(address,bytes32)": 2 if self.bad_role else 1,
                       "getRoleMember(address,bytes32,uint256)": self.settings["proof_gate"],
-                      "observedNativeBatch()": self.observed_native, "nextBatch()": self.native_proved + 1,
+                      "nextBatch()": self.native_proved + 1,
                       "getTotalBatchesVerified()": self.native_proved, "transitionWork()": self.control}
             for signature, value in values.items():
                 if selector == r.selector(signature):

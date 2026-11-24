@@ -551,6 +551,47 @@ class Relay:
                 and acceptance["transaction_hash"] != op["transaction_hash"]
                 and self._confirmations(acceptance["block_number"], op["context"]["head"]) >= self.limits["confirmations"])
 
+    def _acceptance_block(self, batch_to, first_head, head):
+        gate = self.settings["proof_gate"]
+        anchor = {"blockHash": head["hash"], "requireCanonical": True}
+        if call_word(self.rpc, gate, "observedNativeBatch()", anchor) < batch_to:
+            return None
+        runtime = s.raw_hex(self.rpc.call("eth_getCode", [gate, anchor]))
+        s.require(runtime and s.keccak(runtime) == self.limits["gate_code_hash"], "gate_code_changed")
+
+        def covered_at(height):
+            block = self.rpc.call("eth_getBlockByNumber", [hex(height), False])
+            s.require(isinstance(block, dict) and s.uint(block.get("number")) == height,
+                      "historical_gate_block_unavailable")
+            anchor = {"blockHash": s.nonzero(block.get("hash")), "requireCanonical": True}
+            code = s.raw_hex(self.rpc.call("eth_getCode", [gate, anchor]))
+            if not code:
+                return None
+            s.require(code == runtime, "historical_gate_code_changed")
+            return block if call_word(self.rpc, gate, "observedNativeBatch()", anchor) >= batch_to else None
+
+        # Acceptance and the gate frontier advance atomically. Start near the tip so
+        # recent acceptances don't require old state, even if staging followed settlement.
+        tip, staged = s.uint(head["number"]), s.uint(first_head["number"])
+        upper, lower, distance = head, tip - 1, 1
+        while lower >= 0:
+            block = covered_at(lower)
+            if block is None:
+                break
+            upper = block
+            distance *= 2
+            lower = max(-1, tip - distance)
+            if lower < staged < s.uint(upper["number"]):
+                lower = staged
+        while lower + 1 < s.uint(upper["number"]):
+            height = (lower + s.uint(upper["number"])) // 2
+            block = covered_at(height)
+            if block is None:
+                lower = height
+            else:
+                upper = block
+        return upper
+
     def _observe_receipt(self, op, item, observed):
         head = observed["head"]
         receipt = self.rpc.call("eth_getTransactionReceipt", [op["transaction_hash"]]) if op["transaction_hash"] else None
@@ -579,18 +620,19 @@ class Relay:
             op["acceptance"] = {"transaction_hash": None, "block_number": head["number"], "block_hash": head["hash"],
                                 "source": "gate_parent"}
         if (op["acceptance"] is None or op["acceptance"].get("transaction_hash") is None) and observed["parent"] != item["sidecar"]["accepted_package"]["parent"]:
-            logs = self.rpc.call("eth_getLogs", [{"address": self.settings["proof_gate"],
-                                                 "fromBlock": op["first_head"]["number"], "toBlock": head["number"],
-                                                 "topics": acceptance_topics(item)}])
-            s.require(type(logs) is list and len(logs) <= 1, "ambiguous_acceptance_log")
-            if logs:
-                log = logs[0]
-                s.require(matching_log(log, self.settings, item), "acceptance_log_mismatch")
-                s.nonzero(log.get("transactionHash"))
-                s.nonzero(log.get("blockHash"))
-                if self._canonical(log["blockNumber"], log["blockHash"], head):
-                    op["acceptance"] = {"transaction_hash": log["transactionHash"], "block_number": log["blockNumber"],
-                                        "block_hash": log["blockHash"], "source": "gate_event"}
+            block = self._acceptance_block(observed["batch_to"], op["first_head"], head)
+            if block is not None:
+                logs = self.rpc.call("eth_getLogs", [{"address": self.settings["proof_gate"], "blockHash": block["hash"],
+                                                     "topics": acceptance_topics(item)}])
+                s.require(type(logs) is list and len(logs) <= 1, "ambiguous_acceptance_log")
+                if logs:
+                    log = logs[0]
+                    s.require(matching_log(log, self.settings, item) and log.get("blockNumber") == block["number"]
+                              and log.get("blockHash") == block["hash"], "acceptance_log_mismatch")
+                    s.nonzero(log.get("transactionHash"))
+                    check_anchor(self.rpc, self.settings, block)
+                    op["acceptance"] = {"transaction_hash": log["transactionHash"], "block_number": block["number"],
+                                        "block_hash": block["hash"], "source": "gate_event"}
         check_anchor(self.rpc, self.settings, head)
 
     def _new_transaction(self, op, item, observed):

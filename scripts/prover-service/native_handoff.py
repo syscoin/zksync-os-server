@@ -1,5 +1,6 @@
 """Reattach a remotely checked SNARK to its original, private native lease."""
 
+import os
 from pathlib import Path
 import sys
 
@@ -11,6 +12,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "prover-rental"))
 import job
 import sentry
 from runpod import atomic_json, read_private_json
+
+
+# The node enforces its configured limit when staging work. Its largest supported
+# max_records value bounds a coordinator scan without duplicating operator settings.
+MAX_PUBLICATION_RECORDS = 100_000
 
 
 def submit(directory, proof, auth, network):
@@ -47,9 +53,17 @@ def submit(directory, proof, auth, network):
 
 def publication_directories(root):
     root = io.directory(root)
-    entries = sorted(root.iterdir())
-    s.require(len(entries) <= 1024, "publication_scan_capacity")
-    return [child for child in entries if not child.name.startswith(".") and child.is_dir() and not child.is_symlink()]
+    directories = []
+    count = 0
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if entry.name == ".lock":
+                continue
+            count += 1
+            s.require(count <= MAX_PUBLICATION_RECORDS, "publication_scan_capacity")
+            if not entry.name.startswith(".") and entry.is_dir(follow_symlinks=False):
+                directories.append(root / entry.name)
+    return sorted(directories)
 
 
 def publication_pins(settings, limits):

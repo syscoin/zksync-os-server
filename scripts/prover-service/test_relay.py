@@ -80,12 +80,26 @@ class FakeRpc:
         self.selected, self.deadline, self.opened = 0, self.now + 200, True
         self.frozen_override, self.chain_override, self.reorg_anchor, self.stage_store = None, None, False, None
         self.native_proved = item["sidecar"]["accepted_package"]["batchFrom"] - 1
+        self.observed_native = self.native_proved
+        self.observed_history = {}
+        self.gate_deployment = 0
+
+    def block(self, number):
+        if hex(number) not in self.blocks:
+            block_hash = h(90 + number) if 90 + number <= 255 else "0x" + s.word(90 + number).hex()
+            self.blocks[hex(number)] = {"number": hex(number), "hash": block_hash, "timestamp": hex(self.now)}
+        return self.blocks[hex(number)]
 
     def advance(self, seconds=30, blocks=1):
+        self.observed_history[s.uint(self.head["number"])] = self.observed_native
         self.now += seconds
         number = s.uint(self.head["number"]) + blocks
-        self.head = {"number": hex(number), "hash": h(110 + number - 20), "timestamp": hex(self.now)}
-        self.blocks[self.head["number"]] = copy.deepcopy(self.head)
+        self.head = copy.deepcopy(self.block(number))
+
+    def accept_package(self):
+        self.parent = self.item["package_hash"]
+        self.opened = False
+        self.native_proved = self.observed_native = self.item["sidecar"]["accepted_package"]["batchTo"]
 
     def accept_receipt(self, status=1, logs=True):
         tx_hash = s.keccak(s.raw_hex(self.sent[-1]))
@@ -96,9 +110,7 @@ class FakeRpc:
                         "logs": [log] if status and logs else []}
         self.nonce = self.pending_nonce = 1
         if status:
-            self.parent = self.item["package_hash"]
-            self.opened = False
-            self.native_proved = self.observed_native = self.item["sidecar"]["accepted_package"]["batchTo"]
+            self.accept_package()
 
     def call(self, method, params):
         self.calls.append((method, copy.deepcopy(params)))
@@ -107,12 +119,17 @@ class FakeRpc:
         if method == "eth_getBlockByNumber":
             if params[0] == "latest":
                 return copy.deepcopy(self.head)
-            value = copy.deepcopy(self.blocks.get(params[0]))
+            number = s.uint(params[0])
+            value = copy.deepcopy(self.block(number)) if number <= s.uint(self.head["number"]) else None
             if self.reorg_anchor and value:
                 value["hash"] = h(99)
             return value
         if method == "eth_getCode":
             codes = {self.settings["proof_gate"]: b"gate-code", self.settings["coordinator"]: b"coordinator-code"}
+            if params[0] == self.settings["proof_gate"]:
+                block = next(b for b in self.blocks.values() if b["hash"] == params[1]["blockHash"])
+                if s.uint(block["number"]) < self.gate_deployment:
+                    return "0x"
             return "0x" + codes[params[0]].hex()
         if method == "eth_getTransactionCount":
             return hex(self.pending_nonce if params[1] == "pending" else self.nonce)
@@ -121,7 +138,13 @@ class FakeRpc:
         if method == "eth_getTransactionReceipt":
             return copy.deepcopy(self.receipt)
         if method == "eth_getLogs":
-            return copy.deepcopy(self.logs)
+            query = params[0]
+            if "blockHash" in query:
+                return copy.deepcopy([log for log in self.logs if log["blockHash"] == query["blockHash"]])
+            first, last = s.uint(query["fromBlock"]), s.uint(query["toBlock"])
+            if last - first > 10000:
+                raise r.RpcError(-32602)
+            return copy.deepcopy([log for log in self.logs if first <= s.uint(log["blockNumber"]) <= last])
         if method == "eth_sendRawTransaction":
             if self.stage_store:
                 state = self.stage_store.load(self.settings, self.limits)
@@ -143,6 +166,14 @@ class FakeRpc:
                     raise r.RpcError(3)
                 return "0x"
             accepted = self.item["sidecar"]["accepted_package"]
+            if tx["data"] == "0x" + r.selector("observedNativeBatch()").hex():
+                block_hash = params[1]["blockHash"]
+                if block_hash == self.head["hash"]:
+                    return "0x" + s.word(self.observed_native).hex()
+                number = next(s.uint(b["number"]) for b in self.blocks.values() if b["hash"] == block_hash)
+                previous = max((height for height in self.observed_history if height <= number), default=None)
+                value = self.observed_history[previous] if previous is not None else accepted["batchFrom"] - 1
+                return "0x" + s.word(value).hex()
             normalized = {**accepted, "turn": 0, "proofHash": s.ZERO, "wrapper": s.ZERO_ADDRESS, "wrapperBeneficiary": s.ZERO_ADDRESS}
             if tx["data"] == "0x" + r.selector("bootstrapPackage()").hex():
                 return "0x" + s.encode_fields(s.PACKAGE, normalized).hex()
@@ -253,7 +284,8 @@ class RelayTests(unittest.TestCase):
             relay.export_handoff(self.operation_id, work, True)
 
     def test_external_parent_hint_resolves_accepting_transaction_when_logs_arrive(self):
-        self.rpc.parent = self.item["package_hash"]
+        self.rpc.gate_deployment = s.uint(self.rpc.head["number"])
+        self.rpc.accept_package()
         self.relayer().step(self.operation_id, True)
         self.assertIsNone(self.relayer().state["operations"][self.operation_id]["acceptance"]["transaction_hash"])
         included = copy.deepcopy(self.rpc.head)
@@ -264,6 +296,50 @@ class RelayTests(unittest.TestCase):
         result = self.relayer().step(self.operation_id, True)
         self.assertEqual(result["status"], "accepted_elsewhere")
         self.assertEqual(self.relayer().state["operations"][self.operation_id]["acceptance"]["transaction_hash"], h(90))
+        self.assertFalse(self.signatures())
+
+    def external_acceptance(self):
+        self.rpc.accept_package()
+        block = copy.deepcopy(self.rpc.head)
+        self.rpc.logs = [{"address": self.settings["proof_gate"], "topics": r.acceptance_topics(self.item),
+                          "data": "0x" + s.word(0).hex(), "transactionHash": h(90),
+                          "blockNumber": block["number"], "blockHash": block["hash"]}]
+        return block
+
+    def test_receipt_only_recovers_external_acceptance_after_long_gateway_outage(self):
+        self.relayer().step(self.operation_id, True)
+        original = self.relayer().state["operations"][self.operation_id]
+        self.rpc.advance(blocks=27)
+        included = self.external_acceptance()
+        self.rpc.advance(blocks=15000)
+        self.rpc.parent = h(201)
+        result = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(result["next_action"], "export_acceptance_and_reconcile_own_nonce")
+        self.assertEqual(result["acceptance"]["block_hash"], included["hash"])
+        self.assertEqual(result["acceptance"]["transaction_hash"], h(90))
+        queries = [params[0] for method, params in self.rpc.calls if method == "eth_getLogs"]
+        self.assertEqual(queries, [{"address": self.settings["proof_gate"], "topics": r.acceptance_topics(self.item),
+                                    "blockHash": included["hash"]}])
+        after = self.relayer().state["operations"][self.operation_id]
+        self.assertEqual(after["unsigned_transaction"], original["unsigned_transaction"])
+        self.assertEqual(after["raw_transaction"], original["raw_transaction"])
+        self.assertEqual(len(self.rpc.sent), 1)
+
+    def test_new_relayer_staged_after_acceptance_recovers_exact_earlier_block(self):
+        self.rpc.advance(blocks=15000)
+        included = self.external_acceptance()
+        self.rpc.advance(blocks=3)
+        self.rpc.parent = h(201)
+        self.store = r.Store.initialize(Path(self.temp.name) / "late-relay", self.settings, self.limits)
+        operation_id = self.relayer().stage(self.item)
+        self.rpc.calls.clear()
+        result = self.relayer().step(operation_id, True)
+        self.assertEqual(result["status"], "accepted_elsewhere")
+        self.assertEqual(result["acceptance"]["transaction_hash"], h(90))
+        self.assertEqual(result["acceptance"]["block_hash"], included["hash"])
+        history = [s.uint(params[0]) for method, params in self.rpc.calls
+                   if method == "eth_getBlockByNumber" and params[0] != "latest"]
+        self.assertGreaterEqual(min(history), s.uint(included["number"]) - 1)
         self.assertFalse(self.signatures())
 
     def test_export_handoff_rejects_symlinked_node_directory(self):
@@ -457,7 +533,7 @@ class RelayTests(unittest.TestCase):
 
     def test_acceptance_elsewhere_with_pending_own_nonce_keeps_reservation(self):
         self.relayer().step(self.operation_id, execute=True)
-        self.rpc.parent = self.item["package_hash"]
+        self.rpc.accept_package()
         self.rpc.advance()
         result = self.relayer().step(self.operation_id, execute=True)
         self.assertEqual(result["status"], "accepted_with_pending_nonce")
@@ -470,7 +546,7 @@ class RelayTests(unittest.TestCase):
         work.mkdir(mode=0o700)
         s.write_new(work / "work.json", self.node_work())
         included = copy.deepcopy(self.rpc.head)
-        self.rpc.parent = self.item["package_hash"]
+        self.rpc.accept_package()
         self.relayer().step(self.operation_id, True, receipt_only=True)
         with self.assertRaisesRegex(s.Error, "relay_acceptance_not_confirmed"):
             self.relayer().export_handoff(self.operation_id, work, True)
@@ -489,7 +565,7 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(len(self.rpc.sent), 1)
 
     def test_external_acceptance_before_signing_finishes_without_wallet(self):
-        self.rpc.parent = self.item["package_hash"]
+        self.rpc.accept_package()
         self.assertEqual(self.relayer().step(self.operation_id, execute=True)["status"], "accepted_unconfirmed")
         self.rpc.advance()
         self.assertEqual(self.relayer().step(self.operation_id, execute=True)["status"], "accepted_elsewhere")

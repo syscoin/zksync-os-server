@@ -114,7 +114,7 @@ class RelayGraceTests(unittest.TestCase):
         hint = Path(op["publication"]) / "relay.json"
         store = r.Store(self.control_store.root / "relay")
         own = store.load(self.f["settings"], self.config["relay_policy"])["operations"][relay_id]["unsigned_transaction"]
-        self.rpc.parent = self.rpc.item["package_hash"]
+        self.rpc.accept_package()
         self.rpc.logs = [{"address": self.f["settings"]["proof_gate"], "topics": r.acceptance_topics(self.rpc.item),
                           "data": "0x" + s.word(0).hex(), "transactionHash": h(90),
                           "blockNumber": self.rpc.head["number"], "blockHash": self.rpc.head["hash"]}]

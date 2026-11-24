@@ -89,12 +89,12 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
             self.assertEqual(final['records']['pending']['status'], 'complete')
             self.assertNotIn('claim', final['transactions'])
 
-    def test_native_releases_claim_snapshot_before_hook_work(self):
+    def test_native_releases_claim_snapshot_before_hashing_and_hook_work(self):
         old = state()
         report = report_values(fixture(), True)
-        report['id'] = 'pending'
-        old['records']['pending'] = {'report': report, 'status': 'pending', 'nextRetryAt': 0, 'failures': 0}
         digest = s.keccak(native.receipts.report_message(report))
+        report['id'] = 'root:' + digest[2:]
+        old['records'][report['id']] = {'report': report, 'status': 'pending', 'nextRetryAt': 0, 'failures': 0}
         old['rootRequests']['9'] = {'batch': 9, 'messageHash': digest}
         old['rootRequestHashes'][digest] = True
         live = self.stage_claim(old)
@@ -102,23 +102,57 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
             storage.save(self.path, live, 'claim')
         live.database.close()
         database = self.path.with_name(self.path.name + '.sqlite3')
+
+        def check_writable():
+            con = sqlite3.connect(database, timeout=.1)
+            try:
+                con.execute('BEGIN EXCLUSIVE')
+                con.execute('COMMIT')
+            finally:
+                con.close()
+
+        report_message = native.receipts.report_message
+        def hashable_message(report):
+            check_writable()
+            return report_message(report)
+
         class Hook(NativeHooks):
             def validate_report(self, report):
-                con = sqlite3.connect(database, timeout=.1)
-                try:
-                    con.execute('BEGIN EXCLUSIVE')
-                    con.execute('COMMIT')
-                finally:
-                    con.close()
+                check_writable()
         native_state = {'transactions': {}, 'records': {}, 'split': [], 'history': []}
         inbox = self.path.with_name('requests.json')
         storage.publish_descriptor(inbox, 'requests', self.path, old['identity'])
         worker = native.Runner(native_state, lambda _: None, None, None, None, Hook(),
                                claim_journal=str(self.path), claim_identity=old['identity'],
                                requests_file=str(inbox), requests_identity='requests')
-        worker.discover()
-        self.assertIn('pending', native_state['records'])
+        with patch.object(native.receipts, 'report_message', side_effect=hashable_message) as message:
+            worker.discover()
+        message.assert_called_once_with(report)
+        self.assertIn(report['id'], native_state['records'])
         self.assertEqual(worker.bundled, {digest})
+
+    def test_native_binds_unresolved_root_request_to_its_recorded_message_id(self):
+        claim = state()
+        report = {'fromRoot': True, 'kind': 'unresolved', 'packageHash': h(50), 'bootstrap': False}
+        digest = s.keccak(native.receipts.report_message(report))
+        report['id'] = 'root:' + digest[2:]
+        claim['records'][report['id']] = {'report': report, 'status': 'pending'}
+        claim['rootRequests']['9'] = {'batch': 9, 'messageHash': digest}
+        claim['rootRequestHashes'][digest] = True
+        storage.save(self.path, claim, 'claim')
+        inbox = self.path.with_name('requests.json')
+        storage.publish_descriptor(inbox, 'requests', self.path, claim['identity'])
+        native_state = {'transactions': {}, 'records': {}, 'split': [], 'history': []}
+        worker = native.Runner(native_state, lambda _: None, None, None, None, NativeHooks(),
+                               claim_journal=str(self.path), claim_identity=claim['identity'],
+                               requests_file=str(inbox), requests_identity='requests')
+        worker.discover()
+        self.assertEqual(worker.bundled, {digest})
+        self.assertEqual(native_state['records'], {})
+        report['packageHash'] = h(51)
+        storage.save(self.path, claim, 'claim')
+        with self.assertRaisesRegex(s.Error, 'receipt_report_identity_changed'):
+            worker.discover()
 
     def test_root_worker_restarts_inflight_and_persists_delivery(self):
         root_path = Path(self.tmp.name) / 'root.json'
