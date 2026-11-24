@@ -115,8 +115,11 @@ def work_request(settings, body):
 
 
 def result_request(settings, work_hash, result, operator):
+    encoded = s.canonical(result)
+    # The coordinator journals these exact bytes. The incoming JSON may be smaller.
+    s.require(len(encoded) <= s.MAX_FILE, "handoff_file_too_large")
     return s.typed_request("WrapperResultV1", RESULT_FIELDS,
-                           {"workHash": work_hash, "resultHash": s.keccak(s.canonical(result))},
+                           {"workHash": work_hash, "resultHash": s.keccak(encoded)},
                            "ZkSysWrapperWork", settings["settlement_chain_id"], settings["coordinator"], operator)
 
 

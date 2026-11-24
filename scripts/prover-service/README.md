@@ -74,6 +74,9 @@ before signing; low-level manual signing must apply the same checks.
 
 Fresh operator, sequencer and wrapper signatures are verified with
 `cast wallet verify --no-hash` and require canonical 65-byte EOA signatures.
+CI tests this path with Foundry Cast 1.7.1. If Cast cannot complete verification
+or the coordinator temporarily cannot read a result, it keeps the same signed
+result eligible for the next poll and continues checking other candidates.
 Historical account enrollment consent can instead be authenticated from the exact
 subscription already accepted by the canonical registry, including ERC-1271
 accounts. The offline default still checks EOA account signatures. Contract
@@ -91,7 +94,7 @@ index/turn, frozen parent and roster are authenticated by the dispatcher, audit,
 and keeper against canonical contract state before the automated workflow
 endorses work. The contracts enforce the applicable on-chain checks again.
 Low-level signing helpers are not a substitute for those live checks. Real
-enrolled-roster operation, authenticated transport, and deployed priority/message
+enrolled-roster operation, authenticated transport, and deployed service message
 delivery still require production qualification.
 
 ## Domain and JSON conventions
@@ -374,7 +377,7 @@ checks the deployed gate/coordinator state, and uses a trusted wallet RPC only
 under `--execute`. Its journal persists signed raw transactions before broadcast
 and reconciles ambiguous sends without replacing authorization. See
 [`relay-README.md`](relay-README.md) for code/fee pinning, the read-only schedule
-view, bootstrap and priority-guard prerequisites, nonce ownership and recovery.
+view, bootstrap prerequisites, native frontier checks, nonce ownership and recovery.
 
 ## Verification
 
@@ -446,6 +449,8 @@ commands hold an exclusive process lock. Assignment and audit history continue
 on disk within the same period identity, without a lifetime assignment count
 cutoff. Large journals migrate from JSON to an indexed SQLite store, retaining
 the account cursor, credit slots, readiness nonces, leases and signed receipts.
+Every initialized journal includes its audit ledger. A missing ledger stops the
+dispatcher before it can assign or submit work.
 Keep the metadata file and its database together when backing up or restoring;
 the small JSON metadata file alone is not a complete journal. Audit history is
 streamed and checked as one complete hash chain, with bounded records and
@@ -523,8 +528,10 @@ pick. Period and phase changes create a separately verified journal.
 
 The receipt is trusted through the dispatcher's private host storage. When
 restoring a trusted journal, omit any receipt whose provenance is unknown.
-The dispatcher then verifies enrollment against the registry on first use. Older journals follow
-the same path. The coordinator and wrapper independently verify their evidence.
+The dispatcher then verifies the full roster and lane bindings against the registry
+on first use. It also performs this check if initialization stopped after writing
+`state.json` and before writing the receipt. The coordinator and wrapper
+independently verify their evidence.
 Low-level `service.py duty`, `offered-duty`, and
 `package` commands can use the same boundary with both `--registry-rpc-file` and
 `--enrollment-block-hash` before their subcommand; the RPC connection file has
@@ -545,8 +552,8 @@ accepted receipts are audited but excluded from the rewarded duty report.
 `report` distinguishes offered credit opportunities from native successes and
 says whether the whole quota was offered. Operators choose when to sign readiness;
 this adapter does not implement bans for declining further work.
-Upgrade the dispatcher, service tools and wrapper audit together before exporting
-post-quota work or streamed audit history; older tools reject these handoffs.
+Use the dispatcher, service tools and wrapper audit from the same release when
+exporting post-quota work or streamed audit history.
 Sparse demand is not an asserted service failure and never creates synthetic
 successes or reward weight.
 
@@ -631,14 +638,22 @@ SNARK package and settlement delivery.
 Retry uncertain submissions with the same proof and signature. Changed bytes are
 rejected. An ambiguous submission cannot be expired or reassigned; if retained
 proofs have already been pruned, the adapter conservatively remains unresolved and
-requires operator investigation. `recover-pick` resumes a fully retained pick after
-a crash. If the pick response was lost before it could be retained, the journal
-stops automatic picking. `abandon-unexported-pick` can explicitly release only a
-pending reservation whose private job directory is still empty, with no retained
-response, assignment, offer, authority, or submission. It durably records the
-abandonment, preserves readiness and cursor, and creates no opportunity. Any
-unknown native lease simply expires; its absent capability cannot be exported or
-used for a submission. The next pick is fresh work, never replay of that request.
+requires operator investigation. After a restart, `recover-pick` uses the
+retained native response and fetches evidence for the pending batch. When the
+response was lost and the job directory is empty, `abandon-unexported-pick`
+can release the pending reservation immediately.
+
+If another prover completes the batch after the native lease expires, the
+evidence endpoint can return 404. Once the operator's signed readiness expires,
+use `abandon-unexported-pick` for a retained response whose assignment was
+never recorded. The command checks the private files left by pick recovery and
+requires zero submission attempts. Any retained authority must contain the exact
+unsigned pick bytes or the prefix left by an interrupted initial write, including
+an empty file. It preserves the files, assignment cursor and quota,
+and records the abandonment in the audit journal. Submit fresh signed readiness
+to request another batch. For an earlier period, use `--fixed-epoch` with that
+period's journal.
+
 A definite rejection or an
 expired signed offer can be retried only when the ordinary node returns a fresh
 lease; the manifest preserves the previous assignment, increasing attempt number,
@@ -664,5 +679,6 @@ remains separately gated; materializing the reviewed real-VK sources does not
 certify either that fixture or this service's deployed message and recovery paths.
 
 The opt-in [node publication mode](node-publication.md) connects confirmed service
-receipts to the native batch pipeline, including restart recovery, without a
-node proof signing key.
+receipts to the native batch pipeline. The node also authenticates confirmed native
+advances separately, retires superseded service work and recovers the remaining
+batches without assigning service credit to them.

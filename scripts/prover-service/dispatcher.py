@@ -141,6 +141,8 @@ class Dispatcher:
         self.now = int(time.time()) if now is None else now
         self.state = journal.load(store.root / "state.json", list_fields=("audit.events",))
         s.require(self.state["schema_version"] == 1, "unsupported_journal")
+        s.require(type(self.state.get("audit")) is dict and {"identity", "events", "head"} <= self.state["audit"].keys(),
+                  "dispatcher_audit_missing")
         s.require(type(self.state["subscriptions"]) is list and bool(self.state["subscriptions"]),
                   "dispatcher_requires_enrolled_subscribers")
         self.settings = s.config(self.state["settings"])
@@ -166,7 +168,7 @@ class Dispatcher:
         self.enrollment = enrollment
 
     def _record_verified_enrollment(self, authority, rpc):
-        # Older journals have no verification receipt. Check their persisted anchor and lane pins before recording one.
+        # Initialization can stop after saving the state but before saving its verification receipt.
         state = self.state
         s.require(authority.normalized_snapshot == authority.snapshot
                   and authority.anchor == s.canonical(state["enrollment"]),
@@ -182,15 +184,10 @@ class Dispatcher:
         return self.auth[self.state["operations"][operation]["lane"]] if type(self.auth) is dict else self.auth
 
     def save(self):
-        journal.save(self.store.root / "state.json", self.state,
-                     list_fields=("audit.events",) if "audit" in self.state else ())
+        journal.save(self.store.root / "state.json", self.state, list_fields=("audit.events",))
 
     def record(self, kind, payload):
-        # Old journals lack the authenticated history needed to reconstruct fair dispatch.
-        # They may finish their existing work, but can never export an invented audit prefix.
-        ledger = self.state.get("audit")
-        if ledger is None:
-            return
+        ledger = self.state["audit"]
         events = ledger["events"]
         s.require(self.now >= (events[-1]["at"] if events else self.state["enrollment"]["timestamp"]),
                   "audit_clock_regressed")
@@ -328,8 +325,7 @@ class Dispatcher:
         if previous:
             s.require(previous[1]["assignment"]["lease_commitment"] != assignment["lease_commitment"],
                       "retry_requires_new_native_lease")
-        authority = {"schema_version": 1, "stage": "FRI", "status": "picked", "vk_hash": settings["vk_hash"],
-                     "bounds": {"batch_number": number}, "lease_token": token, "submission_sha256": None}
+        authority = self.picked_authority(operation, number, token)
         for name, value in (("payload.json", payload), ("evidence.json", evidence), ("authority.json", authority)):
             path = directory / name
             if path.exists():
@@ -350,14 +346,33 @@ class Dispatcher:
         self.save()
         return operation
 
+    def picked_authority(self, operation, number, token):
+        return {"schema_version": 1, "stage": "FRI", "status": "picked", "vk_hash": self.lane(operation)["settings"]["vk_hash"],
+                "bounds": {"batch_number": number}, "lease_token": token, "submission_sha256": None}
+
     def abandon_unexported_pick(self):
         operation = self.state["pending_pick"]
         s.require(operation is not None, "no_pending_pick")
         op = self.state["operations"][operation]
         s.require(op["status"] == "pick_pending" and op["assignment"] is None
-                  and not any(self.directory(operation).iterdir()), "retained_pick_cannot_be_abandoned")
-        # Nothing was exported, and any unknown native capability is inaccessible. Leave that
-        # lease to expire in the node; this record never becomes an opportunity or accepted duty.
+                  and op["submit_attempts"] == 0 and "offer_signature" not in op, "retained_pick_cannot_be_abandoned")
+        directory = Store(self.directory(operation)).root
+        retained = {path.name: path for path in directory.iterdir()}
+        if retained:
+            # Recovery writes these private files in order before recording the assignment.
+            # Native evidence may disappear after another prover completes the expired lease.
+            files = ("picked-wire.json", "payload.json", "evidence.json", "authority.json")
+            s.require(self.now >= op["request"]["request"]["typed_data"]["message"]["expiresAt"]
+                      and set(retained) == set(files[:len(retained)])
+                      and all(path.is_file() and not path.is_symlink() for path in retained.values()),
+                      "retained_pick_cannot_be_abandoned")
+            if "authority.json" in retained:
+                wire = s.read_json(retained["picked-wire.json"], private=True, maximum=job.MAX_PICK["FRI"])
+                expected = self.picked_authority(operation, s.uint(wire["batch_number"], 64), s.nonzero(wire["lease_token"]))
+                # The initial exclusive write can stop after any byte. Submitted authorities
+                # are replaced atomically after the signed proof and submission are saved.
+                s.require(s.canonical(expected).startswith(s.read(retained["authority.json"], private=True)),
+                          "retained_pick_cannot_be_abandoned")
         op["status"] = "unexported_pick_abandoned"
         self.state["pending_pick"] = None
         self.record("pick_abandoned", {"operation": operation})
@@ -536,7 +551,6 @@ class Dispatcher:
                 "assignments": [], "retries": []}
 
     def audit_payload(self, lane, batch_from, batch_to, *, event_root=None, export_events=True):
-        s.require("audit" in self.state, "legacy_journal_has_no_authenticated_audit_history")
         self.range_manifest_payload(lane, batch_from, batch_to)
         ledger, settings = self.state["audit"], self.state["lanes"][lane]["settings"]
         s.require(self.now >= (ledger["events"][-1]["at"] if ledger["events"]

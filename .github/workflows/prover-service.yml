@@ -96,6 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           forge test --remappings 'contracts/=../contracts/' --match-path 'test/ZkSys*Service*.t.sol'
+          forge test --remappings 'contracts/=../contracts/' --match-path 'test/ZkSysProofGate.t.sol'
           forge test --remappings 'contracts/=../contracts/' --match-path 'test/ZkSysRootDraw.t.sol'
 
       - name: Test issuer and staking accounting

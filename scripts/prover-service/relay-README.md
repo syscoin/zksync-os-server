@@ -17,8 +17,8 @@ a fee beneficiary, or selects a replacement wrapper.
 ## Deployment and wallet inputs
 
 Use the same reviewed `config.json` as the signing workflow. Populate
-`relay-policy.example.json` with the relay account, deployed gate/coordinator
-and priority-guard runtime Keccak code hashes, fixed gas and fee caps, required confirmations,
+`relay-policy.example.json` with the relay account, deployed gate and coordinator
+runtime Keccak hashes, fixed gas and fee caps, required confirmations,
 minimum remaining turn time, and maximum permitted RPC head age. The template's
 zero values deliberately fail validation, except that bootstrap uses a zero
 coordinator address and may use a zero coordinator runtime hash. Service mode
@@ -42,7 +42,7 @@ relayer for investigation instead of inventing a replacement authorization.
 
 Copy `relay-rpc.example.json` into a mode-0600 file owned by the operator. Use an
 independently trusted settlement-node endpoint supporting EIP-1898 canonical
-block-hash reads, receipts and logs. The wallet endpoint must support the
+block-hash reads, historical gate state, receipts and logs. The wallet endpoint must support the
 **signing-only** `eth_signTransaction` method and return a signed EIP-1559 raw
 transaction. An endpoint that broadcasts as part of signing is unsupported:
 it breaks the durable-before-send boundary. Neither a plain browser
@@ -93,17 +93,13 @@ block hash, and the block/chain are rechecked after dependent calls. The
 deployment code hashes, chain ID, child-chain address, sequencer, policy, VK,
 signing domain, frozen package commitment, roster root and current candidate
 must match. The full gate call is simulated with the configured gas limit.
-The status also shows the priority guard's frozen work, checkpoint hash, cursor,
-required/capped prefix end and expiry. Missing freeze, expired work, mismatched
-prefix counts or a missing prefix witness prevent signing.
-
-For service mode, the sequencer must already have opened the exact normalized
-package. For bootstrap, it must have frozen bootstrap work through
-`openBootstrapPackage` before submission. The mandatory priority guard must
-have the required current checkpoint and prefix witness. Those operations are
-separate authenticated workflows; missing or expired guard state makes the
-exact gate simulation refuse signing. Repairs and checkpoint refreshes must
-preserve the coordinator's schedule as the contracts require.
+For service mode, the sequencer must have opened the exact normalized package.
+For bootstrap it opens the work through `openBootstrapPackage`. The proposed
+first batch must still follow the native verified frontier when the gate verifies
+the proof. If independent native settlement covers the start of a frozen range,
+reconcile its relay nonce, observe the native advance, and obtain a fresh package
+for the remaining work. Service acceptance requires the gate transaction and its
+matching event.
 
 Stage the immutable artifact under its package hash:
 
@@ -163,8 +159,11 @@ The signed raw bytes and transaction hash are fsynced before the first
 `eth_sendRawTransaction`. Send timeouts, provider rejection, malformed replies
 and process interruption keep the same durable record. An acceptance event or
 the gate's accepted-parent state can identify acceptance by another relayer;
-an advanced parent alone never proves this package was accepted. A successful
-own receipt must contain the exact gate event for the package/range/bootstrap
+an advanced parent alone never proves this package was accepted. To recover an
+external transaction hash, the relay locates the first canonical block where
+the gate observed the package's final batch and checks that block's exact
+acceptance event. This also covers a package staged locally after settlement.
+A successful own receipt must contain the exact gate event for the package/range/bootstrap
 mode. Existing canonical durable receipts survive transient RPC absence.
 
 Canonical block hashes are rechecked before confirmation. A reorg clears

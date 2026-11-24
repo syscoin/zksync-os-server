@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -40,15 +39,17 @@ class Driver:
 
 def state(tmp_path):
     path = tmp_path / 'requests.json'
-    path.write_text(json.dumps({'version': 1, 'identity': '22' * 32, 'requests': []}))
-    path.chmod(0o600)
+    requests(path, [])
+    r.storage.publish_descriptor(path, '22' * 32, path.with_name('claim.json'), 'claim')
     cfg = {'requests_file': str(path), 'requests_identity': '0x' + '22' * 32, 'zksys_chain_id': 2}
     journal = {'transactions': {}, 'completed': {}, 'history': [], 'nextRetryAt': 0}
     return path, cfg, journal, Driver(journal), Hooks()
 
 
 def requests(path, items):
-    path.write_text(json.dumps({'version': 1, 'identity': '22' * 32, 'requests': items}))
+    claim = r.storage.new_claim_state('claim')
+    claim['rootRequests'].update({r.storage.request_key(item): item for item in items})
+    r.storage.save(path.with_name('claim.json'), claim, 'claim')
 
 
 def test_only_requested_batches_and_bundled_hash(tmp_path):

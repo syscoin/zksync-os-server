@@ -86,11 +86,15 @@ class EmptyBootstrapControlTests(unittest.TestCase):
             with self.assertRaisesRegex(s.Error, 'dispatcher_requires_enrolled_subscribers'):
                 dispatcher.initialize(root, self.f['settings'], [], 5, 'http://127.0.0.1:3050', self.rpc)
             self.assertFalse(root.exists())
-        class Store:
-            root = Path('/private/unused')
-        with patch.object(dispatcher.journal, 'load', return_value={'schema_version': 1, 'subscriptions': []}):
+            settings, subscribers = self.base['settings'], self.base['subscriptions']
+            registry = Rpc(settings, subscribers)
+            store = dispatcher.initialize(root, settings, subscribers, 5, 'http://127.0.0.1:3050', registry)
+            path = root / 'state.json'
+            state = dispatcher.journal.load(path, list_fields=('audit.events',))
+            state['subscriptions'] = []
+            dispatcher.journal.save(path, state, list_fields=('audit.events',))
             with self.assertRaisesRegex(s.Error, 'dispatcher_requires_enrolled_subscribers'):
-                dispatcher.Dispatcher(Store(), registry_rpc=self.rpc)
+                dispatcher.Dispatcher(store, registry_rpc=registry)
 
     def test_control_manifest_builder_pins_empty_enrollment_and_bootstrap_phase(self):
         config, _, _ = setup(self.base)

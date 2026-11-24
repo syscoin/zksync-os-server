@@ -72,8 +72,15 @@ class DispatcherEnrollmentReuseTests(unittest.TestCase):
             {"blockHash": h(100), "requireCanonical": True},
         ])
 
-    def test_older_journal_is_reverified_once(self):
-        self.marker.unlink()
+    def test_interrupted_initial_enrollment_receipt_is_reverified_once(self):
+        self.root = self.root.parent / "interrupted-dispatcher"
+        self.marker = self.root / "verified-enrollment.json"
+        with patch.object(dispatcher, "atomic_json", side_effect=OSError("interrupted receipt write")), self.assertRaises(OSError):
+            dispatcher.initialize(self.root, self.settings, self.subscriptions, 5, "https://child.example/",
+                                  self.rpc, {"settings": self.rpc.gateway, "endpoint": "https://gateway.example/"})
+        self.assertTrue((self.root / "state.json").is_file())
+        self.assertFalse(self.marker.exists())
+        self.rpc.views.clear()
         self.reopen()
         self.assertIn("friSubscriberAt(address,uint64,uint256)", self.rpc.views)
         self.assertIn("operatorAccountAt(address,uint64)", self.rpc.views)

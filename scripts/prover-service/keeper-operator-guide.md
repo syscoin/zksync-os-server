@@ -3,9 +3,9 @@
 `keeper.py` reads canonical contract state, prepares unsigned maintenance calls,
 and issues a bounded SNARK compute permit. The external SNARK path in
 [`pool.py`](../prover-rental/pool.py) independently revalidates that permit before
-renting. It checks the reviewed gate/coordinator/priority-guard code, production
+renting. It checks the reviewed gate and coordinator code, production
 verifier and V8 key, native prover role, parent, committed native batch hashes,
-frozen package, selected wrapper and turn, priority prefix witness, and remaining
+frozen package, selected wrapper and turn, and remaining
 runtime. Both child and Gateway work use this path with their own lane settings.
 
 The low-level `keeper.py` commands do not deploy, sign, broadcast, rent, or start
@@ -49,7 +49,6 @@ Keep one mode-0600 keeper configuration per lane, phase, and enrollment journal:
     "expected_operator": "0xREVIEWED_OPERATOR",
     "gate_code_hash": "0xREVIEWED_DEPLOYED_GATE_CODE_HASH",
     "coordinator_code_hash": "0xREVIEWED_DEPLOYED_COORDINATOR_CODE_HASH",
-    "priority_guard_code_hash": "0xREVIEWED_DEPLOYED_PRIORITY_GUARD_CODE_HASH",
     "reserve_seconds": 120,
     "max_head_age_seconds": 60,
     "rpc_timeout_seconds": 15
@@ -88,7 +87,14 @@ Cross-period wrapping requires `audit_trust_dir`: an absolute private directory
 containing independently provisioned trust files for every included journal.
 It must equal the wrapper's `audit_trust_dir` and remain available to the rental
 pool when it revalidates a saved compute permit. The current journal's trust pin
-must match `block_hash`; historical journals retain their own reviewed pins.
+must match the reviewed enrollment block for its period. By default this is
+`block_hash`. To roll a running service forward, provision `period-<number>.json`
+in the keeper's private `audit_trust_dir` on the coordinator, wrapper and pool.
+For example, the file for period 6 contains
+`{"schema_version":1,"period":6,"enrollment_block_hash":"0x<reviewed 32-byte hash>"}`.
+Use the independently verified canonical enrollment block for that period and
+the same hash in its journal's audit trust file. Historical journals retain
+their own reviewed pins.
 The pool rebuilds canonical enrollment authorities from these files, never from
 the work envelope's claimed anchors. Single-period configurations may omit it.
 Offline `service.py` helpers and `keeper.prepare` retain their EOA account-signature
@@ -146,15 +152,16 @@ the package as more FRIs arrive. Unavailable ranges remain unleased and are retr
 A protocol-boundary constraint can require an explicit package repair through the
 existing keeper workflow; renewal never invents a different report.
 
-Priority refresh and prefix-witness transactions are scoped to the guard, work
-identity and frozen checkpoint. The coordinator persists each invocation before
-staging its transaction. A new checkpoint gets a new invocation even when the
-calldata is identical; retries of an unresolved invocation retain its nonce and
-signed transaction. A canonically confirmed revert permits a new retry generation.
-Keep the transaction journal and coordinator state together across restarts.
-Legacy refresh or witness records that already reserved a nonce without a
-checkpoint scope can recover their original receipt, but are not rebroadcast
-under a new checkpoint.
+A native proof can supersede a frozen package. Compare the native verified height
+with the gate's `observedNativeBatch()`. Use `observe-native` to record a
+forward advance. A confirmed observation retires the overlapping service work
+and leaves its endorsements, service parent and wrapper sequence unspent.
+The coordinator releases the original overlapping package and any following wrapper
+that the node must regroup. It can acquire the replacement range while a transaction
+for either old package still awaits a receipt. The relay keeps the original raw
+transaction and reserved nonce. Fresh endorsements bind the replacement package
+to its exact range.
+
 The maintenance and relay journals retain their history in an indexed SQLite
 store once they outgrow the small JSON form. Completed history does not impose
 a lifetime operation count cutoff. Migration preserves signed transaction bytes,
@@ -175,7 +182,7 @@ The automatic coordinator configuration has these exact top-level fields:
 | `endpoint`, `native_auth_file`, `release_file`, `native_lease_seconds` | Native prover API, private Basic Auth file, reviewed SNARK release, and a conservative lease duration matching the node. The API does not attest its lease duration. |
 | `dispatcher_dir`, `roster_dir` | The current shared dispatcher journal and complete authenticated roster files named `<period>.json`. |
 | `operator_inboxes` | Map of registered lowercase operator addresses to private handoff directories. |
-| `priority_witness_dir`, `publication_dir` | Authenticated priority witnesses named `<work_id_without_0x>.json`, and this lane's node service-publication directory. |
+| `publication_dir` | This lane’s node service-publication directory. |
 | `sequencer_wallet_file`, `relay_wallet_file` | Private connection files for the sequencer signing/maintenance wallet and a separate proof-relay wallet. |
 | `transaction_policy`, `relay_policy` | Complete [relay-policy](relay-policy.example.json) objects with matching reviewed code pins and explicit gas/fee/confirmation limits. Maintenance uses the sequencer account; proof relay must use a different nonce account. |
 | `sequencer_beneficiary`, `poll_interval_seconds` | The fixed nonzero sequencer payee and a polling interval from 1 to 60 seconds. |
@@ -217,13 +224,9 @@ that preserves exact bytes, private permissions and publication order. No public
 transport service is started by these scripts. Never synchronize the coordinator's
 native authority, lease, credentials, transaction journal or signing files.
 
-Roster publication, both future-draw registrations and cross-chain deliveries,
-and priority checkpoint relayers remain external prerequisites. Supply actual
-native priority preimages and tree paths when the coordinator reports
-`await_authenticated_priority_witness`; it will validate and publish that witness,
-but cannot construct it from a transaction count. Rotate the dispatcher snapshot
-only under its period/phase rules and preserve outstanding journals; an old
-snapshot is not silently rewritten for a new period.
+Arrange roster publication, both future-draw registrations and authenticated
+cross-chain delivery independently. Rotate the dispatcher snapshot under its
+period and phase rules. Preserve the original snapshot for outstanding journals.
 
 ### Start and inspect
 
@@ -257,20 +260,20 @@ time, unavailable witnesses and uncertain transactions produce wait/recovery
 states instead of synthetic work or service credit. No production end-to-end
 deployment or live GPU run is established by the local regression tests.
 
-`dispatcher_dir` may name the initial journal with automatically created
-`periods/<period>-<phase>/` journals, a particular period journal, or a legacy
-private parent containing one initialized journal per period (`5/`, `6/`).
+Set `dispatcher_dir` to the initial dispatcher journal or one of its automatically
+created `periods/<period>-<phase>/` journals. Either path uses the same journal
+tree for rollover and recovery.
 The coordinator selects the frozen/opening roster period before acquiring new
 work and taking its signed snapshot. Its keeper pin must match that journal.
-Retain older journals, coordinator/wrapper state, and pool configurations until
+Retain journals from earlier roster periods, coordinator/wrapper state, and pool configurations until
 their pending work and uncertain allocations are reconciled. The FRI dispatcher
 creates the next journal only from finalized registry time and complete eligible
-enrollment; operators sign fresh readiness for its new identity. For a new period,
-prepare new reviewed keeper,
-coordinator/wrapper and pool configurations in fresh state directories, and supply
-the matching independently reviewed audit trust pin to the operators. The
-immutable configuration does not adopt a new journal's pin automatically. Do not
-run competing dispatchers or rewind old state to change a pin.
+enrollment; operators sign fresh readiness for its new identity. Provision the
+new period's reviewed pin and journal trust before the opening roster changes.
+The same coordinator state can then rebuild an unopened proposal for that roster
+and retain historical duty evidence. Already-open packages continue under their
+frozen roster. A signed opening transaction keeps its nonce until its canonical
+receipt resolves. Keep the coordinator, wrapper and pool journals across restart.
 FRI handles from automatic handoff include their journal path, for example
 `periods/6-service/job-000000`; preserve that scope in follow-up commands.
 Use `--fixed-epoch` with the exact old dispatcher journal for pending-pick recovery
@@ -316,16 +319,18 @@ work using an older ready roster have `control_work: true`. Such packages requir
 transactions. Compute their FRI proofs through the explicit native/control path;
 do not consume shared service quota opportunities on work that cannot earn credit.
 Control packages still require a legal native aggregate of at least two batches,
-the selected wrapper, the priority guard, and a current permit.
+the selected wrapper, and a current permit.
 
 A package already frozen for an older period retains that period and control
-status across repairs and clock changes. A new current-period package cannot pay
-old-period slots. Publish rosters and perform draws before the configured cutoff.
+status across repairs and clock changes. A new service package can credit earlier
+accepted duties in its batch range while their original round remains eligible for
+credit. Once that round closes, its duties still count toward batch coverage.
+Publish rosters and perform draws before the configured cutoff.
 Measure FRI, wrapping, delivery, and finality times when setting the period lead,
 grace, and turn durations; the keeper cannot make an already late duty creditable.
 Sparse demand remains unoffered work, not a fabricated success or failure.
 
-## Keep rosters, draws, and priority snapshots moving
+## Maintain rosters, draws and the native verified frontier
 
 Each invocation below writes a simulated unsigned transaction containing its
 exact chain ID, sender, target, calldata, value, and canonical anchor. Submit it
@@ -346,14 +351,13 @@ state before proceeding. Simulation is a point-in-time check, not a reservation.
   The root-settled Gateway coordinator requests its native draw during preparation;
   it does not need the child message-proof request step.
 * `relay-draw` adds explicit `gas_limit`, `gas_per_pubdata_byte_limit`, and
-  `refund_recipient` to the target/code/value/commitment fields. `relay-checkpoint`
-  uses the same fields without `commitment`. All uint256 quantities, including
-  value and gas, are canonical hexadecimal strings. Supply the reviewed source
-  and actual required relay payment; the keeper does not guess fees. Use a keeper
-  configuration whose settlement chain is NEVM for these root transactions.
-* `refresh-priority --arguments empty.json`, with `{}`, prepares the sequencer's
-  gate refresh call. The contract permits this only after the old work window
-  expires and preserves the work identity; it does not reroll the wrapper turn.
+  `refund_recipient` to the target/code/value/commitment fields. Encode uint256
+  values, including value and gas, as canonical hexadecimal strings. Supply
+  the reviewed source and the required relay payment on NEVM.
+* `observe-native --arguments empty.json`, with `{}`, prepares a permissionless
+  gate observation of the native verified height read at the canonical anchor.
+  The contract checks that exact height when the transaction executes. Read the
+  state again if the frontier has advanced since preparation.
 
 For example:
 
@@ -366,23 +370,6 @@ At least one independent root keeper must capture every available draw. If all
 keepers withhold an unfavorable draw until blockhash expiry, recovery allows
 selective-abort bias. Native PoW block hashes also retain producer bias. These
 contracts do not authenticate ChainLocks or guarantee that a keeper will run.
-
-Before nonempty priority work can receive a permit, publish its ordered prefix
-witness. The witness file has `batch_item_preimages` (one array of exact native
-priority-item encoding hex strings per batch), `left_path`, and `right_path`.
-The keeper hashes those preimages, reconstructs every native batch's rolling
-priority hash, and simulates the contract's ordered tree-range proof:
-
-```sh
-python3 scripts/prover-service/keeper.py --config /trusted/child-keeper.json \
-  --output /trusted/prefix-call.json prefix-witness \
-  --evidence /trusted/native-evidence.json --witness /trusted/prefix-preimages.json
-```
-
-The caller must obtain native item preimages and paths from its authenticated
-chain data; the keeper does not invent or fetch them. Empty priority counts need
-the native empty rolling hash and no published witness. A stale checkpoint,
-missing overdue prefix, or missing nonempty witness refuses compute.
 
 ## Native proof checks for a manual handoff
 
@@ -458,7 +445,7 @@ nonce already owned by the automatic coordinator.
    wrapper, beneficiary, and turn to zero. It uses `openBootstrapPackage` before
    coordinator installation and `openPackage` in service mode. `repair` prepares
    the corresponding repair call for changed range/report artifacts; the contract
-   preserves parent, ordinal, entropy, turn clock, and priority work. After any
+   preserves the service parent, ordinal, entropy and turn clock. After any
    repair, build a new permit. Never treat a repair as additional service credit.
 
 3. Read the selected candidate/index/current turn and update the proposal for that
@@ -487,8 +474,8 @@ nonce already owned by the automatic coordinator.
    watchdogs. It rechecks the exact permit, payload, evidence, candidate, frozen
    artifacts, and current chain state before `Controller.launch`. It rereads wall
    time after chain RPCs and after the provider price lookup, including immediately
-   before the sole allocation POST. Runtime plus reserve must fit both the turn
-   and priority window and the supplied native lease deadline. The permit stays
+   before the sole allocation POST. Runtime plus reserve must fit the selected turn and the supplied native
+   lease deadline. The permit stays
    on the trusted host; the rental receives the ordinary one-job native input.
 
 4. After external pool completion, bind the verified returned result to the

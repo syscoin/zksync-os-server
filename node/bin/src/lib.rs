@@ -89,7 +89,7 @@ use zksync_os_contract_interface::l1_discovery::{
     BatchVerificationSL, L1State, L2_BRIDGEHUB_ADDRESS,
 };
 use zksync_os_contract_interface::models::BatchDaInputMode;
-use zksync_os_contract_interface::prover_service_v1::{IZkSysPriorityGuardV1, IZkSysProofGateV1};
+use zksync_os_contract_interface::prover_service_v1::IZkSysProofGateV1;
 use zksync_os_contract_interface::{
     IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call, ZkChain,
 };
@@ -946,11 +946,11 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     if config.service_publication_config.enabled {
         tokio::time::timeout(
             config.service_publication_config.rpc_timeout,
-            validate_service_priority_package_limit(&config, &l1_state, &sl_provider, chain_id),
+            validate_service_gate(&config, &l1_state, &sl_provider, chain_id),
         )
         .await
-        .expect("timed out validating the deployed service priority guard")
-        .expect("invalid deployed service priority guard or package limit");
+        .expect("timed out validating the deployed service gate")
+        .expect("invalid deployed service gate");
     }
     // SYSCOIN: Settlement mode is discovered from the L1 diamond, not from the
     // optional Gateway provider config. A Gateway RPC may be configured before
@@ -1762,7 +1762,6 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
             // Gateway-only empty interop companion fallback.
             interop_companion_idle_delay: config.sequencer_config.interop_companion_idle_delay,
             max_transactions_in_block: config.sequencer_config.max_transactions_in_block,
-            priority_tx_limit: config.batcher_config.priority_txs_per_batch_limit(),
             // We set the value to the same as for the batch, since it should be enforced by batcher, but don't want to exceed it for the block
             interop_roots_per_block: config.batcher_config.interop_roots_per_batch_limit,
         },
@@ -2158,18 +2157,14 @@ fn validate_deployed_verifier_prover_policy(
     Ok(())
 }
 
-/// Bind the production limit to the same settlement-chain gate and guard the service will use.
-async fn validate_service_priority_package_limit(
+/// Authenticate the configured gate against the selected settlement chain before publishing work.
+async fn validate_service_gate(
     config: &Config,
     l1_state: &L1State,
     provider: &NodeProvider,
     child_chain_id: u64,
 ) -> anyhow::Result<()> {
     let service = &config.service_publication_config;
-    let configured_limit = config
-        .batcher_config
-        .priority_package_limit
-        .context("service publication requires batcher.priority_package_limit")?;
     let settlement_block = provider
         .get_block_by_number(l1_state.sl_block_number.into())
         .await?
@@ -2188,19 +2183,6 @@ async fn validate_service_priority_package_limit(
             && gate.timelock().block(block).call().await? == l1_state.validator_timelock_sl
             && gate.policyHash().block(block).call().await? == service.policy_hash,
         "service gate identity does not match the selected settlement chain"
-    );
-    let guard_address = gate.priorityGuard().block(block).call().await?;
-    let guard = IZkSysPriorityGuardV1::new(guard_address, provider.clone());
-    anyhow::ensure!(
-        guard.acceptanceGate().block(block).call().await? == service.gate
-            && guard.chain().block(block).call().await? == chain_address
-            && guard.policyHash().block(block).call().await? == service.policy_hash,
-        "service priority guard does not match the reviewed service gate"
-    );
-    let deployed_limit = guard.maxPriorityPerPackage().block(block).call().await?;
-    anyhow::ensure!(
-        deployed_limit == configured_limit,
-        "configured priority package limit {configured_limit} differs from deployed guard limit {deployed_limit}"
     );
     Ok(())
 }
@@ -2939,7 +2921,6 @@ async fn run_main_node_pipeline(
             node_state_on_startup.l1_state.sl_chain_id,
             prove_required_confirmations,
             expected_v8_vk_hash,
-            config.batcher_config.priority_package_limit,
             // SYSCOIN: Bind restart recovery to the same fake/real lane validated at startup.
             config.prover_api_config.fake_snark_provers.enabled,
         );
@@ -3123,7 +3104,6 @@ async fn run_main_node_pipeline(
         .pipe(Batcher {
             startup_config: BatcherStartupConfig {
                 last_committed_batch: node_state_on_startup.l1_state.last_committed_batch,
-                last_proved_batch: node_state_on_startup.l1_state.last_proved_batch,
                 last_executed_batch: node_state_on_startup.l1_state.last_executed_batch,
                 last_persisted_block: node_state_on_startup.block_replay_storage_last_block,
             },
@@ -3151,7 +3131,6 @@ async fn run_main_node_pipeline(
         .pipe(GaplessCommitter {
             next_expected_batch_number: node_state_on_startup.l1_state.last_executed_batch + 1,
             last_committed_batch_number: node_state_on_startup.l1_state.last_committed_batch,
-            priority_txs_per_batch_limit: config.batcher_config.priority_txs_per_batch_limit(),
             proof_storage,
             batch_verification_l1_config: node_state_on_startup.l1_state.batch_verification.clone(),
         })

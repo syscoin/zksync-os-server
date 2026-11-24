@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import relay as r
+import service as s
 import transactions
 import workflow_io as io
 import test_coordinator_cross_epoch as ce
@@ -105,6 +106,45 @@ class RelayGraceTests(unittest.TestCase):
         self.assertIsNone(retained["raw_transaction"])
         self.assertEqual(self.controller.state["operations"][identifier]["relay"], relay_id)
         self.assertIsNone(self.controller.state["operations"][identifier]["maintenance"])
+
+    def test_external_handoff_survives_restart_while_original_wallet_nonce_remains_reserved(self):
+        identifier, _, _, relay_id, _ = self.staged()
+        self.assertEqual(self.controller_reload().relay(identifier, True)["status"], "broadcast")
+        op = self.controller.state["operations"][identifier]
+        hint = Path(op["publication"]) / "relay.json"
+        store = r.Store(self.control_store.root / "relay")
+        own = store.load(self.f["settings"], self.config["relay_policy"])["operations"][relay_id]["unsigned_transaction"]
+        self.rpc.accept_package()
+        self.rpc.logs = [{"address": self.f["settings"]["proof_gate"], "topics": r.acceptance_topics(self.rpc.item),
+                          "data": "0x" + s.word(0).hex(), "transactionHash": h(90),
+                          "blockNumber": self.rpc.head["number"], "blockHash": self.rpc.head["hash"]}]
+        self.rpc.advance()
+        self.now = self.rpc.now
+
+        with patch.object(self.controller, "save", side_effect=OSError("interrupted after handoff")):
+            with self.assertRaisesRegex(OSError, "interrupted after handoff"):
+                self.controller.relay(identifier, True)
+        self.assertEqual(io.private_json(hint)["transaction_hash"], h(90))
+        self.assertEqual(self.controller_reload().state["active"], identifier)
+        self.assertEqual(self.controller.relay(identifier, True)["transaction_hash"], h(90))
+        self.assertIsNone(self.controller_reload().state["active"])
+        self.assertEqual(self.controller.state["regrouped_pending"], [identifier])
+        next_job = self.controller.reserve()
+        self.controller_reload().reconcile_regrouped(True)
+        row = store.load(self.f["settings"], self.config["relay_policy"])["operations"][relay_id]
+        self.assertEqual(row["unsigned_transaction"], own)
+        self.assertNotIn(row["status"], r.TERMINAL)
+        self.assertEqual(self.controller.state["active"], next_job)
+
+        self.rpc.accept_receipt(status=0)
+        self.rpc.advance()
+        self.now = self.rpc.now
+        self.controller_reload().reconcile_regrouped(True)
+        self.assertEqual(self.controller.state["operations"][identifier]["status"], "settled")
+        self.assertEqual(self.controller.state["active"], next_job)
+        self.assertEqual(self.controller.state["regrouped_pending"], [])
+        self.assertEqual(io.private_json(hint)["transaction_hash"], h(90))
+        self.assertEqual(len(self.rpc.sent), 1)
 
     def test_restart_after_relay_retirement_cannot_sign_the_expired_report(self):
         identifier, _, _, relay_id, _ = self.staged()
