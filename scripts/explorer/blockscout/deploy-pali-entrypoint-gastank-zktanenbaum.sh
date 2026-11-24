@@ -14,10 +14,7 @@
 # Optional:
 #   ZKTANENBAUM_RPC_URL     default: https://rpc-zk.tanenbaum.io
 #   EXPLORER_BASE           default: https://explorer-zk.tanenbaum.io
-#   DEPLOYER_ADDRESS        used with hardware or keystore signers
-#   DEPLOYER_PRIVATE_KEY    raw private key signer
-#   DEPLOYER_MNEMONIC       mnemonic signer, index 0 by default
-#   DEPLOYER_MNEMONIC_INDEX mnemonic index, default: 0
+#   DEPLOYER_ADDRESS        required for hardware and cloud signers
 #   DEPLOYER_ACCOUNT        Foundry keystore account name
 #   DEPLOYER_KEYSTORE       Foundry keystore path
 #   DEPLOYER_PASSWORD_FILE  password file for DEPLOYER_KEYSTORE / DEPLOYER_ACCOUNT
@@ -42,10 +39,15 @@
 #   VERIFY                  true by default; set false to skip Blockscout verification
 #
 # Example:
-#   ZKSYS_TOKEN_ADDRESS=0x... DEPLOYER_PRIVATE_KEY=0x... \
+#   ZKSYS_TOKEN_ADDRESS=0x... DEPLOYER_ACCOUNT=zkTanenbaum-deployer \
 #     ./scripts/explorer/blockscout/deploy-pali-entrypoint-gastank-zktanenbaum.sh
 
 set -euo pipefail
+
+if [[ -n "${DEPLOYER_PRIVATE_KEY+x}" || -n "${DEPLOYER_MNEMONIC+x}" || -n "${DEPLOYER_MNEMONIC_INDEX+x}" ]]; then
+  echo "error: unset DEPLOYER_PRIVATE_KEY, DEPLOYER_MNEMONIC, and DEPLOYER_MNEMONIC_INDEX; use DEPLOYER_ACCOUNT, DEPLOYER_KEYSTORE, or DEPLOYER_SIGNER" >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -81,23 +83,15 @@ if [[ -z "${ZKSYS_TOKEN_ADDRESS:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "${DEPLOYER_ADDRESS:-}" && -n "${DEPLOYER_PRIVATE_KEY:-}" ]]; then
-  DEPLOYER_ADDRESS="$(cast wallet address --private-key "${DEPLOYER_PRIVATE_KEY}")"
-fi
-
 wallet_args=()
 case "${DEPLOYER_SIGNER:-}" in
   "")
-    if [[ -n "${DEPLOYER_PRIVATE_KEY:-}" ]]; then
-      wallet_args+=(--private-key "${DEPLOYER_PRIVATE_KEY}")
-    elif [[ -n "${DEPLOYER_MNEMONIC:-}" ]]; then
-      wallet_args+=(--mnemonic "${DEPLOYER_MNEMONIC}" --mnemonic-index "${DEPLOYER_MNEMONIC_INDEX:-0}")
-    elif [[ -n "${DEPLOYER_ACCOUNT:-}" ]]; then
+    if [[ -n "${DEPLOYER_ACCOUNT:-}" ]]; then
       wallet_args+=(--account "${DEPLOYER_ACCOUNT}")
     elif [[ -n "${DEPLOYER_KEYSTORE:-}" ]]; then
       wallet_args+=(--keystore "${DEPLOYER_KEYSTORE}")
     else
-      echo "error: set DEPLOYER_PRIVATE_KEY, DEPLOYER_ACCOUNT, DEPLOYER_KEYSTORE, or DEPLOYER_SIGNER" >&2
+      echo "error: set DEPLOYER_ACCOUNT, DEPLOYER_KEYSTORE, or DEPLOYER_SIGNER" >&2
       exit 1
     fi
     ;;

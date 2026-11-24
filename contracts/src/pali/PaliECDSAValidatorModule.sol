@@ -14,6 +14,7 @@ contract PaliECDSAValidatorModule is IPaliCompositeChildValidator {
     bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
     bytes4 internal constant EIP1271_FAILED = 0xffffffff;
 
+    error AlreadyInitialized();
     error InvalidECDSAOwner(address owner);
     error InvalidECDSAThreshold(uint64 ownerCount, uint64 threshold);
     error DuplicateECDSAOwner(address owner);
@@ -23,6 +24,9 @@ contract PaliECDSAValidatorModule is IPaliCompositeChildValidator {
     mapping(address account => uint64) private _threshold;
 
     function onInstall(bytes calldata initData) public override {
+        if (_threshold[msg.sender] != 0 || _owners[msg.sender].length != 0) {
+            revert AlreadyInitialized();
+        }
         (address[] memory owners_, uint64 threshold_) = abi.decode(initData, (address[], uint64));
         _setOwners(msg.sender, owners_, threshold_);
     }
