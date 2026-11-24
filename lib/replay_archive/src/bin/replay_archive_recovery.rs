@@ -2,9 +2,10 @@ use clap::{Parser, Subcommand};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use zksync_os_replay_archive::{
-    ArchiveIdentity, FileSystemReplayArchiveReader, S3ReplayArchiveAuthMode, S3ReplayArchiveConfig,
-    S3ReplayArchiveReader, download_all_replay_archive_objects, parse_age_x25519_identity,
-    read_age_x25519_identity, recover_replay_records_to_rocksdb_with_optional_decryption,
+    ArchiveIdentity, FileSystemReplayArchiveReader, ReplayArchiveSession, S3ReplayArchiveAuthMode,
+    S3ReplayArchiveConfig, S3ReplayArchiveReader, download_replay_archive_objects,
+    parse_age_x25519_identity, read_age_x25519_identity,
+    recover_replay_records_to_rocksdb_for_sessions,
 };
 #[cfg(feature = "gcp")]
 use zksync_os_replay_archive::{
@@ -21,7 +22,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Download all archived replay record objects to local disk.
+    /// Download archived replay record objects to local disk.
     Download {
         /// Root folder of the replay archive storage.
         #[cfg_attr(feature = "gcp", arg(
@@ -66,6 +67,9 @@ enum Command {
         /// Local folder where downloaded objects should be written.
         #[arg(long)]
         output_root: PathBuf,
+        /// Restrict to an independently trusted archive session ID. Repeat for more than one.
+        #[arg(long = "trusted-session")]
+        trusted_sessions: Vec<ReplayArchiveSession>,
         /// Number of archive objects fetched concurrently.
         #[arg(long, default_value_t = zksync_os_replay_archive::DEFAULT_DOWNLOAD_CONCURRENCY)]
         download_concurrency: NonZeroUsize,
@@ -109,6 +113,9 @@ enum Command {
         #[cfg(feature = "gcp")]
         #[arg(long, conflicts_with_all = ["identity_file", "age_secret_key"])]
         kms_key_version: Option<String>,
+        /// Restrict to an independently trusted archive session ID. Repeat for more than one.
+        #[arg(long = "trusted-session")]
+        trusted_sessions: Vec<ReplayArchiveSession>,
         /// Number of replay records decoded concurrently. With KMS decryption every record decode
         /// takes one KMS call, so this bounds in-flight KMS requests.
         #[arg(long, default_value_t = zksync_os_replay_archive::DEFAULT_DECRYPT_CONCURRENCY)]
@@ -140,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
             #[cfg(feature = "gcp")]
             gcs_anonymous,
             output_root,
+            trusted_sessions,
             download_concurrency,
         } => {
             // clap guarantees exactly one backend is selected; GCS is only reachable when the
@@ -156,10 +164,11 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await?;
                 Some(
-                    download_all_replay_archive_objects(
+                    download_replay_archive_objects(
                         &reader,
                         &output_root,
                         download_concurrency,
+                        &trusted_sessions,
                     )
                     .await?,
                 )
@@ -173,8 +182,13 @@ async fn main() -> anyhow::Result<()> {
                 gcs_downloaded
             } else if let Some(archive_root) = archive_root {
                 let reader = FileSystemReplayArchiveReader::new(archive_root);
-                download_all_replay_archive_objects(&reader, &output_root, download_concurrency)
-                    .await?
+                download_replay_archive_objects(
+                    &reader,
+                    &output_root,
+                    download_concurrency,
+                    &trusted_sessions,
+                )
+                .await?
             } else {
                 let auth_mode = if let Some(path) = s3_credential_file_path {
                     S3ReplayArchiveAuthMode::AuthenticatedWithCredentialFile(path)
@@ -193,8 +207,13 @@ async fn main() -> anyhow::Result<()> {
                     region: s3_region,
                 })
                 .await;
-                download_all_replay_archive_objects(&reader, &output_root, download_concurrency)
-                    .await?
+                download_replay_archive_objects(
+                    &reader,
+                    &output_root,
+                    download_concurrency,
+                    &trusted_sessions,
+                )
+                .await?
             };
             println!("Downloaded {downloaded} replay archive objects");
         }
@@ -207,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
             age_secret_key,
             #[cfg(feature = "gcp")]
             kms_key_version,
+            trusted_sessions,
             decrypt_concurrency,
         } => {
             // A KMS identity is only reachable when the `gcp` feature is compiled in; clap
@@ -234,13 +254,14 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
-            let recovered = recover_replay_records_to_rocksdb_with_optional_decryption(
+            let recovered = recover_replay_records_to_rocksdb_for_sessions(
                 &input_root,
                 &replay_db_path,
                 anchor_block_number,
                 anchor_block_hash,
                 identity,
                 decrypt_concurrency,
+                &trusted_sessions,
             )
             .await?;
             println!("Recovered {recovered} replay records to RocksDB");

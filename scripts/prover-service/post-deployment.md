@@ -45,12 +45,12 @@ guides refer to their output files.
 
 The prover-role handoff is managed manually using the existing administrator,
 as described in the [gate deployment guide](gate-deployment.md). Pause the initial
-proof sender and reconcile its submitted transactions before deploying the gate
-against the current chain state. No separate cutover contract is required.
+proof sender when changing its authority and reconcile its submitted transactions.
+Verify the service timelock and the independently authorized ordinary proof route.
 
 For an initial uncredited proof when membership delivery needs it, follow the
 [bootstrap proof guide](bootstrap-proof.md) for the real native leases,
-production FRI/SNARK proofs, gate opening, priority witness and relay. The
+production FRI/SNARK proofs, gate opening and receipt delivery. The
 entry point provides the artifact steps:
 
 ```sh

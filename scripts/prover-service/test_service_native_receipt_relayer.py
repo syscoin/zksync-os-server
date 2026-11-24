@@ -1,4 +1,3 @@
-import json
 import subprocess
 from pathlib import Path
 import tempfile
@@ -54,12 +53,16 @@ class Tests(unittest.TestCase):
             path = Path(tmp)/'claim.json'
             journal = {'transactions': {}, 'records': {}, 'split': [], 'history': []}
             worker = n.Runner(journal, lambda _: None, None, None, None, FakeHooks(), claim_journal=str(path), claim_identity='id')
-            source = {'version':1, 'identity':'id', 'cursor':{'gateway':10,'l1':10},
-                      'records':{'root:r':{'status':'pending','report':root}}}
+            source = n.storage.new_claim_state('id')
+            source['cursor'] = {'gateway':10,'l1':10}
+            source['records']['root:r'] = {'status':'pending','report':root}
+            source['activations']['root:r'] = root
             def run():
-                path.write_text(json.dumps(source)); path.chmod(0o600); worker.discover()
+                n.storage.save(path, source, 'claim')
+                worker.discover()
             run(); self.assertEqual(journal['records'], {})
             source['records']['child:r'] = {'status':'pending','report':child}
+            source['activations']['child:r'] = child
             source['records']['child:b'] = {'status':'pending','report':boot}
             run(); self.assertEqual(journal['records'], {})
             source['records']['child:b']['status'] = 'complete'

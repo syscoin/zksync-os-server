@@ -1,4 +1,6 @@
+use crate::eth_filter::bounded_log_filter;
 use crate::eth_impl::build_api_log;
+use crate::result::invalid_params_rpc_err;
 use crate::rpc_storage::ReadRpcStorage;
 use alloy::consensus::Sealed;
 use alloy::consensus::transaction::TransactionInfo;
@@ -14,6 +16,7 @@ use reth_tasks::Runtime;
 use reth_tasks::shutdown::GracefulShutdown;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::ops::Deref;
 use tokio_stream::wrappers::ReceiverStream;
 use zksync_os_mempool::subpools::l2::L2Subpool;
@@ -26,14 +29,21 @@ pub struct EthPubsubNamespace<RpcStorage, Mempool> {
     storage: RpcStorage,
     mempool: Mempool,
     runtime: Runtime,
+    max_filter_terms: NonZeroU32,
 }
 
 impl<RpcStorage, Mempool> EthPubsubNamespace<RpcStorage, Mempool> {
-    pub fn new(storage: RpcStorage, mempool: Mempool, runtime: Runtime) -> Self {
+    pub fn new(
+        storage: RpcStorage,
+        mempool: Mempool,
+        runtime: Runtime,
+        max_filter_terms: NonZeroU32,
+    ) -> Self {
         Self {
             storage,
             mempool,
             runtime,
+            max_filter_terms,
         }
     }
 }
@@ -209,8 +219,19 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthPubSubApiServer
         &self,
         subscription_sink: PendingSubscriptionSink,
         kind: SubscriptionKind,
-        params: Option<Params>,
+        mut params: Option<Params>,
     ) -> jsonrpsee::core::SubscriptionResult {
+        if let (SubscriptionKind::Logs, Some(Params::Logs(filter))) = (&kind, &mut params) {
+            match bounded_log_filter(std::mem::take(filter.as_mut()), self.max_filter_terms) {
+                Ok(compact) => **filter = compact,
+                Err(err) => {
+                    subscription_sink
+                        .reject(invalid_params_rpc_err(err.to_string()))
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
         let sink = subscription_sink.accept().await?;
         let message_stream = self.handle_accepted(&sink, kind, params).await?;
         // This task is not critical but there is no way to spawn a non-critical task with graceful

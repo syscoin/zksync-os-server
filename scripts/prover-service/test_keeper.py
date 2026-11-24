@@ -21,7 +21,7 @@ def setup(f):
               "enrollment": {"registry_rpc_file": "/trusted/unit-registry.json", "block_hash": h(100)},
               "policy": {"expected_operator": f["proposal"]["candidate"]["operator"] if prepared["mode"] == "service" else settings["sequencer"],
                          "gate_code_hash": s.keccak(b"gate-code"), "coordinator_code_hash": s.keccak(b"coordinator-code"),
-                         "priority_guard_code_hash": s.keccak(b"priority-code"), "reserve_seconds": 30,
+                         "reserve_seconds": 30,
                          "max_head_age_seconds": 120, "rpc_timeout_seconds": 15}}
     request = {name: f[name] for name in ("proposal", "manifest", "subscriptions", "duties")}
     return config, request, item
@@ -33,6 +33,7 @@ class NativeRpc(FakeRpc):
         self.evidence = f["evidence"]
         self.control, self.bad_stored, self.bad_role, self.bad_code = False, False, False, False
         self.native_proved, self.opening_period = self.evidence["previous_batch"]["batchNumber"], 5
+        self.observed_native = self.native_proved
         self.frozen_bootstrap = k.normalized(item["sidecar"]["accepted_package"])
         self.roster_count, self.status_overrides = 1, {}
         self.simulated = []
@@ -66,6 +67,8 @@ class NativeRpc(FakeRpc):
                 stored = next(item for item in [self.evidence["previous_batch"]] + [b["stored"] for b in self.evidence["batches"]]
                               if item["batchNumber"] == number)
                 return h(99) if self.bad_stored else s.keccak(s.encode_fields(s.STORED, stored))
+            if selector == r.selector("observedNativeBatch()"):
+                return super().call(method, params)
             values = {"getChainId()": s.uint(self.settings["execution_chain_id"]),
                       "childChainAddress()": self.settings["chain_address"], "rosterCount()": self.roster_count,
                       "productionVerifier()": a(130),
@@ -75,6 +78,7 @@ class NativeRpc(FakeRpc):
                       "timelock()": a(132), "isValidator(address)": True,
                       "getRoleMemberCount(address,bytes32)": 2 if self.bad_role else 1,
                       "getRoleMember(address,bytes32,uint256)": self.settings["proof_gate"],
+                      "nextBatch()": self.native_proved + 1,
                       "getTotalBatchesVerified()": self.native_proved, "transitionWork()": self.control}
             for signature, value in values.items():
                 if selector == r.selector(signature):
@@ -86,9 +90,8 @@ class NativeRpc(FakeRpc):
             actions = [name + "(" + r.abi_tuple(s.PACKAGE) + ")" for name in
                        ("openPackage", "repairPackage", "openBootstrapPackage", "repairBootstrapPackage")]
             actions += ["prepareRosterDraw(uint64)", "recordRosterDraw(uint64)", "captureDraw(bytes32)",
-                        "refreshPriorityCheckpoint()", "publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
-                        "requestDraw(bytes32,uint256,uint256,uint16,bytes32[])", "relayDraw(bytes32,uint256,uint256,address)",
-                        "relayCheckpoint(uint256,uint256,address)"]
+                        "observeNativeSettlement(uint64)",
+                        "requestDraw(bytes32,uint256,uint256,uint16,bytes32[])", "relayDraw(bytes32,uint256,uint256,address)"]
             if selector in [r.selector(signature) for signature in actions]:
                 self.simulated.append(copy.deepcopy(tx))
                 return "0x"
@@ -149,15 +152,7 @@ class KeeperTests(unittest.TestCase):
                     self.permit()
                 setattr(self.rpc, field, original)
 
-    def test_window_and_witness_checks_precede_rental(self):
-        for field, changed, reason in (("witness", False, "priority_prefix_witness_missing"),
-                                     ("guard_expired", True, "priority_checkpoint_needs_refresh"),
-                                     ("deadline", 1080, "insufficient_compute_window")):
-            original = getattr(self.rpc, field)
-            setattr(self.rpc, field, changed)
-            with self.assertRaisesRegex(s.Error, reason):
-                self.permit()
-            setattr(self.rpc, field, original)
+    def test_compute_window_is_bounded_by_the_wrapper_turn(self):
         with self.assertRaisesRegex(s.Error, "stale_or_future_rpc_head"):
             self.permit(now=1201)
         with self.assertRaisesRegex(s.Error, "insufficient_compute_window"):
@@ -284,26 +279,23 @@ class KeeperTests(unittest.TestCase):
         self.config["settings"]["coordinator"] = s.ZERO_ADDRESS
         self.config["policy"]["coordinator_code_hash"] = s.ZERO
         self.rpc = NativeRpc(self.f, self.config, item)
-        self.assertEqual(self.permit()["state"]["deadline"], 1500)
+        permit = self.permit()
+        self.assertEqual(permit["state"]["deadline"], k.NO_TURN_DEADLINE)
+        self.assertEqual(min(1400, permit["state"]["deadline"]), 1400)
         self.rpc.frozen_bootstrap["batchTo"] = 3
         with self.assertRaisesRegex(s.Error, "bootstrap_package_repaired"):
             self.permit()
 
-    def test_prefix_witness_binds_native_preimages_and_is_simulated(self):
-        witness = {"batch_item_preimages": [["0x0102"], ["0x0304"]], "left_path": [], "right_path": []}
-        for entry, batch in zip(witness["batch_item_preimages"], self.f["evidence"]["batches"]):
-            digest = s.keccak(s.raw_hex(s.keccak(b"")) + s.raw_hex(s.keccak(s.raw_hex(entry[0]))))
-            batch["output"]["priorityOperationsHash"] = batch["stored"]["priorityOperationsHash"] = digest
-            batch["stored"]["commitment"] = s.output_hash(batch["output"])
-        result = k.prefix_call(self.config, self.rpc, self.f["evidence"], witness, 1000)
-        hashes = [s.keccak(s.raw_hex(entry[0])) for entry in witness["batch_item_preimages"]]
-        work_id = s.keccak(s.raw_hex(self.request["proposal"]["accepted_package"]["parent"]) + s.word(1))
-        expected = s.cast("calldata", "publishPrefixWitness(bytes32,uint256[],bytes32[],bytes32[],bytes32[])",
-                          work_id, "[1,1]", cast_value(hashes), "[]", "[]")
-        self.assertEqual(result["transaction"]["data"], expected)
-        witness["batch_item_preimages"][0][0] = "0xff"
-        with self.assertRaisesRegex(s.Error, "priority_preimage_hash_mismatch"):
-            k.prefix_call(self.config, self.rpc, self.f["evidence"], witness, 1000)
+    def test_native_advance_can_be_observed_before_picking_another_package(self):
+        before = k.status(self.config, self.rpc, 1000)
+        self.rpc.native_proved += 10
+        after = k.status(self.config, self.rpc, 1000)
+        self.assertEqual(after["next_native_batch"], before["next_native_batch"] + 10)
+        self.assertEqual(after["parent"], before["parent"])
+        self.assertFalse(after["package_open"])
+        self.assertIsNone(after["roster"])
+        call = k.maintenance(self.config, self.rpc, "observe-native", {}, 1000)
+        self.assertEqual(call["transaction"]["data"], s.cast("calldata", "observeNativeSettlement(uint64)", str(self.rpc.native_proved)))
 
     def test_fixed_maintenance_calls_never_sign_or_broadcast(self):
         result = k.maintenance(self.config, self.rpc, "prepare-roster", {"period": 5}, 1000)
@@ -470,12 +462,12 @@ class KeeperTests(unittest.TestCase):
         self.request["proposal"]["accepted_package"]["turn"] = 1
         with self.assertRaisesRegex(s.Error, "invalid_bootstrap_compute"):
             k.rebind_request(self.config["settings"], self.request, state)
-        self.rpc.guard_work_missing = True
+        self.rpc.frozen_bootstrap["batchFrom"] = 0
         state = k.status(self.config, self.rpc, 1000)
         self.assertFalse(state["package_open"])
         self.assertIsNone(state["frozen_package"])
 
-    def test_root_draw_and_checkpoint_call_encodings_match_cast(self):
+    def test_root_draw_request_and_relay_call_encodings_match_cast(self):
         target = self.config["settings"]["coordinator"]
         common = {"target": target, "code_hash": self.config["policy"]["coordinator_code_hash"], "value": "0x0"}
         args = {**common, "commitment": h(88), "batch_number": "0x5", "index": "0x2", "tx_number_in_batch": 3,
@@ -483,9 +475,9 @@ class KeeperTests(unittest.TestCase):
         result = k.maintenance(self.config, self.rpc, "request-draw", args, 1000)
         self.assertEqual(result["transaction"]["data"], s.cast("calldata", "requestDraw(bytes32,uint256,uint256,uint16,bytes32[])",
                          h(88), "5", "2", "3", cast_value(args["proof"])))
-        args = {**common, "value": "0x1", "gas_limit": "0xf4240", "gas_per_pubdata_byte_limit": "0x320", "refund_recipient": a(77)}
-        result = k.maintenance(self.config, self.rpc, "relay-checkpoint", args, 1000)
-        self.assertEqual(result["transaction"]["data"], s.cast("calldata", "relayCheckpoint(uint256,uint256,address)", "1000000", "800", a(77)))
+        args = {**common, "commitment": h(88), "value": "0x1", "gas_limit": "0xf4240", "gas_per_pubdata_byte_limit": "0x320", "refund_recipient": a(77)}
+        result = k.maintenance(self.config, self.rpc, "relay-draw", args, 1000)
+        self.assertEqual(result["transaction"]["data"], s.cast("calldata", "relayDraw(bytes32,uint256,uint256,address)", h(88), "1000000", "800", a(77)))
         self.assertEqual(result["transaction"]["value"], "0x1")
 
 

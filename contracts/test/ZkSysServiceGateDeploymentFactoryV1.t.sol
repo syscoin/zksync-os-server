@@ -3,35 +3,17 @@ pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {ZkSysServiceGateDeploymentFactoryV1} from "../src/zksys/ZkSysServiceGateDeploymentFactoryV1.sol";
-import {ZkSysPriorityGuardV1, IZkSysPriorityMailboxV1} from "../src/zksys/ZkSysPriorityGuardV1.sol";
 import {ZkSysProofGateV1} from "../src/zksys/ZkSysProofGateV1.sol";
 import {ZkSysWrapperCoordinatorV1} from "../src/zksys/ZkSysWrapperCoordinatorV1.sol";
 import {IZkSysAuthenticatedRootSourceV1, IZkSysWrapperRosterSourceV1} from "../src/zksys/ZkSysServiceTypesV1.sol";
-import {
-    GateVerifier,
-    GateSettlement,
-    GatePriorityCheckpoint,
-    GateDrawSource,
-    GateRosterSource
-} from "./ZkSysProofGate.t.sol";
-
-contract GateFactoryGuardStub {
-    address public immutable acceptanceGate;
-
-    constructor(address expectedGate) {
-        acceptanceGate = expectedGate;
-    }
-}
+import {GateVerifier, GateSettlement, GateDrawSource, GateRosterSource} from "./ZkSysProofGate.t.sol";
 
 contract GateFactoryGateStub {
     address public immutable deploymentAuthority;
-    address public immutable priorityGuard;
     address public coordinator;
 
-    constructor(address expectedGuard) {
-        require(expectedGuard.code.length != 0);
-        deploymentAuthority = msg.sender;
-        priorityGuard = expectedGuard;
+    constructor(address authority) {
+        deploymentAuthority = authority;
     }
 
     function installCoordinator(address candidate) external {
@@ -43,18 +25,14 @@ contract GateFactoryGateStub {
 contract ZkSysServiceGateDeploymentFactoryV1Test is Test {
     function testAtomicBindingAndCoordinatorInstallation() public {
         ZkSysServiceGateDeploymentFactoryV1 factory = new ZkSysServiceGateDeploymentFactoryV1(address(this));
-        address guard = vm.computeCreateAddress(address(factory), 1);
-        address gate = vm.computeCreateAddress(address(factory), 2);
-        bytes memory guardCode = abi.encodePacked(type(GateFactoryGuardStub).creationCode, abi.encode(gate));
-        bytes memory gateCode = abi.encodePacked(type(GateFactoryGateStub).creationCode, abi.encode(guard));
+        address gate = vm.computeCreateAddress(address(factory), 1);
+        bytes memory gateCode = abi.encodePacked(type(GateFactoryGateStub).creationCode, abi.encode(address(factory)));
         vm.prank(address(42));
         vm.expectRevert(ZkSysServiceGateDeploymentFactoryV1.Unauthorized.selector);
-        factory.deploy(guardCode, gateCode);
-        factory.deploy(guardCode, gateCode);
+        factory.deploy(gateCode);
+        factory.deploy(gateCode);
         assertEq(factory.gate(), gate);
-        assertEq(GateFactoryGuardStub(guard).acceptanceGate(), gate);
-        assertEq(GateFactoryGateStub(gate).priorityGuard(), guard);
-        assertEq(factory.deploymentCommitment(), keccak256(abi.encode(guardCode, gateCode)));
+        assertEq(factory.deploymentCommitment(), keccak256(gateCode));
         vm.prank(address(42));
         vm.expectRevert(ZkSysServiceGateDeploymentFactoryV1.Unauthorized.selector);
         factory.installCoordinator(address(this));
@@ -63,30 +41,21 @@ contract ZkSysServiceGateDeploymentFactoryV1Test is Test {
         vm.expectRevert();
         factory.installCoordinator(address(this));
         vm.expectRevert(ZkSysServiceGateDeploymentFactoryV1.AlreadyDeployed.selector);
-        factory.deploy(guardCode, gateCode);
+        factory.deploy(gateCode);
     }
 
-    function testRealGuardAndGateBindAndInstallCoordinator() public {
+    function testRealGateInstallsCoordinator() public {
         bytes32 policy = keccak256("policy");
         GateVerifier verifier = new GateVerifier();
         GateSettlement settlement = new GateSettlement(verifier);
-        GatePriorityCheckpoint checkpoint = new GatePriorityCheckpoint(policy);
         ZkSysServiceGateDeploymentFactoryV1 factory = new ZkSysServiceGateDeploymentFactoryV1(address(this));
-        address guardAddress = vm.computeCreateAddress(address(factory), 1);
-        address gateAddress = vm.computeCreateAddress(address(factory), 2);
-        bytes memory guardCode = abi.encodePacked(
-            type(ZkSysPriorityGuardV1).creationCode,
-            abi.encode(gateAddress, IZkSysPriorityMailboxV1(address(settlement)), checkpoint, policy, 100, 600, 64)
-        );
+        address gateAddress = vm.computeCreateAddress(address(factory), 1);
         bytes memory gateCode = abi.encodePacked(
             type(ZkSysProofGateV1).creationCode,
-            abi.encode(settlement, settlement, address(123), policy, verifier.vkHash(), guardAddress, address(0))
+            abi.encode(settlement, settlement, address(123), policy, verifier.vkHash(), address(0))
         );
-        factory.deploy(guardCode, gateCode);
-        ZkSysPriorityGuardV1 guard = ZkSysPriorityGuardV1(guardAddress);
+        factory.deploy(gateCode);
         ZkSysProofGateV1 gate = ZkSysProofGateV1(gateAddress);
-        assertEq(guard.acceptanceGate(), gateAddress);
-        assertEq(address(gate.priorityGuard()), guardAddress);
         assertEq(gate.deploymentAuthority(), address(factory));
         GateDrawSource draw = new GateDrawSource();
         GateRosterSource roster = new GateRosterSource(keccak256("roster"));
@@ -111,14 +80,12 @@ contract ZkSysServiceGateDeploymentFactoryV1Test is Test {
         assertEq(address(gate.coordinator()), address(coordinator));
     }
 
-    function testWrongPredictedGateRollsBackBothCreations() public {
+    function testIncorrectDeploymentAuthorityRollsBackCreation() public {
         ZkSysServiceGateDeploymentFactoryV1 factory = new ZkSysServiceGateDeploymentFactoryV1(address(this));
-        address guard = vm.computeCreateAddress(address(factory), 1);
-        bytes memory guardCode = abi.encodePacked(type(GateFactoryGuardStub).creationCode, abi.encode(address(123)));
-        bytes memory gateCode = abi.encodePacked(type(GateFactoryGateStub).creationCode, abi.encode(guard));
+        bytes memory gateCode = abi.encodePacked(type(GateFactoryGateStub).creationCode, abi.encode(address(123)));
         vm.expectRevert(ZkSysServiceGateDeploymentFactoryV1.InvalidBinding.selector);
-        factory.deploy(guardCode, gateCode);
-        assertEq(guard.code.length, 0);
+        factory.deploy(gateCode);
+        assertEq(vm.computeCreateAddress(address(factory), 1).code.length, 0);
         assertEq(factory.deploymentCommitment(), bytes32(0));
     }
 }

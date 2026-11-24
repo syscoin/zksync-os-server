@@ -2,12 +2,9 @@
 
 `deploy_gate.py` is a post-deployment stage for **one** settlement lane. Run it
 separately for the zkSYS gate on Gateway and the Gateway gate on NEVM, with a
-separate protected journal and signer for each lane. It deploys the lane's
-priority guard and proof gate together using the repository's actual constructor
-bytecode. It does not deploy the checkpoint source/receiver, root sink, roster
-receivers, draws, or coordinators, change timelock roles, or activate the service.
-The component stage below can provision those components; all bindings and
-remaining activation steps must still be verified separately.
+separate protected journal and signer for each lane. Each factory deploys one
+proof gate from the compiled constructor bytecode. Use the component installer
+for the NEVM message sink, roster receivers, root draws and coordinators.
 
 Create a private JSON config and an existing owner-only journal directory. The
 config is the complete object below; all addresses, hashes and values must come
@@ -24,17 +21,12 @@ it must be retained to install the coordinator after bootstrap.
   "chain_code_hash": "0x<32-byte runtime hash>",
   "timelock": "0x<native prover timelock>",
   "timelock_code_hash": "0x<32-byte runtime hash>",
-  "checkpoint": "0x<root priority source or Gateway checkpoint receiver>",
-  "checkpoint_code_hash": "0x<32-byte runtime hash>",
   "message_sink": "0x<NEVM service sink, or zero address for Gateway gate>",
   "message_sink_code_hash": "0x<32-byte runtime hash, or zero for Gateway gate>",
   "sequencer": "0x<service sequencer>",
   "policy_hash": "0x<32-byte service policy hash>",
   "production_vk_hash": "0x<32-byte production VK hash for this lane>",
   "child_chain_id": 57001,
-  "max_snapshot_age": 600,
-  "max_proof_work_seconds": 1200,
-  "max_priority_per_package": 64,
   "factory_salt": "0x<unique 32-byte deployment salt>",
   "create2_code_hash": "0x<verified runtime hash of canonical CREATE2 factory>",
   "gas_limit": 30000000,
@@ -44,13 +36,11 @@ it must be retained to install the coordinator after bootstrap.
 }
 ```
 
-The numbers above are examples, not deployed policy recommendations. For the
-Gateway lane, `chain_id` is the Gateway chain ID, `child_chain_id` is zkSYS,
-`chain` is the zkSYS diamond on Gateway, `checkpoint` is the Gateway receiver,
-and the sink address/hash are zero. For the NEVM lane, `chain_id` is the NEVM
-chain ID, `child_chain_id` is Gateway, `chain` is the Gateway diamond on NEVM,
-`checkpoint` is its NEVM priority source, and `message_sink` is the NEVM service
-sink. Both lanes must use their own pinned native contracts, verifier and VK.
+Use the actual chain IDs and gas settings for each deployment. On Gateway,
+`chain` is the zkSYS diamond, `child_chain_id` is zkSYS, and the sink address and
+hash are zero. On NEVM, `chain` is the Gateway diamond, `child_chain_id` is
+Gateway, and `message_sink` is the NEVM service sink. Pin each lane's native
+contracts, production verifier and VK independently.
 
 First compute the deterministic addresses without any on-chain action:
 
@@ -80,49 +70,39 @@ python3 scripts/prover-service/deploy_gate.py --config /private/root-gate.json \
 The first command checks the chain and pinned prerequisites without sending.
 Repeat the second command as needed: it submits at most one stage, saves signed
 bytes before broadcast, waits for a finalized receipt on later runs, and retries
-only those same bytes if they disappear from the mempool. The guard requires all
-verified batches executed and the native priority queue drained when the guard
-and gate are created. A failed or inconsistent transaction stops the stage;
-retain its journal for diagnosis.
+only those same bytes if they disappear from the mempool. A failed or inconsistent
+transaction stops the stage. Retain its journal for diagnosis.
 
 After actual bootstrap proof acceptance and coordinator deployment, pass
 `--coordinator 0x... --coordinator-code-hash 0x... --send` with the same config
 and journal to install it. The gate checks the coordinator's accepted parent,
-next batch, lane, policy, VK, roster and sequencer. The script checks the
+chain, draw topology, policy, VK and sequencer. The script checks the
 supplied coordinator runtime hash before submission. Resume an in-flight
 installation with the same coordinator and hash.
 
-This stage has not been exercised against live Gateway or NEVM infrastructure.
-It does not alone establish a qualified roster or make proving available through
-the gate. Both lanes, their supervised prover-role handoff, checkpoint and roster
-relays, real duty reports and activation messages must be completed before the
-service can start.
+For each proof lane, verify the gate is the sole `PROVER_ROLE` member of its
+configured validator timelock. Verify the independent authority for ordinary
+native proof publication separately. The gate anchors
+itself to the diamond's verified frontier at deployment. Compare its
+`observedNativeBatch()` against the expected native verified height and check
+the gate's policy, production VK and sink binding. Exercise both publication
+routes and receipt delivery before activating service rewards. Confirm that
+bootstrap receipts from both lanes reached the registry before installing the
+coordinators. Use the existing authorized L1-to-Gateway administrator route
+where the Gateway role administrator is the aliased L1 ChainAdmin.
 
-For the supervised fresh launch, stop the initial proof sender and reconcile all
-of its submitted proof transactions before deploying the gate and guard. Use the
-existing chain administrator to grant the gate the prover role and remove that
-role from the initial sender. The gate requires itself to be the sole holder of
-the role; confirm this and the guard's native batch and priority cursors before
-starting gate submissions. Perform this for each proof lane. The Gateway role
-administrator may be the aliased L1 ChainAdmin, so use the existing authorized
-L1-to-Gateway administrator route and verify each finalized Gateway operation.
-No new cutover contract is required.
+## Service message sink, roster and coordinator deployment
 
-## Priority checkpoints and root message sink
-
-`deploy_component.py` provides the preceding stages for the NEVM priority
-sources, Gateway checkpoint receiver, and NEVM service message sink. It deploys
-one component per configuration and journal. Each uses a deterministic factory
-whose first CREATE address is independent of the component's constructor data.
-This permits the NEVM child-priority source and Gateway receiver to name each
-other before either exists. It also lets the root sink name the planned NEVM
-gate and the predicted zkSYS accepted-message receiver.
+`deploy_component.py` deploys one service component per configuration and journal.
+Each component uses a deterministic factory whose first CREATE address is
+independent of the component's constructor data. The root sink can therefore name
+the planned NEVM gate and the predicted zkSYS accepted-message receiver.
 
 Each private JSON file has these common fields, with real deployment values:
 
 ```json
 {
-  "kind": "root_priority_source",
+  "kind": "root_message_sink",
   "chain_id": 57,
   "genesis_hash": "0x<32-byte genesis hash>",
   "sender": "0x<component factory owner and transaction signer>",
@@ -138,16 +118,6 @@ Each private JSON file has these common fields, with real deployment values:
 
 Add exactly the fields for the selected kind:
 
-- `root_priority_source`, deployed on NEVM: `mailbox`, `mailbox_code_hash`,
-  `bridgehub`, `bridgehub_code_hash`, `child_chain_id`, `gateway_receiver`,
-  `gateway_chain_id`, and `inclusion_delay`. Deploy one source for the zkSYS
-  priority queue, with `gateway_receiver` set to the planned Gateway receiver
-  and `gateway_chain_id` set to Gateway. Deploy a second source for the Gateway
-  queue with `child_chain_id` set to Gateway and both `gateway_receiver` and
-  `gateway_chain_id` set to zero. Both sources require the corresponding native
-  priority queue to be drained and all verified batches executed.
-- `gateway_checkpoint_receiver`, deployed on Gateway: `root_source` is the
-  planned NEVM zkSYS priority source, and `child_chain_id` is zkSYS.
 - `root_message_sink`, deployed on NEVM: `publisher` is the planned NEVM proof
   gate and `gateway_gate` is the planned Gateway proof gate; `bridgehub` and
   `bridgehub_code_hash` pin the root Bridgehub;
@@ -173,9 +143,10 @@ Add exactly the fields for the selected kind:
   `child_chain_code_hash`, `production_vk_hash`, `initial_parent`,
   `first_batch`, `first_service_period`, `turn_seconds`, and boolean
   `native_root_draw`. The last bootstrap accepted-package hash and the native
-  diamond's next verified batch must still match at deployment and coordinator
-  installation. Quiesce proof submission between those two operations; otherwise
-  the gate rejects the installation and a new coordinator plan may be needed.
+  diamond's next batch must match at coordinator deployment. The coordinator
+  subsequently reads the next batch from the native verified frontier. Pause
+  bootstrap service submissions during installation to preserve the pinned
+  accepted-package parent.
 
 For each component, first use `--plan` with its config:
 
@@ -196,7 +167,7 @@ without `--send` to check prerequisites; run with `--send` and repeat to progres
 through finalized factory and component deployment. The journal persists the
 signed bytes and rebroadcasts only the same bytes. After finality the script
 checks the factory commitment and every component binding before reporting the
-address. The stage does not publish checkpoints or relay service messages.
+address. Use the service receipt workers for message delivery.
 
 
 ## Prepare deployment configs together
@@ -212,17 +183,17 @@ operator.
 {
   "schema_version": 1,
   "stages": [
-    {"id": "root-source", "type": "component", "config": {"...": "..."}},
-    {"id": "gateway-receiver", "type": "component", "config": {"...": "..."}},
+    {"id": "root-sink", "type": "component", "config": {"...": "..."}},
+    {"id": "root-gate", "type": "gate", "config": {"...": "..."}},
     {"id": "gateway-gate", "type": "gate", "config": {"...": "..."}}
   ]
 }
 ```
 
 In a config, a peer address can be written as, for example,
-`{"ref":"gateway-receiver.component"}` or `{"ref":"gateway-gate.gate"}`.
-Component stages expose `factory` and `component`; gate stages expose `factory`,
-`guard`, and `gate`. Use a distinct sender/salt factory for each stage on a chain.
+`{"ref":"root-sink.component"}` or `{"ref":"gateway-gate.gate"}`.
+Component stages expose `factory` and `component`. Gate stages expose `factory`
+and `gate`. Use a distinct sender/salt factory for each stage on a chain.
 Runtime code hashes are not predicted: provide the reviewed hashes once those
 contracts are deployed, and prepare a new output directory for later stages.
 

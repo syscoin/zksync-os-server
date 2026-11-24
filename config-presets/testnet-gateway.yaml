@@ -25,8 +25,8 @@ batcher:
   batch_timeout: 40m
   # Fill these per environment or via a local override file.
   bitcoin_da_rpc_url: http://127.0.0.1:8369
-  bitcoin_da_rpc_user: __cookie__
-  bitcoin_da_rpc_password: CHANGE_ME
+  # Bind loopback authentication with bitcoin_da_cookie_file and bitcoin_da_cookie_rpc_url.
+  # For HTTPS Core, supply bitcoin_da_rpc_user and bitcoin_da_rpc_password in a private overlay.
   bitcoin_da_poda_url: https://poda.tanenbaum.io
   bitcoin_da_wallet_name: zksync-os
   bitcoin_da_address_label: zksync-os-batcher

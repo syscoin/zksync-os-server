@@ -11,10 +11,12 @@ use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::sol_types::SolCall;
 use alloy::transports::RpcError;
 use bitcoin_da_client::SyscoinClient;
+use futures::FutureExt;
+use futures::future::{BoxFuture, WeakShared};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::{OnceCell, Semaphore, watch};
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
@@ -37,6 +39,108 @@ const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(
 // SYSCOIN: bound attacker-influenced unavailable-ref caching. This cache is an optimization only;
 // if it is full, skipping a new entry is safer than allowing unbounded memory or mutex work.
 const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES: usize = 8192;
+
+type EdgeDaLookup = BoxFuture<'static, Result<Arc<[String]>, String>>;
+
+#[derive(Default)]
+struct EdgeDaChecks {
+    unavailable: Mutex<HashMap<String, Instant>>,
+    in_flight: Mutex<HashMap<Arc<[String]>, WeakShared<EdgeDaLookup>>>,
+}
+
+impl EdgeDaChecks {
+    fn reject_cached(&self, refs: &[String]) -> Result<(), EthSendRawTransactionError> {
+        let mut cache = self.unavailable.lock().expect("edge DA cache poisoned");
+        if let Some(hash) = cached_unavailable_edge_da_ref(&mut cache, refs, Instant::now()) {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!("compact edge DA ref {hash} is temporarily cached as not retrievable"),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn verify<F>(
+        self: &Arc<Self>,
+        original_refs: &[String],
+        max_concurrent: usize,
+        fetch: impl FnOnce(Arc<[String]>) -> F,
+    ) -> Result<(), EthSendRawTransactionError>
+    where
+        F: Future<Output = Result<Vec<bool>, String>> + Send + 'static,
+    {
+        // Commitments retain their original order. Availability depends only on the set.
+        let mut key = original_refs.to_vec();
+        key.sort_unstable();
+        key.dedup();
+        let lookup = {
+            let mut active = self.in_flight.lock().expect("edge DA lookup map poisoned");
+            self.reject_cached(original_refs)?;
+            // Callers own the shared future. Dropping the last waiter cancels its HTTP
+            // work; completed results never serve as positive availability evidence.
+            if let Some(lookup) = active
+                .get(key.as_slice())
+                .and_then(WeakShared::upgrade)
+                .filter(|lookup| lookup.peek().is_none())
+            {
+                lookup
+            } else {
+                active
+                    .retain(|_, weak| weak.upgrade().is_some_and(|lookup| lookup.peek().is_none()));
+                if active.len() >= max_concurrent {
+                    return Err(EthSendRawTransactionError::EdgeDaAdmissionBusy);
+                }
+                let key: Arc<[String]> = key.into();
+                let query = fetch(key.clone());
+                let refs = key.clone();
+                let checks = self.clone();
+                let lookup = async move {
+                    let exists = query.await?;
+                    if exists.len() != refs.len() {
+                        return Err(format!(
+                            "Bitcoin DA availability response length mismatch for compact edge refs: requested {}, got {}",
+                            refs.len(),
+                            exists.len()
+                        ));
+                    }
+                    let missing: Arc<[String]> = refs
+                        .iter()
+                        .zip(exists)
+                        .filter(|(_, found)| !found)
+                        .map(|(hash, _)| hash.clone())
+                        .collect();
+                    let now = Instant::now();
+                    let mut cache = checks.unavailable.lock().expect("edge DA cache poisoned");
+                    remember_unavailable_edge_da_refs_in_cache(
+                        &mut cache,
+                        missing.iter().map(String::as_str),
+                        now,
+                        now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL,
+                    );
+                    Ok(missing)
+                };
+                let lookup = lookup.boxed().shared();
+                active.insert(
+                    key,
+                    lookup.downgrade().expect("new unpolled edge DA lookup"),
+                );
+                lookup
+            }
+        };
+        let missing = lookup
+            .await
+            .map_err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed)?;
+        if let Some((idx, hash)) = original_refs
+            .iter()
+            .enumerate()
+            .find(|(_, hash)| missing.binary_search(hash).is_ok())
+        {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!("compact edge DA ref {idx} ({hash}) is not retrievable"),
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// JSON-RPC error code used by EIP-7966 to signal a sync-send timeout.
 const EIP_7966_TIMEOUT_CODE: i64 = 4;
@@ -65,7 +169,8 @@ pub struct TxHandler<RpcStorage, Mempool> {
     mempool: Mempool,
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     tx_forwarder: Option<TxForwarder>,
-    edge_da_unavailable_ref_cache: Arc<Mutex<HashMap<String, Instant>>>,
+    edge_da_checks: Arc<EdgeDaChecks>,
+    edge_da_client: OnceCell<Arc<SyscoinClient>>,
     /// Optional policy client. When set, each incoming tx is simulated
     /// once with the validator wired in (admit + judge inline). Spares
     /// clients a `pending → no receipt` poll loop on a stable deny.
@@ -99,7 +204,8 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             mempool,
             acceptance_state,
             tx_forwarder,
-            edge_da_unavailable_ref_cache: Arc::new(Mutex::new(HashMap::new())),
+            edge_da_checks: Arc::default(),
+            edge_da_client: OnceCell::new(),
             policy_client,
             blocking_rpcs_semaphore,
             last_constructed_block_context,
@@ -262,7 +368,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         let Some(version_hashes) = compact_edge_da_refs_from_commit_calldata(tx.input())? else {
             return Ok(None);
         };
-        self.reject_cached_unavailable_edge_da_refs(&version_hashes)?;
+        self.edge_da_checks.reject_cached(&version_hashes)?;
 
         Ok(Some(version_hashes))
     }
@@ -276,87 +382,39 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             return Ok(());
         };
 
-        let client = SyscoinClient::new(
-            &config.rpc_url,
-            &config.rpc_user,
-            &config.rpc_password,
-            &config.poda_url,
-            Some(config.request_timeout),
-            &config.wallet_name,
-        )
-        .map_err(|err| {
-            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
-                "failed to create Bitcoin DA client: {err}"
-            ))
-        })?;
-        let existence = client
-            .blobs_exist(version_hashes.iter())
+        let client = self
+            .edge_da_client
+            .get_or_try_init(|| async {
+                SyscoinClient::new(
+                    &config.rpc_url,
+                    &config.rpc_user,
+                    &config.rpc_password,
+                    &config.poda_url,
+                    Some(config.request_timeout),
+                    &config.wallet_name,
+                )
+                .map(Arc::new)
+                .map_err(|err| {
+                    EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
+                        "failed to create Bitcoin DA client: {err}"
+                    ))
+                })
+            })
+            .await?
+            .clone();
+        self.edge_da_checks
+            .verify(
+                version_hashes,
+                config.max_concurrent_checks,
+                |refs| async move {
+                    client.blobs_exist(refs.iter()).await.map_err(|err| {
+                        format!(
+                            "failed to check Bitcoin DA availability for compact edge refs: {err}"
+                        )
+                    })
+                },
+            )
             .await
-            .map_err(|err| {
-                EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
-                    "failed to check Bitcoin DA availability for compact edge refs: {err}"
-                ))
-            })?;
-        if existence.len() != version_hashes.len() {
-            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
-                format!(
-                    "Bitcoin DA availability response length mismatch for compact edge refs: requested {}, got {}",
-                    version_hashes.len(),
-                    existence.len()
-                ),
-            ));
-        }
-        let missing: Vec<_> = version_hashes
-            .iter()
-            .zip(existence)
-            .enumerate()
-            .filter_map(|(idx, (version_hash, exists))| (!exists).then_some((idx, version_hash)))
-            .collect();
-        self.remember_unavailable_edge_da_refs(
-            missing
-                .iter()
-                .map(|(_, version_hash)| version_hash.as_str()),
-        );
-        if let Some((idx, version_hash)) = missing.first() {
-            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
-                format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn reject_cached_unavailable_edge_da_refs(
-        &self,
-        version_hashes: &[String],
-    ) -> Result<(), EthSendRawTransactionError> {
-        let now = Instant::now();
-        let mut cache = self
-            .edge_da_unavailable_ref_cache
-            .lock()
-            .expect("edge DA unavailable ref cache poisoned");
-        if let Some(version_hash) = cached_unavailable_edge_da_ref(&mut cache, version_hashes, now)
-        {
-            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
-                format!(
-                    "compact edge DA ref {version_hash} is temporarily cached as not retrievable"
-                ),
-            ));
-        }
-        Ok(())
-    }
-
-    fn remember_unavailable_edge_da_refs<'a>(
-        &self,
-        version_hashes: impl IntoIterator<Item = &'a str>,
-    ) {
-        let now = Instant::now();
-        let expires_at = now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL;
-        let mut cache = self
-            .edge_da_unavailable_ref_cache
-            .lock()
-            .expect("edge DA unavailable ref cache poisoned");
-        remember_unavailable_edge_da_refs_in_cache(&mut cache, version_hashes, now, expires_at);
     }
 
     // SYSCOIN: use only cheap structural checks here so invalid raw txs cannot force DA parsing or
@@ -664,6 +722,8 @@ pub enum EthSendRawTransactionError {
     BlacklistedTransaction,
     #[error("compact edge DA admission check failed: {0}")]
     EdgeDaAdmissionCheckFailed(String),
+    #[error("compact edge DA admission is busy")]
+    EdgeDaAdmissionBusy,
     /// The executed-gas rate limiter is exhausted; retriable.
     #[error(
         "transaction gas rate limit exceeded: node is at capacity, retry in ~{}ms",
@@ -691,7 +751,8 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::NotAcceptingTransactions(_) => Self::NotAccepting,
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
             EthSendRawTransactionError::BlacklistedTransaction => Self::BlacklistedTransaction,
-            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
+            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_)
+            | EthSendRawTransactionError::EdgeDaAdmissionBusy => Self::PoolOther,
             EthSendRawTransactionError::GasRateLimited { .. } => Self::GasRateLimited,
             EthSendRawTransactionError::ForwardError(err) => match err {
                 TxForwardError::Rpc(RpcError::ErrorResp(_)) => Self::ForwardRejected,
@@ -1027,6 +1088,86 @@ mod tests {
         let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
 
         assert!(err.to_string().contains("at most 32 32-byte hashes"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_da_checks_share_a_full_slot_and_preserve_each_commit_order() {
+        let checks = Arc::new(EdgeDaChecks::default());
+        let (finish, released) = tokio::sync::oneshot::channel();
+        let first_refs = vec!["a".to_owned(), "b".to_owned(), "a".to_owned()];
+        let second_refs = vec!["b".to_owned(), "a".to_owned()];
+        let mut first = Box::pin(checks.verify(&first_refs, 1, |refs| async move {
+            assert_eq!(&*refs, ["a", "b"]);
+            released.await.unwrap();
+            Ok(vec![true, false])
+        }));
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        let mut second = Box::pin(checks.verify(&second_refs, 1, |_| async {
+            panic!("identical DA refs started another lookup")
+        }));
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        let busy = checks
+            .verify(&["c".to_owned()], 1, |_| async {
+                panic!("distinct lookup started without capacity")
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            busy,
+            EthSendRawTransactionError::EdgeDaAdmissionBusy
+        ));
+
+        finish.send(()).unwrap();
+        assert!(first.await.unwrap_err().to_string().contains("ref 1 (b)"));
+        assert!(second.await.unwrap_err().to_string().contains("ref 0 (b)"));
+        assert!(checks.reject_cached(&second_refs).is_err());
+        checks
+            .verify(&["a".to_owned()], 1, |_| async { Ok(vec![true]) })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn da_lookup_cancellation_errors_and_completion_release_capacity() {
+        let checks = Arc::new(EdgeDaChecks::default());
+        let refs = vec!["a".to_owned()];
+        let (finish, released) = tokio::sync::oneshot::channel();
+        let mut first = Box::pin(checks.verify(&refs, 1, |_| async move {
+            released.await.unwrap();
+            Err("backend unavailable".into())
+        }));
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        let mut duplicate = Box::pin(checks.verify(&refs, 1, |_| async {
+            panic!("disconnected caller restarted a shared DA lookup")
+        }));
+        assert!(futures::poll!(duplicate.as_mut()).is_pending());
+        drop(first);
+        finish.send(()).unwrap();
+        assert!(
+            duplicate
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("backend unavailable")
+        );
+
+        let (finish, released) = tokio::sync::oneshot::channel();
+        let mut last = Box::pin(checks.verify(&refs, 1, |_| async move {
+            released.await.unwrap();
+            Ok(vec![true])
+        }));
+        assert!(futures::poll!(last.as_mut()).is_pending());
+        drop(last);
+        assert!(finish.send(()).is_err());
+        checks
+            .verify(&refs, 1, |_| async { Ok(vec![true]) })
+            .await
+            .unwrap();
+        let err = checks
+            .verify(&refs, 1, |_| async { Ok(vec![]) })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("response length mismatch"));
     }
 
     #[test]

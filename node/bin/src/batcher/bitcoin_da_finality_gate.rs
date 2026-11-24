@@ -162,6 +162,14 @@ impl BitcoinDaFinalityGate {
         }
     }
 
+    fn has_durable_finality(&self, status: &BitcoinDaBatchStatus) -> bool {
+        // A confirmation-depth receipt records what was observed at the time. Re-read the
+        // current canonical state on every commit attempt because its depth can change.
+        self.config.bitcoin_da_finality_mode == BitcoinDaFinalityMode::Chainlock
+            && status.finalized
+            && status.finality_policy.as_ref() == Some(&self.current_finality_policy())
+    }
+
     fn finality_mode(&self) -> ClientBitcoinDaFinalityMode {
         match self.config.bitcoin_da_finality_mode {
             BitcoinDaFinalityMode::Chainlock => ClientBitcoinDaFinalityMode::Chainlock,
@@ -231,8 +239,7 @@ impl BitcoinDaFinalityGate {
             return Ok(());
         }
 
-        let current_policy = self.current_finality_policy();
-        if status.finalized && status.finality_policy.as_ref() == Some(&current_policy) {
+        if self.has_durable_finality(&status) {
             tracing::info!(batch_number, "Bitcoin DA already finalized");
             return Ok(());
         }
@@ -273,7 +280,7 @@ impl BitcoinDaFinalityGate {
         }
 
         status.finalized = true;
-        status.finality_policy = Some(current_policy);
+        status.finality_policy = Some(self.current_finality_policy());
         self.storage.save(batch_number, &status).await?;
         Ok(())
     }
@@ -657,9 +664,7 @@ impl BitcoinDaFinalityGate {
                     .load(batch.batch_number())
                     .await?
                     .context("missing validated Bitcoin DA publication status")?;
-                if !(status.finalized
-                    && status.finality_policy.as_ref() == Some(&self.current_finality_policy()))
-                {
+                if !self.has_durable_finality(&status) {
                     for hash in info
                         .operator_da_input
                         .as_chunks::<32>()
@@ -777,9 +782,7 @@ impl BitcoinDaFinalityGate {
                 );
                 self.verify_published_batch_status(batch.batch_number(), &status)
                     .await?;
-                if !(status.finalized
-                    && status.finality_policy.as_ref() == Some(&self.current_finality_policy()))
-                {
+                if !self.has_durable_finality(&status) {
                     hashes.extend(expected);
                 }
             }
@@ -1008,8 +1011,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_registration_completes_direct_and_bounded_commands_without_core_calls() {
-        for window in [1, 2] {
+    async fn confirmation_commands_observe_current_registration_in_both_windows() {
+        for (window, resumed) in [(1, false), (2, false), (1, true), (2, true)] {
             let (mut config, effects, server) = missing_core_fixture().await;
             let dir = tempfile::tempdir().unwrap();
             config.bitcoin_da_publication_window = window;
@@ -1024,7 +1027,11 @@ mod tests {
                     &BitcoinDaBatchStatus {
                         expected_hashes: hashes.clone(),
                         published_hashes: hashes.clone(),
-                        ..Default::default()
+                        finalized: resumed,
+                        finality_policy: resumed.then_some(BitcoinDaFinalityPolicy {
+                            mode: config.bitcoin_da_finality_mode,
+                            confirmations: config.bitcoin_da_finality_confirmations,
+                        }),
                     },
                 )
                 .await
@@ -1058,7 +1065,7 @@ mod tests {
             );
             assert!(
                 asserter.read_q().is_empty(),
-                "unexpected extra native or locator request"
+                "confirmation-mode command skipped a fresh registration observation"
             );
             assert_eq!(effects.metadata_reads.load(Ordering::SeqCst), 0);
             assert_no_recovery_effects(&effects, dir.path());
@@ -1531,38 +1538,48 @@ mod tests {
             assert!(!due_dir.path().join(format!("republish_{hash}_2")).exists());
         }
 
-        let cached_dir = tempfile::tempdir().unwrap();
-        let cached_storage = BitcoinDaStatusStorage::new(cached_dir.path()).unwrap();
-        cached_storage
-            .reserve_republication(&hashes[0], 3)
-            .await
-            .unwrap();
-        cached_storage
-            .save(
-                7,
-                &BitcoinDaBatchStatus {
-                    finalized: true,
-                    finality_policy: Some(BitcoinDaFinalityPolicy {
-                        mode: BitcoinDaFinalityMode::Confirmations,
-                        confirmations: 2,
-                    }),
-                    ..status
-                },
-            )
-            .await
-            .unwrap();
-        let cached_gate = BitcoinDaFinalityGate::new(config, cached_storage, false);
-        cached_gate
-            .prime_command_recovery_clocks(&command)
-            .await
-            .unwrap();
-        for extension in ["json", "lock"] {
-            assert!(
-                !cached_dir
-                    .path()
-                    .join(format!("recovery_{}.{extension}", hashes[0]))
-                    .exists()
-            );
+        // Confirmation depth may fall after a reorg. Only a matching ChainLock receipt can
+        // suppress fresh observation and the corresponding legacy recovery clock.
+        for mode in [
+            BitcoinDaFinalityMode::Confirmations,
+            BitcoinDaFinalityMode::Chainlock,
+        ] {
+            let cached_dir = tempfile::tempdir().unwrap();
+            let cached_storage = BitcoinDaStatusStorage::new(cached_dir.path()).unwrap();
+            cached_storage
+                .reserve_republication(&hashes[0], 3)
+                .await
+                .unwrap();
+            cached_storage
+                .save(
+                    7,
+                    &BitcoinDaBatchStatus {
+                        finalized: true,
+                        finality_policy: Some(BitcoinDaFinalityPolicy {
+                            mode,
+                            confirmations: 2,
+                        }),
+                        ..status.clone()
+                    },
+                )
+                .await
+                .unwrap();
+            let mut cached_config = config.clone();
+            cached_config.bitcoin_da_finality_mode = mode;
+            let cached_gate = BitcoinDaFinalityGate::new(cached_config, cached_storage, false);
+            cached_gate
+                .prime_command_recovery_clocks(&command)
+                .await
+                .unwrap();
+            for extension in ["json", "lock"] {
+                assert_eq!(
+                    cached_dir
+                        .path()
+                        .join(format!("recovery_{}.{extension}", hashes[0]))
+                        .exists(),
+                    mode == BitcoinDaFinalityMode::Confirmations
+                );
+            }
         }
         server.abort();
     }

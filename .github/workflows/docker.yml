@@ -33,31 +33,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-images:
-    name: Build, push and attest server image
+  resolve-source:
+    name: Resolve image source
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      statuses: read
-      packages: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
     outputs:
+      ref: ${{ steps.requested.outputs.ref }}
       source_sha: ${{ steps.source.outputs.source_sha }}
       version: ${{ steps.source.outputs.version }}
       image_name: ${{ steps.source.outputs.image_name }}
-      image_digest: ${{ steps.publish-versioned.outputs.digest || steps.build.outputs.digest }}
     steps:
-      - name: Free space on the ephemeral runner
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h /
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
-          docker image prune --all --force
-          df -h /
-
       - name: Validate requested source
         id: requested
         env:
@@ -116,21 +100,37 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "image_name=ghcr.io/${owner}/zksync-os-server" >> "${GITHUB_OUTPUT}"
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+  build-images:
+    name: Build server OCI image
+    needs: resolve-source
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Free space on the ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          docker image prune --all --force
+          df -h /
+
+      - name: Checkout exact image source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+          persist-credentials: false
 
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
         with:
-          images: ${{ steps.source.outputs.image_name }}
-          tags: |
-            type=raw,value=${{ steps.source.outputs.version }}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tag_name == '' }}
+          images: ${{ needs.resolve-source.outputs.image_name }}
+          tags: type=raw,value=${{ needs.resolve-source.outputs.version }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
@@ -142,37 +142,89 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: ${{ !(inputs.tag_name || github.ref_type == 'tag') }}
-          outputs: ${{ (inputs.tag_name || github.ref_type == 'tag') && format('type=oci,tar=false,dest={0}/versioned-image', runner.temp) || '' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          push: false
+          outputs: type=oci,tar=false,dest=${{ runner.temp }}/server-image
+          # Each exported tag adds an OCI index entry. Apply registry aliases after digest verification.
+          tags: ${{ needs.resolve-source.outputs.image_name }}:${{ needs.resolve-source.outputs.version }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Upload image layout
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-oci-image
+          path: ${{ runner.temp }}/server-image/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  publish-image:
+    name: Publish and attest server image
+    needs: [resolve-source, build-images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      image_digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - name: Download image layout from the build job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build-images.outputs.artifact_id }}
+          path: ${{ runner.temp }}/server-image
+
+      - name: Checkout qualification tooling
+        if: ${{ inputs.tag_name || github.ref_type == 'tag' }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: qualification-tooling
+          sparse-checkout: .github/scripts/check-canonical-qualification.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Checkout the versioned qualification source
+        if: ${{ inputs.tag_name || github.ref_type == 'tag' }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify canonical qualification for a versioned release
         if: ${{ inputs.tag_name || github.ref_type == 'tag' }}
+        working-directory: release-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
-          RELEASE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
-          TOOLING_SHA: ${{ job.workflow_sha }}
+          RELEASE_SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         run: |
           set -euo pipefail
-          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          # The release source and the workflow's status validator can be different commits.
-          git fetch --quiet --no-tags --depth=1 origin "${TOOLING_SHA}"
-          checker="${RUNNER_TEMP}/canonical-release-check.py"
-          git show "${TOOLING_SHA}:.github/scripts/check-canonical-qualification.py" > "${checker}"
-          python3 -I -B "${checker}" --source-sha "${RELEASE_SOURCE_SHA}"
+          python3 -I -B ../qualification-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
 
-      - name: Publish qualified versioned image
-        id: publish-versioned
-        if: ${{ inputs.tag_name || github.ref_type == 'tag' }}
+      - name: Publish verified image digest
+        id: publish
         env:
-          IMAGE_NAME: ${{ steps.source.outputs.image_name }}
-          VERSION: ${{ steps.source.outputs.version }}
-          EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_NAME: ${{ needs.resolve-source.outputs.image_name }}
+          VERSION: ${{ needs.resolve-source.outputs.version }}
+          PUBLISH_LATEST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tag_name == '' }}
+          EXPECTED_DIGEST: ${{ needs.build-images.outputs.image_digest }}
         run: |
           set -euo pipefail
-          layout="${RUNNER_TEMP}/versioned-image"
+          layout="${RUNNER_TEMP}/server-image"
           authfile="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
           [[ "${EXPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Buildx did not report an OCI digest' >&2; exit 1; }
           digest="$(jq -er '.manifests | select(length == 1) | .[0].digest' "${layout}/index.json")"
@@ -180,13 +232,20 @@ jobs:
           blob="${layout}/blobs/sha256/${digest#sha256:}"
           [[ "sha256:$(sha256sum "${blob}" | cut -d' ' -f1)" == "${digest}" ]] || { echo 'OCI index content does not match its digest' >&2; exit 1; }
 
-          source="oci:${layout}"
-          destination="docker://${IMAGE_NAME}:${VERSION}"
-          digestfile="${RUNNER_TEMP}/published-image-digest"
-          skopeo copy --all --preserve-digests --authfile "${authfile}" --digestfile "${digestfile}" "${source}" "${destination}"
-          [[ "$(cat "${digestfile}")" == "${digest}" ]] || { echo 'Registry copy did not preserve the OCI digest' >&2; exit 1; }
-          published="$(skopeo inspect --raw --authfile "${authfile}" "${destination}" | sha256sum | cut -d' ' -f1)"
-          [[ "sha256:${published}" == "${digest}" ]] || { echo 'Published tag resolves to a different digest' >&2; exit 1; }
+          publish_tag() {
+            local destination="docker://${IMAGE_NAME}:${1}"
+            local digestfile="${RUNNER_TEMP}/published-image-digest"
+            local published
+            skopeo copy --all --preserve-digests --authfile "${authfile}" --digestfile "${digestfile}" "oci:${layout}" "${destination}"
+            [[ "$(cat "${digestfile}")" == "${digest}" ]] || { echo 'Registry copy did not preserve the OCI digest' >&2; exit 1; }
+            published="$(skopeo inspect --raw --authfile "${authfile}" "${destination}" | sha256sum | cut -d' ' -f1)"
+            [[ "sha256:${published}" == "${digest}" ]] || { echo 'Published tag resolves to a different digest' >&2; exit 1; }
+          }
+
+          publish_tag "${VERSION}"
+          if [[ "${PUBLISH_LATEST}" == true ]]; then
+            publish_tag latest
+          fi
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
 
       - name: Generate build provenance
@@ -197,8 +256,8 @@ jobs:
         env:
           PREDICATE: ${{ steps.predicate.outputs.predicate }}
           PREDICATE_TYPE: ${{ steps.predicate.outputs.predicate-type }}
-          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
-          SOURCE_REF: ${{ steps.requested.outputs.ref }}
+          SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
+          SOURCE_REF: ${{ needs.resolve-source.outputs.ref }}
         run: |
           set -euo pipefail
           [[ "${PREDICATE_TYPE}" == https://slsa.dev/provenance/v1 ]] || exit 1
@@ -215,37 +274,34 @@ jobs:
 
       - name: Recheck canonical qualification before registry attestation
         if: ${{ inputs.tag_name || github.ref_type == 'tag' }}
+        working-directory: release-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SYSCOIN_CANONICAL_QUALIFIER_ID: ${{ vars.SYSCOIN_CANONICAL_QUALIFIER_ID }}
-          RELEASE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
-          TOOLING_SHA: ${{ job.workflow_sha }}
+          RELEASE_SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         run: |
           set -euo pipefail
-          [[ "${TOOLING_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          checker="${RUNNER_TEMP}/canonical-release-check.py"
-          git show "${TOOLING_SHA}:.github/scripts/check-canonical-qualification.py" | cmp - "${checker}"
-          python3 -I -B "${checker}" --source-sha "${RELEASE_SOURCE_SHA}"
+          python3 -I -B ../qualification-tooling/.github/scripts/check-canonical-qualification.py --source-sha "${RELEASE_SOURCE_SHA}"
 
       - name: Attest published image
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ${{ steps.source.outputs.image_name }}
-          subject-digest: ${{ steps.publish-versioned.outputs.digest || steps.build.outputs.digest }}
+          subject-name: ${{ needs.resolve-source.outputs.image_name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
           predicate-type: https://slsa.dev/provenance/v1
           predicate-path: ${{ runner.temp }}/server-image-provenance.json
           push-to-registry: true
 
   sbom-generation:
     name: SBOM
-    needs: [build-images]
+    needs: [resolve-source, publish-image]
     permissions:
       contents: read
       packages: read
     uses: ./.github/workflows/sbom-analysis-reusable.yaml
     secrets: inherit
     with:
-      version: ${{ needs.build-images.outputs.version }}
-      source_sha: ${{ needs.build-images.outputs.source_sha }}
-      image_name: ${{ needs.build-images.outputs.image_name }}
-      image_digest: ${{ needs.build-images.outputs.image_digest }}
+      version: ${{ needs.resolve-source.outputs.version }}
+      source_sha: ${{ needs.resolve-source.outputs.source_sha }}
+      image_name: ${{ needs.resolve-source.outputs.image_name }}
+      image_digest: ${{ needs.publish-image.outputs.image_digest }}

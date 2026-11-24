@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 // SYSCOIN: Bound startup ownership planning independently of the committed backlog. The live job
 // map remains much smaller, but a corrupt or unexpectedly distant frontier must not materialize an
@@ -73,6 +73,43 @@ pub(crate) struct StartupRecoveryPlan {
 }
 
 impl StartupRecoveryPlan {
+    /// A retained wrapper closes the uncovered segment immediately before it. If that
+    /// segment cannot be partitioned into real wrappers, give back just this next
+    /// wrapper and try the next boundary. The absolute tip may wait for a successor.
+    pub(crate) fn unproved_wrappers_to_regroup(
+        last_proved_batch: u64,
+        last_committed_batch: u64,
+        validated_unproved_ranges: &[(u64, u64)],
+        max_fris_per_snark: usize,
+        max_assigned_batch_range: usize,
+    ) -> Result<BTreeSet<(u64, u64)>, StartupRecoveryPlanError> {
+        if validated_unproved_ranges.len() > MAX_STARTUP_RECOVERY_RANGES {
+            return Err(StartupRecoveryPlanError::TooManyJournalRanges {
+                provided: validated_unproved_ranges.len(),
+                max: MAX_STARTUP_RECOVERY_RANGES,
+            });
+        }
+        let capacity = max_fris_per_snark.min(max_assigned_batch_range.saturating_add(1));
+        let mut regroup = BTreeSet::new();
+        let mut previous_to = last_proved_batch;
+        let mut retained_to = last_proved_batch;
+        for &(from, to) in validated_unproved_ranges {
+            if from <= previous_to || from > to || to > last_committed_batch {
+                return Err(StartupRecoveryPlanError::InvalidJournalRange { from, to });
+            }
+            previous_to = to;
+            let gap = from - retained_to - 1;
+            // With capacity two only even closed segments fit. At higher capacities
+            // all lengths >= 2 can be partitioned using pairs and triples.
+            if capacity >= 2 && (gap == 1 || (capacity == 2 && !gap.is_multiple_of(2))) {
+                regroup.insert((from, to));
+            } else {
+                retained_to = to;
+            }
+        }
+        Ok(regroup)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         last_proved_batch: u64,
@@ -620,6 +657,72 @@ mod tests {
             StartupRecoveryPlan::build(0, 4, &[(2, 4)], 100, 255, false).unwrap_err(),
             StartupRecoveryPlanError::InteriorSingleton { batch_number: 1 }
         );
+    }
+
+    fn regroup_plan(
+        proved: u64,
+        committed: u64,
+        replay: &[(u64, u64)],
+        wrapper_limit: usize,
+        map_span: usize,
+    ) -> (Vec<(u64, u64)>, StartupRecoveryPlan) {
+        let regroup = StartupRecoveryPlan::unproved_wrappers_to_regroup(
+            proved,
+            committed,
+            replay,
+            wrapper_limit,
+            map_span,
+        )
+        .unwrap();
+        let kept: Vec<_> = replay
+            .iter()
+            .copied()
+            .filter(|range| !regroup.contains(range))
+            .collect();
+        let plan =
+            StartupRecoveryPlan::build(proved, committed, &kept, wrapper_limit, map_span, false)
+                .unwrap();
+        (regroup.into_iter().collect(), plan)
+    }
+
+    #[test]
+    fn partial_native_progress_rebuilds_only_the_needed_following_wrapper() {
+        // The old [1,3] wrapper was retired after native settlement proved through 2.
+        let (regroup, plan) = regroup_plan(2, 7, &[(4, 5), (6, 7)], 100, 255);
+        assert_eq!(regroup, [(4, 5)]);
+        assert_eq!(tuples(&plan), [(3, 5)]);
+        assert_eq!(plan.deferred_tip(), None);
+
+        let (regroup_after_restart, same_plan) = regroup_plan(2, 7, &[(6, 7)], 100, 255);
+        assert!(regroup_after_restart.is_empty());
+        assert_eq!(tuples(&same_plan), tuples(&plan));
+    }
+
+    #[test]
+    fn regrouping_respects_both_capacity_limits_and_the_next_closed_boundary() {
+        let (regroup, plan) = regroup_plan(2, 105, &[(4, 103), (104, 105)], 100, 255);
+        assert_eq!(regroup, [(4, 103)]);
+        assert_eq!(tuples(&plan), [(3, 101), (102, 103)]);
+
+        // The map admits two batches. An odd closed gap remains unprovable after one
+        // even-length wrapper is absorbed. The next odd-length wrapper makes it even.
+        let (regroup, plan) = regroup_plan(2, 10, &[(4, 5), (6, 8), (9, 10)], 100, 1);
+        assert_eq!(regroup, [(4, 5), (6, 8)]);
+        assert_eq!(tuples(&plan), [(3, 4), (5, 6), (7, 8)]);
+        let (regroup, plan) = regroup_plan(2, 5, &[(4, 5)], 2, 255);
+        assert_eq!(regroup, [(4, 5)]);
+        assert_eq!(tuples(&plan), [(3, 4)]);
+        assert_eq!(plan.deferred_tip(), Some(5));
+    }
+
+    #[test]
+    fn regrouping_refuses_covered_overlapping_and_uncommitted_ranges() {
+        for ranges in [&[(1, 3)][..], &[(4, 6), (6, 7)], &[(4, 8)]] {
+            assert!(matches!(
+                StartupRecoveryPlan::unproved_wrappers_to_regroup(2, 7, ranges, 100, 255),
+                Err(StartupRecoveryPlanError::InvalidJournalRange { .. })
+            ));
+        }
     }
 
     #[test]

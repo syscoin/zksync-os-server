@@ -563,3 +563,13 @@ the existing Gateway component fixture and its existing signing and RPC
 interfaces. The crypto-bigint and libz-sys callers remain in their recorded
 scopes. The source fingerprint covers this change; the guarded Linux scanners
 still need to pass on the resulting head.
+
+## Launch audit remediation — 2026-11-22
+
+The price client now uses the already locked `serde_json` to decode responses
+after enforcing its byte budget. The full all-features Linux resolution changes
+only that edge in the price client, from development to runtime. All resolved
+package identities, features and other dependency edges agree with the previous
+graph. The existing `libz-sys` scope validator passes the new graph. The lock and
+advisory dispositions are unchanged. The guarded Linux scanners still need to
+pass on the resulting head.

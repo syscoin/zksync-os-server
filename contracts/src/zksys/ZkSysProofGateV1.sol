@@ -5,20 +5,19 @@ import {EIP712} from "@openzeppelin/contracts-v4/utils/cryptography/EIP712.sol";
 import {SignatureChecker} from "@openzeppelin/contracts-v4/utils/cryptography/SignatureChecker.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts-v4/security/ReentrancyGuard.sol";
 import {ZkSysWrapperCoordinatorV1} from "./ZkSysWrapperCoordinatorV1.sol";
-import {IZkSysPriorityGuardV1} from "./ZkSysPriorityGuardV1.sol";
 import {
     AcceptedPackageV1,
     DutySuccessV1,
     WrapperCandidateV1,
+    IZkSysVerifiedFrontierV1,
     ZkSysServiceTypesV1,
     IZkSysServiceMessageSinkV1
 } from "./ZkSysServiceTypesV1.sol";
 
-interface IZkSysNativeSettlementV1 {
+interface IZkSysNativeSettlementV1 is IZkSysVerifiedFrontierV1 {
     function getVerifier() external view returns (address);
     function getChainId() external view returns (uint256);
     function getSemverProtocolVersion() external view returns (uint32, uint32, uint32);
-    function getTotalBatchesVerified() external view returns (uint256);
     function storedBatchHash(uint256 batch) external view returns (bytes32);
     function isValidator(address validator) external view returns (bool);
 }
@@ -40,10 +39,8 @@ interface IZkSysL1MessengerV1 {
 }
 
 /// @notice Opt-in Gateway proof lane binding native V8 validity to both operator endorsements.
-/// @dev Deployment must remove every alternative diamond validator/prover path, including emergency
-/// priority mode. The diamond validator mapping is not enumerable, so sole timelock PROVER_ROLE
-/// membership alone cannot establish that global deployment invariant. Existing commit/execute
-/// calls and timelock delays remain in their original contracts.
+/// @dev Only packages accepted by this gate produce service receipts. Independent native
+/// settlement can advance the lane without endorsing a package or earning service credit.
 contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     using SignatureChecker for address;
     bytes32 public constant ACCEPTED_DOMAIN = keccak256("ZKSYS_ACCEPTED_SERVICE_V1");
@@ -92,6 +89,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     address public immutable sequencer;
     address public immutable deploymentAuthority;
     uint256 public immutable childChainId;
+    uint64 public immutable initialNativeBatch;
     bytes32 public immutable policyHash;
     bytes32 public immutable productionVkHash;
     address public immutable productionVerifier;
@@ -99,11 +97,13 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     address public immutable plonkVerifier;
     bytes32 public immutable plonkVerifierCodeHash;
     bytes32 public immutable chainConfigHash;
-    IZkSysPriorityGuardV1 public immutable priorityGuard;
     IZkSysServiceMessageSinkV1 public immutable messageSink;
     ZkSysWrapperCoordinatorV1 public coordinator;
     bytes32 public lastAcceptedPackage;
-    bytes32 public priorityWorkId;
+    uint64 public observedNativeBatch;
+    uint64 private _lastServiceBatch;
+    bytes32 private _observedNativeBatchHash;
+    bytes32 private _lastServiceBatchHash;
     AcceptedPackageV1 private _bootstrapPackage;
     bool public serviceActive;
     bool public transitionWork;
@@ -111,6 +111,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     event ServicePackageAccepted(bytes32 indexed packageHash, uint64 indexed from, uint64 indexed to, bool bootstrap);
     event ServiceActivated(address indexed coordinator, bytes32 qualifiedRosterRoot);
     event ServiceControlPackageAccepted(bytes32 indexed packageHash);
+    event NativeSettlementAdvanced(uint64 indexed from, uint64 indexed to, bytes32 nativeBatchHash);
 
     constructor(
         IZkSysNativeSettlementV1 chain_,
@@ -118,14 +119,11 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         address sequencer_,
         bytes32 policyHash_,
         bytes32 productionVkHash_,
-        IZkSysPriorityGuardV1 priorityGuard_,
         IZkSysServiceMessageSinkV1 messageSink_
     ) EIP712("ZkSysProofGate", "1") {
         if (
             address(chain_).code.length == 0 || address(timelock_).code.length == 0 || sequencer_ == address(0)
                 || policyHash_ == bytes32(0) || productionVkHash_ == bytes32(0)
-                || address(priorityGuard_).code.length == 0 || priorityGuard_.acceptanceGate() != address(this)
-                || address(priorityGuard_.chain()) != address(chain_) || priorityGuard_.policyHash() != policyHash_
                 || (address(messageSink_) != address(0)
                     && (address(messageSink_).code.length == 0 || messageSink_.publisher() != address(this)))
         ) revert InvalidConfiguration();
@@ -136,7 +134,6 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         childChainId = chain_.getChainId();
         policyHash = policyHash_;
         productionVkHash = productionVkHash_;
-        priorityGuard = priorityGuard_;
         messageSink = messageSink_;
         productionVerifier = chain_.getVerifier();
         verifierCodeHash = productionVerifier.codehash;
@@ -144,9 +141,11 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         plonkVerifierCodeHash = plonkVerifier.codehash;
         chainConfigHash = keccak256(abi.encode(childChainId, uint256(0), uint256(1 << 24)));
         uint256 verified = chain_.getTotalBatchesVerified();
-        lastAcceptedPackage = keccak256(
-            abi.encode(block.chainid, address(this), childChainId, verified, chain_.storedBatchHash(verified))
-        );
+        if (verified >= type(uint64).max) revert InvalidConfiguration();
+        initialNativeBatch = uint64(verified);
+        _recordServiceAnchor(initialNativeBatch);
+        lastAcceptedPackage =
+            keccak256(abi.encode(block.chainid, address(this), childChainId, verified, _observedNativeBatchHash));
         _checkVerifier();
     }
 
@@ -158,7 +157,11 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
     /// the final bootstrap parent and first batch. It cannot replace a live coordinator.
     function installCoordinator(ZkSysWrapperCoordinatorV1 coordinator_) external {
         if (msg.sender != deploymentAuthority) revert Unauthorized();
-        if (address(coordinator) != address(0) || serviceActive || priorityWorkId != bytes32(0)) revert WrongPhase();
+        _checkVerifier();
+        _observeNativeSettlement();
+        if (address(coordinator) != address(0) || serviceActive || _bootstrapPackage.batchFrom != 0) {
+            revert WrongPhase();
+        }
         if (
             address(coordinator_).code.length == 0 || coordinator_.acceptanceGate() != address(this)
                 || coordinator_.childChainId() != childChainId || coordinator_.childChainAddress() != address(chain)
@@ -166,7 +169,6 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
                 || coordinator_.productionVkHash() != productionVkHash
                 || coordinator_.nativeRootDraw() != (address(messageSink) != address(0))
                 || coordinator_.acceptedParent() != lastAcceptedPackage
-                || coordinator_.nextBatch() != chain.getTotalBatchesVerified() + 1
         ) revert InvalidConfiguration();
         coordinator = coordinator_;
     }
@@ -191,10 +193,9 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         if (msg.sender != sequencer) revert Unauthorized();
         if (!serviceActive) revert WrongPhase();
         _checkSettlement();
-        if (proposed.batchFrom != chain.getTotalBatchesVerified() + 1) revert InvalidPackage();
+        if (proposed.batchFrom != _observeNativeSettlement() + 1) revert InvalidPackage();
         (,,, transitionWork) = coordinator.openingRoster();
         if (transitionWork && proposed.reportHash != _emptyReportHash()) revert InvalidPackage();
-        _openPriorityWork(proposed);
         coordinator.openPackage(proposed);
     }
 
@@ -202,24 +203,27 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         if (msg.sender != sequencer) revert Unauthorized();
         if (serviceActive || address(coordinator) != address(0)) revert WrongPhase();
         _checkSettlement();
+        uint64 verified = _observeNativeSettlement();
+        if (_bootstrapPackage.batchFrom != 0) revert WrongPhase();
         if (
             proposed.domainVersion != 1 || proposed.policyHash != policyHash || proposed.chainId != childChainId
                 || proposed.chainAddress != address(chain) || proposed.parent != lastAcceptedPackage
                 || proposed.protocolVersion != 32 || proposed.vkHash != productionVkHash
                 || proposed.sequencer != sequencer || proposed.sequencerBeneficiary == address(0)
-                || proposed.batchFrom != chain.getTotalBatchesVerified() + 1 || proposed.batchTo <= proposed.batchFrom
+                || proposed.batchFrom != verified + 1 || proposed.batchTo <= proposed.batchFrom
                 || proposed.batchTo - proposed.batchFrom >= 100 || proposed.manifestHash == bytes32(0)
                 || proposed.proofHash != bytes32(0) || proposed.wrapper != address(0)
                 || proposed.wrapperBeneficiary != address(0) || proposed.rosterRoot != bytes32(0) || proposed.turn != 0
         ) revert InvalidPackage();
-        _openPriorityWork(proposed);
         _bootstrapPackage = proposed;
     }
 
-    /// @dev Repairing the batch range or work artifacts does not renew the frozen inclusion deadline.
     function repairBootstrapPackage(AcceptedPackageV1 calldata proposed) external nonReentrant {
         if (msg.sender != sequencer) revert Unauthorized();
-        if (serviceActive || address(coordinator) != address(0) || priorityWorkId == bytes32(0)) revert WrongPhase();
+        if (serviceActive || address(coordinator) != address(0) || _bootstrapPackage.batchFrom == 0) {
+            revert WrongPhase();
+        }
+        if (proposed.batchFrom != chain.getTotalBatchesVerified() + 1) revert InvalidPackage();
         AcceptedPackageV1 memory frozen = _bootstrapPackage;
         frozen.batchTo = proposed.batchTo;
         frozen.manifestHash = proposed.manifestHash;
@@ -236,16 +240,28 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         return _bootstrapPackage;
     }
 
-    function refreshPriorityCheckpoint() external nonReentrant {
-        if (msg.sender != sequencer) revert Unauthorized();
-        _checkSettlement();
-        priorityGuard.refreshExpired(priorityWorkId);
+    function observeNativeSettlement(uint64 expectedVerified) external nonReentrant {
+        _checkVerifier();
+        if (_observeNativeSettlement() != expectedVerified) revert InvalidPackage();
     }
 
-    function _openPriorityWork(AcceptedPackageV1 calldata proposed) private {
-        if (priorityWorkId != bytes32(0)) revert WrongPhase();
-        priorityWorkId = keccak256(abi.encode(proposed.parent, proposed.batchFrom));
-        priorityGuard.open(priorityWorkId, proposed.batchFrom);
+    /// @dev A proof outside the service advances the native chain without accepting the
+    /// package that covered that work. A rewritten service history requires separate recovery.
+    function _observeNativeSettlement() private returns (uint64) {
+        uint256 verified = chain.getTotalBatchesVerified();
+        if (verified >= type(uint64).max || verified < observedNativeBatch || !_historyMatches()) {
+            revert SettlementConfigurationChanged();
+        }
+        if (verified > observedNativeBatch) {
+            uint64 previous = observedNativeBatch;
+            observedNativeBatch = uint64(verified);
+            _observedNativeBatchHash = chain.storedBatchHash(verified);
+            if (_bootstrapPackage.batchFrom != 0) delete _bootstrapPackage;
+            if (address(coordinator) != address(0)) coordinator.retireSupersededPackage();
+            transitionWork = false;
+            emit NativeSettlementAdvanced(previous + 1, observedNativeBatch, _observedNativeBatchHash);
+        }
+        return observedNativeBatch;
     }
 
     function repairPackage(AcceptedPackageV1 calldata proposed) external nonReentrant {
@@ -268,7 +284,7 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         AcceptedPackageV1 memory normalized = accepted;
         normalized.proofHash = bytes32(0);
         if (
-            priorityWorkId == bytes32(0)
+            _bootstrapPackage.batchFrom == 0
                 || ZkSysServiceTypesV1.hashPackage(normalized) != ZkSysServiceTypesV1.hashPackage(_bootstrapPackage)
                 || accepted.wrapper != address(0) || accepted.wrapperBeneficiary != address(0)
                 || accepted.rosterRoot != bytes32(0) || accepted.turn != 0
@@ -328,8 +344,6 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         ) revert InvalidProofData();
 
         bytes32[] memory statements = new bytes32[](batches.length);
-        uint256[] memory priorityCounts = new uint256[](batches.length);
-        bytes32[] memory priorityHashes = new bytes32[](batches.length);
         for (uint256 i; i < batches.length; ++i) {
             StoredBatch memory batch = batches[i];
             BatchOutput calldata output = outputs[i];
@@ -342,8 +356,6 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
             ) revert InvalidProofData();
             statements[i] =
                 keccak256(abi.encodePacked(previous.batchHash, batch.batchHash, chainConfigHash, batch.commitment));
-            priorityCounts[i] = output.l1TxCount;
-            priorityHashes[i] = output.priorityOperationsHash;
             previous = batch;
         }
         uint256 seen;
@@ -366,7 +378,9 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
             seen |= bit;
         }
 
-        priorityGuard.consume(priorityWorkId, accepted.batchTo, priorityCounts, priorityHashes);
+        if (!_historyMatches() || accepted.batchFrom != uint256(observedNativeBatch) + 1) {
+            revert SettlementConfigurationChanged();
+        }
         // The native Executor checks committed batch hashes and invokes the production verifier.
         // Reversion also rolls back coordinator acceptance; a signature can never substitute for proof validity.
         timelock.proveBatchesSharedBridge(address(chain), accepted.batchFrom, accepted.batchTo, proofData);
@@ -377,12 +391,26 @@ contract ZkSysProofGateV1 is EIP712, ReentrancyGuard {
         bytes32 packageHash = ZkSysServiceTypesV1.hashPackage(accepted);
         bool control = transitionWork;
         lastAcceptedPackage = packageHash;
-        priorityWorkId = bytes32(0);
+        _recordServiceAnchor(accepted.batchTo);
         transitionWork = false;
         if (bootstrap) delete _bootstrapPackage;
         if (control) emit ServiceControlPackageAccepted(packageHash);
         else _publishMessage(abi.encode(ACCEPTED_DOMAIN, packageHash, bootstrap));
         emit ServicePackageAccepted(packageHash, accepted.batchFrom, accepted.batchTo, bootstrap);
+    }
+
+    function _recordServiceAnchor(uint64 batch) private {
+        observedNativeBatch = batch;
+        _lastServiceBatch = batch;
+        _observedNativeBatchHash = chain.storedBatchHash(batch);
+        _lastServiceBatchHash = _observedNativeBatchHash;
+    }
+
+    function _historyMatches() private view returns (bool) {
+        // A settlement-only advance must not discard the stored native hash of the last service receipt.
+        return chain.storedBatchHash(observedNativeBatch) == _observedNativeBatchHash
+            && (_lastServiceBatch == observedNativeBatch
+                || chain.storedBatchHash(_lastServiceBatch) == _lastServiceBatchHash);
     }
 
     function _publishMessage(bytes memory message) private {

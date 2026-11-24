@@ -31,10 +31,14 @@ import sentry
 from runpod import Store, atomic_json, read_private_json
 
 
+MAX_RETAINED_NATIVE_LEASES = 256
+WRAPPER_WORK_PAGE_SIZE = 256
+
+
 def configuration(value):
     s.exact(value, ("schema_version", "keeper", "endpoint", "native_auth_file", "release_file",
                     "native_lease_seconds", "dispatcher_dir", "roster_dir", "operator_inboxes",
-                    "priority_witness_dir", "publication_dir", "sequencer_wallet_file", "relay_wallet_file",
+                    "publication_dir", "sequencer_wallet_file", "relay_wallet_file",
                     "transaction_policy", "relay_policy", "sequencer_beneficiary", "poll_interval_seconds"))
     s.require(value["schema_version"] == 1, "unsupported_coordinator_configuration")
     k.configuration(value["keeper"])
@@ -42,7 +46,7 @@ def configuration(value):
     s.require(settings["coordinator"] != s.ZERO_ADDRESS and pins["expected_operator"] == settings["sequencer"],
               "coordinator_requires_sequencer_keeper")
     sentry.endpoint_url(value["endpoint"])
-    for name in ("dispatcher_dir", "roster_dir", "priority_witness_dir", "publication_dir"):
+    for name in ("dispatcher_dir", "roster_dir", "publication_dir"):
         io.directory(value[name])
     for name in ("native_auth_file", "release_file", "sequencer_wallet_file", "relay_wallet_file"):
         s.require(Path(value[name]).is_absolute(), "absolute_coordinator_file_required")
@@ -57,7 +61,7 @@ def configuration(value):
         io.directory(path)
     for name in ("transaction_policy", "relay_policy"):
         r.policy(value[name])
-        for pin in ("gate_code_hash", "coordinator_code_hash", "priority_guard_code_hash"):
+        for pin in ("gate_code_hash", "coordinator_code_hash"):
             s.require(value[name][pin] == pins[pin], "transaction_code_pin_mismatch")
     s.require(value["transaction_policy"]["account"] == settings["sequencer"]
               and value["relay_policy"]["account"] != settings["sequencer"], "separate_relay_nonce_account_required")
@@ -131,6 +135,8 @@ class Coordinator:
                                       request["proposal"]["accepted_package"]["batchTo"]) as (current, dispatches):
                 authorities = {item.state["journal_id"]: item.enrollment for item in dispatches}
                 self.enrollment = s.EnrollmentGroup(self.settings, authorities, current.state["journal_id"], self.registry_rpc)
+        elif type(self.enrollment) is not s.EnrollmentAuthority or self.enrollment.period != request["manifest"]["payload"]["period"]:
+            self.enrollment = None
         self.enrollment = k.enrollment_for(self.keeper, request, self.registry_rpc, enrollment=self.enrollment)
         return self.enrollment
 
@@ -162,7 +168,8 @@ class Coordinator:
                         state.database.close()
                 if not relevant:
                     continue
-                item = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc)
+                item = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc,
+                                             reuse_local_enrollment=False)
                 lane = item.state["lanes"].get(self.keeper["lane"])
                 s.require(lane is not None and lane["settings"] == self.settings
                           and lane["endpoint"] == sentry.endpoint_url(self.config["endpoint"]), "dispatcher_lane_changed")
@@ -213,10 +220,8 @@ class Coordinator:
     @contextmanager
     def dispatcher_for(self, chain):
         period = chain["roster"]["period"]
-        journal_root = Path(self.config["dispatcher_dir"])
-        if not (journal_root / "state.json").exists():
-            journal_root = journal_root / str(period)
-        store = period_routing.root_store(Store(io.directory(journal_root)))
+        pin = k.enrollment_pin(self.keeper, period)
+        store = period_routing.root_store(Store(io.directory(self.config["dispatcher_dir"])))
         with ExitStack() as locks:
             locks.enter_context(store.lock("dispatcher.lock"))
             state = journal.load(store.root / "state.json", list_fields=("audit.events",))
@@ -226,11 +231,11 @@ class Coordinator:
                 and int(self.clock()) < state["enrollment"]["ends_at"] and type(chain.get("head")) is dict \
                 and s.uint(chain["head"]["timestamp"]) < state["enrollment"]["ends_at"] else "service"
             if state["period"] != period or state["enrollment"]["phase"] != phase \
-                    or state["enrollment"]["block_hash"] != self.keeper["enrollment"]["block_hash"]:
+                    or state["enrollment"]["block_hash"] != pin:
                 try:
                     store = period_routing.current_store(store, None, int(self.clock()), requested_period=period,
                                   existing_only=True, requested_phase=phase,
-                                  enrollment_block_hash=self.keeper["enrollment"]["block_hash"])
+                                  enrollment_block_hash=pin)
                 except s.Error as error:
                     if state["period"] == period and str(error) == "unknown_period_journal":
                         raise s.Error("enrollment_authority_anchor_mismatch") from None
@@ -238,12 +243,14 @@ class Coordinator:
                 locks.enter_context(store.lock("dispatcher.lock"))
                 state = journal.load(store.root / "state.json", list_fields=("audit.events",))
             s.require(state["period"] == period, "dispatcher_period_does_not_match_opening_roster")
-            s.require(state["enrollment"]["block_hash"] == self.keeper["enrollment"]["block_hash"],
+            s.require(state["enrollment"]["block_hash"] == pin,
                       "enrollment_authority_anchor_mismatch")
             if self.registry_rpc is None:
                 self.registry_rpc = k.registry_rpc_for(self.keeper)
             dispatch = dispatcher.Dispatcher(store, now=int(self.clock()), registry_rpc=self.registry_rpc,
-                                               enrollment=self.enrollment if type(self.enrollment) is s.EnrollmentAuthority else None)
+                                               reuse_local_enrollment=False,
+                                               enrollment=self.enrollment if type(self.enrollment) is s.EnrollmentAuthority
+                                               and self.enrollment.block_hash == pin else None)
             s.require(phase != "bootstrap" or dispatch.enrollment.anchor == s.canonical(state["enrollment"]),
                       "bootstrap_enrollment_authority_changed")
             lane = dispatch.state["lanes"].get(self.keeper["lane"])
@@ -265,11 +272,45 @@ class Coordinator:
         self.save()
         return identifier
 
-    def acquire(self, identifier, execute):
+    def archive_finished_attempt(self, identifier, attempt, expected_range=None):
+        lease = self.directory(identifier) / attempt["name"]
+        authority = lease / "authority.json"
+        if not authority.exists():
+            return False
+        record = read_private_json(authority)
+        status = record["status"]
+        if status not in ("no_job", "picked", "rejected"):
+            return False
+        if status != "no_job" and (expected_range is None or int(self.clock()) < attempt["deadline"]):
+            return False
+        s.require(record["job_id"] == identifier + ":" + attempt["name"]
+                  and record["endpoint"] == sentry.endpoint_url(self.config["endpoint"])
+                  and record["release_sha256"] == self.state["release_sha256"]
+                  and record["stage"] == "SNARK" and record["vk_hash"] == self.settings["vk_hash"]
+                  and record["operation_id"] is None and record["manifest_sha256"] is None,
+                  "native_origin_changed")
+        if status == "no_job":
+            s.require(record["lease_token"] is None and record["submission_sha256"] is None,
+                      "native_unleased_authority_changed")
+        else:
+            bounds = sentry.validate_expected_range("SNARK", expected_range)
+            s.require(record["bounds"] == bounds and record.get("expected_bounds", bounds) == bounds,
+                      "archived_lease_range_changed")
+            job.b256(record["lease_token"])
+            if status == "rejected":
+                submitted = job.read_file(lease / "submission.json", job.MAX_SUBMIT, private=True)
+                s.require(record["submission_sha256"] == job.hash_bytes(submitted), "native_terminal_submission_changed")
+            else:
+                s.require(record["submission_sha256"] is None, "uncertain_submission_blocks_lease_renewal")
+        io.immutable_json(lease / "attempt.json", attempt)
+        return True
+
+    def acquire(self, identifier, execute, *, next_native_batch=None):
         op, directory = self.state["operations"][identifier], self.directory(identifier)
         if not execute:
             return "would_pick_native_snark"
         lease = directory / op["lease"] if op["lease"] is not None else None
+        expected_range = None
         if lease is None or not os.path.lexists(lease / "authority.json"):
             if lease is not None and os.path.lexists(lease):
                 sentry.require(all(entry.name == "release.json" or re.fullmatch(r"\.authority\.json\.[0-9a-f]{32}\.tmp", entry.name)
@@ -281,28 +322,33 @@ class Coordinator:
             s.require(chain["mode"] == "service" and chain["service_active"], "service_activation_required")
             with self.dispatcher_for(chain):
                 pass
+            if (directory / "payload.json").exists():
+                frozen = io.private_json(directory / "payload.json", io.MAX_PAYLOAD)
+                expected_range = (frozen["from_batch_number"], frozen["to_batch_number"])
         if op["lease"] is None:
-            s.require(len(op["leases"]) < 256, "native_lease_attempt_limit")
-            name = "lease-" + str(len(op["leases"]))
+            if len(op["leases"]) >= MAX_RETAINED_NATIVE_LEASES:
+                # Keep uncertain picks and submissions in the active index. Finished
+                # attempts retain their private lease evidence on disk.
+                op["leases"] = [item for item in op["leases"]
+                                if not self.archive_finished_attempt(identifier, item, expected_range)]
+                s.require(len(op["leases"]) < MAX_RETAINED_NATIVE_LEASES, "native_lease_attempt_limit")
+            name = "lease-" + uuid.uuid4().hex
+            s.require(not os.path.lexists(directory / name), "native_lease_directory_already_exists")
             op["leases"].append({"name": name, "started_at": int(self.clock()),
                                  "deadline": int(self.clock()) + self.config["native_lease_seconds"]})
             op["lease"] = name
             self.save()
         lease = directory / op["lease"]
         if not os.path.lexists(lease / "authority.json"):
-            bounds = {}
-            if (directory / "payload.json").exists():
-                frozen = io.private_json(directory / "payload.json", io.MAX_PAYLOAD)
-                bounds["expected_range"] = (frozen["from_batch_number"], frozen["to_batch_number"])
             sentry.reset_unstarted_pick(lease, self.config["endpoint"], self.release,
-                                        identifier + ":" + op["lease"], **bounds)
+                                        identifier + ":" + op["lease"], expected_range=expected_range)
             # Only a proven pre-request restart may move the lease window forward.
             lease_info = next(item for item in op["leases"] if item["name"] == op["lease"])
             now = int(self.clock())
             lease_info.update(started_at=now, deadline=now + self.config["native_lease_seconds"])
             self.save()
             sentry.pick(lease, self.config["endpoint"], self.release, identifier + ":" + op["lease"],
-                        sentry.authorization(self.config["native_auth_file"]), self.native, **bounds)
+                        sentry.authorization(self.config["native_auth_file"]), self.native, expected_range=expected_range)
         authority = read_private_json(lease / "authority.json")
         if authority["status"] == "no_job":
             if op["bundle"] is None:
@@ -310,6 +356,9 @@ class Coordinator:
                 io.immutable_json(directory / "completed.json", op)
                 del self.state["operations"][identifier]
             else:
+                attempt = next(item for item in op["leases"] if item["name"] == op["lease"])
+                s.require(self.archive_finished_attempt(identifier, attempt), "native_unleased_authority_changed")
+                op["leases"].remove(attempt)
                 op["lease"] = None
             self.save()
             return "native_queue_empty"
@@ -324,6 +373,8 @@ class Coordinator:
         payload = io.private_json(lease / "payload.json", io.MAX_PAYLOAD)
         job.validate_payload(payload, "SNARK", self.settings["vk_hash"])
         io.immutable_json(directory / "payload.json", payload, io.MAX_PAYLOAD)
+        if next_native_batch is not None and payload["from_batch_number"] > next_native_batch:
+            return "await_native_frontier_for_picked_lease"
         if not (directory / "evidence.json").exists():
             start, end = payload["from_batch_number"], payload["to_batch_number"]
             status, _, raw = self.native.request(sentry.endpoint_url(self.config["endpoint"]) +
@@ -339,14 +390,78 @@ class Coordinator:
         self.save()
         return None
 
+    @staticmethod
+    def retained_bundle(job_root, op):
+        bundle = io.private_json(job_root / op.get("bundle_file", "bundle.json"))
+        s.require(io.digest(bundle) == op["bundle"], "frozen_bundle_changed")
+        return bundle
+
+    @staticmethod
+    def check_rollover_history(dispatches, receipts, manifest, audit_bundle, duties):
+        if audit_bundle["schema_version"] == 3:
+            sources = [(ctx["request"]["manifest"]["payload"], ctx["bundle"]) for ctx in audit_bundle["contexts"]]
+        else:
+            sources = [(manifest, audit_bundle)]
+        ledgers = {item.state["journal_id"]: item.state["audit"]["events"] for item in dispatches}
+        for source, original in sources:
+            if not (source["assignments"] or source["retries"]):
+                continue
+            events = ledgers.get(original["journal_id"])
+            count = audit.event_count(original)
+            s.require(events is not None and 0 < count <= len(events)
+                      and events[count - 1]["hash"] == original["checkpoint"]["eventHead"], "rollover_audit_prefix_changed")
+        observed = {s.canonical(duty) for duty in receipts}
+        s.require(all(s.canonical(duty) in observed for duty in duties), "rollover_duty_receipt_changed")
+
     def snapshot(self, identifier, chain, roster, execute):
-        op, directory = self.state["operations"][identifier], self.directory(identifier)
+        op, job_root = self.state["operations"][identifier], self.directory(identifier)
+        directory = job_root / op.get("snapshot_directory", ".")
+        period, root = chain["roster"]["period"], chain["roster"]["root"]
+        rollover = False
+        old_ref = None
+        retained_manifest = None
+        prior_history = None
         if op["bundle"] is not None:
-            return io.private_json(directory / op.get("bundle_file", "bundle.json"))
+            bundle = self.retained_bundle(job_root, op)
+            accepted = bundle["request"]["proposal"]["accepted_package"]
+            if op["maintenance"] is not None or (accepted["period"], accepted["rosterRoot"]) == (period, root):
+                return bundle
+            old_key = f"{accepted['period']}-{accepted['rosterRoot']}"
+            old_ref = {"bundle": op["bundle"], "bundle_file": op.get("bundle_file", "bundle.json"),
+                       "snapshot_directory": op.get("snapshot_directory", ".")}
+            if chain["package_open"]:
+                # A reorg can restore a previous opening. Resume its authenticated bundle,
+                # never generate a replacement for a package the contract already froze.
+                previous = op.get("opening_history", {}).get(f"{period}-{root}")
+                s.require(previous is not None, "frozen_roster_mismatch")
+                restored = self.retained_bundle(job_root, previous)
+                saved = restored["request"]["proposal"]["accepted_package"]
+                s.require((saved["period"], saved["rosterRoot"]) == (period, root), "frozen_roster_mismatch")
+                if execute:
+                    op["opening_history"][old_key] = old_ref
+                    op.update(previous)
+                    self.save()
+                return restored
+            rollover = True
+            retained_manifest = bundle["request"]["manifest"]["payload"]
+            prior_history = (bundle["audit"], bundle["request"]["duties"])
         if not execute:
             return None
-        payload = io.private_json(directory / "payload.json", io.MAX_PAYLOAD)
-        evidence = io.private_json(directory / "evidence.json")
+        payload = io.private_json(job_root / "payload.json", io.MAX_PAYLOAD)
+        evidence = io.private_json(job_root / "evidence.json")
+        if op["bundle"] is None and not chain["package_open"]:
+            for name in ("snapshot.json", "snapshot-intent.json"):
+                if (directory / name).exists():
+                    saved = io.private_json(directory / name)
+                    snapshot = saved if name == "snapshot.json" else saved["snapshot"]
+                    retained_manifest = snapshot["manifest"]
+                    rollover = snapshot["manifest"]["period"] != period
+                    prior_history = (snapshot["audit"], snapshot["duties"])
+                    break
+        if rollover:
+            # An unopened proposal may outlive its roster. Preserve each signed prefix and
+            # its immutable event archive while rebuilding this range from the dispatcher journals.
+            directory = io.directory(job_root / f"opening-{period}-{root[2:]}-{io.digest(prior_history)}", create=True)
         snapshot_path = directory / "snapshot.json"
         intent_path = directory / "snapshot-intent.json"
         if snapshot_path.exists():
@@ -365,6 +480,8 @@ class Coordinator:
                 contexts = [(item, self.context_snapshot(item, payload, evidence)) for item in dispatches]
                 statements = s.validate_evidence(self.settings, evidence)
                 receipts = [duty for _, context in contexts for duty in context["receipts"]]
+                if rollover:
+                    self.check_rollover_history(dispatches, receipts, retained_manifest, *prior_history)
                 covered = {duty["batchNumber"] for duty in receipts}
                 s.require(len(covered) == len(receipts), "duplicate_cross_period_accepted_batch")
                 exhausted = all(account["offered"] >= self.settings["duties_per_round"]
@@ -433,12 +550,18 @@ class Coordinator:
         bundle = self.refresh_report(identifier, {"request": request, "audit": signed_audit}, False)
         self.prepare(bundle["request"], evidence, payload)
         name = "bundle.json"
-        if (directory / name).exists() and io.private_json(directory / name) != bundle:
+        if (job_root / name).exists() and io.private_json(job_root / name) != bundle:
             name = "bundle-" + io.digest(bundle) + ".json"
-        io.immutable_json(directory / name, bundle)
+        io.immutable_json(job_root / name, bundle)
+        if old_ref is not None:
+            op.setdefault("opening_history", {})[old_key] = old_ref
         op["bundle"] = io.digest(bundle)
         if name != "bundle.json":
             op["bundle_file"] = name
+        else:
+            op.pop("bundle_file", None)
+        if directory != job_root:
+            op["snapshot_directory"] = directory.name
         self.save()
         return bundle
 
@@ -506,17 +629,23 @@ class Coordinator:
         op = self.state["operations"][identifier]
         if not execute:
             return "would_" + call["action"]
+        if op["maintenance"] is None and self.state.get("maintenance_receipt"):
+            return {"next_action": "wait_for_existing_wallet_reservation"}
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
             self.signing_wallet(), transactions.Store(self.store.root / "transactions"), self.clock)
+        if call["action"] == "observeNativeSettlement":
+            producer = self.native_observation_call
         if op["maintenance"] is None:
-            op["maintenance"] = manager.plan(call)
+            pending = manager.plan(producer if call["action"] in transactions.REPEATABLE else call)
+            if (pending["call"]["action"] != call["action"] or
+                    call["action"] not in transactions.REPEATABLE and pending["call"]["transaction"] != call["transaction"]):
+                return self.track_reserved_receipt(manager, pending["operation_id"], True)
+            op["maintenance"] = pending
             self.save()
         operation_id = self.stage_maintenance(op["maintenance"], manager, True)
         def preflight(original, head, anchor):
-            if original["action"] in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
-                return False
             try:
-                current = producer()
+                current = producer(head)
             except s.Error:
                 return False
             return current["transaction"] == original["transaction"] and current["anchor"]["hash"] == head["hash"]
@@ -527,8 +656,6 @@ class Coordinator:
         return result
 
     def stage_maintenance(self, pending, manager, execute):
-        if isinstance(pending, str):
-            return pending
         s.exact(pending, ("operation_id", "call", "invocation"))
         expected = r.sha256(transactions.intent(self.settings, self.config["transaction_policy"],
                                                pending["call"], pending["invocation"]))
@@ -537,31 +664,40 @@ class Coordinator:
             s.require(manager.stage(pending["call"], pending["invocation"]) == expected, "maintenance_descriptor_changed")
         return expected
 
-    def recover_maintenance(self, identifier, execute, bundle, evidence, payload):
+    def track_reserved_receipt(self, manager, operation_id, execute):
+        result = manager.step(operation_id, execute, receipt_only=True)
+        if execute:
+            entry = manager.state["operations"][operation_id]
+            if entry["unsigned_transaction"] is not None and result["status"] not in transactions.TERMINAL:
+                self.state["maintenance_receipt"] = operation_id
+            self.save()
+        return result
+
+    def recover_maintenance(self, identifier, execute, bundle, evidence, payload, *, receipt_only=False):
         op = self.state["operations"][identifier]
         if op["maintenance"] is None:
             return None
         manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
-            self.signing_wallet() if execute else None, transactions.Store(self.store.root / "transactions"), self.clock)
+            self.signing_wallet() if execute and not receipt_only else None, transactions.Store(self.store.root / "transactions"), self.clock)
         operation_id = self.stage_maintenance(op["maintenance"], manager, execute)
         if operation_id not in manager.state["operations"]:
             return {"next_action": "would_stage_maintenance", "operation_id": operation_id}
+        if not receipt_only and operation_id == self.state.get("maintenance_receipt"):
+            if execute:
+                op["maintenance"] = None
+            self.track_reserved_receipt(manager, operation_id, execute)
+            return None
         def preflight(original, head, anchor):
+            if receipt_only:
+                return False
             try:
                 action = original["action"]
-                # Legacy rows did not bind a checkpoint. A reserved nonce remains receipt-only recovery.
-                if action in transactions.REPEATABLE and manager.state["operations"][operation_id].get("invocation") is None:
-                    return False
                 if action in ("openPackage", "repairPackage"):
                     call = k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()),
                                           "open" if action == "openPackage" else "repair",
-                                          enrollment=self.enrollment_for(bundle["request"]))
-                elif action == "refreshPriorityCheckpoint":
-                    call = k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
-                elif action == "publishPrefixWitness":
-                    work_id = r.call_word(self.rpc, self.settings["proof_gate"], "priorityWorkId()", anchor, kind="bytes32")
-                    witness = io.private_json(Path(self.config["priority_witness_dir"]) / (work_id[2:] + ".json"))
-                    call = k.prefix_call(self.keeper, self.rpc, evidence, witness, int(self.clock()))
+                                          enrollment=self.enrollment_for(bundle["request"]), at_head=head)
+                elif action == "observeNativeSettlement":
+                    call = self.native_observation_call(head)
                 else:
                     return False
                 return call["transaction"] == original["transaction"] and call["anchor"]["hash"] == head["hash"]
@@ -577,53 +713,134 @@ class Coordinator:
             return None
         return result
 
+    def record_wrapper_work(self, identifier, work_hash, source, operator):
+        op = self.state["operations"][identifier]
+        if work_hash in op["works"]:
+            meta = op["works"][work_hash]
+            s.require(meta["directory"] == str(source) and meta["operator"] == operator, "wrapper_work_destination_changed")
+            return False
+        if len(op["works"]) >= WRAPPER_WORK_PAGE_SIZE:
+            page = op.get("work_pages", 0)
+            # A crash before the journal save leaves this page unreferenced. Rebuild
+            # it from the authoritative inline records, including any later results.
+            r.atomic_json(self.directory(identifier) / f"wrapper-work-{page}.json", op["works"])
+            op["works"] = {}
+            op["work_pages"] = page + 1
+        op["works"][work_hash] = {"directory": str(source), "operator": operator, "checked": False}
+        return True
+
+    def wrapper_work_items(self, identifier, page):
+        op = self.state["operations"][identifier]
+        for work_hash, meta in reversed(list(op["works"].items())):
+            yield work_hash, meta, None
+        if op.get("work_pages", 0):
+            path = self.directory(identifier) / f"wrapper-work-{page}.json"
+            history = io.private_json(path)
+            for work_hash, meta in history.items():
+                if work_hash not in op["works"]:
+                    yield work_hash, meta, (path, history)
+
+    def verify_wrapper_result(self, work_hash, meta, path, evidence, payload, selected):
+        try:
+            result = io.validate_result(self.settings, work_hash, io.private_json(path), meta["operator"])
+            job.validate_payload(result["proof"], "SNARK", self.settings["vk_hash"], proof=True)
+            proof_check.inputs(self.settings, evidence, payload, result["proof"])
+        except OSError:
+            # An absent or temporarily unreadable inbox is still eligible on the next poll.
+            return None
+        except (s.Error, job.Error, ValueError, TypeError, KeyError, RecursionError) as error:
+            if isinstance(error, s.Error) and str(error) == "cast_failed":
+                return None
+            return None, {"ignored": True, "error": "invalid_authenticated_result"}
+        # An endorsement for different proof bytes cannot authorize the selected
+        # native submission. Its verifier call could delay an already verified proof.
+        if selected is not None and selected != result["proof"]:
+            return None, {"ignored": True}
+        try:
+            proof_check.verify_snark(self.keeper, self.rpc, evidence, payload, result["proof"], int(self.clock()))
+        except r.RpcError:
+            # The verifier normalizes definitive proof reverts to native_snark_rejected.
+            return None
+        except s.Error as error:
+            reason = str(error)
+            if reason == "native_snark_rejected":
+                return None, {"ignored": True, "error": reason}
+            if reason in ("cast_failed", "rpc_transport_failure", "rpc_http_failure", "rpc_response_limit",
+                          "proof_verification_timeout"):
+                return None
+            raise
+        return result, {}
+
+    def retained_proof(self, identifier, execute):
+        op, directory = self.state["operations"][identifier], self.directory(identifier)
+        selection = op["proof"]
+        if selection is None:
+            return None
+        path = directory / "proof.json"
+        if path.exists():
+            proof = io.private_json(path)
+        else:
+            # Selection is durable before proof.json, so a restart can finish the
+            # interrupted write even if the worker has since removed its response.
+            work_hash = s.nonzero(selection["work_hash"])
+            result = io.private_json(directory / (work_hash[2:] + ".result.json"))
+            s.require(result["work_hash"] == work_hash and io.digest(result) == selection["result_sha256"],
+                      "selected_wrapper_result_changed")
+            proof = result["proof"]
+        s.require(io.digest(proof) == selection["proof_sha256"], "retained_proof_changed")
+        if execute and not path.exists():
+            io.immutable_json(path, proof)
+        return proof
+
     def result(self, identifier, execute):
         op, directory = self.state["operations"][identifier], self.directory(identifier)
         evidence, payload = io.private_json(directory / "evidence.json"), io.private_json(directory / "payload.json", io.MAX_PAYLOAD)
-        for work_hash, meta in reversed(list(op["works"].items())):
+        proof_path = directory / "proof.json"
+        selected = self.retained_proof(identifier, execute)
+        page = op.get("work_cursor", 0)
+        for work_hash, meta, archive in self.wrapper_work_items(identifier, page):
             path = Path(meta["directory"]) / "result.json"
-            if not path.exists() or meta["checked"]:
+            if meta["checked"]:
                 continue
-            try:
-                result = io.validate_result(self.settings, work_hash, io.private_json(path), meta["operator"])
-                job.validate_payload(result["proof"], "SNARK", self.settings["vk_hash"], proof=True)
-                proof_check.inputs(self.settings, evidence, payload, result["proof"])
-            except (s.Error, job.Error, OSError, ValueError, TypeError, KeyError):
-                if execute:
-                    meta.update(checked=True, ignored=True, error="invalid_authenticated_result")
-                    self.save()
-                continue
-            try:
-                proof_check.verify_snark(self.keeper, self.rpc, evidence, payload, result["proof"], int(self.clock()))
-            except s.Error as error:
-                if str(error) != "native_snark_rejected":
-                    raise
-                if execute:
-                    meta.update(checked=True, ignored=True, error=str(error))
-                    self.save()
-                continue
-            if op["proof"] is not None and io.private_json(directory / "proof.json") != result["proof"]:
-                # The native submission freezes one exact proof; later valid proofs cannot replace it.
-                if execute:
+            if selected is not None and work_hash == op["proof"]["work_hash"]:
+                # An archived page is saved after the selection journal. Its checked flag
+                # may still need replay even after the worker has archived its own result.
+                if execute and archive is not None:
                     meta["checked"] = True
-                    meta["ignored"] = True
-                    self.save()
+                    r.atomic_json(*archive)
                 continue
-            if not execute:
-                return "would_retain_verified_wrapper_result"
-            io.immutable_json(directory / "proof.json", result["proof"])
-            io.immutable_json(directory / (work_hash[2:] + ".result.json"), result)
-            op["proof"], meta["checked"] = io.digest(result["proof"]), True
+            verified = self.verify_wrapper_result(work_hash, meta, path, evidence, payload, selected)
+            if verified is None:
+                continue
+            result, disposition = verified
+            if not disposition:
+                if not execute:
+                    return "would_retain_verified_wrapper_result"
+                io.immutable_json(directory / (work_hash[2:] + ".result.json"), result)
+                if op["proof"] is None:
+                    selected = result["proof"]
+                    op["proof"] = {"work_hash": work_hash, "result_sha256": io.digest(result),
+                                   "proof_sha256": io.digest(selected)}
+            if execute:
+                meta.update(checked=True, **disposition)
+                self.save()
+                if not disposition and not proof_path.exists():
+                    io.immutable_json(proof_path, selected)
+                if archive is not None:
+                    r.atomic_json(*archive)
+        if execute and op.get("work_pages", 0) > 1:
+            # Keep polling bounded while revisiting every old inbox for late proofs.
+            op["work_cursor"] = (page + 1) % op["work_pages"]
             self.save()
         return None
 
-    def relay(self, identifier, execute):
+    def relay(self, identifier, execute, *, receipt_only=False):
         op = self.state["operations"][identifier]
         if op["relay"] is None:
             return None
         store = r.Store(self.store.root / "relay")
         wallet = (self.relay_wallet or io.wallet_connection(self.config["relay_wallet_file"],
-                   self.keeper["policy"]["rpc_timeout_seconds"])) if execute else None
+                   self.keeper["policy"]["rpc_timeout_seconds"])) if execute and not receipt_only else None
         with store.lock() if execute else nullcontext():
             relay = r.Relay(self.settings, self.config["relay_policy"], self.rpc, wallet, store, self.clock)
             entry = relay.state["operations"][op["relay"]]
@@ -632,70 +849,253 @@ class Coordinator:
                     op["relay"] = None
                     self.save()
                 return None
-            if entry["unsigned_transaction"] is None and entry["raw_transaction"] is None and entry["status"] not in r.TERMINAL:
+            if (not receipt_only and entry["unsigned_transaction"] is None and entry["raw_transaction"] is None
+                    and entry["status"] not in r.TERMINAL):
                 bundle = io.private_json(self.directory(identifier) / op.get("bundle_file", "bundle.json"))
                 s.require(io.digest(bundle) == op["bundle"], "frozen_bundle_changed")
-                if self.refresh_report(identifier, bundle, False) != bundle:
-                    # Observe existing acceptance first; retiring an unreserved artifact must
-                    # not lose a confirmed handoff or release an uncertain wallet nonce.
-                    relay.step(op["relay"], False)
-                    if entry["acceptance"] is None and entry["receipt"] is None:
-                        if not execute:
-                            return {"next_action": "would_retire_expired_unsigned_report", "operation_id": op["relay"]}
-                        entry["status"] = "stale_unsigned"
-                        relay.save(True)
-                        op["relay"] = None
-                        self.save()
-                        return None
-            result = relay.step(op["relay"], execute)
-            if result["status"] in ("accepted", "accepted_elsewhere"):
+                preview = relay.step(op["relay"], False)
+                if (entry["acceptance"] is None and entry["receipt"] is None
+                        and preview["context"]["reason"] != "range_already_proven"
+                        and self.refresh_report(identifier, bundle, False) != bundle):
+                    if not execute:
+                        return {"next_action": "would_retire_expired_unsigned_report", "operation_id": op["relay"]}
+                    entry["status"] = "stale_unsigned"
+                    relay.save(True)
+                    op["relay"] = None
+                    self.save()
+                    return None
+            result = relay.step(op["relay"], execute, receipt_only=receipt_only)
+            entry = relay.state["operations"][op["relay"]]
+            pending_nonce = relay.external_acceptance_with_pending_nonce(entry)
+            if result["status"] in ("accepted", "accepted_elsewhere") or pending_nonce:
+                accepted_tx = result["acceptance"].get("transaction_hash")
+                if not accepted_tx:
+                    return {**result, "next_action": "wait_for_acceptance_transaction"}
                 s.require(op["publication"] is not None, "native_publication_missing")
-                handoff = relay.export_handoff(op["relay"], op["publication"], execute)
-                if execute:
-                    op["status"], self.state["active"] = "settled", None
+                try:
+                    handoff = relay.export_handoff(op["relay"], op["publication"], execute)
+                except FileNotFoundError as error:
+                    if not receipt_only or error.filename != op["publication"]:
+                        raise
+                    # A delivered hint is bound to this frozen relay and its acceptance transaction.
+                    # An archived first or replacement handoff still needs its original publication.
+                    if op.get("handed_off_tx") != accepted_tx:
+                        if execute and op.get("handoff_restore_required") != accepted_tx:
+                            op["handoff_restore_required"] = accepted_tx
+                            self.save()
+                        return {**result, "next_action": "restore_publication_for_handoff"}
+                    handoff = result
+                status = "settled_with_pending_nonce" if pending_nonce else "settled"
+                if execute and (op["status"] != status or self.state["active"] == identifier
+                                or op.get("handed_off_tx") != accepted_tx or op.get("handoff_restore_required")):
+                    op["handed_off_tx"] = accepted_tx
+                    op.pop("handoff_restore_required", None)
+                    op["status"] = status
+                    if pending_nonce and identifier not in self.state.setdefault("regrouped_pending", []):
+                        self.state["regrouped_pending"].append(identifier)
+                    if self.state["active"] == identifier:
+                        self.state["active"] = None
                     self.save()
                 return handoff
-            entry = relay.state["operations"][op["relay"]]
             if result["status"] in ("stale_unsigned", "reverted") and (entry["unsigned_transaction"] is None
                     or result["status"] == "reverted"):
                 if execute:
                     op["relay"] = None
+                    op.pop("handoff_restore_required", None)
                     self.save()
                 return None
             return result
 
+    def retire_regrouped(self, identifier, payload, execute):
+        op = self.state["operations"][identifier]
+        directory = self.directory(identifier)
+        evidence_file = directory / "evidence.json"
+        evidence = io.private_json(evidence_file) if evidence_file.exists() else None
+        proof = self.retained_proof(identifier, execute)
+        s.require(proof is None or evidence is not None, "retained_proof_changed")
+        source = native_handoff.regrouped_work(self.config["publication_dir"], op["publication"], self.settings,
+            self.config["relay_policy"], self.rpc, int(self.clock()), payload, evidence, proof)
+        if source is None:
+            return None
+        if execute:
+            op["publication"] = str(source)
+            self.detach_native_work(identifier, "regrouped")
+        return {"next_action": "pick_regrouped_native_range" if execute else "would_retire_regrouped_native_range"}
+
+    def detach_native_work(self, identifier, status):
+        op = self.state["operations"][identifier]
+        op["status"], self.state["active"] = status, None
+        if op["relay"] or op["maintenance"]:
+            # Releasing local proof ownership does not release either wallet's nonce.
+            self.state.setdefault("regrouped_pending", []).append(identifier)
+        self.save()
+
+    def retire_superseded(self, identifier, start, end, head, execute):
+        op, directory = self.state["operations"][identifier], self.directory(identifier)
+        evidence = io.private_json(directory / "evidence.json")
+        proof = self.retained_proof(identifier, execute)
+        disposition = native_handoff.superseded_work(self.config["publication_dir"], op["publication"],
+            self.settings, self.config["relay_policy"], self.rpc, head, start, end, evidence, proof)
+        if disposition is None:
+            return None
+        verified, status = disposition
+        if execute:
+            self.detach_native_work(identifier, status)
+        action = "range_already_proven" if verified >= end else "native_advance_requires_new_range"
+        return {"next_action": action if execute else "would_retire_superseded_native_range"}
+
+    def reconcile_regrouped(self, execute):
+        for identifier in list(self.state.get("regrouped_pending", [])):
+            op = self.state["operations"][identifier]
+            self.recover_maintenance(identifier, execute, None, None, None, receipt_only=True)
+            if op["status"] != "settled":
+                self.relay(identifier, execute, receipt_only=True)
+            if execute and not op["maintenance"] and (not op["relay"] or op["status"] == "settled"):
+                self.state["regrouped_pending"].remove(identifier)
+                self.save()
+
+    def native_observation_call(self, head):
+        return k.maintenance(self.keeper, self.rpc, "observe-native", {}, int(self.clock()), at_head=head)
+
+    def observe_native(self, execute):
+        pending = self.state.get("native_observation")
+        if not pending and self.state.get("maintenance_receipt"):
+            return {"next_action": "wait_for_existing_wallet_reservation"}
+        if not pending and not execute:
+            return {"next_action": "would_observe_native_settlement"}
+        manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
+            self.signing_wallet() if execute else None, transactions.Store(self.store.root / "transactions"), self.clock)
+        if not pending:
+            pending = manager.plan(self.native_observation_call)
+            if pending["call"]["action"] == "observeNativeSettlement":
+                self.state["native_observation"] = pending
+                self.save()
+        operation_id = self.stage_maintenance(pending, manager, execute)
+        if operation_id not in manager.state["operations"]:
+            return {"next_action": "would_stage_maintenance", "operation_id": operation_id}
+        entry = manager.state["operations"][operation_id]
+        if entry["call"]["action"] != "observeNativeSettlement":
+            # The maintenance wallet can already own a nonce for another package.
+            return self.track_reserved_receipt(manager, operation_id, execute)
+
+        def preflight(original, head, anchor):
+            try:
+                current = self.native_observation_call(head)
+            except s.Error:
+                return False
+            return current["transaction"] == original["transaction"] and current["anchor"]["hash"] == head["hash"]
+
+        result = manager.step(operation_id, execute, preflight)
+        entry = manager.state["operations"][operation_id]
+        if execute and (result["status"] in transactions.TERMINAL
+                        or result["status"] == "stale_unsigned" and entry["unsigned_transaction"] is None):
+            self.state.pop("native_observation", None)
+            self.save()
+        elif (result["status"] in ("authorization_stale_reserved", "nonce_conflict")
+              and native_handoff.confirmed_observation(self.rpc, self.settings, self.config["transaction_policy"],
+                                                       entry["invocation"]["scope"], int(self.clock()))):
+            if execute:
+                # Move ownership in one journal write. The maintenance wallet still owns the nonce.
+                self.state.pop("native_observation")
+                self.state["maintenance_receipt"] = operation_id
+                self.save()
+            return {**result, "next_action": "resume_after_confirmed_native_observation" if execute
+                    else "would_resume_after_confirmed_native_observation"}
+        return result
+
     def step(self, execute=False):
         s.require(type(execute) is bool, "invalid_execute_flag")
+        reserved = self.state.get("maintenance_receipt")
+        if reserved:
+            manager = transactions.Transactions(self.settings, self.config["transaction_policy"], self.rpc,
+                store=transactions.Store(self.store.root / "transactions"), clock=self.clock)
+            receipt = manager.step(reserved, execute, receipt_only=True)
+            if execute and receipt["status"] in transactions.TERMINAL:
+                self.state.pop("maintenance_receipt")
+                self.save()
+        self.reconcile_regrouped(execute)
         identifier = self.state["active"]
+        if self.state.get("native_observation"):
+            return self.observe_native(execute)
         if identifier is not None:
+            op = self.state["operations"][identifier]
+            if op["publication"] and (Path(op["publication"]) / "regrouped.json").exists():
+                payload = io.private_json(self.directory(identifier) / "payload.json", io.MAX_PAYLOAD)
+                retired = self.retire_regrouped(identifier, payload, execute)
+                if retired:
+                    return retired
             result = self.relay(identifier, execute)
             if result is not None:
+                context = result.get("context")
+                acceptance = result.get("acceptance") or {}
+                if (context and context["reason"] in ("range_already_proven", "accepted_parent_changed", "package_already_accepted")
+                        and not acceptance.get("transaction_hash")):
+                    head = context["head"]
+                    anchor = {"blockHash": head["hash"], "requireCanonical": True}
+                    if (context["reason"] == "range_already_proven" or
+                            r.call_word(self.rpc, self.settings["chain_address"], "getTotalBatchesVerified()", anchor) >= context["batch_from"]):
+                        if transactions.observation_scope(self.rpc, self.settings, head) is not None:
+                            return self.observe_native(execute)
+                        retired = self.retire_superseded(identifier, context["batch_from"], context["batch_to"], head, execute)
+                        if retired:
+                            return retired
                 return result
         chain, roster = self.status()
+        if chain["observed_native_batch"] + 1 < chain["next_native_batch"]:
+            return self.observe_native(execute)
         s.require(chain["mode"] == "service" and chain["service_active"], "service_activation_required")
         if identifier is None:
             if not execute:
                 return {"next_action": "would_pick_native_snark", "chain": chain}
             identifier = self.reserve()
         op, directory = self.state["operations"][identifier], self.directory(identifier)
+        payload_path = directory / "payload.json"
+        if payload_path.exists():
+            # A restart may have persisted the pick just before its old evidence became unavailable.
+            payload = io.private_json(payload_path, io.MAX_PAYLOAD)
+            if chain["next_native_batch"] < payload["from_batch_number"] and op["publication"] is None:
+                retired = self.retire_regrouped(identifier, payload, execute)
+                if retired:
+                    return retired
+                # A node restart can replace an in-memory lease before a wrapper exists
+                # to journal. Only an expired pick with no submission or endorsements can
+                # be released on this evidence alone. Keep its original authority on disk.
+                if op["lease"] and not any(op[k] for k in ("bundle", "proof", "works", "maintenance", "relay")):
+                    authority = read_private_json(directory / op["lease"] / "authority.json")
+                    if authority["status"] == "picked" and authority["submission_sha256"] is None:
+                        deadline = next(item["deadline"] for item in op["leases"] if item["name"] == op["lease"])
+                        if int(self.clock()) < deadline:
+                            return {"next_action": "await_native_frontier_for_picked_lease"}
+                        if execute:
+                            op["status"], self.state["active"] = "expired", None
+                            self.save()
+                        return {"next_action": "pick_after_expired_future_lease" if execute else "would_release_expired_future_lease"}
+            if chain["next_native_batch"] > payload["from_batch_number"]:
+                if op["maintenance"] or op["relay"] or op["publication"]:
+                    head, _ = r.anchored_head(self.rpc, self.settings, self.config["relay_policy"], int(self.clock()))
+                    retired = self.retire_superseded(identifier, payload["from_batch_number"], payload["to_batch_number"],
+                                                     head, execute)
+                    return retired or {"next_action": "await_confirmed_native_disposition"}
+                if execute:
+                    op["status"], self.state["active"] = "superseded", None
+                    self.save()
+                return {"next_action": "range_already_proven" if chain["next_native_batch"] > payload["to_batch_number"]
+                        else "native_advance_requires_new_range"}
         if op["lease"] is None or op["status"] == "picking":
-            result = self.acquire(identifier, execute)
+            result = self.acquire(identifier, execute, next_native_batch=chain["next_native_batch"])
             if result:
                 return {"next_action": result}
-        payload, evidence = io.private_json(directory / "payload.json", io.MAX_PAYLOAD), io.private_json(directory / "evidence.json")
-        if chain["next_native_batch"] > payload["to_batch_number"]:
-            if execute:
-                op["status"], self.state["active"] = "superseded", None
-                self.save()
-            return {"next_action": "range_already_proven"}
+        payload = io.private_json(payload_path, io.MAX_PAYLOAD)
+        evidence = io.private_json(directory / "evidence.json")
         s.require(chain["next_native_batch"] == payload["from_batch_number"], "native_frontier_does_not_match_retained_lease")
+        if op["maintenance"] is not None:
+            retained = self.retained_bundle(directory, op)
+            pending = self.recover_maintenance(identifier, execute, retained, evidence, payload)
+            if pending is not None:
+                return pending
         bundle = self.snapshot(identifier, chain, roster, execute)
         if bundle is None:
             return {"next_action": "would_sign_dispatch_snapshot"}
-        s.require(io.digest(bundle) == op["bundle"], "frozen_bundle_changed")
-        pending = self.recover_maintenance(identifier, execute, bundle, evidence, payload)
-        if pending is not None:
-            return pending
         bundle = self.refresh_report(identifier, bundle, execute)
         if chain["package_open"] and (bundle["audit"]["schema_version"] == 3 or op.get("report_repair")
                                       or io.digest(bundle) != op["bundle"]):
@@ -705,35 +1105,22 @@ class Coordinator:
                 expected = dict(chain["frozen_package"])
                 expected["reportHash"] = frozen["reportHash"]
                 s.require(frozen == expected, "report_repair_changed_frozen_work")
-                produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload,
-                                 int(self.clock()), "repair", enrollment=self.enrollment_for(bundle["request"]))
+                produce = lambda head=None: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload,
+                                 int(self.clock()), "repair", enrollment=self.enrollment_for(bundle["request"]), at_head=head)
                 return self.maintenance(identifier, produce(), produce, execute)
         if not chain["package_open"]:
-            produce = lambda: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload, int(self.clock()), "open",
-                                             enrollment=self.enrollment_for(bundle["request"]))
+            produce = lambda head=None: k.package_call(self.keeper, self.rpc, bundle["request"], evidence, payload,
+                                 int(self.clock()), "open", enrollment=self.enrollment_for(bundle["request"]), at_head=head)
             return self.maintenance(identifier, produce(), produce, execute)
         request = k.rebind_request(self.settings, bundle["request"], chain, roster)
-        prepared = self.prepare(request, evidence, payload)
-        priority = r.priority_context(self.rpc, self.settings, {**self.keeper["policy"], "min_turn_seconds": 1},
-                     {"sidecar": prepared}, chain["head"], {"blockHash": chain["head"]["hash"], "requireCanonical": True})
-        r.check_anchor(self.rpc, self.settings, chain["head"])
-        if priority["reason"] == "priority_checkpoint_needs_refresh":
-            produce = lambda: k.maintenance(self.keeper, self.rpc, "refresh-priority", {}, int(self.clock()))
-            return self.maintenance(identifier, produce(), produce, execute)
-        if priority["reason"] == "priority_prefix_witness_missing":
-            witness_path = Path(self.config["priority_witness_dir"]) / (priority["work_id"][2:] + ".json")
-            if not witness_path.exists():
-                return {"next_action": "await_authenticated_priority_witness", "work_id": priority["work_id"]}
-            witness = io.private_json(witness_path)
-            produce = lambda: k.prefix_call(self.keeper, self.rpc, evidence, witness, int(self.clock()))
-            return self.maintenance(identifier, produce(), produce, execute)
-        s.require(priority["reason"] == "ready", priority["reason"])
+        self.prepare(request, evidence, payload)
+        operator = request["proposal"]["candidate"]["operator"]
+        work_page = op.get("work_cursor", 0)
         result = self.result(identifier, execute)
         if result:
             return {"next_action": result}
-        proof = io.private_json(directory / "proof.json") if op["proof"] is not None else None
+        proof = self.retained_proof(identifier, execute)
         if proof is not None:
-            s.require(io.digest(proof) == op["proof"], "retained_proof_changed")
             publication = native_handoff.publication_work(self.config["publication_dir"], self.settings,
                             self.config["relay_policy"], evidence, proof)
             if publication is not None:
@@ -752,18 +1139,26 @@ class Coordinator:
                             sentry.authorization(self.config["native_auth_file"]), self.native)
                 s.require(outcome != "rejected", "native_submission_rejected_reconcile_lease")
                 return {"next_action": "await_node_publication", "native_status": outcome}
-            for work_hash, meta in reversed(list(op["works"].items())):
-                if not meta["checked"] or meta.get("ignored"):
+            expected = None
+            for work_hash, meta, _ in self.wrapper_work_items(identifier, work_page):
+                if not meta["checked"] or meta.get("ignored") or meta["operator"] != operator:
                     continue
                 result = io.private_json(directory / (work_hash[2:] + ".result.json"))
                 if result["prepared"] is None:
                     continue
-                expected = s.prepare_package(self.settings, evidence, request["manifest"], request["subscriptions"],
-                              request["duties"], request["proposal"], proof, payload,
-                              enrollment=self.enrollment_for(request))
+                if expected is None:
+                    expected = s.prepare_package(self.settings, evidence, request["manifest"], request["subscriptions"],
+                                  request["duties"], request["proposal"], proof, payload,
+                                  enrollment=self.enrollment_for(request))
                 if result["prepared"] != expected:
                     continue
-                s.verify_eoa(expected["wrapper_request"], result["wrapper_signature"])
+                try:
+                    s.verify_eoa(expected["wrapper_request"], result["wrapper_signature"])
+                except s.Error:
+                    # A signed result envelope can carry an unusable package endorsement.
+                    # Keep both the selected proof and the candidate for the next poll
+                    # because a local signature verifier failure can be transient.
+                    continue
                 signature = self.sign(expected["sequencer_request"], execute)
                 if not execute:
                     return {"next_action": "would_endorse_package"}
@@ -783,7 +1178,6 @@ class Coordinator:
                 op["lease"], op["status"] = None, "picking"
                 self.save()
             return {"next_action": "renew_expired_native_lease_same_frozen_payload"}
-        operator = request["proposal"]["candidate"]["operator"]
         inbox = self.config["operator_inboxes"].get(operator)
         if inbox is None:
             return {"next_action": "await_selected_operator_transport", "operator": operator,
@@ -796,12 +1190,10 @@ class Coordinator:
         signature = self.sign(signing_request, execute)
         if not execute:
             return {"next_action": "would_deliver_selected_wrapper", "operator": operator, "turn": chain["current_turn"]}
-        source = io.publish_work(inbox, {"body": body, "sequencer_signature": signature}, payload,
-                                 event_root=directory / "audit-events")
-        if work_hash not in op["works"]:
-            s.require(len(op["works"]) < 256, "wrapper_turn_attempt_limit")
-            op["works"][work_hash] = {"directory": str(source), "operator": operator, "checked": False}
+        if self.record_wrapper_work(identifier, work_hash, Path(inbox) / work_hash[2:], operator):
             self.save()
+        io.publish_work(inbox, {"body": body, "sequencer_signature": signature}, payload,
+                        event_root=directory / op.get("snapshot_directory", ".") / "audit-events")
         return {"next_action": "await_selected_wrapper", "operator": operator, "turn": chain["current_turn"],
                 "deadline": chain["turn_deadline"], "work_hash": work_hash}
 

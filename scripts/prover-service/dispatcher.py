@@ -18,7 +18,7 @@ import service as s
 import audit
 import journal
 import period_routing
-from enrollment import enrollment_snapshot, fixed_word
+from enrollment import enrollment_snapshot, fixed_word, validate_lane
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "prover-rental"))
 import job
@@ -41,6 +41,7 @@ class Rpc:
     def __init__(self, url, network):
         self.url = sentry.endpoint_url(url)
         self.network = network
+        self.batch_reads = True
 
     def call(self, method, params):
         status, _, raw = self.network.request(self.url, "POST", s.canonical(
@@ -57,28 +58,58 @@ class Rpc:
                                       {"blockHash": anchor, "requireCanonical": True}])
         return s.raw_hex(result)
 
-
+    def contract_page(self, address, signature, arguments, anchor):
+        if len(arguments) == 1 or not self.batch_reads:
+            return [self.contract(address, signature, values, anchor) for values in arguments]
+        block = {"blockHash": anchor, "requireCanonical": True}
+        requests = [{"jsonrpc": "2.0", "id": index, "method": "eth_call",
+                     "params": [{"to": address, "data": s.cast("calldata", signature, *map(str, values))}, block]}
+                    for index, values in enumerate(arguments, start=1)]
+        status, _, raw = self.network.request(self.url, "POST", s.canonical(requests), maximum=s.MAX_FILE)
+        response = decode(raw) if status == 200 else None
+        # Existing operators may disable JSON-RPC batches or enforce a smaller provider limit.
+        if status in (400, 413) or (type(response) is dict and type(response.get("error")) is dict
+                                   and response["error"].get("code") in (-32600, -32005, -32010, -32011)):
+            self.batch_reads = False
+            return [s.raw_hex(self.call("eth_call", item["params"])) for item in requests]
+        s.require(status == 200 and type(response) is list and len(response) == len(requests),
+                  "invalid_enrollment_rpc_page")
+        by_id = {}
+        for item in response:
+            s.require(type(item) is dict and item.get("jsonrpc") == "2.0" and type(item.get("id")) is int
+                      and 1 <= item["id"] <= len(requests) and item["id"] not in by_id
+                      and "error" not in item and "result" in item, "invalid_enrollment_rpc_page")
+            by_id[item["id"]] = s.raw_hex(item["result"])
+        return [by_id[request["id"]] for request in requests]
 
 
 def initialize(root, settings, subscriptions, period, endpoint, rpc, gateway=None):
     s.require(type(subscriptions) is list and bool(subscriptions), "dispatcher_requires_enrolled_subscribers")
     subscriptions, anchor = enrollment_snapshot(settings, subscriptions, period, rpc)
+    return _initialize_from_snapshot(root, settings, subscriptions, period, endpoint, rpc, anchor, gateway)
+
+
+def _dispatch_lanes(settings, endpoint, gateway, rpc, anchor):
     endpoint = sentry.endpoint_url(endpoint)
     lanes = {"child": {"settings": settings, "endpoint": endpoint}}
     if gateway is not None:
         s.exact(gateway, ("settings", "endpoint"))
         other = s.config(gateway["settings"])
-        for field in ("registry_chain_id", "registry", "policy_hash", "sequencer", "duties_per_round"):
-            s.require(other[field] == settings[field], "shared_service_identity_required")
+        s.require(s.EnrollmentAuthority.scope(other) == s.EnrollmentAuthority.scope(settings), "shared_service_identity_required")
         s.require(settings["execution_chain_id"] == settings["registry_chain_id"]
                   and settings["settlement_chain_id"] == other["execution_chain_id"]
                   and other["execution_chain_id"] != settings["execution_chain_id"]
                   and other["settlement_chain_id"] not in (settings["execution_chain_id"], other["execution_chain_id"]),
                   "invalid_child_gateway_topology")
-        other_subscriptions, other_anchor = enrollment_snapshot(other, subscriptions, period, rpc)
-        s.require(other_anchor == anchor and other_subscriptions == subscriptions, "enrollment_snapshot_changed")
+        validate_lane(other, rpc, anchor["block_hash"], anchor["phase"])
         lanes["gateway"] = {"settings": other, "endpoint": sentry.endpoint_url(gateway["endpoint"])}
         s.require(lanes["gateway"]["endpoint"] != endpoint, "independent_lane_endpoint_required")
+    return lanes
+
+
+def _initialize_from_snapshot(root, settings, subscriptions, period, endpoint, rpc, anchor, gateway=None):
+    lanes = _dispatch_lanes(settings, endpoint, gateway, rpc, anchor)
+    endpoint = lanes["child"]["endpoint"]
     root = Path(root)
     s.require(root.is_absolute(), "absolute_state_directory_required")
     root.mkdir(mode=0o700)
@@ -98,16 +129,20 @@ def initialize(root, settings, subscriptions, period, endpoint, rpc, gateway=Non
              "accounts": {item["subscription"]["account"]: {"nonce": 0, "offered": 0, "ready": None}
                           for item in subscriptions}}
     s.write_new(root / "state.json", state)
+    atomic_json(root / "verified-enrollment.json", s.EnrollmentAuthority.dispatcher_receipt(state))
     return store
 
 
 class Dispatcher:
-    def __init__(self, store, network=None, auth=None, now=None, registry_rpc=None, *, enrollment=None):
+    def __init__(self, store, network=None, auth=None, now=None, registry_rpc=None, *, enrollment=None,
+                 reuse_local_enrollment=True):
         s.require(registry_rpc is not None, "registry_rpc_required")
         self.store, self.network, self.auth = store, network, auth
         self.now = int(time.time()) if now is None else now
         self.state = journal.load(store.root / "state.json", list_fields=("audit.events",))
         s.require(self.state["schema_version"] == 1, "unsupported_journal")
+        s.require(type(self.state.get("audit")) is dict and {"identity", "events", "head"} <= self.state["audit"].keys(),
+                  "dispatcher_audit_missing")
         s.require(type(self.state["subscriptions"]) is list and bool(self.state["subscriptions"]),
                   "dispatcher_requires_enrolled_subscribers")
         self.settings = s.config(self.state["settings"])
@@ -119,14 +154,28 @@ class Dispatcher:
             s.require(type(auth) is dict and set(auth) == set(self.state["lanes"]), "lane_credentials_required")
         self.subscriptions = {item["subscription"]["account"]: item["subscription"]
                               for item in self.state["subscriptions"]}
+        if enrollment is None and reuse_local_enrollment:
+            enrollment = s.EnrollmentAuthority.from_dispatcher_store(store, self.state, registry_rpc)
         if enrollment is None:
             enrollment = s.EnrollmentAuthority(self.settings, self.state["subscriptions"], self.state["period"],
                                                registry_rpc, self.state["enrollment"]["block_hash"])
+            if reuse_local_enrollment:
+                self._record_verified_enrollment(enrollment, registry_rpc)
         s.require(type(enrollment) is s.EnrollmentAuthority, "authenticated_enrollment_authority_required")
         s.require(enrollment.block_hash == self.state["enrollment"]["block_hash"],
                   "enrollment_authority_anchor_mismatch")
         enrollment.check(self.settings, self.state["subscriptions"], self.state["period"])
         self.enrollment = enrollment
+
+    def _record_verified_enrollment(self, authority, rpc):
+        # Initialization can stop after saving the state but before saving its verification receipt.
+        state = self.state
+        s.require(authority.normalized_snapshot == authority.snapshot
+                  and authority.anchor == s.canonical(state["enrollment"]),
+                  "enrollment_snapshot_changed")
+        lanes = _dispatch_lanes(self.settings, state["endpoint"], state["lanes"].get("gateway"), rpc, state["enrollment"])
+        s.require(lanes == state["lanes"], "dispatcher_lanes_changed")
+        atomic_json(self.store.root / "verified-enrollment.json", s.EnrollmentAuthority.dispatcher_receipt(state))
 
     def lane(self, operation):
         return self.state["lanes"][self.state["operations"][operation]["lane"]]
@@ -135,15 +184,10 @@ class Dispatcher:
         return self.auth[self.state["operations"][operation]["lane"]] if type(self.auth) is dict else self.auth
 
     def save(self):
-        journal.save(self.store.root / "state.json", self.state,
-                     list_fields=("audit.events",) if "audit" in self.state else ())
+        journal.save(self.store.root / "state.json", self.state, list_fields=("audit.events",))
 
     def record(self, kind, payload):
-        # Old journals lack the authenticated history needed to reconstruct fair dispatch.
-        # They may finish their existing work, but can never export an invented audit prefix.
-        ledger = self.state.get("audit")
-        if ledger is None:
-            return
+        ledger = self.state["audit"]
         events = ledger["events"]
         s.require(self.now >= (events[-1]["at"] if events else self.state["enrollment"]["timestamp"]),
                   "audit_clock_regressed")
@@ -281,8 +325,7 @@ class Dispatcher:
         if previous:
             s.require(previous[1]["assignment"]["lease_commitment"] != assignment["lease_commitment"],
                       "retry_requires_new_native_lease")
-        authority = {"schema_version": 1, "stage": "FRI", "status": "picked", "vk_hash": settings["vk_hash"],
-                     "bounds": {"batch_number": number}, "lease_token": token, "submission_sha256": None}
+        authority = self.picked_authority(operation, number, token)
         for name, value in (("payload.json", payload), ("evidence.json", evidence), ("authority.json", authority)):
             path = directory / name
             if path.exists():
@@ -303,14 +346,33 @@ class Dispatcher:
         self.save()
         return operation
 
+    def picked_authority(self, operation, number, token):
+        return {"schema_version": 1, "stage": "FRI", "status": "picked", "vk_hash": self.lane(operation)["settings"]["vk_hash"],
+                "bounds": {"batch_number": number}, "lease_token": token, "submission_sha256": None}
+
     def abandon_unexported_pick(self):
         operation = self.state["pending_pick"]
         s.require(operation is not None, "no_pending_pick")
         op = self.state["operations"][operation]
         s.require(op["status"] == "pick_pending" and op["assignment"] is None
-                  and not any(self.directory(operation).iterdir()), "retained_pick_cannot_be_abandoned")
-        # Nothing was exported, and any unknown native capability is inaccessible. Leave that
-        # lease to expire in the node; this record never becomes an opportunity or accepted duty.
+                  and op["submit_attempts"] == 0 and "offer_signature" not in op, "retained_pick_cannot_be_abandoned")
+        directory = Store(self.directory(operation)).root
+        retained = {path.name: path for path in directory.iterdir()}
+        if retained:
+            # Recovery writes these private files in order before recording the assignment.
+            # Native evidence may disappear after another prover completes the expired lease.
+            files = ("picked-wire.json", "payload.json", "evidence.json", "authority.json")
+            s.require(self.now >= op["request"]["request"]["typed_data"]["message"]["expiresAt"]
+                      and set(retained) == set(files[:len(retained)])
+                      and all(path.is_file() and not path.is_symlink() for path in retained.values()),
+                      "retained_pick_cannot_be_abandoned")
+            if "authority.json" in retained:
+                wire = s.read_json(retained["picked-wire.json"], private=True, maximum=job.MAX_PICK["FRI"])
+                expected = self.picked_authority(operation, s.uint(wire["batch_number"], 64), s.nonzero(wire["lease_token"]))
+                # The initial exclusive write can stop after any byte. Submitted authorities
+                # are replaced atomically after the signed proof and submission are saved.
+                s.require(s.canonical(expected).startswith(s.read(retained["authority.json"], private=True)),
+                          "retained_pick_cannot_be_abandoned")
         op["status"] = "unexported_pick_abandoned"
         self.state["pending_pick"] = None
         self.record("pick_abandoned", {"operation": operation})
@@ -489,7 +551,6 @@ class Dispatcher:
                 "assignments": [], "retries": []}
 
     def audit_payload(self, lane, batch_from, batch_to, *, event_root=None, export_events=True):
-        s.require("audit" in self.state, "legacy_journal_has_no_authenticated_audit_history")
         self.range_manifest_payload(lane, batch_from, batch_to)
         ledger, settings = self.state["audit"], self.state["lanes"][lane]["settings"]
         s.require(self.now >= (ledger["events"][-1]["at"] if ledger["events"]

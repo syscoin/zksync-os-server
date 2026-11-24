@@ -3,7 +3,7 @@ use alloy::consensus::Transaction;
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::primitives::{Address, BlockNumber, Log, TxHash, U256};
 use alloy::providers::Provider;
-use alloy::rpc::types::Filter;
+use alloy::rpc::types::{Filter, Log as RpcLog, Topic};
 use alloy::sol_types::SolEvent;
 use anyhow::Context as _;
 use backon::{ConstantBuilder, Retryable};
@@ -429,7 +429,7 @@ fn event_scan_block_count(
 /// if there is not any.
 ///
 /// Batch `batch_number` MUST have been committed before `start_block_number`.
-async fn find_latest_l1_revert(
+pub(crate) async fn find_latest_l1_revert(
     zk_chain: &ZkChain<NodeProvider>,
     batch_number: u64,
     start_block_number: BlockNumber,
@@ -634,7 +634,7 @@ pub async fn fetch_stored_batch_data(
     batch_number: u64,
 ) -> anyhow::Result<Option<(DiscoveredCommittedBatch, TxHash)>> {
     let Some((commit_log, tx_hash)) =
-        find_commit_log(zk_chain, l1_block_number, batch_number).await?
+        find_commit_log(zk_chain, l1_block_number.into(), batch_number).await?
     else {
         return Ok(None);
     };
@@ -652,38 +652,74 @@ pub async fn fetch_stored_batch_data(
 }
 
 /// Finds the `ReportCommittedBatchRangeZKsyncOS` commit event for `batch_number` in
-/// `l1_block_number`, returning the decoded event together with the hash of the transaction that
+/// `l1_block`, returning the decoded event together with the hash of the transaction that
 /// emitted it, or `None` if no matching event is present in that block.
 pub(crate) async fn find_commit_log(
     zk_chain: &ZkChain<NodeProvider>,
-    l1_block_number: BlockNumber,
+    l1_block: BlockId,
     batch_number: u64,
 ) -> anyhow::Result<Option<(Log<ReportCommittedBatchRangeZKsyncOS>, TxHash)>> {
-    let logs = zk_chain
-        .provider()
-        .get_logs(
-            &Filter::new()
-                .address(*zk_chain.address())
-                .event_signature(ReportCommittedBatchRangeZKsyncOS::SIGNATURE_HASH)
-                .from_block(l1_block_number)
-                .to_block(l1_block_number),
-        )
-        .await?;
-    // Take the last matching log: a batch may be committed, reverted, and recommitted in one L1
-    // block, in which case only the final commit can match the block's resulting stored batch hash.
-    Ok(logs
-        .into_iter()
-        .filter_map(|log| {
-            let batch_log = ReportCommittedBatchRangeZKsyncOS::decode_log(&log.inner)
-                .expect("unable to decode `ReportCommittedBatchRangeZKsyncOS` log");
-            (batch_log.batchNumber == batch_number).then(|| {
-                (
-                    batch_log,
-                    log.transaction_hash.expect("indexed log without tx hash"),
-                )
-            })
-        })
-        .next_back())
+    let filter = Filter::new().address(*zk_chain.address()).event_signature(
+        Topic::default()
+            .extend(ReportCommittedBatchRangeZKsyncOS::SIGNATURE_HASH)
+            .extend(IExecutor::BlocksRevert::SIGNATURE_HASH),
+    );
+    let filter = match l1_block {
+        BlockId::Hash(hash) => filter.at_block_hash(hash.block_hash),
+        BlockId::Number(number) => filter.from_block(number).to_block(number),
+    };
+    let logs = zk_chain.provider().get_logs(&filter).await?;
+    surviving_commit_log(logs, *zk_chain.address(), l1_block, batch_number)
+}
+
+fn surviving_commit_log(
+    mut logs: Vec<RpcLog>,
+    address: Address,
+    l1_block: BlockId,
+    batch_number: u64,
+) -> anyhow::Result<Option<(Log<ReportCommittedBatchRangeZKsyncOS>, TxHash)>> {
+    // Revert and replacement can share a transaction, so the block-wide log index determines
+    // which commit survived. Reverting higher batch numbers leaves this batch intact.
+    logs.sort_unstable_by_key(|log| log.log_index);
+    anyhow::ensure!(
+        logs.iter().all(|log| log.log_index.is_some())
+            && logs
+                .windows(2)
+                .all(|pair| pair[0].log_index != pair[1].log_index),
+        "settlement events have missing or duplicate log positions"
+    );
+    for log in logs.iter().rev() {
+        anyhow::ensure!(
+            !log.removed && log.address() == address,
+            "removed settlement log or unexpected emitter"
+        );
+        if let BlockId::Hash(hash) = l1_block {
+            anyhow::ensure!(
+                log.block_hash == Some(hash.block_hash),
+                "settlement log returned for a different block than requested"
+            );
+        }
+        match log.topic0() {
+            Some(signature) if *signature == IExecutor::BlocksRevert::SIGNATURE_HASH => {
+                if IExecutor::BlocksRevert::decode_log(&log.inner)?.totalBatchesCommitted
+                    < batch_number
+                {
+                    return Ok(None);
+                }
+            }
+            Some(signature) if *signature == ReportCommittedBatchRangeZKsyncOS::SIGNATURE_HASH => {
+                let batch_log = ReportCommittedBatchRangeZKsyncOS::decode_log(&log.inner)?;
+                if batch_log.batchNumber == batch_number {
+                    let tx_hash = log
+                        .transaction_hash
+                        .context("indexed log without tx hash")?;
+                    return Ok(Some((batch_log, tx_hash)));
+                }
+            }
+            _ => anyhow::bail!("unexpected settlement event signature"),
+        }
+    }
+    Ok(None)
 }
 
 /// Fetches batch commit transaction and extra data from L1 required to construct `CommitedBatch`.
@@ -796,7 +832,76 @@ pub async fn fetch_committed_batch_data(
 
 #[cfg(test)]
 mod tests {
-    use super::{event_scan_block_count, interop_cursor_is_caught_up};
+    use super::{
+        Address, BlockId, IExecutor, ReportCommittedBatchRangeZKsyncOS, RpcLog, SolEvent, U256,
+        event_scan_block_count, interop_cursor_is_caught_up, surviving_commit_log,
+    };
+    use alloy::primitives::B256;
+
+    #[test]
+    fn same_block_commit_revert_and_recommit_selects_only_the_surviving_range() {
+        let block_hash = B256::repeat_byte(1);
+        let tx_hash = B256::repeat_byte(2);
+        let log = |data, index| RpcLog {
+            inner: alloy::primitives::Log {
+                address: Address::ZERO,
+                data,
+            },
+            block_hash: Some(block_hash),
+            transaction_hash: Some(tx_hash),
+            log_index: Some(index),
+            ..RpcLog::default()
+        };
+        let commit = |first, last, index| {
+            log(
+                ReportCommittedBatchRangeZKsyncOS {
+                    batchNumber: 7,
+                    firstBlockNumber: first,
+                    lastBlockNumber: last,
+                }
+                .encode_log_data(),
+                index,
+            )
+        };
+        let revert = |kept: u64, index| {
+            log(
+                IExecutor::BlocksRevert {
+                    totalBatchesCommitted: U256::from(kept),
+                    totalBatchesVerified: U256::ZERO,
+                    totalBatchesExecuted: U256::ZERO,
+                }
+                .encode_log_data(),
+                index,
+            )
+        };
+        let select = |logs| {
+            surviving_commit_log(logs, Address::ZERO, BlockId::hash_canonical(block_hash), 7)
+        };
+        let original = commit(70, 79, 3);
+        let rollback = revert(6, 5);
+        let replacement = commit(80, 95, 7);
+        let higher_batch_rollback = revert(7, 9);
+
+        let (matched, hash) = select(vec![
+            replacement.clone(),
+            higher_batch_rollback,
+            rollback.clone(),
+            original.clone(),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (matched.firstBlockNumber, matched.lastBlockNumber, hash),
+            (80, 95, tx_hash)
+        );
+        assert!(select(vec![rollback, original]).unwrap().is_none());
+        assert!(
+            select(vec![replacement.clone(), revert(6, 8)])
+                .unwrap()
+                .is_none()
+        );
+        assert!(select(vec![replacement, revert(6, 7)]).is_err());
+    }
 
     #[test]
     fn event_scan_block_count_is_inclusive() {

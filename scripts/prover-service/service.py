@@ -5,6 +5,7 @@ import argparse
 from dataclasses import dataclass
 import base64
 import functools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import sys
 
 ZERO = "0x" + "00" * 32
 ZERO_ADDRESS = "0x" + "00" * 20
+SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 MAX_FILE = 16 * 1024 * 1024
 SUBSCRIPTION = [("account", "address"), ("operator", "address"), ("beneficiary", "address"),
                 ("sequencer", "address"), ("firstPeriod", "uint64"), ("lastPeriod", "uint64"),
@@ -103,12 +105,16 @@ def read(path, private=False, maximum=MAX_FILE):
     return data
 
 
-def read_json(path, private=False, maximum=MAX_FILE):
+def decode_json(data):
     try:
-        return json.loads(read(path, private, maximum), object_pairs_hook=_unique,
+        return json.loads(data, object_pairs_hook=_unique,
                           parse_constant=lambda _: require(False, "nonfinite_json_value"))
     except (ValueError, UnicodeError):
         raise Error("invalid_json") from None
+
+
+def read_json(path, private=False, maximum=MAX_FILE):
+    return decode_json(read(path, private, maximum))
 
 
 def write_new(path, value):
@@ -125,19 +131,27 @@ def write_new(path, value):
         os.close(fd)
 
 
-def cast(*args, stdin=None):
+def _run_cast(*args, stdin=None):
     try:
-        result = subprocess.run(["cast", *args], input=stdin, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, check=True, timeout=30)
+        return subprocess.run(["cast", *args], input=stdin, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=30)
     except (OSError, subprocess.SubprocessError):
         raise Error("cast_failed") from None
-    return result.stdout.decode().strip()
+
+
+def cast(*args, stdin=None):
+    result = _run_cast(*args, stdin=stdin)
+    require(result.returncode == 0, "cast_failed")
+    try:
+        return result.stdout.decode().strip()
+    except UnicodeDecodeError:
+        raise Error("cast_failed") from None
 
 
 def keccak(data):
     # Stdin avoids OS argv limits for native FRI artifacts and does not expose their bytes in ps.
     digest = cast("keccak", stdin=("0x" + data.hex()).encode())
-    raw_hex(digest, 32)
+    require(re.fullmatch(r"0x[0-9a-f]{64}", digest), "cast_failed")
     return digest
 
 
@@ -219,16 +233,44 @@ class EnrollmentAuthority:
         import enrollment
         nonzero(block_hash)
         normalized, anchor = enrollment.enrollment_snapshot(settings, subscriptions, period, rpc, block_hash=block_hash)
+        self._bind(settings, subscriptions, normalized, anchor, period, rpc)
+
+    def _bind(self, settings, subscriptions, normalized, anchor, period, rpc):
         object.__setattr__(self, "identity", self.scope(settings))
-        object.__setattr__(self, "snapshot", canonical(subscriptions))
+        snapshot = canonical(subscriptions)
+        object.__setattr__(self, "snapshot", snapshot)
         # Audits compare the normalized roster and entire anchor without another registry scan.
-        object.__setattr__(self, "normalized_snapshot", canonical(normalized))
+        object.__setattr__(self, "normalized_snapshot", snapshot if normalized is subscriptions else canonical(normalized))
         object.__setattr__(self, "anchor", canonical(anchor))
         object.__setattr__(self, "period", period)
         object.__setattr__(self, "block_hash", anchor["block_hash"])
         object.__setattr__(self, "empty_bootstrap", not subscriptions and anchor["phase"] == "bootstrap")
         object.__setattr__(self, "rpc", rpc)
         object.__setattr__(self, "settings", json.loads(canonical(settings)))
+
+    @staticmethod
+    def dispatcher_receipt(state):
+        fields = ("journal_id", "settings", "lanes", "endpoint", "period", "enrollment", "subscriptions")
+        immutable = {key: state[key] for key in fields}
+        return {"version": 1, "sha256": hashlib.sha256(canonical(immutable)).hexdigest()}
+
+    @classmethod
+    def from_dispatcher_store(cls, store, state, rpc):
+        import enrollment
+        # Only the dispatcher uses this private host receipt. Exported evidence has its own RPC verification.
+        try:
+            receipt = read_json(store.root / "verified-enrollment.json", private=True, maximum=256)
+        except FileNotFoundError:
+            return None
+        require(receipt == cls.dispatcher_receipt(state), "verified_dispatcher_enrollment_changed")
+        settings, anchor = state["settings"], state["enrollment"]
+        require(rpc.call("eth_chainId", []) == settings["registry_chain_id"], "wrong_rpc_chain")
+        policy = enrollment.registry_view(rpc, settings["registry"], anchor["block_hash"], "policyHash()")
+        require(policy == raw_hex(settings["policy_hash"]), "registry_policy_mismatch")
+        authority = cls.__new__(cls)
+        roster = state["subscriptions"]
+        authority._bind(settings, roster, roster, anchor, state["period"], rpc)
+        return authority
 
     @staticmethod
     def scope(settings):
@@ -384,11 +426,18 @@ def prepare_enrollment(settings, signed_subscription, operator_signature):
 def verify_eoa(request, signature):
     signature_bytes = raw_hex(signature)
     require(len(signature_bytes) == 65 and signature_bytes[64] in (27, 28), "eoa_signature_required")
-    require(0 < int.from_bytes(signature_bytes[32:64], "big") <=
-            0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+    require(0 < int.from_bytes(signature_bytes[:32], "big") < SECP256K1_ORDER
+            and 0 < int.from_bytes(signature_bytes[32:64], "big") <= SECP256K1_ORDER // 2,
             "noncanonical_signature")
-    output = cast("wallet", "verify", "--no-hash", "--address", request["signer"], request["digest"], signature)
-    require("validation succeeded" in output.lower(), "invalid_signature")
+    signer = request["signer"]
+    result = _run_cast("wallet", "verify", "--no-hash", "--address", signer, request["digest"], signature)
+    # Cast uses exit 1 for a signer mismatch and for tool errors. Only its
+    # complete, signer-bound negative verdict can permanently reject a result.
+    negative = f"error: validation failed. address {signer} did not sign this message.".lower().encode()
+    if result.returncode == 1 and not result.stdout and result.stderr.strip().lower() == negative:
+        raise Error("invalid_signature")
+    positive = f"validation succeeded. address {signer} signed this message.".lower().encode()
+    require(result.returncode == 0 and result.stdout.strip().lower() == positive, "cast_failed")
 
 
 def prepare_renewal(settings, signed_subscription, snapshot):
@@ -590,7 +639,8 @@ def _validate_manifest_v1(settings, manifest, subscriptions, evidence, allow_emp
     uint(payload["period"], 64)
     nonzero(payload["previous_cursor"])
     minimum = 0 if allow_empty else 1
-    require(type(subscriptions) is list and minimum <= len(subscriptions) <= 1000, "invalid_subscription_snapshot")
+    require(type(subscriptions) is list and len(subscriptions) >= minimum
+            and (enrollment is not None or len(subscriptions) <= 1000), "invalid_subscription_snapshot")
     require(payload["subscription_snapshot_hash"] == keccak(canonical(subscriptions)), "subscription_snapshot_mismatch")
     if enrollment is not None:
         require(type(enrollment) is EnrollmentAuthority, "authenticated_enrollment_authority_required")

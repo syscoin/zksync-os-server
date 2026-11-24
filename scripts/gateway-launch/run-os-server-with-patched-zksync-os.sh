@@ -196,60 +196,17 @@ prebuilt_digest() {
     runner_sha256_stdin
 }
 
-refresh_os_server_config_credentials() {
-  local seen_bin_args=false expect_config=false arg config_entry config_path
-  local config_paths=()
-
-  for arg in "$@"; do
-    if [ "${arg}" = "--" ]; then
-      seen_bin_args=true
-      expect_config=false
-      continue
-    fi
-    [ "${seen_bin_args}" = true ] || continue
-
-    if [ "${expect_config}" = true ]; then
-      config_paths+=("${arg}")
-      expect_config=false
-      continue
-    fi
-
-    case "${arg}" in
-    --config=*)
-      config_paths+=("${arg#--config=}")
-      ;;
-    --config)
-      expect_config=true
-      ;;
-    esac
-  done
-
-  [ "${#config_paths[@]}" -gt 0 ] || return 0
-  # SYSCOIN: syscoind rotates cookie credentials on restart. Keep generated
-  # os-server configs aligned immediately before launching the node. Mirror the
-  # Rust CLI's config parsing: repeated --config flags are allowed and each value
-  # may contain ':'-delimited config files loaded in order.
-  for config_entry in "${config_paths[@]}"; do
-    while IFS= read -r config_path; do
-      [ -n "${config_path}" ] || continue
-      gl_refresh_bitcoin_da_config_from_cookie "${config_path}"
-    done < <(printf '%s\n' "${config_entry}" | tr ':' '\n')
-  done
-}
-
 if [ "${1:-}" = "exec-prebuilt" ] || [ "${1:-}" = "check-prebuilt" ]; then
   PREBUILT_CHECK_ONLY=false
   [ "${1}" != "check-prebuilt" ] || PREBUILT_CHECK_ONLY=true
   shift
   if [ "${PREBUILT_CHECK_ONLY}" = true ]; then
-    # SYSCOIN: Release checkpoint probes must not refresh credentials or start
-    # the executable merely to validate its existing build provenance.
+    # SYSCOIN: Release checkpoint probes only validate build provenance.
     [ $# -eq 0 ] || usage
   else
     [ "${1:-}" = "--" ] || usage
     shift
     [ $# -gt 0 ] || usage
-    refresh_os_server_config_credentials -- "$@"
   fi
 
   configure_build_context
@@ -303,7 +260,6 @@ if uses_patched_workspace; then
   esac
 fi
 
-refresh_os_server_config_credentials "$@"
 if [ "${BUILD_PREBUILT}" = true ]; then
   PREBUILT_SOURCE_DIGEST="$(prebuilt_source_digest)"
 fi

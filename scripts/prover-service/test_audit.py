@@ -318,7 +318,7 @@ class AuditTests(unittest.TestCase):
         finally:
             replay.close()
 
-    def test_segmented_source_streams_more_than_legacy_event_capacity(self):
+    def test_segmented_source_streams_more_than_the_inline_event_limit(self):
         root = Path(self.tmp.name) / "large-stream"
         events = ({"index": index} for index in range(audit.MAX_EVENTS + 1))
         descriptor = audit.export_events(events, root, count=audit.MAX_EVENTS + 1)
@@ -756,12 +756,15 @@ audit.export_events([{'index': index} for index in range(3)], Path(sys.argv[1]))
         with self.assertRaisesRegex(s.Error, "changed_after_signing_request"):
             self.dispatcher.export_audit("child", 1, 2, signature, prepared=bundle)
 
-    def test_legacy_journals_cannot_claim_a_fabricated_audit_prefix(self):
-        del self.dispatcher.state["audit"]
-        self.dispatcher.save()
-        self.reload()
-        with self.assertRaisesRegex(s.Error, "legacy_journal"):
-            self.dispatcher.audit_payload("child", 1, 2)
+    def test_missing_dispatch_audit_stops_restart_before_work(self):
+        self.ready()
+        path = self.store.root / "state.json"
+        state = s.read_json(path, private=True)
+        del state["audit"]
+        d.atomic_json(path, state)
+        with self.assertRaisesRegex(s.Error, "journal_field_missing"):
+            self.reload()
+        self.assertEqual(s.read_json(path, private=True), state)
 
     def test_audit_event_is_saved_atomically_with_dispatch_transition(self):
         request = self.dispatcher.request(self.account, 590)

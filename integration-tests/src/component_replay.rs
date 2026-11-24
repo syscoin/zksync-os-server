@@ -1,13 +1,16 @@
 //! Only newly generated, source-registered Anvil component replay records are
-//! recovered here. Ordinary node startup validates their computed block hashes;
+//! recovered here. A replay-only node verifies the anchor before normal fixture startup;
 //! no executed state, private database or canonical fixture is substituted.
 use crate::config::fixture_backend::{
     FileIdentity, ValidatedFixtureInventory, component::ComponentReplayArchive,
 };
 use alloy::primitives::B256;
+use alloy::providers::Provider;
 use anyhow::{Context, ensure};
+use reth_tasks::{RuntimeBuilder, RuntimeConfig, TokioConfig};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
@@ -15,6 +18,7 @@ use zksync_os_replay_archive::{
     DEFAULT_DECRYPT_CONCURRENCY, FileSystemReplayArchiveReader, ReplayArchiveStorageReader,
     recover_replay_records_to_rocksdb_with_optional_decryption,
 };
+use zksync_os_server::config::{Config, ReplayArchiveConfig};
 use zksync_os_storage::db::BlockReplayStorage;
 use zksync_os_storage_api::{ReadReplay, ReplayRecord};
 
@@ -184,7 +188,7 @@ pub async fn export_replay(
 }
 
 /// Source-registered descriptors bind every object byte and the canonical anchor.
-/// Recovery writes only a fresh WAL; ordinary startup reconstructs all other DBs.
+/// Recovery writes only a fresh WAL; the replay-only startup reconstructs derived state.
 pub async fn recover_replay(
     root: &Path,
     archive: &ComponentReplayArchive,
@@ -257,6 +261,113 @@ pub async fn recover_replay(
     );
     drop(wal);
     Ok(())
+}
+
+/// Reexecute a pending archive in a separate runtime and return its verified anchor.
+/// A newly generated chain or a previously verified WAL has no pending anchor.
+pub async fn verify_pending_replay(config: &Config) -> anyhow::Result<Option<(u64, B256)>> {
+    let wal_path = config.general_config.rocks_db_path.join("block_replay_wal");
+    if !wal_path.join("CURRENT").try_exists()? {
+        return Ok(None);
+    }
+    let chain_id = config
+        .genesis_config
+        .chain_id
+        .context("component chain ID")?;
+    let pending =
+        BlockReplayStorage::new_without_genesis(&wal_path, chain_id).archive_recovery()?;
+    let Some(pending) = pending else {
+        return Ok(None);
+    };
+
+    let mut replay = config.clone();
+    replay.network_config.enabled = false;
+    replay.consensus_config.enabled = false;
+    replay.batcher_config.enabled = false;
+    replay.service_publication_config.enabled = false;
+    replay.prover_api_config.enabled = false;
+    replay.sequencer_config.rebuild = None;
+    replay.replay_archive_config = ReplayArchiveConfig::Noop;
+    replay.rpc_config.address = "127.0.0.1:0".into();
+    replay.status_server_config.enabled = false;
+    with_replay_runtime(move |cancelled| async move {
+        let runtime = RuntimeBuilder::new(RuntimeConfig::default().with_tokio(
+            TokioConfig::existing_handle(tokio::runtime::Handle::current()),
+        ))
+        .build()
+        .context("component replay verification runtime")?;
+        let manager = runtime
+            .take_task_manager_handle()
+            .context("component replay task manager")?;
+        // run() returns only after reexecution reaches the anchor. A failed critical task can
+        // terminate the pipeline before then, so it must also interrupt the startup wait.
+        let verified = tokio::select! {
+            _ = zksync_os_server::run(&runtime, replay) => Ok(()),
+            result = manager => match result {
+                Ok(Err(error)) => Err(anyhow::anyhow!("component replay critical task failed: {error}")),
+                Ok(Ok(())) => Err(anyhow::anyhow!("component replay runtime stopped before verification")),
+                Err(error) => Err(anyhow::Error::new(error).context("component replay task manager join")),
+            },
+            _ = cancelled => Err(anyhow::anyhow!("component replay verification cancelled")),
+        };
+        crate::shutdown_runtime(runtime).await?;
+        verified
+    })
+    .await?;
+
+    let wal = BlockReplayStorage::new_without_genesis(&wal_path, chain_id);
+    ensure!(
+        wal.archive_recovery()?.is_none()
+            && wal.latest_record() == pending.anchor_block
+            && wal.get_canonical_block_hash(pending.anchor_block) == Some(pending.anchor_hash),
+        "component replay did not finish at its trusted archive anchor"
+    );
+    Ok(Some((pending.anchor_block, pending.anchor_hash)))
+}
+
+async fn with_replay_runtime<F>(
+    verify: impl FnOnce(tokio::sync::oneshot::Receiver<()>) -> F + Send + 'static,
+) -> anyhow::Result<()>
+where
+    F: Future<Output = anyhow::Result<()>>,
+{
+    // Reth's graceful guards can finish while another Tokio task still owns the WAL.
+    // Dropping the private executor joins its workers before normal startup opens the same path.
+    let (cancel_on_drop, cancelled) = tokio::sync::oneshot::channel();
+    let result = tokio::task::spawn_blocking(move || {
+        let executor = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .context("creating isolated component replay executor")?;
+        executor.block_on(verify(cancelled))
+    })
+    .await
+    .context("joining isolated component replay executor")?;
+    drop(cancel_on_drop);
+    result
+}
+
+/// Normal startup replays a configured window even when the archive has already been
+/// verified. Its RPC can initially report a height inside that window.
+pub(crate) async fn wait_for_anchor(
+    provider: &impl Provider,
+    (height, hash): (u64, B256),
+) -> anyhow::Result<()> {
+    loop {
+        if provider.get_block_number().await? >= height {
+            let block = provider
+                .get_block_by_number(height.into())
+                .await?
+                .context("verified fixture anchor missing from normal RPC")?;
+            ensure!(
+                block.header.hash == hash,
+                "normal fixture RPC disagrees with verified archive anchor {height}"
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(crate::assert_traits::POLL_INTERVAL).await;
+    }
 }
 
 pub async fn recover_registered(
@@ -337,6 +448,27 @@ pub fn registered_root_for_config(path: &Path) -> Option<&Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn replay_handoff_releases_its_wal_while_other_nodes_keep_theirs() {
+        let root = tempfile::tempdir().unwrap();
+        let wal = root.path().join("replay");
+        let peer = BlockReplayStorage::new_without_genesis(&root.path().join("gateway"), 6565);
+        let replay_path = wal.clone();
+        with_replay_runtime(move |_| async move {
+            let storage = BlockReplayStorage::new_without_genesis(&replay_path, 57001);
+            tokio::spawn(async move {
+                std::future::pending::<()>().await;
+                drop(storage);
+            });
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let reopened = BlockReplayStorage::new_without_genesis(&wal, 57001);
+        assert!(reopened.archive_recovery().unwrap().is_none());
+        assert!(peer.archive_recovery().unwrap().is_none());
+    }
 
     #[test]
     fn restored_seed_marker_is_create_only_private_and_byte_preserving() {

@@ -58,47 +58,59 @@ def decode_static(data, fields):
 
 
 def decode_gate_calldata(raw):
-    """Recover report preimages from a direct canonical proof-gate transaction."""
+    """Read the package and recover duty preimages when their encoding is supported."""
     data = s.raw_hex(raw)
     p, d, o = relay.abi_tuple(s.PACKAGE), relay.abi_tuple(s.DUTY + [('operatorSignature', 'bytes')]), relay.abi_tuple(s.OUTPUT)
     bootstrap_sig = f'submitBootstrap({p},{d}[],{o}[],bytes,bytes)'
     service_sig = f'submit({p},{d}[],{o}[],bytes,{relay.abi_tuple(s.CANDIDATE)},bytes32[],bytes,bytes)'
-    s.require(len(data) >= 4 + 32 * (len(s.PACKAGE) + 4), 'malformed_gate_calldata')
     selector = data[:4]
     s.require(selector in (relay.selector(bootstrap_sig), relay.selector(service_sig)), 'unknown_gate_submission')
     bootstrap = selector == relay.selector(bootstrap_sig)
     args = data[4:]
+    minimum = 32 * (len(s.PACKAGE) + (4 if bootstrap else 10))
+    s.require(len(args) >= minimum, 'malformed_gate_calldata')
     accepted = decode_static(args[:32 * len(s.PACKAGE)], s.PACKAGE)
     offset = read_word(args, 32 * len(s.PACKAGE))
-    minimum = 32 * (len(s.PACKAGE) + (4 if bootstrap else 10))
-    s.require(offset >= minimum and offset % 32 == 0 and offset + 32 <= len(args), 'malformed_gate_duties')
+    duties = decode_gate_duties(args, offset, minimum)
+    if duties is not None:
+        s.require(s.report_hash(duties) == accepted['reportHash'], 'duty_report_hash_mismatch')
+    return accepted, duties, bootstrap
+
+
+def decode_gate_duties(args, offset, minimum):
+    # A valid gate receipt can carry a layout outside our canonical duty decoder.
+    # Leave the preimages unresolved until the operator supplies the authenticated sidecar.
+    s.require(offset + 32 <= len(args), 'malformed_gate_duties')
+    if offset < minimum or offset % 32:
+        return None
     count = read_word(args, offset)
     s.require(count <= 100 and offset + 32 * (1 + count) <= len(args), 'malformed_gate_duties')
     base = offset + 32
     duties = []
-    encoded = []
     expected_offset = count * 32
     for i in range(count):
         relative = read_word(args, base + 32 * i)
-        s.require(relative == expected_offset, 'noncanonical_gate_duties')
         start = base + relative
         static_size = len(s.DUTY) * 32
-        s.require(start + static_size + 64 <= len(args), 'malformed_gate_duty')
+        s.require(start + static_size + 32 <= len(args), 'malformed_gate_duty')
+        if relative != expected_offset:
+            return None
         duty = decode_static(args[start:start + static_size], s.DUTY)
         sig_offset = read_word(args, start + static_size)
-        s.require(sig_offset == static_size + 32, 'noncanonical_gate_duty')
+        s.require(start + sig_offset + 32 <= len(args), 'malformed_gate_duty')
+        if sig_offset != static_size + 32:
+            return None
         sig_len = read_word(args, start + sig_offset)
-        s.require(0 < sig_len <= 4096, 'invalid_duty_signature')
+        s.require(start + sig_offset + 32 + sig_len <= len(args), 'malformed_gate_duty')
         size = static_size + 32 + 32 + ((sig_len + 31) // 32) * 32
-        s.require(start + size <= len(args), 'malformed_gate_duty')
+        if not 0 < sig_len <= 4096:
+            return None
         duty['operatorSignature'] = '0x' + args[start + sig_offset + 32:start + sig_offset + 32 + sig_len].hex()
-        item = s.encode_duty(duty)
-        s.require(item == args[start:start + size], 'noncanonical_gate_duty')
+        if s.encode_duty(duty) != args[start:start + size]:
+            return None
         duties.append(duty)
-        encoded.append(item)
         expected_offset += size
-    s.require(s.report_hash(duties) == accepted['reportHash'], 'duty_report_hash_mismatch')
-    return accepted, duties, bootstrap
+    return duties
 
 
 def sidecar(artifact_roots, package_hash):
@@ -223,23 +235,21 @@ def discover_one(rpc, gate, sink, event, from_root, cfg, artifact_roots, anchor)
                 s.require(type(tx) is dict and tx.get('hash') == txhash
                           and tx.get('blockHash') == event['blockHash']
                           and tx.get('blockNumber') == event['blockNumber'], 'source_transaction_mismatch')
-            if tx is None or tx.get('to') != gate:
-                identity = ('root:' if from_root else 'child:') + s.keccak(payload)[2:]
-                return {**common, 'id': identity, 'kind': 'unresolved', 'bootstrap': bootstrap,
-                        'packageHash': package_hash, 'batchFrom': from_batch, 'batchTo': to_batch,
-                        'transactionLogIndex': None if from_root else present}
-            value = decode_gate_calldata(tx['input'])
-        accepted, duties, artifact_bootstrap = value
-        expected_chain = cfg['gateway_chain_id'] if from_root else cfg['zksys_chain_id']
-        expected_address = cfg['gateway_chain_address'] if from_root else cfg['child_chain_address']
-        s.require(s.struct_hash('AcceptedPackageV1', s.PACKAGE, accepted) == package_hash
-                  and s.uint(accepted['chainId']) == expected_chain and accepted['chainAddress'] == expected_address
-                  and accepted['batchFrom'] == from_batch and accepted['batchTo'] == to_batch
-                  and artifact_bootstrap == bootstrap and s.report_hash(duties) == accepted['reportHash'],
-                  'accepted_report_identity_mismatch')
-        identity = ('root:' if from_root else 'child:') + s.keccak(payload)[2:]
-        return {**common, 'id': identity, 'kind': 'accepted', 'bootstrap': bootstrap,
-                'accepted': accepted, 'duties': duties, 'transactionLogIndex': None if from_root else present}
+                if tx.get('to') == gate:
+                    value = decode_gate_calldata(tx['input'])
+        common.update(id=('root:' if from_root else 'child:') + s.keccak(payload)[2:],
+                      bootstrap=bootstrap, transactionLogIndex=None if from_root else present)
+        if value is not None:
+            accepted, duties, artifact_bootstrap = value
+            expected_chain = cfg['gateway_chain_id'] if from_root else cfg['zksys_chain_id']
+            expected_address = cfg['gateway_chain_address'] if from_root else cfg['child_chain_address']
+            s.require(s.struct_hash('AcceptedPackageV1', s.PACKAGE, accepted) == package_hash
+                      and s.uint(accepted['chainId']) == expected_chain and accepted['chainAddress'] == expected_address
+                      and accepted['batchFrom'] == from_batch and accepted['batchTo'] == to_batch
+                      and artifact_bootstrap == bootstrap, 'accepted_report_identity_mismatch')
+            if duties is not None:
+                return {**common, 'kind': 'accepted', 'accepted': accepted, 'duties': duties}
+        return {**common, 'kind': 'unresolved', 'packageHash': package_hash, 'batchFrom': from_batch, 'batchTo': to_batch}
     s.require(topics[0] == ACTIVATED and len(topics) == 2 and len(s.raw_hex(topics[1], 32)) == 32,
               'invalid_activation_event')
     root = '0x' + s.raw_hex(event['data'], 32).hex()

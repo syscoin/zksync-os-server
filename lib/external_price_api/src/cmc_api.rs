@@ -10,7 +10,9 @@ use std::{collections::HashMap, str::FromStr};
 use tokio::sync::RwLock;
 use url::Url;
 
-use crate::{APIToken, PriceApiClient, TokenApiRatio, ZK_DECIMALS};
+use crate::{
+    APIToken, PriceApiClient, TokenApiRatio, ZK_DECIMALS, price_client, read_price_response,
+};
 
 const AUTH_HEADER: &str = "x-cmc_pro_api_key";
 const DEFAULT_API_URL: &str = "https://pro-api.coinmarketcap.com";
@@ -18,11 +20,16 @@ const ALLOW_TOKENS_ONLY_ON_PLATFORM_ID: i32 = 1; // 1 = Ethereum
 const ETHEREUM_ID: i32 = 1027;
 const ZKSYNC_ID: i32 = 24091;
 
-#[derive(Debug)]
 pub struct CmcPriceApiClient {
     base_url: Url,
     client: reqwest::Client,
     cache_token_id_by_address: RwLock<HashMap<Address, i32>>,
+}
+
+impl std::fmt::Debug for CmcPriceApiClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CmcPriceApiClient").finish_non_exhaustive()
+    }
 }
 
 impl CmcPriceApiClient {
@@ -31,21 +38,16 @@ impl CmcPriceApiClient {
         api_key: SecretString,
         client_timeout: Duration,
     ) -> anyhow::Result<Self> {
-        tracing::debug!(?base_url, ?client_timeout, "Creating CmcPriceApiClient");
-
         let mut header_value = HeaderValue::from_str(api_key.expose_secret())
             .context("Failed to create header value")?;
         header_value.set_sensitive(true);
         let default_headers =
             HeaderMap::from_iter([(HeaderName::from_static(AUTH_HEADER), header_value)]);
-        let client = reqwest::Client::builder()
-            .default_headers(default_headers)
-            .timeout(client_timeout)
-            .build()
-            .context("Failed to build reqwest client")?;
-
-        let base_url = base_url.unwrap_or(DEFAULT_API_URL.to_string());
-        let base_url = Url::parse(&base_url).context("Failed to parse CoinMarketCap API URL")?;
+        let (base_url, client) = price_client(
+            base_url.as_deref().unwrap_or(DEFAULT_API_URL),
+            default_headers,
+            client_timeout,
+        )?;
 
         Ok(Self {
             base_url,
@@ -64,16 +66,21 @@ impl CmcPriceApiClient {
             return Ok(*x);
         }
 
-        let response = self.get("/v1/cryptocurrency/map").send().await?;
+        let response = self
+            .get("/v1/cryptocurrency/map")
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
         let status = response.status();
         if !status.is_success() {
             return Err(anyhow::anyhow!(
-                "Http error while fetching token id. Status: {status}, token: {address}, msg: {}",
-                response.text().await.unwrap_or_default(),
+                "Http error while fetching token id. Status: {status}, token: {address}",
             ));
         }
 
-        let parsed = response.json::<V1CryptocurrencyMapResponse>().await?;
+        // The map lists the provider's entire inventory, unlike a single-token quote.
+        let parsed: V1CryptocurrencyMapResponse =
+            read_price_response(response, 16 * 1024 * 1024).await?;
         for token_info in parsed.data {
             if let Some(platform) = token_info.platform
                 && platform.id == ALLOW_TOKENS_ONLY_ON_PLATFORM_ID
@@ -109,19 +116,19 @@ impl CmcPriceApiClient {
             .get("/v2/cryptocurrency/quotes/latest")
             .query(&[("id", id)])
             .send()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
         let status = response.status();
         if !status.is_success() {
             return Err(anyhow::anyhow!(
-                "Http error while fetching token price. Status: {status}, token: {id}, msg: {}",
-                response.text().await.unwrap_or_default(),
+                "Http error while fetching token price. Status: {status}, token: {id}",
             ));
         }
 
-        response
-            .json::<V2CryptocurrencyQuotesLatestResponse>()
-            .await?
+        let parsed: V2CryptocurrencyQuotesLatestResponse =
+            read_price_response(response, 64 * 1024).await?;
+        parsed
             .data
             .get(&id)
             .and_then(|data| data.quote.get("USD"))

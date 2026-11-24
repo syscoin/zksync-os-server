@@ -191,14 +191,18 @@ class Hooks:
     def verify_delivery(self, receipt, entry, updates, observed_height, observed_at):
         anchor = receipt['blockHash']
         for account, height, weight in updates:
-            if k.member_at(self.l2, self.config['membership'], account, anchor) != (height, weight):
-                return False
             data = k.selector('membershipObservation(address)') + k.aword(account)
             raw = self.l2.call('eth_call', [{'to': self.config['membership'], 'data': '0x' + data.hex()}, {'blockHash': anchor, 'requireCanonical': True}])
             if not isinstance(raw, str) or len(raw) != 130:
                 return False
             value = bytes.fromhex(raw[2:])
-            if (int.from_bytes(value[:32], 'big'), int.from_bytes(value[32:], 'big')) != (observed_height, observed_at):
+            stored_height, stored_at = int.from_bytes(value[:32], 'big'), int.from_bytes(value[32:], 'big')
+            # The runner already authenticated the exact successful priority receipt. A later
+            # authorized observation may supersede it in the receipt's canonical block.
+            if stored_height > observed_height and stored_at >= observed_at:
+                continue
+            if ((stored_height, stored_at) != (observed_height, observed_at)
+                    or k.member_at(self.l2, self.config['membership'], account, anchor) != (height, weight)):
                 return False
         return True
 

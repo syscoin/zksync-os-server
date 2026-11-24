@@ -46,6 +46,40 @@ fn chain(len: u64) -> Vec<Sealed<ReplayRecord>> {
     records
 }
 
+#[tokio::test]
+async fn archive_replay_verification_uses_applier_updates_and_persists_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+    storage.begin_archive_recovery(2, block_hash(2)).unwrap();
+    for record in chain(3) {
+        storage.write(record, false).await.unwrap();
+    }
+    storage.initialize_archive_recovery().unwrap();
+    let recovery = storage.archive_recovery().unwrap().unwrap();
+
+    let (sender, mut receiver) = tokio::sync::watch::channel(Some(2));
+    let mut verification = Box::pin(super::verify_imported_replay_prefix(
+        &storage,
+        recovery,
+        &mut receiver,
+    ));
+    assert!(futures::poll!(verification.as_mut()).is_pending());
+    sender.send_replace(Some(1));
+    assert!(futures::poll!(verification.as_mut()).is_pending());
+    assert_eq!(
+        storage
+            .archive_recovery()
+            .unwrap()
+            .unwrap()
+            .verified_through,
+        Some(1)
+    );
+
+    sender.send_replace(Some(2));
+    verification.await.unwrap();
+    assert!(storage.archive_recovery().unwrap().is_none());
+}
+
 // SYSCOIN: Exercise the actual command-source startup, including an initially empty async
 // canonizer bridge after Raft has durably applied only the rebuilt boundary block.
 async fn partial_raft_resume(leader: bool, changed_boundary: bool, reset_timestamps: bool) {

@@ -463,12 +463,6 @@ impl JournaledProof {
         )
     }
 
-    /// SYSCOIN: Recovered wrappers are preflighted in place before ownership moves into the L1
-    /// pipeline; exposing immutable inputs avoids cloning proof bytes or bypassing journal state.
-    pub(super) fn preflight_inputs(&self) -> (&[SignedBatchEnvelope<FriProof>], &SnarkProof) {
-        (&self.batches, &self.proof)
-    }
-
     pub(super) fn into_command(
         self,
         confirmation_sender: mpsc::UnboundedSender<String>,
@@ -702,7 +696,7 @@ impl SnarkProofJournal {
 
     /// Covered service proofs must retain their full command until the service gate receipt is
     /// authenticated. Reading here cannot retire, replay or notify the ordinary journal reaper.
-    pub(super) async fn covered_service_commands(
+    pub(super) async fn intersecting_service_commands(
         &self,
         last_proved_batch: u64,
     ) -> anyhow::Result<Vec<ProofCommand>> {
@@ -717,7 +711,9 @@ impl SnarkProofJournal {
             .collect();
         let mut commands = Vec::new();
         for entry in entries {
-            if entry.batch_to > last_proved_batch {
+            let (batch_from, _) =
+                parse_journal_key(&entry.key).context("invalid service journal key")?;
+            if batch_from > last_proved_batch {
                 continue;
             }
             let record = load_record(&self.inner.directory.join(&entry.key)).await?;
@@ -730,6 +726,10 @@ impl SnarkProofJournal {
             commands.push(ProofCommand::new(record.batches, record.proof));
         }
         Ok(commands)
+    }
+
+    pub(super) async fn retire_superseded(&self, from: u64, to: u64) -> anyhow::Result<()> {
+        self.remove_confirmed(&journal_key(from, to)).await
     }
 
     pub(super) async fn has_records(&self) -> bool {

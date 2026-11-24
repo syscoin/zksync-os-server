@@ -11,6 +11,7 @@ import {
     IZkSysNativeRootDrawV1,
     IZkSysL1MessengerV1,
     IZkSysWrapperRosterSourceV1,
+    IZkSysVerifiedFrontierV1,
     ZkSysServiceTypesV1
 } from "./ZkSysServiceTypesV1.sol";
 
@@ -73,7 +74,6 @@ contract ZkSysWrapperCoordinatorV1 is EIP712 {
     bool public immutable nativeRootDraw;
 
     bytes32 public acceptedParent;
-    uint64 public nextBatch;
     bool public packageOpen;
     bytes32 public frozenPackageHash;
     uint64 public rootHeight;
@@ -119,7 +119,7 @@ contract ZkSysWrapperCoordinatorV1 is EIP712 {
         policyHash = config.policyHash;
         productionVkHash = config.productionVkHash;
         acceptedParent = config.initialParent;
-        nextBatch = config.firstBatch;
+        if (config.firstBatch != nextBatch()) revert InvalidConfiguration();
         turnSeconds = config.turnSeconds;
         firstServicePeriod = config.firstServicePeriod;
         nativeRootDraw = config.nativeRootDraw;
@@ -128,6 +128,22 @@ contract ZkSysWrapperCoordinatorV1 is EIP712 {
     modifier onlyGate() {
         if (msg.sender != acceptanceGate) revert UnauthorizedGate();
         _;
+    }
+
+    function nextBatch() public view returns (uint64) {
+        uint256 verified = IZkSysVerifiedFrontierV1(childChainAddress).getTotalBatchesVerified();
+        if (verified >= type(uint64).max) revert InvalidConfiguration();
+        return uint64(verified + 1);
+    }
+
+    /// @dev An out-of-band proof can cover the start of a frozen package. Its old
+    /// endorsements cannot authorize a new suffix and do not advance the paid wrapper draw.
+    function retireSupersededPackage() external onlyGate {
+        if (!packageOpen) return;
+        if (_frozenPackage.batchFrom >= nextBatch()) revert InvalidPackage();
+        packageOpen = false;
+        delete _frozenPackage;
+        delete frozenPackageHash;
     }
 
     function prepareRosterDraw(uint64 period) external returns (bytes32 commitment) {
@@ -237,8 +253,7 @@ contract ZkSysWrapperCoordinatorV1 is EIP712 {
         if (
             proposed.domainVersion != ZkSysServiceTypesV1.DOMAIN_VERSION || proposed.policyHash != policyHash
                 || proposed.chainId != childChainId || proposed.chainAddress != childChainAddress
-                || proposed.parent != acceptedParent || proposed.batchFrom != nextBatch
-                || proposed.batchTo <= proposed.batchFrom
+                || proposed.parent != acceptedParent || proposed.batchTo <= proposed.batchFrom
                 || proposed.batchTo - proposed.batchFrom >= ZkSysServiceTypesV1.MAX_BATCHES_PER_PACKAGE
                 || proposed.batchTo == type(uint64).max || proposed.protocolVersion != 32
                 || proposed.vkHash != productionVkHash || proposed.period != period || proposed.rosterRoot != root
@@ -343,7 +358,6 @@ contract ZkSysWrapperCoordinatorV1 is EIP712 {
         ) revert InvalidSignature();
 
         acceptedParent = packageHash;
-        nextBatch = accepted.batchTo + 1;
         ++packageOrdinal;
         packageOpen = false;
         emit PackageAccepted(packageHash, accepted.batchTo, candidate.operator, turn);

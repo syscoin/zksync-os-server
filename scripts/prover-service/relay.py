@@ -82,15 +82,14 @@ class Rpc:
 
 
 def policy(value):
-    s.exact(value, ("schema_version", "account", "gate_code_hash", "coordinator_code_hash", "priority_guard_code_hash", "gas_limit",
+    s.exact(value, ("schema_version", "account", "gate_code_hash", "coordinator_code_hash", "gas_limit",
                     "max_fee_per_gas", "max_priority_fee_per_gas", "max_total_fee_wei", "confirmations",
                     "min_turn_seconds", "max_head_age_seconds", "rpc_timeout_seconds",
                     "rebroadcast_interval_seconds", "max_broadcast_attempts"))
     s.require(value["schema_version"] == 1, "unsupported_relay_policy")
     s.nonzero(value["account"], 20)
     s.raw_hex(value["coordinator_code_hash"], 32)
-    for field in ("gate_code_hash", "priority_guard_code_hash"):
-        s.nonzero(value[field])
+    s.nonzero(value["gate_code_hash"])
     for field in ("gas_limit", "confirmations", "min_turn_seconds", "max_head_age_seconds", "rpc_timeout_seconds",
                   "rebroadcast_interval_seconds", "max_broadcast_attempts"):
         s.require(0 < s.uint(value[field], 64), "positive_relay_limit_required")
@@ -317,10 +316,13 @@ def call_word(rpc, address, signature, anchor, encoded=b"", kind="uint"):
     return result
 
 
-def anchored_head(rpc, settings, limits, now):
+def anchored_head(rpc, settings, limits, now, *, at_head=None):
     s.require(s.uint(rpc.call("eth_chainId", [])) == s.uint(settings["settlement_chain_id"]), "wrong_rpc_chain")
-    head = rpc.call("eth_getBlockByNumber", ["latest", False])
+    head = rpc.call("eth_getBlockByNumber", [at_head["number"] if at_head is not None else "latest", False])
     s.require(type(head) is dict, "missing_canonical_head")
+    if at_head is not None:
+        s.require(head.get("hash") == at_head["hash"] and s.uint(head.get("number")) == s.uint(at_head["number"]),
+                  "rpc_reorg_or_chain_change")
     s.nonzero(head.get("hash"))
     s.uint(head.get("number"))
     timestamp = s.uint(head.get("timestamp"))
@@ -334,51 +336,7 @@ def check_anchor(rpc, settings, head):
               and s.uint(rpc.call("eth_chainId", [])) == s.uint(settings["settlement_chain_id"]), "rpc_reorg_or_chain_change")
 
 
-def priority_context(rpc, settings, limits, item, head, anchor):
-    gate, accepted = settings["proof_gate"], item["sidecar"]["accepted_package"]
-    guard = call_word(rpc, gate, "priorityGuard()", anchor, kind="address")
-    s.nonzero(guard, 20)
-    s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [guard, anchor]))) == limits["priority_guard_code_hash"],
-              "priority_guard_code_changed")
-    for signature, kind, expected in (("acceptanceGate()", "address", gate), ("chain()", "address", settings["chain_address"]),
-                                       ("policyHash()", "bytes32", settings["policy_hash"])):
-        s.require(call_word(rpc, guard, signature, anchor, kind=kind) == expected, "priority_guard_configuration_changed")
-    work_id = s.keccak(s.raw_hex(accepted["parent"]) + s.word(accepted["batchFrom"]))
-    current_id = call_word(rpc, gate, "priorityWorkId()", anchor, kind="bytes32")
-    data = s.raw_hex(rpc.call("eth_call", [{"to": guard, "data": "0x" + selector("work()").hex()}, anchor]), 9 * 32)
-    words = [data[i:i + 32] for i in range(0, len(data), 32)]
-    numbers = [s.uint(int.from_bytes(value, "big"), 64) for value in words[3:]]
-    batch_from, opened, _, _, required_end, max_end = numbers
-    cursor = call_word(rpc, guard, "priorityCursor()", anchor)
-    maximum_seconds = call_word(rpc, guard, "maxProofWorkSeconds()", anchor)
-    deadline = opened + maximum_seconds
-    result = {"guard": guard, "work_id": current_id, "checkpoint_hash": "0x" + words[1].hex(),
-              "cursor": cursor, "required_end": required_end, "max_end": max_end, "deadline": deadline,
-              "reason": "ready"}
-    if current_id != work_id or words[0] != s.raw_hex(work_id) or batch_from != accepted["batchFrom"] or opened == 0:
-        result["reason"] = "priority_work_not_frozen"
-        return result
-    if maximum_seconds == 0 or deadline - s.uint(head["timestamp"]) < limits["min_turn_seconds"]:
-        result["reason"] = "priority_checkpoint_needs_refresh"
-        return result
-    counts = [s.uint(output["l1TxCount"]) for output in item["sidecar"]["batch_outputs"]]
-    hashes = [output["priorityOperationsHash"] for output in item["sidecar"]["batch_outputs"]]
-    if not required_end <= cursor + sum(counts) <= max_end:
-        result["reason"] = "priority_prefix_range_mismatch"
-    elif sum(counts) == 0:
-        if any(value != s.keccak(b"") for value in hashes):
-            result["reason"] = "priority_empty_hash_mismatch"
-    else:
-        encoded = s.encode_dynamic_tuple([(s.raw_hex(work_id), False), (words[1], False),
-                                           (s.word(len(counts)) + b"".join(s.word(count) for count in counts), True),
-                                           (s.word(len(hashes)) + b"".join(s.raw_hex(value) for value in hashes), True)])
-        witness = call_word(rpc, guard, "prefixWitness(bytes32)", anchor, s.raw_hex(s.keccak(encoded)), "bool")
-        if not witness:
-            result["reason"] = "priority_prefix_witness_missing"
-    return result
-
-
-def context(rpc, settings, limits, item, now, simulate=True):
+def context(rpc, settings, limits, item, now, simulate=True, *, receipt_only=False):
     head, anchor = anchored_head(rpc, settings, limits, now)
     gate, accepted = settings["proof_gate"], item["sidecar"]["accepted_package"]
     s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [gate, anchor]))) == limits["gate_code_hash"], "gate_code_changed")
@@ -393,8 +351,10 @@ def context(rpc, settings, limits, item, now, simulate=True):
     result = {"head": {k: head[k] for k in ("number", "hash", "timestamp")}, "parent": parent,
               "eligible": False, "reason": "unknown", "selected_wrapper_index": None, "current_turn": None, "turn_deadline": None,
               "period": accepted["period"], "batch_from": accepted["batchFrom"], "batch_to": accepted["batchTo"],
-              "candidate_operator": accepted["wrapper"], "priority": None}
-    if parent == item["package_hash"]:
+              "candidate_operator": accepted["wrapper"]}
+    if receipt_only:
+        result["reason"] = "publication_regrouped"
+    elif parent == item["package_hash"]:
         result["reason"] = "package_already_accepted"
     elif parent != accepted["parent"]:
         result["reason"] = "accepted_parent_changed"
@@ -402,8 +362,16 @@ def context(rpc, settings, limits, item, now, simulate=True):
         result["reason"] = "bootstrap_phase_closed"
     elif item["mode"] == "service" and (not active or coordinator != settings["coordinator"]):
         result["reason"] = "service_phase_not_active"
+    elif call_word(rpc, settings["chain_address"], "getTotalBatchesVerified()", anchor) >= accepted["batchFrom"]:
+        result["reason"] = "range_already_proven"
     else:
         result["reason"] = "ready"
+        if item["mode"] == "bootstrap":
+            expected = {**accepted, "turn": 0, "proofHash": s.ZERO, "wrapper": s.ZERO_ADDRESS,
+                        "wrapperBeneficiary": s.ZERO_ADDRESS}
+            frozen = rpc.call("eth_call", [{"to": gate, "data": "0x" + selector("bootstrapPackage()").hex()}, anchor])
+            if s.raw_hex(frozen, 32 * len(s.PACKAGE)) != s.encode_fields(s.PACKAGE, expected):
+                result["reason"] = "bootstrap_package_repaired"
         if item["mode"] == "service":
             s.nonzero(limits["coordinator_code_hash"])
             s.require(s.keccak(s.raw_hex(rpc.call("eth_getCode", [coordinator, anchor]))) == limits["coordinator_code_hash"],
@@ -432,9 +400,6 @@ def context(rpc, settings, limits, item, now, simulate=True):
                     result["reason"] = "stale_wrapper_turn"
                 elif deadline - s.uint(head["timestamp"]) < limits["min_turn_seconds"]:
                     result["reason"] = "insufficient_turn_time"
-        if result["reason"] == "ready":
-            result["priority"] = priority_context(rpc, settings, limits, item, head, anchor)
-            result["reason"] = result["priority"]["reason"]
         if result["reason"] == "ready":
             contract = gate if item["mode"] == "bootstrap" else coordinator
             signature = ("bootstrapDigest" if item["mode"] == "bootstrap" else "packageDigest") + "(" + abi_tuple(s.PACKAGE) + ")"
@@ -513,7 +478,8 @@ class Relay:
         """Export a receipt hint; the node independently authenticates every chain claim."""
         item = self.load_artifact(operation_id)
         op = self.state["operations"][operation_id]
-        s.require(op["status"] in ("accepted", "accepted_elsewhere"), "relay_acceptance_not_confirmed")
+        s.require(op["status"] in ("accepted", "accepted_elsewhere") or self.external_acceptance_with_pending_nonce(op),
+                  "relay_acceptance_not_confirmed")
         acceptance = op["acceptance"]
         s.require(isinstance(acceptance, dict) and acceptance.get("transaction_hash"),
                   "acceptance_transaction_hash_required")
@@ -559,10 +525,12 @@ class Relay:
                 "transaction_hash": acceptance["transaction_hash"], "sidecar": item["sidecar"]}
         destination = directory / "relay.json"
         if execute:
+            previous = None
             if destination.exists() or destination.is_symlink():
-                s.read(destination, private=True, maximum=2 * 1024 * 1024)
+                previous = s.read(destination, private=True, maximum=2 * 1024 * 1024)
                 s.require(destination.lstat().st_nlink == 1, "linked_handoff_file_forbidden")
-            atomic_json(destination, hint)
+            if previous != s.canonical(hint):
+                atomic_json(destination, hint)
         return {"work_hash": hint["work_hash"], "transaction_hash": hint["transaction_hash"],
                 "handoff": str(destination), "written": execute,
                 "next_action": "node_verifies_canonical_native_gate_receipt"}
@@ -575,6 +543,54 @@ class Relay:
 
     def _confirmations(self, block_number, head):
         return s.uint(head["number"]) - s.uint(block_number) + 1
+
+    def external_acceptance_with_pending_nonce(self, op):
+        acceptance = op["acceptance"]
+        return (op["status"] in ("accepted_with_pending_nonce", "mined_unconfirmed") and op["unsigned_transaction"] is not None
+                and acceptance is not None and acceptance["source"] == "gate_event" and acceptance.get("transaction_hash")
+                and acceptance["transaction_hash"] != op["transaction_hash"]
+                and self._confirmations(acceptance["block_number"], op["context"]["head"]) >= self.limits["confirmations"])
+
+    def _acceptance_block(self, batch_to, first_head, head):
+        gate = self.settings["proof_gate"]
+        anchor = {"blockHash": head["hash"], "requireCanonical": True}
+        if call_word(self.rpc, gate, "observedNativeBatch()", anchor) < batch_to:
+            return None
+        runtime = s.raw_hex(self.rpc.call("eth_getCode", [gate, anchor]))
+        s.require(runtime and s.keccak(runtime) == self.limits["gate_code_hash"], "gate_code_changed")
+
+        def covered_at(height):
+            block = self.rpc.call("eth_getBlockByNumber", [hex(height), False])
+            s.require(isinstance(block, dict) and s.uint(block.get("number")) == height,
+                      "historical_gate_block_unavailable")
+            anchor = {"blockHash": s.nonzero(block.get("hash")), "requireCanonical": True}
+            code = s.raw_hex(self.rpc.call("eth_getCode", [gate, anchor]))
+            if not code:
+                return None
+            s.require(code == runtime, "historical_gate_code_changed")
+            return block if call_word(self.rpc, gate, "observedNativeBatch()", anchor) >= batch_to else None
+
+        # Acceptance and the gate frontier advance atomically. Start near the tip so
+        # recent acceptances don't require old state, even if staging followed settlement.
+        tip, staged = s.uint(head["number"]), s.uint(first_head["number"])
+        upper, lower, distance = head, tip - 1, 1
+        while lower >= 0:
+            block = covered_at(lower)
+            if block is None:
+                break
+            upper = block
+            distance *= 2
+            lower = max(-1, tip - distance)
+            if lower < staged < s.uint(upper["number"]):
+                lower = staged
+        while lower + 1 < s.uint(upper["number"]):
+            height = (lower + s.uint(upper["number"])) // 2
+            block = covered_at(height)
+            if block is None:
+                lower = height
+            else:
+                upper = block
+        return upper
 
     def _observe_receipt(self, op, item, observed):
         head = observed["head"]
@@ -604,18 +620,19 @@ class Relay:
             op["acceptance"] = {"transaction_hash": None, "block_number": head["number"], "block_hash": head["hash"],
                                 "source": "gate_parent"}
         if (op["acceptance"] is None or op["acceptance"].get("transaction_hash") is None) and observed["parent"] != item["sidecar"]["accepted_package"]["parent"]:
-            logs = self.rpc.call("eth_getLogs", [{"address": self.settings["proof_gate"],
-                                                 "fromBlock": op["first_head"]["number"], "toBlock": head["number"],
-                                                 "topics": acceptance_topics(item)}])
-            s.require(type(logs) is list and len(logs) <= 1, "ambiguous_acceptance_log")
-            if logs:
-                log = logs[0]
-                s.require(matching_log(log, self.settings, item), "acceptance_log_mismatch")
-                s.nonzero(log.get("transactionHash"))
-                s.nonzero(log.get("blockHash"))
-                if self._canonical(log["blockNumber"], log["blockHash"], head):
-                    op["acceptance"] = {"transaction_hash": log["transactionHash"], "block_number": log["blockNumber"],
-                                        "block_hash": log["blockHash"], "source": "gate_event"}
+            block = self._acceptance_block(observed["batch_to"], op["first_head"], head)
+            if block is not None:
+                logs = self.rpc.call("eth_getLogs", [{"address": self.settings["proof_gate"], "blockHash": block["hash"],
+                                                     "topics": acceptance_topics(item)}])
+                s.require(type(logs) is list and len(logs) <= 1, "ambiguous_acceptance_log")
+                if logs:
+                    log = logs[0]
+                    s.require(matching_log(log, self.settings, item) and log.get("blockNumber") == block["number"]
+                              and log.get("blockHash") == block["hash"], "acceptance_log_mismatch")
+                    s.nonzero(log.get("transactionHash"))
+                    check_anchor(self.rpc, self.settings, block)
+                    op["acceptance"] = {"transaction_hash": log["transactionHash"], "block_number": block["number"],
+                                        "block_hash": block["hash"], "source": "gate_event"}
         check_anchor(self.rpc, self.settings, head)
 
     def _new_transaction(self, op, item, observed):
@@ -640,12 +657,12 @@ class Relay:
         return {"package_hash": item["package_hash"], "mode": item["mode"], "context": observed,
                 "next_action": "stage_and_sign" if observed["eligible"] else "wait_or_refresh_authorization"}
 
-    def step(self, operation_id, execute=False):
+    def step(self, operation_id, execute=False, *, receipt_only=False):
         s.require(self.store is not None, "relay_store_required")
         item = self.load_artifact(operation_id)
         op = self.state["operations"][operation_id]
         now = int(self.clock())
-        observed = context(self.rpc, self.settings, self.limits, item, now, simulate=False)
+        observed = context(self.rpc, self.settings, self.limits, item, now, simulate=False, receipt_only=receipt_only)
         op["context"] = observed
         self._observe_receipt(op, item, observed)
         receipt, acceptance = op["receipt"], op["acceptance"]
@@ -653,16 +670,23 @@ class Relay:
         if receipt:
             if self._confirmations(receipt["block_number"], observed["head"]) >= confirmations:
                 op["status"] = "accepted" if receipt["status"] else "reverted"
-                if receipt["status"] == 0 and acceptance and self._confirmations(acceptance["block_number"], observed["head"]) >= confirmations:
-                    op["status"] = "accepted_elsewhere"
                 action = "complete"
+                if receipt["status"] == 0 and acceptance:
+                    if self._confirmations(acceptance["block_number"], observed["head"]) >= confirmations:
+                        op["status"] = "accepted_elsewhere"
+                    else:
+                        op["status"], action = "accepted_unconfirmed", "wait_for_confirmations"
             else:
                 op["status"], action = "mined_unconfirmed", "wait_for_confirmations"
+            if self.external_acceptance_with_pending_nonce(op):
+                action = "export_acceptance_and_reconcile_own_nonce"
             self.save(execute)
             return self.summary(operation_id, action)
         if acceptance:
-            if op["raw_transaction"]:
+            if op["unsigned_transaction"]:
                 op["status"], action = "accepted_with_pending_nonce", "wait_for_own_nonce_receipt"
+                if self.external_acceptance_with_pending_nonce(op):
+                    action = "export_acceptance_and_reconcile_own_nonce"
             elif self._confirmations(acceptance["block_number"], observed["head"]) >= confirmations:
                 op["status"], action = "accepted_elsewhere", "complete"
             else:
@@ -678,10 +702,11 @@ class Relay:
                 return self.summary(operation_id, "investigate_nonce_without_receipt")
             s.require(latest_nonce == s.uint(op["unsigned_transaction"]["nonce"]), "reserved_nonce_ahead_of_chain")
         if not observed["eligible"]:
-            if op["raw_transaction"]:
+            if op["unsigned_transaction"]:
                 op["status"] = "authorization_stale_inflight"
                 action = "wait_for_receipt_no_resign"
-            elif observed["reason"] in ("stale_wrapper_turn", "frozen_package_repaired", "accepted_parent_changed", "bootstrap_phase_closed"):
+            elif observed["reason"] in ("stale_wrapper_turn", "frozen_package_repaired", "accepted_parent_changed", "bootstrap_phase_closed",
+                                       "range_already_proven", "bootstrap_package_repaired", "publication_regrouped"):
                 op["status"] = "stale_unsigned"
                 action = "new_artifact_requires_fresh_endorsements"
             else:

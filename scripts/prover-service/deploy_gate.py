@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Deploy one service proof gate and priority guard after the native chains exist.
+"""Deploy one service proof gate after the native settlement contracts exist.
 
-The lane's checkpoint receiver/source and root message sink must already exist.
+For a root-settled lane the configured service message sink must already exist.
 This stage does not change timelock roles or activate the service.
 """
 import argparse
@@ -70,18 +70,18 @@ def encode(signature, *args):
 
 def config(raw):
     fields = {'chain_id', 'genesis_hash', 'sender', 'chain', 'chain_code_hash', 'timelock',
-              'timelock_code_hash', 'checkpoint', 'checkpoint_code_hash', 'message_sink',
+              'timelock_code_hash', 'message_sink',
               'message_sink_code_hash', 'sequencer', 'policy_hash', 'production_vk_hash',
-              'child_chain_id', 'max_snapshot_age', 'max_proof_work_seconds', 'max_priority_per_package',
+              'child_chain_id',
               'factory_salt', 'create2_code_hash', 'gas_limit', 'gas_price', 'keystore', 'password_file'}
     require(type(raw) is dict and set(raw) == fields, 'invalid configuration fields')
     value = dict(raw)
-    for key in ('sender', 'chain', 'timelock', 'checkpoint', 'message_sink', 'sequencer'):
+    for key in ('sender', 'chain', 'timelock', 'message_sink', 'sequencer'):
         require(type(value[key]) is str and ADDRESS.fullmatch(value[key]) is not None, 'invalid ' + key)
         value[key] = value[key].lower()
         if key != 'message_sink':
             require(value[key] != ZERO, 'zero ' + key)
-    for key in ('genesis_hash', 'chain_code_hash', 'timelock_code_hash', 'checkpoint_code_hash',
+    for key in ('genesis_hash', 'chain_code_hash', 'timelock_code_hash',
                 'message_sink_code_hash', 'policy_hash', 'production_vk_hash', 'factory_salt', 'create2_code_hash'):
         require(type(value[key]) is str and HASH.fullmatch(value[key]) is not None, 'invalid ' + key)
         value[key] = value[key].lower()
@@ -89,13 +89,9 @@ def config(raw):
             require(int(value[key], 16) != 0, 'zero ' + key)
     require((value['message_sink'] == ZERO) == (int(value['message_sink_code_hash'], 16) == 0),
             'sink and code hash inconsistent')
-    for key in ('chain_id', 'child_chain_id', 'max_snapshot_age', 'max_proof_work_seconds',
-                'max_priority_per_package', 'gas_limit', 'gas_price'):
+    for key in ('chain_id', 'child_chain_id', 'gas_limit', 'gas_price'):
         require(type(value[key]) is int and value[key] > 0, 'invalid ' + key)
     require(value['chain_id'] != value['child_chain_id'], 'settlement and child chain ids must differ')
-    require(value['max_priority_per_package'] <= 1024, 'priority package limit exceeds contract maximum')
-    for key in ('max_snapshot_age', 'max_proof_work_seconds', 'max_priority_per_package'):
-        require(value[key] < 2**64, 'invalid ' + key)
     for key in ('keystore', 'password_file'):
         require(type(value[key]) is str and Path(value[key]).is_absolute(), 'invalid ' + key)
     return value
@@ -105,19 +101,13 @@ def build(cfg):
     factory_init = bytecode('ZkSysServiceGateDeploymentFactoryV1') + encode('constructor(address)', cfg['sender'])
     factory = cast('create2', '--deployer', CREATE2, '--salt', cfg['factory_salt'], '--init-code', factory_init).lower()
     require(ADDRESS.fullmatch(factory) is not None, 'invalid factory address')
-    guard = cast('compute-address', factory, '--nonce', '1').split()[-1].lower()
-    gate = cast('compute-address', factory, '--nonce', '2').split()[-1].lower()
-    require(ADDRESS.fullmatch(guard) and ADDRESS.fullmatch(gate), 'invalid predicted addresses')
-    guard_init = bytecode('ZkSysPriorityGuardV1') + encode(
-        'constructor(address,address,address,bytes32,uint64,uint64,uint64)', gate, cfg['chain'],
-        cfg['checkpoint'], cfg['policy_hash'], cfg['max_snapshot_age'], cfg['max_proof_work_seconds'],
-        cfg['max_priority_per_package'])
+    gate = cast('compute-address', factory, '--nonce', '1').split()[-1].lower()
+    require(ADDRESS.fullmatch(gate), 'invalid predicted gate address')
     gate_init = bytecode('ZkSysProofGateV1') + encode(
-        'constructor(address,address,address,bytes32,bytes32,address,address)', cfg['chain'], cfg['timelock'],
-        cfg['sequencer'], cfg['policy_hash'], cfg['production_vk_hash'], guard, cfg['message_sink'])
-    commitment = digest('0x' + encode('f(bytes,bytes)', guard_init, gate_init))
-    return {'factory': factory, 'guard': guard, 'gate': gate, 'factory_init': factory_init,
-            'guard_init': guard_init, 'gate_init': gate_init, 'commitment': commitment}
+        'constructor(address,address,address,bytes32,bytes32,address)', cfg['chain'], cfg['timelock'],
+        cfg['sequencer'], cfg['policy_hash'], cfg['production_vk_hash'], cfg['message_sink'])
+    return {'factory': factory, 'gate': gate, 'factory_init': factory_init,
+            'gate_init': gate_init, 'commitment': digest(gate_init)}
 
 
 def rpc_code(rpc, address, block='latest'):
@@ -147,26 +137,16 @@ def verify_inputs(rpc, cfg, plan):
     genesis = rpc.call('eth_getBlockByNumber', ['0x0', False])
     require(type(genesis) is dict and genesis.get('hash', '').lower() == cfg['genesis_hash'], 'genesis mismatch')
     pins = [(CREATE2, cfg['create2_code_hash']), (cfg['chain'], cfg['chain_code_hash']),
-            (cfg['timelock'], cfg['timelock_code_hash']), (cfg['checkpoint'], cfg['checkpoint_code_hash'])]
+            (cfg['timelock'], cfg['timelock_code_hash'])]
     if cfg['message_sink'] != ZERO:
         pins.append((cfg['message_sink'], cfg['message_sink_code_hash']))
     for address, expected in pins:
         code = rpc_code(rpc, address)
         require(code != '0x' and digest(code) == expected, 'pinned contract code mismatch')
     require(int(call_word(rpc, cfg['chain'], 'getChainId()'), 16) == cfg['child_chain_id'], 'native chain id mismatch')
-    require(int(call_word(rpc, cfg['checkpoint'], 'childChainId()'), 16) == cfg['child_chain_id'], 'checkpoint chain mismatch')
-    require(call_word(rpc, cfg['checkpoint'], 'policyHash()') == cfg['policy_hash'], 'checkpoint policy mismatch')
     if cfg['message_sink'] != ZERO:
         assert_address(rpc, cfg['message_sink'], 'publisher()', plan['gate'])
         require(call_word(rpc, cfg['message_sink'], 'policyHash()') == cfg['policy_hash'], 'sink policy mismatch')
-
-def verify_queue_drained(rpc, cfg):
-    require(int(call_word(rpc, cfg['chain'], 'getTotalBatchesVerified()'), 16)
-            == int(call_word(rpc, cfg['chain'], 'getTotalBatchesExecuted()'), 16), 'verified batches must be executed')
-    require(int(call_word(rpc, cfg['chain'], 'getFirstUnprocessedPriorityTx()'), 16)
-            == int(call_word(rpc, cfg['chain'], 'getTotalPriorityTxs()'), 16), 'priority queue must be drained')
-    require(int(call_word(rpc, cfg['chain'], 'isPriorityQueueActive()'), 16) == 0, 'priority queue active')
-
 
 def attest_factory(rpc, cfg, plan):
     code = rpc_code(rpc, plan['factory'])
@@ -182,14 +162,11 @@ def attest_factory(rpc, cfg, plan):
 def attest_gate(rpc, cfg, plan):
     commitment = call_word(rpc, plan['factory'], 'deploymentCommitment()')
     if int(commitment, 16) == 0:
-        require(rpc_code(rpc, plan['guard']) == '0x' and rpc_code(rpc, plan['gate']) == '0x',
-                'unexpected pre-existing gate or guard')
+        require(rpc_code(rpc, plan['gate']) == '0x', 'unexpected pre-existing gate')
         return False
     require(commitment == plan['commitment'], 'factory deployment commitment mismatch')
-    require(rpc_code(rpc, plan['guard']) != '0x' and rpc_code(rpc, plan['gate']) != '0x', 'missing gate or guard')
+    require(rpc_code(rpc, plan['gate']) != '0x', 'missing gate')
     assert_address(rpc, plan['factory'], 'gate()', plan['gate'])
-    assert_address(rpc, plan['guard'], 'acceptanceGate()', plan['gate'])
-    assert_address(rpc, plan['gate'], 'priorityGuard()', plan['guard'])
     assert_address(rpc, plan['gate'], 'deploymentAuthority()', plan['factory'])
     assert_address(rpc, plan['gate'], 'chain()', cfg['chain'])
     assert_address(rpc, plan['gate'], 'timelock()', cfg['timelock'])
@@ -234,7 +211,7 @@ def main():
     if args.plan:
         require(not args.coordinator, 'coordinator not applicable to planning')
         plan = build(cfg)
-        print(json.dumps({'status': 'unverified_plan', 'factory': plan['factory'], 'guard': plan['guard'],
+        print(json.dumps({'status': 'unverified_plan', 'factory': plan['factory'],
                           'gate': plan['gate'], 'commitment': plan['commitment']}, sort_keys=True))
         return
     require(bool(args.state_dir), 'state directory required')
@@ -264,7 +241,7 @@ def main():
     save = lambda obj: relay.atomic_json(path, obj)
     factory_exists = attest_factory(rpc, cfg, plan)
     if not args.send:
-        print(json.dumps({'factory': plan['factory'], 'guard': plan['guard'], 'gate': plan['gate'],
+        print(json.dumps({'factory': plan['factory'], 'gate': plan['gate'],
                           'factory_exists': factory_exists,
                           'gate_exists': attest_gate(rpc, cfg, plan) if factory_exists else False}, sort_keys=True))
         return
@@ -275,7 +252,7 @@ def main():
     require(address == cfg['sender'], 'signer mismatch')
     driver = ServiceTransactionDriver(journal, save, signer.sign, signer.decode, signer.hash_raw)
     factory_tx = (CREATE2, cfg['factory_salt'] + plan['factory_init'][2:])
-    gate_tx = (plan['factory'], cast('calldata', 'deploy(bytes,bytes)', plan['guard_init'], plan['gate_init']).lower())
+    gate_tx = (plan['factory'], cast('calldata', 'deploy(bytes)', plan['gate_init']).lower())
     coordinator_tx = ((plan['factory'], cast('calldata', 'installCoordinator(address)', args.coordinator).lower())
                       if args.coordinator else None)
     if journal['transactions']:
@@ -284,7 +261,7 @@ def main():
         require(type(entry) is dict and entry.get('kind') == 'deployment' and type(entry.get('metadata')) is dict,
                 'invalid deployment transaction')
         step = entry['metadata'].get('step')
-        require(step in ('factory', 'guard_and_gate', 'install_coordinator'), 'unknown deployment step')
+        require(step in ('factory', 'gate', 'install_coordinator'), 'unknown deployment step')
         if step == 'install_coordinator':
             require(coordinator_tx is not None and entry['metadata'].get('coordinator') == args.coordinator
                     and entry['metadata'].get('coordinator_code_hash') == args.coordinator_code_hash,
@@ -301,7 +278,7 @@ def main():
             print('pending')
             return
         require(attest_factory(rpc, cfg, plan), 'finalized factory missing')
-        if step in ('guard_and_gate', 'install_coordinator'):
+        if step in ('gate', 'install_coordinator'):
             require(attest_gate(rpc, cfg, plan), 'finalized gate missing')
         if step == 'install_coordinator':
             assert_address(rpc, plan['gate'], 'coordinator()', args.coordinator)
@@ -310,8 +287,7 @@ def main():
     if not factory_exists:
         target, data, step = *factory_tx, 'factory'
     elif not attest_gate(rpc, cfg, plan):
-        verify_queue_drained(rpc, cfg)
-        target, data, step = *gate_tx, 'guard_and_gate'
+        target, data, step = *gate_tx, 'gate'
     elif args.coordinator:
         code = rpc_code(rpc, args.coordinator)
         require(code != '0x' and digest(code) == args.coordinator_code_hash, 'coordinator runtime mismatch')
@@ -322,7 +298,7 @@ def main():
         require(current == ZERO, 'gate has a different coordinator')
         target, data, step = *coordinator_tx, 'install_coordinator'
     else:
-        print(json.dumps({'status': 'deployed', 'factory': plan['factory'], 'guard': plan['guard'], 'gate': plan['gate']}, sort_keys=True))
+        print(json.dumps({'status': 'deployed', 'factory': plan['factory'], 'gate': plan['gate']}, sort_keys=True))
         return
     metadata = {'step': step}
     if step == 'install_coordinator':

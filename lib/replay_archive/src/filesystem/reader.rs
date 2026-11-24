@@ -31,6 +31,39 @@ impl FileSystemReplayArchiveReader {
             .join(format_block_hash(key.block_hash))
     }
 
+    async fn list_session_objects(
+        &self,
+        session: &ReplayArchiveSession,
+        keys: &mut Vec<ReplayArchiveKey>,
+    ) -> anyhow::Result<()> {
+        let session_path = self.root_path.join(session.folder_name());
+        let mut block_entries = tokio::fs::read_dir(&session_path).await.with_context(|| {
+            format!(
+                "failed to read replay archive session {}",
+                session_path.display()
+            )
+        })?;
+        while let Some(block_entry) = block_entries.next_entry().await? {
+            if !block_entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let block_dir_name = block_entry.file_name();
+            let Some(block_number) = block_dir_name
+                .to_str()
+                .and_then(parse_canonical_block_number)
+            else {
+                tracing::warn!(
+                    path = %block_entry.path().display(),
+                    "Skipping replay archive session entry that is not a block number"
+                );
+                continue;
+            };
+            self.list_block_dir_objects(&block_entry.path(), session, block_number, keys)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn list_block_dir_objects(
         &self,
         block_dir: &Path,
@@ -89,11 +122,44 @@ impl ReplayArchiveStorageReader for FileSystemReplayArchiveReader {
         &self,
         page_token: Option<String>,
     ) -> anyhow::Result<ReplayArchiveKeyPage> {
+        self.list_keys_page_for_session(None, page_token).await
+    }
+
+    async fn list_keys_page_for_session(
+        &self,
+        session: Option<&ReplayArchiveSession>,
+        page_token: Option<String>,
+    ) -> anyhow::Result<ReplayArchiveKeyPage> {
         anyhow::ensure!(
             page_token.is_none(),
             "filesystem replay archive reader returns a single page"
         );
         let mut keys = Vec::new();
+        if let Some(session) = session {
+            let path = self.root_path.join(session.folder_name());
+            match tokio::fs::symlink_metadata(&path).await {
+                Ok(metadata) if metadata.is_dir() => {
+                    self.list_session_objects(session, &mut keys).await?
+                }
+                Ok(_) => anyhow::bail!(
+                    "selected archive session {} is not a directory",
+                    path.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to inspect selected archive session {}",
+                            path.display()
+                        )
+                    });
+                }
+            }
+            return Ok(ReplayArchiveKeyPage {
+                keys,
+                next_page_token: None,
+            });
+        }
         let mut root_entries = tokio::fs::read_dir(&self.root_path)
             .await
             .with_context(|| {
@@ -124,33 +190,7 @@ impl ReplayArchiveStorageReader for FileSystemReplayArchiveReader {
                 );
                 continue;
             };
-            let mut block_entries =
-                tokio::fs::read_dir(root_entry.path())
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "failed to read replay archive session {}",
-                            root_entry.path().display()
-                        )
-                    })?;
-            while let Some(block_entry) = block_entries.next_entry().await? {
-                if !block_entry.file_type().await?.is_dir() {
-                    continue;
-                }
-                let block_dir_name = block_entry.file_name();
-                let Some(block_number) = block_dir_name
-                    .to_str()
-                    .and_then(parse_canonical_block_number)
-                else {
-                    tracing::warn!(
-                        path = %block_entry.path().display(),
-                        "Skipping replay archive session entry that is not a block number"
-                    );
-                    continue;
-                };
-                self.list_block_dir_objects(&block_entry.path(), &session, block_number, &mut keys)
-                    .await?;
-            }
+            self.list_session_objects(&session, &mut keys).await?;
         }
 
         Ok(ReplayArchiveKeyPage {

@@ -1245,7 +1245,9 @@ signing default to the same funder signer/account unless `DEPLOYER_*` or
 `EDGE_GATEWAY_GOVERNOR_*` overrides are set. `FUNDER_PRIVATE_KEY` and
 `DEPLOYER_SIGNER=private-key` are local/disposable-network fallbacks only; on
 Tanenbaum/Mainnet they are rejected unless
-`GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true` is set explicitly.
+`GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true` is set explicitly. Raw-key funding
+on a public network requires an explicit key. The public Anvil development
+account is rejected even if it was imported into a keystore.
 The `--migrate-edge` flag is required for the normal full launch because it pauses deposits and finalizes the edge-chain migration to Gateway settlement. If omitted, the launcher stops after edge-chain initialization and can be resumed later with the same command plus `--migrate-edge`.
 
 Optional log override:
@@ -1364,7 +1366,10 @@ replay_archive:
 Do not treat `replay_archive: { type: Noop }` as sufficient for mainnet
 operations. Test recovery before relying on the archive: download the archive
 objects, rebuild `db/block_replay_wal` with `replay_archive_recovery`, and
-start a node from the recovered replay WAL using a known canonical anchor.
+verify the recovered WAL from a known canonical anchor before serving it. Keep
+the deployment's `database_identity.json` with the trusted recovery inventory.
+The [replay recovery guide](https://github.com/syscoin/zksync-os-server/blob/main/lib/replay_archive/README.md#cli) describes
+the verification startup profile and restart behavior.
 
 <!-- SYSCOIN: Explicit release policy; the current non-Ethereum root-chain allowance is retained. -->
 Syscoin currently retains the pinned contracts' **30-day maximum commit age**, including on
@@ -1800,6 +1805,11 @@ The official `ethereum/solc-bin` mirror supplies the default compiler checksum
 list and binaries. `SMART_CONTRACT_VERIFIER_SOLC_LIST_URL` can select a different
 reviewed official list when needed; retain compiler checksum verification.
 
+The EN deploy helper uploads tracked files from the current Git commit. Commit the
+reviewed source before running it with `UPLOAD_REPO=true`. The upload excludes
+local configuration and ignored files. Provide credentialed provider URLs through
+the documented environment variables.
+
 The generated `start-node.sh` now preflights the open-file limit before starting the node:
 
 - it tries to raise `ulimit -n` to `1048576`
@@ -1878,8 +1888,24 @@ work and bind recovery to one verifier mode. -->
 | `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME` | Foundry keystore account name when `EDGE_GATEWAY_GOVERNOR_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
 | `EDGE_GATEWAY_GOVERNOR_KEYSTORE` | Keystore file path when `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
 | `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional password file used for the short-lived generated-governor or external keystore (default: `FUNDER_PASSWORD_FILE`; when neither is set for the generated governor, the launcher creates a random process-local password) |
-| `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | DA connectivity for gateway blobs mode |
+| `BITCOIN_DA_RPC_URL` | Core RPC endpoint for Bitcoin DA, with HTTPS required outside a literal loopback IP |
+| `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | Explicit Core RPC credentials supplied as a pair |
+| `BITCOIN_DA_COOKIE_FILE` | Absolute path to the rotating Core cookie for the configured loopback IP. Select either cookie authentication or the explicit credential pair. |
 | `BITCOIN_DA_MISSING_BLOB_RECOVERY_TIMEOUT` | Initial grace before recovering a blob that Core reports missing; Tanenbaum launch/repair defaults to `5m`. Omitted on mainnet, preserving the existing timeout. |
+
+The generated Gateway JSON-RPC binds to IPv4 loopback. Place its allowlisting
+nginx proxy on the same host. Internal launcher and edge RPC callers on that host
+use the same loopback endpoint. Regenerate older Gateway configurations when
+deploying this revision.
+
+For a node using a local cookie, regenerate the launcher configuration with
+`BITCOIN_DA_COOKIE_FILE` set to the cookie for its selected Core endpoint. In a
+hand-maintained configuration, set `batcher.bitcoin_da_cookie_file` and set
+`batcher.bitcoin_da_cookie_rpc_url` to exactly match the effective Core RPC URL.
+Remove `bitcoin_da_rpc_user` and `bitcoin_da_rpc_password` from the effective
+configuration, including inherited layers. The node reads the cookie at startup
+and keeps it in memory.
+Restart the node after Core rotates its cookie.
 
 Missing-blob recovery does not relax settlement checks: Tanenbaum still uses its
 configured confirmation count, and mainnet still uses its configured ChainLock
@@ -1920,7 +1946,27 @@ are not scanned ahead or published in parallel.
 <!-- SYSCOIN: Exact receipt-relative issuance is an operator policy, not an
 estimated wall-clock timestamp or a contract bytecode change. -->
 For issuance beginning exactly 24 hours after the canonical **token proxy**
-deployment, leave `ZKSYS_ISSUER_START_TIME` unset and run:
+deployment, keep `ZKSYS_ISSUER_START_TIME` unset. The receipt anchor requires
+creation by the configured bootstrap signer. Before the edge chain first
+produces blocks, enable its deployment filter with that signer's address as the
+only allowlisted deployer. For example, replace the address below with the
+configured signer address in the edge sequencer configuration.
+
+```yaml
+sequencer:
+  tx_validator:
+    deployment_filter:
+      enabled: true
+      allowed_deployers:
+        - "0x1234567890abcdef1234567890abcdef12345678"
+```
+
+Apply the same filter to every edge sequencer eligible for failover. It checks
+deployment through the CREATE2 factory as well as direct deployment. Keep it
+enabled through canonical receipt revalidation by the second command, then
+restore the intended production deployment policy.
+
+Run the receipt-timed bootstrap in two stages.
 
 ```bash
 scripts/gateway-launch/zksys-l2-bootstrap.sh --token-prelude
@@ -1947,6 +1993,13 @@ before that step. After the ordinary bootstrap, use
 `zksys-l2-bootstrap.sh --service-addresses` to derive the child receiver
 address needed by the NEVM message sink. The flag and the existing launch and
 bootstrap identities must match the persisted deployment.
+
+The native proof sender can run operator-managed Airbender workers while V1 proof
+publication is disabled. Switching the publisher on a running chain requires a
+drained handoff of the prover role on both settlement lanes. Reward activation
+also needs the service-aware bridge and issuer configuration, a qualified Sentry
+roster, and both activation messages before the configured first service period.
+The period-zero launcher has no migration for a live passive reward ledger.
 
 The separate `zksys-l2-bootstrap.sh --service-v1` stage deploys the child
 receiver and service registry and configures the issuer from period zero,
@@ -2021,5 +2074,5 @@ count the same reserve twice. Keep faucet principal in its separate allocation.
   diagnosed incompatible replay requires a reset, first stop the node, then back
   up and move the complete `os-server-configs/<chain>/db` directory before rerunning.
 - For `v32.x`, launcher build/run commands copy the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrite only the `*_dev` `zksync-os` deps to the patched upstream checkout, and use that isolated workspace for Cargo.
-- The zkSYS external-node deployment invalidates the prior build stamp, builds each isolated patched workspace with `build-node.sh`, then publishes a stamp bound to the binary, compiled Syscoin address context, and current server build/release sources before restarting its service. The generated `start-node.sh` only refreshes rotating Syscoin RPC cookie credentials, validates that stamp, and executes the prebuilt binary, so ordinary systemd or package-maintenance restarts do not rebuild Rust dependencies while the public RPC is offline. A failed or partial redeployment leaves the stamp invalid and later restarts fail closed rather than running a stale binary against new deployment state.
+- The zkSYS external-node deployment invalidates the prior build stamp, builds each isolated patched workspace with `build-node.sh`, then publishes a stamp bound to the binary, compiled Syscoin address context, and current server build/release sources before restarting its service. The generated `start-node.sh` validates that stamp and executes the prebuilt binary. The node reads its configured Core cookie at startup, so ordinary systemd or package-maintenance restarts do not rebuild Rust dependencies while the public RPC is offline. A failed or partial redeployment leaves the stamp invalid and later restarts fail closed rather than running a stale binary against new deployment state.
 - High-TPS runs can exhaust low default `nofile` limits; use at least `65536`, with `131072+` recommended.

@@ -1,7 +1,10 @@
 use super::proof_storage::ProofStorage;
 use super::prover_job_map::StartupRecoveryPlan;
+use super::service_publication::ServicePublication;
 use super::snark_job_manager::SnarkJobManager;
-use super::snark_proof_journal::{SnarkProofJournal, validate_batch_against_committed};
+use super::snark_proof_journal::{
+    JournaledProof, SnarkProofJournal, validate_batch_against_committed,
+};
 use super::snark_proof_preflight::{OnchainSnarkProofPreflight, SnarkProofPreflight};
 use crate::prover_api::fri_proof_verifier;
 use alloy::eips::{BlockId, BlockNumberOrTag};
@@ -384,17 +387,18 @@ where
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CanonicalProvedFrontiers {
+pub(super) struct CanonicalProvedFrontiers {
     tip_block: u64,
     safe_block: u64,
-    latest_proved: u64,
-    confirmation_safe_proved: u64,
+    pub(super) safe_hash: B256,
+    pub(super) latest_proved: u64,
+    pub(super) confirmation_safe_proved: u64,
 }
 
 // SYSCOIN: Bind latest and confirmation-safe proved counters to canonical EIP-1898 hashes from
 // one SL identity. Numbered postchecks make a concurrent reorg/topology change restart the full
 // node discovery path instead of deleting or replaying a wrapper against an ambiguous snapshot.
-async fn canonical_proved_frontiers(
+pub(super) async fn canonical_proved_frontiers(
     provider: &NodeProvider,
     diamond_address: Address,
     expected_sl_chain_id: u64,
@@ -465,8 +469,95 @@ async fn canonical_proved_frontiers(
     Ok(CanonicalProvedFrontiers {
         tip_block,
         safe_block,
+        safe_hash,
         latest_proved,
         confirmation_safe_proved,
+    })
+}
+
+pub(super) struct PreparedStartupReplay {
+    pub(super) plan: StartupRecoveryPlan,
+    pub(super) covered_ranges: Vec<(u64, u64)>,
+    pub(super) commands: Vec<ProofCommand>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn prepare_startup_replay(
+    journal: &SnarkProofJournal,
+    publication: Option<&ServicePublication>,
+    validated_replay: Vec<JournaledProof>,
+    last_proved_batch: u64,
+    last_committed_batch: u64,
+    max_fris_per_snark: usize,
+    max_assigned_batch_range: usize,
+    fake_mode: bool,
+) -> anyhow::Result<PreparedStartupReplay> {
+    let candidates = match publication {
+        Some(publication) if !validated_replay.is_empty() => publication.regrouped_candidates()?,
+        _ => Default::default(),
+    };
+    let sender = journal.confirmation_sender();
+    let mut replay = Vec::with_capacity(validated_replay.len());
+    let mut covered_ranges = Vec::with_capacity(validated_replay.len());
+    for proof in validated_replay {
+        let range = proof.batch_range();
+        let command = proof.into_command(sender.clone());
+        // A crash after recording the disposition can leave its exact SNARK in the journal.
+        // Finish that intent even if the frontier moved and the new layout could keep it.
+        let already_regrouped = match publication {
+            Some(publication) if candidates.contains(&range) => {
+                publication.is_regrouped(&command).await?
+            }
+            _ => false,
+        };
+        if !already_regrouped {
+            covered_ranges.push(range);
+        }
+        replay.push((range, command, already_regrouped));
+    }
+
+    let regroup = if publication.is_some() && !fake_mode {
+        StartupRecoveryPlan::unproved_wrappers_to_regroup(
+            last_proved_batch,
+            last_committed_batch,
+            &covered_ranges,
+            max_fris_per_snark,
+            max_assigned_batch_range,
+        )?
+    } else {
+        Default::default()
+    };
+    covered_ranges.retain(|range| !regroup.contains(range));
+    let plan = StartupRecoveryPlan::build(
+        last_proved_batch,
+        last_committed_batch,
+        &covered_ranges,
+        max_fris_per_snark,
+        max_assigned_batch_range,
+        fake_mode,
+    )
+    .context("build ordered SNARK startup recovery plan")?;
+
+    let mut commands = Vec::with_capacity(covered_ranges.len());
+    for (range, command, already_regrouped) in replay {
+        if !already_regrouped && !regroup.contains(&range) {
+            commands.push(command);
+            continue;
+        }
+        if !already_regrouped {
+            // The publication marker must reach disk before the journal unlink, so another
+            // startup can finish retirement without reusing the obsolete endorsements.
+            publication
+                .context("regrouping requires service publication")?
+                .regroup_unproved(&command, last_proved_batch)
+                .await?;
+        }
+        journal.retire_superseded(range.0, range.1).await?;
+    }
+    Ok(PreparedStartupReplay {
+        plan,
+        covered_ranges,
+        commands,
     })
 }
 
@@ -771,12 +862,26 @@ impl PipelineComponent for SnarkProvingPipelineStep {
 
         // The native proved counter is insufficient service authority after a crash between gate
         // acceptance and handoff. Authenticate covered exact commands before recovery may reap.
-        if let Some(publication) = self.service_publication {
+        let mut superseded = Vec::new();
+        if let Some(publication) = &self.service_publication {
             for command in journal
-                .covered_service_commands(last_proved_batch_number)
+                .intersecting_service_commands(last_proved_batch_number)
                 .await?
             {
-                publication.confirm_command(&command).await?;
+                if publication.confirm_recovery(&command).await? {
+                    // A native proof has consumed the prefix. The old wrapper cannot prove its
+                    // suffix independently; normal startup rebuilds FRI work above the frontier.
+                    let batches = command.as_ref();
+                    let from = batches
+                        .first()
+                        .context("empty superseded command")?
+                        .batch_number();
+                    let to = batches
+                        .last()
+                        .context("empty superseded command")?
+                        .batch_number();
+                    superseded.push((from, to));
+                }
             }
         }
 
@@ -804,6 +909,16 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             .map_or(last_proved_batch_number, |snapshot| {
                 snapshot.confirmation_safe_proved
             });
+
+        for (from, to) in superseded {
+            anyhow::ensure!(
+                from <= last_proved_batch_number
+                    && to <= last_committed_batch_number
+                    && from <= confirmation_safe_proved,
+                "startup native settlement changed before retiring superseded wrapper {from}-{to}"
+            );
+            journal.retire_superseded(from, to).await?;
+        }
 
         // SYSCOIN: Canonical-state validate and classify every durable wrapper before exposing any
         // rehydrated FRI to aggregation. Latest-covered but not depth-safe records remain durable
@@ -882,20 +997,21 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             recovered.pending_confirmation.clear();
         }
 
-        let journal_covered_ranges: Vec<_> = recovered
-            .replay
-            .iter()
-            .map(|journaled| journaled.batch_range())
-            .collect();
-        let recovery_plan = StartupRecoveryPlan::build(
+        let PreparedStartupReplay {
+            plan: recovery_plan,
+            covered_ranges: journal_covered_ranges,
+            commands,
+        } = prepare_startup_replay(
+            &journal,
+            self.service_publication.as_ref(),
+            recovered.replay,
             last_proved_batch_number,
             last_committed_batch_number,
-            &journal_covered_ranges,
             max_fris_per_snark,
             max_assigned_batch_range,
             proof_mode == SnarkFriProofMode::Fake,
         )
-        .context("build ordered SNARK startup recovery plan")?;
+        .await?;
         // SYSCOIN: Canonically validated journal ranges acquire in-process ownership before any
         // queue or prover can observe the startup map. Reaped files retain these tombstones until
         // process exit, preventing recreated FRI duplicates from reopening completed work.
@@ -907,19 +1023,15 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             .install_startup_recovery_plan(recovery_plan)
             .await
             .context("install ordered SNARK startup recovery boundary")?;
-        let confirmation_sender = journal.confirmation_sender();
-        for journaled in recovered.replay {
+        for command in commands {
             // SYSCOIN: A durable file is crash authority, not proof validity authority. Re-run the
             // exact fixed-block verifier preflight before recovered bytes can re-enter L1 sending.
-            let (batches, proof) = journaled.preflight_inputs();
+            let (batches, proof) = command.preflight_inputs();
             preflight.verify(batches, proof).await.map_err(|error| {
                 anyhow::anyhow!("recovered SNARK verifier preflight failed: {error}")
             })?;
             proof_output
-                .send_and_record(
-                    L1SenderCommand::SendToL1(journaled.into_command(confirmation_sender.clone())),
-                    &proof_state_reporter,
-                )
+                .send_and_record(L1SenderCommand::SendToL1(command), &proof_state_reporter)
                 .await?;
         }
 
@@ -1483,6 +1595,7 @@ mod tests {
             CanonicalProvedFrontiers {
                 tip_block: 42,
                 safe_block: 40,
+                safe_hash: safe.header.hash,
                 latest_proved: 10,
                 confirmation_safe_proved: 8,
             }
