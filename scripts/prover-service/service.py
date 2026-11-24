@@ -17,6 +17,7 @@ import sys
 
 ZERO = "0x" + "00" * 32
 ZERO_ADDRESS = "0x" + "00" * 20
+SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 MAX_FILE = 16 * 1024 * 1024
 SUBSCRIPTION = [("account", "address"), ("operator", "address"), ("beneficiary", "address"),
                 ("sequencer", "address"), ("firstPeriod", "uint64"), ("lastPeriod", "uint64"),
@@ -130,19 +131,27 @@ def write_new(path, value):
         os.close(fd)
 
 
-def cast(*args, stdin=None):
+def _run_cast(*args, stdin=None):
     try:
-        result = subprocess.run(["cast", *args], input=stdin, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, check=True, timeout=30)
+        return subprocess.run(["cast", *args], input=stdin, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=30)
     except (OSError, subprocess.SubprocessError):
         raise Error("cast_failed") from None
-    return result.stdout.decode().strip()
+
+
+def cast(*args, stdin=None):
+    result = _run_cast(*args, stdin=stdin)
+    require(result.returncode == 0, "cast_failed")
+    try:
+        return result.stdout.decode().strip()
+    except UnicodeDecodeError:
+        raise Error("cast_failed") from None
 
 
 def keccak(data):
     # Stdin avoids OS argv limits for native FRI artifacts and does not expose their bytes in ps.
     digest = cast("keccak", stdin=("0x" + data.hex()).encode())
-    raw_hex(digest, 32)
+    require(re.fullmatch(r"0x[0-9a-f]{64}", digest), "cast_failed")
     return digest
 
 
@@ -417,11 +426,18 @@ def prepare_enrollment(settings, signed_subscription, operator_signature):
 def verify_eoa(request, signature):
     signature_bytes = raw_hex(signature)
     require(len(signature_bytes) == 65 and signature_bytes[64] in (27, 28), "eoa_signature_required")
-    require(0 < int.from_bytes(signature_bytes[32:64], "big") <=
-            0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+    require(0 < int.from_bytes(signature_bytes[:32], "big") < SECP256K1_ORDER
+            and 0 < int.from_bytes(signature_bytes[32:64], "big") <= SECP256K1_ORDER // 2,
             "noncanonical_signature")
-    output = cast("wallet", "verify", "--no-hash", "--address", request["signer"], request["digest"], signature)
-    require("validation succeeded" in output.lower(), "invalid_signature")
+    signer = request["signer"]
+    result = _run_cast("wallet", "verify", "--no-hash", "--address", signer, request["digest"], signature)
+    # Cast uses exit 1 for a signer mismatch and for tool errors. Only its
+    # complete, signer-bound negative verdict can permanently reject a result.
+    negative = f"error: validation failed. address {signer} did not sign this message.".lower().encode()
+    if result.returncode == 1 and not result.stdout and result.stderr.strip().lower() == negative:
+        raise Error("invalid_signature")
+    positive = f"validation succeeded. address {signer} signed this message.".lower().encode()
+    require(result.returncode == 0 and result.stdout.strip().lower() == positive, "cast_failed")
 
 
 def prepare_renewal(settings, signed_subscription, snapshot):

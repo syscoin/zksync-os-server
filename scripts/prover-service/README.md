@@ -74,6 +74,9 @@ before signing; low-level manual signing must apply the same checks.
 
 Fresh operator, sequencer and wrapper signatures are verified with
 `cast wallet verify --no-hash` and require canonical 65-byte EOA signatures.
+CI tests this path with Foundry Cast 1.7.1. If Cast cannot complete verification
+or the coordinator temporarily cannot read a result, it keeps the same signed
+result eligible for the next poll and continues checking other candidates.
 Historical account enrollment consent can instead be authenticated from the exact
 subscription already accepted by the canonical registry, including ERC-1271
 accounts. The offline default still checks EOA account signatures. Contract

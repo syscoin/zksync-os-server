@@ -745,7 +745,12 @@ class Coordinator:
             result = io.validate_result(self.settings, work_hash, io.private_json(path), meta["operator"])
             job.validate_payload(result["proof"], "SNARK", self.settings["vk_hash"], proof=True)
             proof_check.inputs(self.settings, evidence, payload, result["proof"])
-        except (s.Error, job.Error, OSError, ValueError, TypeError, KeyError):
+        except OSError:
+            # An absent or temporarily unreadable inbox is still eligible on the next poll.
+            return None
+        except (s.Error, job.Error, ValueError, TypeError, KeyError) as error:
+            if isinstance(error, s.Error) and str(error) == "cast_failed":
+                return None
             return None, {"ignored": True, "error": "invalid_authenticated_result"}
         # An endorsement for different proof bytes cannot authorize the selected
         # native submission. Its verifier call could delay an already verified proof.
@@ -753,10 +758,17 @@ class Coordinator:
             return None, {"ignored": True}
         try:
             proof_check.verify_snark(self.keeper, self.rpc, evidence, payload, result["proof"], int(self.clock()))
+        except r.RpcError:
+            # The verifier normalizes definitive proof reverts to native_snark_rejected.
+            return None
         except s.Error as error:
-            if str(error) != "native_snark_rejected":
-                raise
-            return None, {"ignored": True, "error": str(error)}
+            reason = str(error)
+            if reason == "native_snark_rejected":
+                return None, {"ignored": True, "error": reason}
+            if reason in ("cast_failed", "rpc_transport_failure", "rpc_http_failure", "rpc_response_limit",
+                          "proof_verification_timeout"):
+                return None
+            raise
         return result, {}
 
     def retained_proof(self, identifier, execute):
@@ -797,9 +809,10 @@ class Coordinator:
                     meta["checked"] = True
                     r.atomic_json(*archive)
                 continue
-            if not path.exists():
+            verified = self.verify_wrapper_result(work_hash, meta, path, evidence, payload, selected)
+            if verified is None:
                 continue
-            result, disposition = self.verify_wrapper_result(work_hash, meta, path, evidence, payload, selected)
+            result, disposition = verified
             if not disposition:
                 if not execute:
                     return "would_retain_verified_wrapper_result"

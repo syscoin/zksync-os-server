@@ -3,6 +3,7 @@ import copy
 from contextlib import nullcontext
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -202,7 +203,7 @@ class CoordinatorTests(unittest.TestCase):
         self.rpc.opened = True
         return identifier, bundle
 
-    def returned(self, work, bare=False, *, endorsement_key="wrapper"):
+    def returned(self, work, bare=False, *, endorsement_key="wrapper", envelope_key="wrapper"):
         directory = Path(self.controller.state["operations"][self.controller.state["active"]]["works"][work["work_hash"]]["directory"])
         envelope = io.private_json(directory / "work.json")
         request = envelope["body"]["request"]
@@ -212,7 +213,7 @@ class CoordinatorTests(unittest.TestCase):
                   "prepared": None if bare else prepared,
                   "wrapper_signature": "0x" if bare else sign(prepared["wrapper_request"], endorsement_key)}
         signed = {"result": result, "operator_signature": sign(io.result_request(self.f["settings"], work["work_hash"],
-                                        result, self.f["proposal"]["candidate"]["operator"]), "wrapper")}
+                                        result, self.f["proposal"]["candidate"]["operator"]), envelope_key)}
         io.immutable_json(directory / "result.json", signed)
         return prepared
 
@@ -1530,6 +1531,90 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
         self.assertTrue(self.controller.state["operations"][identifier]["works"][old["work_hash"]]["ignored"])
 
+    def test_restart_submits_same_wrapper_result_after_envelope_verifier_timeout(self):
+        identifier, _ = self.frozen()
+        work = self.controller.step(True)
+        self.returned(work)
+        result_path = self.base / "inbox" / work["work_hash"][2:] / "result.json"
+        signed_bytes = result_path.read_bytes()
+        signature = json.loads(signed_bytes)["operator_signature"]
+        native_calls = list(self.native.calls)
+        verifier_calls = []
+        run = subprocess.run
+
+        def timeout_on_envelope(command, *args, **kwargs):
+            if command[:3] == ["cast", "wallet", "verify"] and command[-1] == signature:
+                verifier_calls.append(command)
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return run(command, *args, **kwargs)
+
+        with patch.object(subprocess, "run", side_effect=timeout_on_envelope):
+            pending = self.controller.step(True)
+            self.assertEqual((pending["next_action"], pending["work_hash"]), ("await_selected_wrapper", work["work_hash"]))
+        self.assertEqual(len(verifier_calls), 1)
+        op = self.controller_reload().state["operations"][identifier]
+        self.assertEqual(list(op["works"]), [work["work_hash"]])
+        self.assertFalse(op["works"][work["work_hash"]]["checked"])
+        self.assertIsNone(op["proof"])
+        self.assertEqual(self.native.calls, native_calls)
+
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        self.assertEqual(self.controller.step(True)["next_action"], "await_node_publication")
+        op = self.controller_reload().state["operations"][identifier]
+        self.assertEqual(op["proof"]["work_hash"], work["work_hash"])
+        self.assertEqual(list(op["works"]), [work["work_hash"]])
+        self.assertTrue(op["works"][work["work_hash"]]["checked"])
+        self.assertEqual(result_path.read_bytes(), signed_bytes)
+        self.assertEqual(self.native.calls[:-1], native_calls)
+        self.assertEqual(json.loads(self.native.calls[-1][2])["proof"], self.f["snark"]["proof"])
+
+    def test_transient_read_of_older_result_allows_newer_result_in_same_poll(self):
+        identifier, _ = self.frozen()
+        old = self.controller.step(True)
+        self.rpc.turn += 1
+        current = self.controller_reload().step(True)
+        self.returned(old)
+        self.returned(current)
+        controller = self.controller_reload()
+        old_result = self.base / "inbox" / old["work_hash"][2:] / "result.json"
+        current_result = self.base / "inbox" / current["work_hash"][2:] / "result.json"
+        attempts = []
+        read = s.read
+
+        def old_first(identifier, page):
+            items = c.Coordinator.wrapper_work_items(controller, identifier, page)
+            return sorted(items, key=lambda item: item[0] != old["work_hash"])
+
+        def temporary_read_failure(path, *args, **kwargs):
+            if path in (old_result, current_result):
+                attempts.append(path)
+            if path == old_result:
+                raise BlockingIOError("wrapper result temporarily unavailable")
+            return read(path, *args, **kwargs)
+
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        with patch.object(controller, "wrapper_work_items", side_effect=old_first), \
+                patch.object(s, "read", side_effect=temporary_read_failure):
+            self.assertEqual(controller.step(True)["next_action"], "await_node_publication")
+        self.assertEqual(attempts, [old_result, current_result])
+        op = self.controller_reload().state["operations"][identifier]
+        self.assertFalse(op["works"][old["work_hash"]]["checked"])
+        self.assertTrue(op["works"][current["work_hash"]]["checked"])
+        self.assertEqual(op["proof"]["work_hash"], current["work_hash"])
+
+    def test_wrong_outer_signer_is_definitively_ignored_without_selecting_a_proof(self):
+        identifier, _ = self.frozen()
+        work = self.controller.step(True)
+        self.returned(work, envelope_key="operator")
+        self.controller.result(identifier, True)
+        op = self.controller_reload().state["operations"][identifier]
+        meta = op["works"][work["work_hash"]]
+        self.assertEqual((meta["checked"], meta["ignored"], meta["error"]), (True, True, "invalid_authenticated_result"))
+        self.assertIsNone(op["proof"])
+        self.assertEqual(self.rpc.verifications, [])
+        with patch.object(io, "validate_result", side_effect=AssertionError("definitive rejection was retried")):
+            self.assertIsNone(self.controller.result(identifier, True))
+
     def test_canonical_revert_is_retired_across_restart_and_turn_rotation(self):
         identifier, _ = self.frozen()
         old = self.controller.step(True)
@@ -1598,12 +1683,20 @@ class CoordinatorTests(unittest.TestCase):
         work = self.controller.step(True)
         self.returned(work, bare=True)
         original = copy.deepcopy(self.controller.state)
+        with patch.dict(self.rpc.status_overrides, {(self.f["settings"]["chain_address"], "getVerifier()"): a(250)}):
+            with self.assertRaisesRegex(s.Error, "native_verifier_changed"):
+                self.controller.result(identifier, True)
+            self.assertEqual(self.controller_reload().state, original)
         for error in (r.RpcError(3), r.RpcError(3, "0x"), s.Error("rpc_transport_failure")):
             with self.subTest(error=error):
                 self.rpc.verification_error = error
-                with self.assertRaises(s.Error):
-                    self.controller.result(identifier, True)
+                self.assertIsNone(self.controller.result(identifier, True))
                 self.assertEqual(self.controller.state, original)
+        self.rpc.turn += 1
+        following = self.controller_reload().step(True)
+        self.assertEqual(following["next_action"], "await_selected_wrapper")
+        self.assertNotEqual(following["work_hash"], work["work_hash"])
+        self.assertFalse(self.controller.state["operations"][identifier]["works"][work["work_hash"]]["checked"])
         self.rpc.verification_error = None
         self.controller_reload().result(identifier, True)
         self.assertTrue(self.controller.state["operations"][identifier]["works"][work["work_hash"]]["checked"])
