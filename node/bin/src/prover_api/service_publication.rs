@@ -7,7 +7,7 @@ use alloy::{
     primitives::{Address, B256, Bytes, U256, keccak256},
     providers::Provider,
     rpc::types::{BlockId, BlockNumberOrTag},
-    sol_types::{SolCall, SolEvent, SolValue},
+    sol_types::{SolEvent, SolValue},
 };
 use anyhow::Context;
 use async_trait::async_trait;
@@ -138,7 +138,8 @@ impl Work {
             batch_outputs: command.service_batch_outputs(),
         };
         anyhow::ensure!(
-            !work.chain_address.is_zero()
+            !work.gate.is_zero()
+                && !work.chain_address.is_zero()
                 && !work.execution_chain_id.is_zero()
                 && !work.settlement_chain_id.is_zero(),
             "service publication requires native chain identity"
@@ -223,8 +224,8 @@ impl Work {
         } else {
             PackagePhaseV1::Bootstrap
         };
-        // These historical phase fields only reconstruct calldata. Successful execution by the
-        // pinned gate, checked below, authenticates the former live turn and endorsements.
+        // The retained sidecar supplies historical phase fields. Successful execution by the
+        // pinned gate authenticates the former live turn and endorsements.
         Ok(ValidationContextV1 {
             child_chain_id: self.execution_chain_id,
             child_chain_address: self.chain_address,
@@ -277,7 +278,7 @@ impl PipelineComponent for ProofPublication {
                         if !confirmed_work_hashes.contains(&work_hash) {
                             let native =
                                 NativeBatch::from_batch(&batch, work.required_confirmations);
-                            if !publication.wait_for_work(&work, None, &native).await? {
+                            if !publication.wait_for_work(&work, &native).await? {
                                 confirmed_work_hashes.insert(work_hash);
                             }
                         }
@@ -347,7 +348,7 @@ impl ServicePublication {
             .await?;
         let native = NativeBatch::from_work(&work, work.batch_from)?;
         anyhow::ensure!(
-            !self.wait_for_work(&work, Some(command), &native).await?,
+            !self.wait_for_work(&work, &native).await?,
             "native settlement overtook service work {}-{}; restart for canonical batch discovery",
             work.batch_from,
             work.batch_to
@@ -362,15 +363,10 @@ impl ServicePublication {
             .stage(&Work::new(command, self)?, self.config.max_records)?
             .0;
         let native = NativeBatch::from_work(&work, work.batch_from)?;
-        self.wait_for_work(&work, Some(command), &native).await
+        self.wait_for_work(&work, &native).await
     }
 
-    async fn wait_for_work(
-        &self,
-        work: &Work,
-        command: Option<&ProofCommand>,
-        native: &NativeBatch,
-    ) -> anyhow::Result<bool> {
+    async fn wait_for_work(&self, work: &Work, native: &NativeBatch) -> anyhow::Result<bool> {
         let (_, directory, work_hash) = self.journal.stage(work, self.config.max_records)?;
         tracing::info!(batch_from=work.batch_from, batch_to=work.batch_to,
             directory=%directory.display(), "native proof awaiting canonical service receipt");
@@ -385,7 +381,7 @@ impl ServicePublication {
                             && !handoff.transaction_hash.is_zero(),
                         "service handoff identity mismatch"
                     );
-                    self.observe(work, work_hash, &handoff, command).await
+                    self.observe(work, work_hash, &handoff).await
                 };
                 match tokio::time::timeout(self.config.rpc_timeout, result).await {
                     Ok(Ok(Some(confirmed))) => {
@@ -430,7 +426,6 @@ impl ServicePublication {
         work: &Work,
         work_hash: B256,
         handoff: &Handoff,
-        command: Option<&ProofCommand>,
     ) -> anyhow::Result<Option<Confirmed>> {
         let provider = &self.provider;
         anyhow::ensure!(
@@ -473,6 +468,10 @@ impl ServicePublication {
                 && transaction.block_number() == Some(block_number)
                 && transaction.to() == receipt.to,
             "service transaction differs from its mined receipt"
+        );
+        anyhow::ensure!(
+            transaction.to() != Some(work.gate) || transaction.value().is_zero(),
+            "direct service gate submission carries value"
         );
         let package_hash = hash_package(&handoff.sidecar.accepted_package);
         let bootstrap = handoff.sidecar.candidate.is_none();
@@ -555,26 +554,13 @@ impl ServicePublication {
             0
         };
         let context = work.context(&handoff.sidecar, first_service_period)?;
-        let calldata = if let Some(command) = command {
-            command
-                .service_submission(work.gate, &handoff.sidecar, &context)?
-                .calldata
-        } else {
-            anyhow::ensure!(
-                handoff.sidecar.batch_outputs == work.batch_outputs,
-                "service outputs differ from retained native work"
-            );
-            handoff.sidecar.validate(&context, &work.proof_data)?;
-            encode_historical_calldata(work, &handoff.sidecar)
-        };
-        // A smart account's outer calldata and value belong to the forwarding call. The
-        // pinned gate emits the matching package hash only after it verifies the native proof.
-        if transaction.to() == Some(work.gate) {
-            anyhow::ensure!(
-                transaction.input() == &calldata && transaction.value().is_zero(),
-                "service transaction differs from exact native gate call"
-            );
-        }
+        // Anyone can relay the endorsed package. The pinned gate authenticates the package
+        // and proof regardless of how the submitting wallet encoded the transaction.
+        anyhow::ensure!(
+            handoff.sidecar.batch_outputs == work.batch_outputs,
+            "service outputs differ from retained native work"
+        );
+        handoff.sidecar.validate(&context, &work.proof_data)?;
         let canonical = provider
             .get_block_by_number(BlockNumberOrTag::Number(block_number))
             .await?
@@ -608,33 +594,6 @@ impl ServicePublication {
             calldata_hash: keccak256(transaction.input()),
             package_hash,
         }))
-    }
-}
-
-fn encode_historical_calldata(work: &Work, sidecar: &ProverServiceSidecarV1) -> Bytes {
-    if let Some(candidate) = &sidecar.candidate {
-        IZkSysProofGateV1::submitCall {
-            accepted: sidecar.accepted_package.clone(),
-            duties: sidecar.duties.clone(),
-            outputs: sidecar.batch_outputs.clone(),
-            proofData: work.proof_data.clone(),
-            candidate: candidate.clone(),
-            candidateProof: sidecar.candidate_proof.clone(),
-            sequencerSignature: sidecar.sequencer_signature.clone(),
-            wrapperSignature: sidecar.wrapper_signature.clone(),
-        }
-        .abi_encode()
-        .into()
-    } else {
-        IZkSysProofGateV1::submitBootstrapCall {
-            accepted: sidecar.accepted_package.clone(),
-            duties: sidecar.duties.clone(),
-            outputs: sidecar.batch_outputs.clone(),
-            proofData: work.proof_data.clone(),
-            sequencerSignature: sidecar.sequencer_signature.clone(),
-        }
-        .abi_encode()
-        .into()
     }
 }
 

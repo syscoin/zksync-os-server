@@ -53,8 +53,10 @@ Use the actual deployed addresses, genesis and code hashes and start scanning
 at or before each gate's first event. The receipt signer signs zkSYS claims and
 Gateway-native NEVM relays; fund it on both chains. Its keystore and password
 file must correspond to `signer`. Retain the complete package and signed duties
-from each gate transaction; direct gate-call calldata can also supply these.
-Missing sidecars for routed or multisig calls remain pending for recovery.
+from each gate transaction. The worker can also recover them from direct gate
+calls it can decode. For a forwarded call or an unsupported direct duty
+encoding, it records the verified event as unresolved and continues scanning.
+Restore its matching sidecar in the configured artifact directory to resume credit.
 
 Create `/private/service/root-base.json` with all fields required by
 `configuration()` in [service_gateway_root_relayer.py](service_gateway_root_relayer.py),

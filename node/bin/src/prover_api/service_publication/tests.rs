@@ -8,7 +8,7 @@ use alloy::{
         json_rpc::ErrorPayload,
         types::{Block, Transaction},
     },
-    sol_types::SolValue,
+    sol_types::{SolCall, SolValue},
     transports::mock::Asserter,
 };
 use serde_json::{Value, json};
@@ -34,6 +34,33 @@ async fn provider(asserter: &Asserter) -> NodeProvider {
     )
     .await
     .unwrap()
+}
+
+fn gate_calldata(work: &Work, sidecar: &ProverServiceSidecarV1) -> Bytes {
+    if let Some(candidate) = &sidecar.candidate {
+        IZkSysProofGateV1::submitCall {
+            accepted: sidecar.accepted_package.clone(),
+            duties: sidecar.duties.clone(),
+            outputs: sidecar.batch_outputs.clone(),
+            proofData: work.proof_data.clone(),
+            candidate: candidate.clone(),
+            candidateProof: sidecar.candidate_proof.clone(),
+            sequencerSignature: sidecar.sequencer_signature.clone(),
+            wrapperSignature: sidecar.wrapper_signature.clone(),
+        }
+        .abi_encode()
+        .into()
+    } else {
+        IZkSysProofGateV1::submitBootstrapCall {
+            accepted: sidecar.accepted_package.clone(),
+            duties: sidecar.duties.clone(),
+            outputs: sidecar.batch_outputs.clone(),
+            proofData: work.proof_data.clone(),
+            sequencerSignature: sidecar.sequencer_signature.clone(),
+        }
+        .abi_encode()
+        .into()
+    }
 }
 
 async fn fixture(
@@ -105,7 +132,7 @@ async fn fixture(
         work.timelock,
     )
     .unwrap();
-    let calldata = encode_historical_calldata(&work, &sidecar);
+    let calldata = gate_calldata(&work, &sidecar);
     let handoff = Handoff {
         schema_version: 1,
         work_hash: keccak256(serde_json::to_vec(&work).unwrap()),
@@ -221,7 +248,7 @@ async fn confirms_exact_bootstrap_and_service_receipts_at_inclusive_depth() {
         asserter.push_success(&receipt);
         asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
         let confirmed = publication
-            .observe(&work, handoff.work_hash, &handoff, None)
+            .observe(&work, handoff.work_hash, &handoff)
             .await
             .unwrap()
             .unwrap();
@@ -246,7 +273,7 @@ async fn insufficient_depth_preserves_pending_work() {
     );
     assert!(
         publication
-            .observe(&work, handoff.work_hash, &handoff, None)
+            .observe(&work, handoff.work_hash, &handoff)
             .await
             .unwrap()
             .is_none()
@@ -254,18 +281,20 @@ async fn insufficient_depth_preserves_pending_work() {
 }
 
 #[tokio::test]
-async fn rejects_foreign_calldata_missing_event_reverted_receipt_and_wrong_runtime() {
-    for mutation in ["calldata", "event", "reverted", "runtime"] {
+async fn rejects_direct_value_missing_event_reverted_receipt_and_wrong_runtime() {
+    for (mutation, expected) in [
+        ("value", "direct service gate submission carries value"),
+        ("event", "expected exactly one service acceptance"),
+        ("reverted", "service transaction reverted"),
+        (
+            "runtime",
+            "service gate runtime does not match reviewed pin",
+        ),
+    ] {
         let asserter = Asserter::new();
         let (publication, work, mut handoff, calldata, _temp) = fixture(&asserter, true).await;
-        let tx = transaction(
-            &work,
-            if mutation == "calldata" {
-                Bytes::from_static(b"other proof")
-            } else {
-                calldata.clone()
-            },
-        );
+        let value = U256::from(u8::from(mutation == "value"));
+        let tx = transaction_to(&work, work.gate, calldata, value);
         handoff.transaction_hash = tx.tx_hash();
         let mut receipt = receipt(&work, &handoff);
         if mutation == "event" {
@@ -277,16 +306,12 @@ async fn rejects_foreign_calldata_missing_event_reverted_receipt_and_wrong_runti
         push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
         if mutation == "runtime" {
             asserter.push_success(&Bytes::from_static(b"unreviewed"));
-        } else if mutation == "calldata" {
-            push_contracts(&asserter, &work);
         }
         let error = publication
-            .observe(&work, handoff.work_hash, &handoff, None)
+            .observe(&work, handoff.work_hash, &handoff)
             .await
             .unwrap_err();
-        if mutation == "calldata" {
-            assert!(error.to_string().contains("exact native gate call"));
-        }
+        assert!(error.to_string().contains(expected), "{mutation}: {error}");
     }
 }
 
@@ -338,7 +363,7 @@ async fn routed_receipt_requires_unique_canonical_event_and_retained_commitments
             asserter.push_success(&receipt);
         }
         let err = publication
-            .observe(&work, handoff.work_hash, &handoff, None)
+            .observe(&work, handoff.work_hash, &handoff)
             .await
             .unwrap_err();
         assert!(err.to_string().contains(expected), "{mutation}: {err}");
@@ -352,7 +377,7 @@ async fn historical_service_receipt_rejects_duty_before_pinned_first_period() {
     handoff.sidecar.duties[0].period = 4;
     handoff.sidecar.accepted_package.reportHash =
         zksync_os_contract_interface::prover_service_v1::hash_report(&handoff.sidecar.duties);
-    let calldata = encode_historical_calldata(&work, &handoff.sidecar);
+    let calldata = gate_calldata(&work, &handoff.sidecar);
     let tx = transaction(&work, calldata);
     handoff.transaction_hash = tx.tx_hash();
     push_start(
@@ -365,7 +390,7 @@ async fn historical_service_receipt_rejects_duty_before_pinned_first_period() {
     );
     push_contracts(&asserter, &work);
     let error = publication
-        .observe(&work, handoff.work_hash, &handoff, None)
+        .observe(&work, handoff.work_hash, &handoff)
         .await
         .unwrap_err();
     assert_eq!(
@@ -400,7 +425,7 @@ async fn rejects_reorg_and_receipt_disappearance_after_historical_checks() {
         asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
         assert!(
             publication
-                .observe(&work, handoff.work_hash, &handoff, None)
+                .observe(&work, handoff.work_hash, &handoff)
                 .await
                 .is_err(),
             "{mutation}"
@@ -480,6 +505,16 @@ fn publication_batches(work: &Work, from: u64, to: u64) -> Vec<SignedBatchEnvelo
 
 #[tokio::test]
 async fn routed_service_package_forwards_its_batches_live_and_after_journal_restart() {
+    check_external_publication_after_restart(true).await;
+}
+
+#[tokio::test]
+async fn independently_endorsed_direct_package_forwards_its_batches_live_and_after_journal_restart()
+{
+    check_external_publication_after_restart(false).await;
+}
+
+async fn check_external_publication_after_restart(forwarded: bool) {
     use zksync_os_batch_types::batcher_model::{RealSnarkProof, SnarkProof};
 
     async fn forward_batches(
@@ -532,8 +567,22 @@ async fn routed_service_package_forwards_its_batches_live_and_after_journal_rest
     handoff.sidecar.accepted_package.reportHash =
         zksync_os_contract_interface::prover_service_v1::hash_report(&[]);
     handoff.sidecar.batch_outputs = work.batch_outputs.clone();
-    let router = Address::repeat_byte(90);
-    let tx = transaction_to(&work, router, Bytes::from_static(b"forward"), U256::from(1));
+    let tx = if forwarded {
+        transaction_to(
+            &work,
+            Address::repeat_byte(90),
+            Bytes::from_static(b"forward"),
+            U256::from(1),
+        )
+    } else {
+        // The RPC fixture attests a package submitted with a different contract-wallet endorsement.
+        let mut submitted = handoff.sidecar.clone();
+        submitted.wrapper_signature =
+            Bytes::from_static(b"independent contract wallet endorsement");
+        let input = gate_calldata(&work, &submitted);
+        assert_ne!(input, gate_calldata(&work, &handoff.sidecar));
+        transaction(&work, input)
+    };
     handoff.transaction_hash = tx.tx_hash();
     atomic_write(
         &directory.join("relay.json"),
@@ -541,19 +590,21 @@ async fn routed_service_package_forwards_its_batches_live_and_after_journal_rest
     )
     .unwrap();
     let mut receipt = receipt(&work, &handoff);
-    receipt["to"] = json!(router);
-    let following = IZkSysProofGateV1::ServicePackageAccepted {
-        packageHash: B256::repeat_byte(91),
-        from: 3,
-        to: 4,
-        bootstrap: false,
+    receipt["to"] = json!(tx.to());
+    if forwarded {
+        let following = IZkSysProofGateV1::ServicePackageAccepted {
+            packageHash: B256::repeat_byte(91),
+            from: 3,
+            to: 4,
+            bootstrap: false,
+        }
+        .encode_log_data();
+        let mut other = receipt["logs"][0].clone();
+        other["topics"] = json!(following.topics());
+        other["data"] = json!(following.data);
+        other["logIndex"] = json!("0x1");
+        receipt["logs"].as_array_mut().unwrap().push(other);
     }
-    .encode_log_data();
-    let mut other = receipt["logs"][0].clone();
-    other["topics"] = json!(following.topics());
-    other["data"] = json!(following.data);
-    other["logIndex"] = json!("0x1");
-    receipt["logs"].as_array_mut().unwrap().push(other);
     let push_observation = || {
         push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
         push_contracts(&asserter, &work);
@@ -653,10 +704,7 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         )
         .unwrap()
         .calldata;
-    assert_eq!(
-        calldata,
-        encode_historical_calldata(&work, &handoff.sidecar)
-    );
+    assert_eq!(calldata, gate_calldata(&work, &handoff.sidecar));
     let tx = transaction(&work, calldata);
     handoff.transaction_hash = tx.tx_hash();
     atomic_write(
@@ -727,7 +775,7 @@ async fn restart_cannot_lower_the_frozen_confirmation_depth() {
         );
         assert!(
             publication
-                .observe(&work, handoff.work_hash, &handoff, None)
+                .observe(&work, handoff.work_hash, &handoff)
                 .await
                 .unwrap()
                 .is_none()
@@ -812,12 +860,7 @@ async fn native_observations_authorize_only_the_matching_batch() {
         }
         let (_, directory, _) = publication.journal.stage(&work, 256).unwrap();
         if number == 1 && matching_hash {
-            assert!(
-                publication
-                    .wait_for_work(&work, None, &native)
-                    .await
-                    .unwrap()
-            );
+            assert!(publication.wait_for_work(&work, &native).await.unwrap());
             let evidence = read_private(&directory.join("superseded.json"))
                 .unwrap()
                 .unwrap();

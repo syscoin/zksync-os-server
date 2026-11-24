@@ -358,10 +358,12 @@ constructs the gate call.
 The node's opt-in `service_publication` configuration replaces its proof sender
 with a durable external-wallet handoff on each execution lane. It writes the
 exact native proof bytes, batch outputs and reviewed deployment pins to a private
-`work.json`. After a relayer returns a matching `relay.json`, the node reconstructs
-the exact gate call and verifies its successful transaction, acceptance event,
-historical contract code and configuration, canonical block and configured
-confirmation depth before advancing service-proved batches to execution.
+`work.json`. After a relayer returns a matching `relay.json`, the node binds the
+retained proof, batch outputs and duty report to one matching acceptance event
+from the pinned gate. It verifies the successful transaction, historical
+contract code and configuration, canonical block and configured confirmation
+depth before advancing the batches to execution. This applies to both direct
+submissions and calls forwarded through a smart account.
 For a confirmed native-only advance, the node authenticates the reviewed gate's
 observation and the canonical stored hash for each local batch it forwards.
 Superseded wrappers are retired and outstanding batches are regrouped from the

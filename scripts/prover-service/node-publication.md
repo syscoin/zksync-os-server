@@ -102,10 +102,11 @@ from the gate's parent hash is insufficient: the actual accepting transaction
 hash must first be found. This hint does not authorize execution itself.
 
 The node binds the accepted package to its retained batch range, outputs, proof
-bytes and duty report. Direct gate transactions must carry zero value and the
-exact reconstructed calldata. For a submission forwarded by a smart account or
-router, the pinned gate's acceptance event authenticates the package inside the
-outer transaction. Other packages can have acceptance events in the same receipt.
+bytes and duty report. The pinned gate's acceptance event authenticates the
+package for both direct submissions and calls forwarded by a smart account or
+router. Direct gate transactions must carry zero value. The stock relay also
+checks the exact transaction bytes it signs and broadcasts. Other packages can
+have acceptance events in the same receipt.
 The node requires a successful receipt with exactly one matching event, the
 reviewed historical gate/coordinator runtimes and configuration, a stable
 settlement identity, and canonical inclusion/tip postchecks. It enforces at least
