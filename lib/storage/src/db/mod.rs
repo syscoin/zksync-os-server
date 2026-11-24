@@ -1,5 +1,5 @@
 mod replay;
-pub use replay::BlockReplayStorage;
+pub use replay::{ArchiveReplayRecovery, BlockReplayStorage};
 
 mod repository;
 pub use repository::RepositoryDb;
