@@ -471,10 +471,8 @@ impl ServicePublication {
                 && transaction.tx_hash() == handoff.transaction_hash
                 && transaction.block_hash() == Some(block_hash)
                 && transaction.block_number() == Some(block_number)
-                && transaction.to() == Some(work.gate)
-                && receipt.to == Some(work.gate)
-                && transaction.value().is_zero(),
-            "service transaction differs from exact native gate call"
+                && transaction.to() == receipt.to,
+            "service transaction differs from its mined receipt"
         );
         let package_hash = hash_package(&handoff.sidecar.accepted_package);
         let bootstrap = handoff.sidecar.candidate.is_none();
@@ -497,9 +495,11 @@ impl ServicePublication {
                 "noncanonical service acceptance log"
             );
             let event = IZkSysProofGateV1::ServicePackageAccepted::decode_log(&log.inner)?.data;
+            if event.packageHash != package_hash {
+                continue;
+            }
             anyhow::ensure!(
-                event.packageHash == package_hash
-                    && event.from == work.batch_from
+                event.from == work.batch_from
                     && event.to == work.batch_to
                     && event.bootstrap == bootstrap,
                 "service acceptance event differs from retained package"
@@ -560,13 +560,21 @@ impl ServicePublication {
                 .service_submission(work.gate, &handoff.sidecar, &context)?
                 .calldata
         } else {
+            anyhow::ensure!(
+                handoff.sidecar.batch_outputs == work.batch_outputs,
+                "service outputs differ from retained native work"
+            );
             handoff.sidecar.validate(&context, &work.proof_data)?;
             encode_historical_calldata(work, &handoff.sidecar)
         };
-        anyhow::ensure!(
-            transaction.input() == &calldata,
-            "service transaction differs from exact native gate call"
-        );
+        // A smart account's outer calldata and value belong to the forwarding call. The
+        // pinned gate emits the matching package hash only after it verifies the native proof.
+        if transaction.to() == Some(work.gate) {
+            anyhow::ensure!(
+                transaction.input() == &calldata && transaction.value().is_zero(),
+                "service transaction differs from exact native gate call"
+            );
+        }
         let canonical = provider
             .get_block_by_number(BlockNumberOrTag::Number(block_number))
             .await?
@@ -584,7 +592,10 @@ impl ServicePublication {
                 && canonical_tip.header.hash == tip.header.hash
                 && again.block_hash == Some(block_hash)
                 && again.block_number == Some(block_number)
+                && again.transaction_hash == handoff.transaction_hash
                 && again.status()
+                && again.to == receipt.to
+                && again.inner.logs() == receipt.inner.logs()
                 && U256::from(provider.get_chain_id().await?) == work.settlement_chain_id,
             "service receipt changed during canonical confirmation check"
         );
@@ -594,7 +605,7 @@ impl ServicePublication {
             transaction_hash: handoff.transaction_hash,
             block_hash,
             block_number,
-            calldata_hash: keccak256(&calldata),
+            calldata_hash: keccak256(transaction.input()),
             package_hash,
         }))
     }

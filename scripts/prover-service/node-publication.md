@@ -101,16 +101,20 @@ and Keccak hash of the exact `work.json` bytes. An external acceptance known onl
 from the gate's parent hash is insufficient: the actual accepting transaction
 hash must first be found. This hint does not authorize execution itself.
 
-The node reconstructs `service_submission` from its retained native command and
-checks the actual mined transaction's destination, zero value and exact calldata.
-It requires a successful receipt and exactly one matching gate acceptance event,
-the reviewed historical gate/coordinator runtimes and configuration, a stable
+The node binds the accepted package to its retained batch range, outputs, proof
+bytes and duty report. Direct gate transactions must carry zero value and the
+exact reconstructed calldata. For a submission forwarded by a smart account or
+router, the pinned gate's acceptance event authenticates the package inside the
+outer transaction. Other packages can have acceptance events in the same receipt.
+The node requires a successful receipt with exactly one matching event, the
+reviewed historical gate/coordinator runtimes and configuration, a stable
 settlement identity, and canonical inclusion/tip postchecks. It enforces at least
 both the stored and current confirmation depths. Pending, reverted, malformed,
 foreign, reorged or unavailable receipts keep the native proof waiting. A local
 `confirmed.json` never substitutes for fresh chain checks on restart.
 
-For a service acceptance, the node records `confirmed.json`, notifies the durable
+For a service acceptance, the node records the mined transaction's calldata hash
+and the accepted package hash in `confirmed.json`, notifies the durable
 SNARK journal and forwards the original batch envelopes to priority-tree and
 execute processing. Restore the service receipt and original `work.json` when
 recovering that acceptance.

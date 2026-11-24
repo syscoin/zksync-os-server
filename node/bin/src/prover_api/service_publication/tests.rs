@@ -116,9 +116,14 @@ async fn fixture(
 }
 
 fn transaction(work: &Work, calldata: Bytes) -> Transaction {
+    transaction_to(work, work.gate, calldata, U256::ZERO)
+}
+
+fn transaction_to(work: &Work, destination: Address, calldata: Bytes, value: U256) -> Transaction {
     let tx = TxLegacy {
         chain_id: Some(work.settlement_chain_id.to::<u64>()),
-        to: TxKind::Call(work.gate),
+        to: TxKind::Call(destination),
+        value,
         input: calldata,
         gas_limit: 1_000_000,
         gas_price: 1,
@@ -286,6 +291,61 @@ async fn rejects_foreign_calldata_missing_event_reverted_receipt_and_wrong_runti
 }
 
 #[tokio::test]
+async fn routed_receipt_requires_unique_canonical_event_and_retained_commitments() {
+    for (mutation, expected) in [
+        ("destination", "differs from its mined receipt"),
+        ("foreign gate", "exactly one service acceptance"),
+        ("foreign package", "exactly one service acceptance"),
+        ("duplicate", "exactly one service acceptance"),
+        ("range", "differs from retained package"),
+        ("proof", "mismatched manifest, report or proof"),
+        ("duties", "mismatched manifest, report or proof"),
+        ("outputs", "outputs differ from retained native work"),
+        ("changed receipt", "changed during canonical confirmation"),
+    ] {
+        let asserter = Asserter::new();
+        let (publication, work, mut handoff, _, _temp) = fixture(&asserter, false).await;
+        let router = Address::repeat_byte(90);
+        let tx = transaction_to(&work, router, Bytes::from_static(b"forward"), U256::from(1));
+        handoff.transaction_hash = tx.tx_hash();
+        if mutation == "proof" {
+            handoff.sidecar.accepted_package.proofHash = B256::repeat_byte(91);
+        } else if mutation == "duties" {
+            handoff.sidecar.duties.clear();
+        } else if mutation == "outputs" {
+            handoff.sidecar.batch_outputs[0].settlementChainId += U256::from(1);
+        }
+        let mut receipt = receipt(&work, &handoff);
+        receipt["to"] = json!(router);
+        match mutation {
+            "destination" => receipt["to"] = json!(work.gate),
+            "foreign gate" => receipt["logs"][0]["address"] = json!(router),
+            "foreign package" => receipt["logs"][0]["topics"][1] = json!(B256::repeat_byte(90)),
+            "duplicate" => {
+                let mut duplicate = receipt["logs"][0].clone();
+                duplicate["logIndex"] = json!("0x1");
+                receipt["logs"].as_array_mut().unwrap().push(duplicate);
+            }
+            "range" => receipt["logs"][0]["topics"][2] = json!(B256::ZERO),
+            _ => {}
+        }
+        push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
+        push_contracts(&asserter, &work);
+        if mutation == "changed receipt" {
+            asserter.push_success(&block(42, B256::repeat_byte(42)));
+            asserter.push_success(&block(44, B256::repeat_byte(44)));
+            receipt["logs"] = json!([]);
+            asserter.push_success(&receipt);
+        }
+        let err = publication
+            .observe(&work, handoff.work_hash, &handoff, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(expected), "{mutation}: {err}");
+    }
+}
+
+#[tokio::test]
 async fn historical_service_receipt_rejects_duty_before_pinned_first_period() {
     let asserter = Asserter::new();
     let (publication, work, mut handoff, _, _temp) = fixture(&asserter, false).await;
@@ -416,6 +476,118 @@ fn publication_batches(work: &Work, from: u64, to: u64) -> Vec<SignedBatchEnvelo
         batches.push(batch);
     }
     batches
+}
+
+#[tokio::test]
+async fn routed_service_package_forwards_its_batches_live_and_after_journal_restart() {
+    use zksync_os_batch_types::batcher_model::{RealSnarkProof, SnarkProof};
+
+    async fn forward_batches(
+        publication: ServicePublication,
+        commands: Vec<L1SenderCommand<ProofCommand>>,
+    ) -> Vec<SignedBatchEnvelope<FriProof>> {
+        let (input_tx, input_rx) = mpsc::channel(commands.len());
+        let (output_tx, mut output_rx) = mpsc::channel(2);
+        let (reporter, _state) = ComponentStateReporter::new("routed_service_publication");
+        for command in commands {
+            input_tx.send(command).await.unwrap();
+        }
+        drop(input_tx);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ProofPublication::Service(publication).run(
+                PeekableReceiver::new(input_rx),
+                output_tx,
+                reporter,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let batches = vec![output_rx.try_recv().unwrap(), output_rx.try_recv().unwrap()];
+        assert_eq!(
+            (batches[0].batch_number(), batches[1].batch_number()),
+            (1, 2)
+        );
+        batches
+    }
+
+    let asserter = Asserter::new();
+    let (publication, fixture_work, mut handoff, _, _temp) = fixture(&asserter, false).await;
+    let (confirmed_tx, mut confirmed_rx) = mpsc::unbounded_channel();
+    let command = ProofCommand::new_durable(
+        publication_batches(&fixture_work, 1, 2),
+        SnarkProof::Real(RealSnarkProof {
+            proof: vec![7; 1408],
+            proving_execution_version: 8,
+        }),
+        "retained-proof".to_owned(),
+        confirmed_tx,
+    );
+    let work = Work::new(&command, &publication).unwrap();
+    let (_, directory, work_hash) = publication.journal.stage(&work, 256).unwrap();
+    handoff.work_hash = work_hash;
+    handoff.sidecar.accepted_package.proofHash = keccak256(&work.proof_data);
+    handoff.sidecar.duties.clear();
+    handoff.sidecar.accepted_package.reportHash =
+        zksync_os_contract_interface::prover_service_v1::hash_report(&[]);
+    handoff.sidecar.batch_outputs = work.batch_outputs.clone();
+    let router = Address::repeat_byte(90);
+    let tx = transaction_to(&work, router, Bytes::from_static(b"forward"), U256::from(1));
+    handoff.transaction_hash = tx.tx_hash();
+    atomic_write(
+        &directory.join("relay.json"),
+        &serde_json::to_vec(&handoff).unwrap(),
+    )
+    .unwrap();
+    let mut receipt = receipt(&work, &handoff);
+    receipt["to"] = json!(router);
+    let following = IZkSysProofGateV1::ServicePackageAccepted {
+        packageHash: B256::repeat_byte(91),
+        from: 3,
+        to: 4,
+        bootstrap: false,
+    }
+    .encode_log_data();
+    let mut other = receipt["logs"][0].clone();
+    other["topics"] = json!(following.topics());
+    other["data"] = json!(following.data);
+    other["logIndex"] = json!("0x1");
+    receipt["logs"].as_array_mut().unwrap().push(other);
+    let push_observation = || {
+        push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
+        push_contracts(&asserter, &work);
+        asserter.push_success(&block(42, B256::repeat_byte(42)));
+        asserter.push_success(&block(44, B256::repeat_byte(44)));
+        asserter.push_success(&receipt);
+        asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
+    };
+    let config = publication.config.clone();
+    let provider = publication.provider.clone();
+    push_observation();
+    let batches = forward_batches(publication, vec![L1SenderCommand::SendToL1(command)]).await;
+    assert_eq!(confirmed_rx.try_recv().unwrap(), "retained-proof");
+    let confirmed: Confirmed = serde_json::from_slice(
+        &read_private(&directory.join("confirmed.json"))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(confirmed.calldata_hash, keccak256(tx.input()));
+    assert_eq!(
+        confirmed.package_hash,
+        hash_package(&handoff.sidecar.accepted_package)
+    );
+
+    let restarted =
+        ServicePublication::new(config, provider, ConfirmationPolicy::new(3), work.timelock)
+            .unwrap();
+    push_observation();
+    let passthrough = batches
+        .into_iter()
+        .map(|batch| L1SenderCommand::Passthrough(Box::new(batch)))
+        .collect();
+    forward_batches(restarted, passthrough).await;
 }
 
 #[tokio::test]

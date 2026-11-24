@@ -376,8 +376,12 @@ def snapshot(path, *, map_fields=("operations",), list_fields=()):
         s.require(row is not None, "journal_metadata_missing")
         if marker.get("storage_version") != 2:
             origin = connection.execute("SELECT value FROM metadata WHERE key='origin'").fetchone()
-            s.require(origin is not None and origin[0] == hashlib.sha256(raw).hexdigest(),
-                      "journal_migration_source_changed")
+            s.require(origin is not None, "journal_migration_source_changed")
+            if origin[0] != hashlib.sha256(raw).hexdigest():
+                # An inline save and promotion may both commit between our first read and BEGIN.
+                current = s.read(path, private=True)
+                s.require(origin[0] == hashlib.sha256(current).hexdigest()
+                          or _decode(current).get("storage_version") == 2, "journal_migration_source_changed")
         state = _stored_state(_decode(row[0]), map_fields, list_fields)
         for field in (*map_fields, *list_fields):
             parent, key = _field(state, field)
