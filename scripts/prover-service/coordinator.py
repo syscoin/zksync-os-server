@@ -748,7 +748,7 @@ class Coordinator:
         except OSError:
             # An absent or temporarily unreadable inbox is still eligible on the next poll.
             return None
-        except (s.Error, job.Error, ValueError, TypeError, KeyError) as error:
+        except (s.Error, job.Error, ValueError, TypeError, KeyError, RecursionError) as error:
             if isinstance(error, s.Error) and str(error) == "cast_failed":
                 return None
             return None, {"ignored": True, "error": "invalid_authenticated_result"}

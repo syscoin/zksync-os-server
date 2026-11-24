@@ -1531,6 +1531,39 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
         self.assertTrue(self.controller.state["operations"][identifier]["works"][old["work_hash"]]["ignored"])
 
+    def test_result_nesting_error_does_not_block_submission_or_recur_after_restart(self):
+        identifier, _ = self.frozen()
+        valid = self.controller.step(True)
+        self.rpc.turn += 1
+        malformed = self.controller_reload().step(True)
+        self.returned(valid, bare=True)
+        inbox = self.base / "inbox"
+        valid_bytes = (inbox / valid["work_hash"][2:] / "result.json").read_bytes()
+        malformed_bytes = b'{"fixture":"decoder nesting limit"}'
+        io.immutable_bytes(inbox / malformed["work_hash"][2:] / "result.json", malformed_bytes)
+        decode = s.decode_json
+        attempts = []
+
+        def decode_result(data):
+            if data == malformed_bytes:
+                attempts.append("malformed")
+                raise RecursionError("JSON nesting limit")
+            if data == valid_bytes:
+                attempts.append("valid")
+            return decode(data)
+
+        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+        with patch.object(s, "decode_json", side_effect=decode_result):
+            self.assertEqual(self.controller.step(True)["next_action"], "await_node_publication")
+            self.assertEqual(attempts, ["malformed", "valid"])
+            restarted = self.controller_reload()
+            op = restarted.state["operations"][identifier]
+            rejected = op["works"][malformed["work_hash"]]
+            self.assertTrue(rejected["checked"] and rejected["ignored"])
+            self.assertEqual(op["proof"]["work_hash"], valid["work_hash"])
+            restarted.result(identifier, True)
+            self.assertEqual(attempts, ["malformed", "valid"])
+
     def test_restart_submits_same_wrapper_result_after_envelope_verifier_timeout(self):
         identifier, _ = self.frozen()
         work = self.controller.step(True)
