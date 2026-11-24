@@ -19,7 +19,7 @@ use smart_config::{
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 // SYSCOIN: Parse remote prover Basic Auth credentials and validated socket addresses.
 use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
@@ -41,6 +41,7 @@ use zksync_os_raft::RaftConsensusConfig;
 use zksync_os_tx_validators::deployment_filter;
 use zksync_os_types::{NodeRole, PubdataMode};
 
+mod bitcoin_da_auth;
 mod build_external_config;
 mod cli;
 mod metrics;
@@ -1019,6 +1020,9 @@ fn interop_root_limits_are_executable(per_tx: usize, per_batch: u64) -> bool {
     per_tx > 0 && u64::try_from(per_tx).is_ok_and(|per_tx| per_tx <= per_batch)
 }
 
+pub(crate) const DEVELOPMENT_FEE_COLLECTOR: Address =
+    alloy::primitives::address!("36615Cf349d7F6344891B1e7CA7C72883F5dc049");
+
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 #[config(derive(Default))]
 pub struct SequencerConfig {
@@ -1062,8 +1066,8 @@ pub struct SequencerConfig {
     #[config(default_t = "./db/block_dumps".into())]
     pub block_dump_path: PathBuf,
 
-    /// Address that receives the transaction fees.
-    #[config(with = Serde![str], default_t = "0x36615Cf349d7F6344891B1e7CA7C72883F5dc049".parse().unwrap())]
+    /// Fee recipient. The default is accepted for block production only on development L1 chain 31337.
+    #[config(with = Serde![str], default_t = DEVELOPMENT_FEE_COLLECTOR)]
     pub fee_collector_address: Address,
 
     /// Maximum number of blocks to produce.
@@ -1183,11 +1187,11 @@ pub struct DeploymentFilterConfig {
 #[config(derive(Default))]
 #[config(validate(
     Self::check_auth_required,
-    "auth_token is required when using `http://` transport"
+    "auth_token is required for TCP policy service transport"
 ))]
 pub struct PolicyServiceConfig {
-    /// `http://host:port` or `unix:///path/to/socket`.
-    #[config(with = Serde![str], validate(check_url_scheme, "URL must use scheme `http` or `unix`"))]
+    /// HTTPS, local loopback HTTP, or `unix:///path/to/socket`.
+    #[config(with = Serde![str], validate(check_policy_service_url, "invalid policy service URL"))]
     pub url: Option<url::Url>,
 
     /// Per-request timeout. Fail-closed on exceed.
@@ -1220,7 +1224,7 @@ pub struct PolicyServiceConfig {
     pub max_trace_frames: usize,
 
     /// Bearer token sent as `Authorization: Bearer <token>` on every request.
-    /// Required for `http://` transports. Ignored for `unix://` transports,
+    /// Required for TCP transports. Ignored for `unix://` transports,
     /// where socket-path filesystem permissions are the access control.
     #[config(secret)]
     pub auth_token: Option<SecretString>,
@@ -1278,6 +1282,10 @@ pub struct RpcConfig {
     /// SYSCOIN: Maximum number of concurrent resource-heavy blocking RPC executions.
     #[config(default_t = 128)]
     pub max_concurrent_blocking_rpcs: u32,
+
+    /// Maximum distinct compact edge DA availability lookups in flight at this Gateway RPC node.
+    #[config(default_t = NonZeroU16::new(4).unwrap())]
+    pub max_concurrent_edge_da_checks: NonZeroU16,
 
     /// SYSCOIN: Maximum historical IMT leaves replayed by one proof/lookup RPC. Operators may
     /// raise this after capacity testing; reaching it signals that indexed proofs are required.
@@ -1891,6 +1899,14 @@ pub struct BatcherConfig {
     /// Auth password for the Syscoin NEVM RPC endpoint.
     #[config(secret)]
     pub bitcoin_da_rpc_password: Option<SecretString>,
+
+    /// Absolute path to the rotating Core RPC cookie for a loopback IP endpoint.
+    /// Exclusive with `bitcoin_da_rpc_user` and `bitcoin_da_rpc_password`.
+    pub bitcoin_da_cookie_file: Option<PathBuf>,
+
+    /// Exact Core RPC URL bound to the cookie to guard against an endpoint-only overlay.
+    #[config(secret)]
+    pub bitcoin_da_cookie_rpc_url: Option<String>,
 
     /// PoDA gateway base URL used as a fallback read path and network preset.
     // SYSCOIN: Keep URL-like config values out of serialized metrics.
@@ -2744,21 +2760,17 @@ impl TxValidatorConfig {
     }
 }
 
-fn check_url_scheme(url: &url::Url) -> Result<(), ErrorWithOrigin> {
-    match url.scheme() {
-        "http" | "unix" => Ok(()),
-        other => Err(ErrorWithOrigin::custom(format!(
-            "unsupported URL scheme `{other}`; expected `http` or `unix`"
-        ))),
-    }
+fn check_policy_service_url(url: &url::Url) -> Result<(), ErrorWithOrigin> {
+    zksync_os_tx_validators::policy_client::validate_endpoint(url)
+        .map_err(|err| ErrorWithOrigin::custom(err.to_string()))
 }
 
 impl PolicyServiceConfig {
     fn check_auth_required(&self) -> Result<(), ErrorWithOrigin> {
         let Some(url) = &self.url else { return Ok(()) };
-        if url.scheme() == "http" && self.auth_token.is_none() {
+        if matches!(url.scheme(), "http" | "https") && self.auth_token.is_none() {
             return Err(ErrorWithOrigin::custom(
-                "auth_token is required when using `http://` transport",
+                "auth_token is required for TCP policy service transport",
             ));
         }
         Ok(())
@@ -3130,6 +3142,14 @@ mod tests {
     const TEST_SECRET_KEY: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
     const TEST_BOOT_NODE: &str = "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@localhost:30303?discport=30301";
+
+    #[test]
+    fn omitted_fee_collector_keeps_local_development_recipient() {
+        assert_eq!(
+            SequencerConfig::default().fee_collector_address,
+            alloy::primitives::address!("36615Cf349d7F6344891B1e7CA7C72883F5dc049")
+        );
+    }
 
     // SYSCOIN: Capacity controls must survive configuration deserialization and runtime conversion.
     #[test]
@@ -4337,23 +4357,24 @@ mod tests {
     }
 
     #[test]
-    fn policy_service_accepts_http_url_with_token() {
+    fn policy_service_accepts_https_url_with_token() {
         let result = parse_policy_service_config([
-            ("POLICY_SERVICE_URL", "http://policy.local:9000"),
+            ("POLICY_SERVICE_URL", "https://policy.local:9000"),
             ("POLICY_SERVICE_AUTH_TOKEN", "secret"),
         ]);
         assert!(
             result.is_ok(),
-            "http URL with token should be accepted, got: {:?}",
+            "HTTPS URL with token should be accepted, got: {:?}",
             result.unwrap_err()
         );
     }
 
     #[test]
-    fn policy_service_rejects_http_url_without_token() {
-        let err = parse_policy_service_config([("POLICY_SERVICE_URL", "http://policy.local:9000")])
-            .unwrap_err()
-            .to_string();
+    fn policy_service_rejects_https_url_without_token() {
+        let err =
+            parse_policy_service_config([("POLICY_SERVICE_URL", "https://policy.local:9000")])
+                .unwrap_err()
+                .to_string();
         assert!(
             err.contains("auth_token is required"),
             "expected token-required error, got: {err}"

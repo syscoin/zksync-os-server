@@ -14,8 +14,9 @@ paths have been tested and recovery from the exceptional authorized batch revert
 described in [the service design](../../docs/src/design/prover_service_v1.md)
 has been qualified.
 For a supervised launch, verify that both gates' bootstrap reports are recorded
-in the registry before delivering both activation messages. Activation is
-permissionless and another caller can bypass worker ordering.
+in the registry before the first service period starts. The workers prioritize
+bootstrap reports, and the registry accepts authenticated reports before that
+deadline even if the activation messages arrive first.
 
 ## Prepare configuration
 
@@ -52,8 +53,10 @@ Use the actual deployed addresses, genesis and code hashes and start scanning
 at or before each gate's first event. The receipt signer signs zkSYS claims and
 Gateway-native NEVM relays; fund it on both chains. Its keystore and password
 file must correspond to `signer`. Retain the complete package and signed duties
-from each gate transaction; direct gate-call calldata can also supply these.
-Missing sidecars for routed or multisig calls remain pending for recovery.
+from each gate transaction. The worker can also recover them from direct gate
+calls it can decode. For a forwarded call or an unsupported direct duty
+encoding, it records the verified event as unresolved and continues scanning.
+Restore its matching sidecar in the configured artifact directory to resume credit.
 
 Create `/private/service/root-base.json` with all fields required by
 `configuration()` in [service_gateway_root_relayer.py](service_gateway_root_relayer.py),
@@ -106,12 +109,11 @@ python3 scripts/prover-service/service_native_receipt_relayer.py --config /priva
 
 Run each command continuously under a process supervisor, adding `--execute`.
 For a single supervised iteration add `--once`; it does not continue polling.
-Start the local claimant first: it publishes a private root-request descriptor
-and its discovery journal for the other workers. The descriptor points to the
-claim journal, so the publisher and native relay need read access to both files
-and the journal's adjacent SQLite database. Keep the whole state directory
-together across restarts and backups. Existing JSON journals and request inboxes
-are read during migration. The publisher and native relay wait for those files.
+Start the local claimant first. It saves its discovery journal before publishing
+the private root-request descriptor. The descriptor points to the claim journal,
+so the publisher and native relay need read access to both files
+and its adjacent SQLite database once the journal grows past the inline storage
+limit. Keep the whole state directory together across restarts and backups.
 Monitor process failures, missing artifacts, unconfirmed
 transactions, retry/split status and accounting deadlines. The local worker
 estimates and simulates zkSYS claims and splits rejected batches; no fixed small

@@ -143,6 +143,8 @@ contract ServiceRosterMockV1 is IZkSysWrapperRosterSourceV1 {
 }
 
 contract ServiceGateMockV1 {
+    uint256 public getTotalBatchesVerified;
+
     function open(ZkSysWrapperCoordinatorV1 coordinator, AcceptedPackageV1 calldata accepted) external {
         coordinator.openPackage(accepted);
     }
@@ -159,7 +161,9 @@ contract ServiceGateMockV1 {
         bytes calldata sequencerSignature,
         bytes calldata wrapperSignature
     ) external returns (bytes32) {
-        return coordinator.acceptPackage(accepted, candidate, proof, sequencerSignature, wrapperSignature);
+        bytes32 result = coordinator.acceptPackage(accepted, candidate, proof, sequencerSignature, wrapperSignature);
+        getTotalBatchesVerified = accepted.batchTo;
+        return result;
     }
 }
 
@@ -701,6 +705,28 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
             abi.encodeWithSelector(ZkSysProverServiceRegistryV1.OperatorAlreadyUsed.selector, sub.operator, uint64(0))
         );
         service.subscribe(sub, signature, operatorSignature);
+    }
+
+    function testPeriodEnrollmentPreservesSubscribersBeyond256() public {
+        address sequencer = vm.addr(SEQUENCER_KEY);
+        for (uint256 i; i < 256; ++i) {
+            uint256 accountKey = 10_000 + i;
+            uint256 operatorKey = 20_000 + i;
+            _senior(accountKey, false);
+            ProverSubscriptionV1 memory sub = _subscription(accountKey, operatorKey);
+            sub.firstPeriod = 1;
+            sub.lastPeriod = 1;
+            bytes32 digest = service.subscriptionDigest(sub);
+            service.subscribe(sub, _sign(accountKey, digest), _sign(operatorKey, digest));
+        }
+        ProverSubscriptionV1 memory extra = _subscription(ALICE_KEY, ALICE_OPERATOR_KEY);
+        extra.lastPeriod = 1;
+        bytes32 extraDigest = service.subscriptionDigest(extra);
+        service.subscribe(extra, _sign(ALICE_KEY, extraDigest), _sign(ALICE_OPERATOR_KEY, extraDigest));
+        assertEq(service.friSubscriberCount(sequencer, 0), 1);
+        assertEq(service.friSubscriberCount(sequencer, 1), 257);
+        assertEq(service.friSubscriberAt(sequencer, 1, 0), vm.addr(10_000));
+        assertEq(service.friSubscriberAt(sequencer, 1, 256), extra.account);
     }
 
     function _assertUnregistered(ProverSubscriptionV1 memory sub) internal view {
@@ -1343,10 +1369,37 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidPackage.selector);
         source.accept(service, accepted, duties);
         accepted.reportHash = ZkSysServiceTypesV1.hashReport(duties);
-        vm.expectRevert(ZkSysProverServiceRegistryV1.InvalidSignature.selector);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysProverServiceRegistryV1.DutyAlreadyCredited.selector, uint64(4)));
         source.accept(service, accepted, duties);
         assertFalse(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
         assertEq(service.rewardedSuccesses(bob, 6), 1);
+    }
+
+    function testContractDutyRejectionPreservesOtherCreditsInAuthenticatedReport() public {
+        bytes32 aliceSub = _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        ServiceContractSignerMockV1 operator = new ServiceContractSignerMockV1(vm.addr(BOB_OPERATOR_KEY));
+        ProverSubscriptionV1 memory bobSubscription = _subscription(BOB_KEY, BOB_OPERATOR_KEY);
+        bobSubscription.operator = address(operator);
+        bytes32 digest = service.subscriptionDigest(bobSubscription);
+        bytes32 bobSub = service.subscribe(bobSubscription, _sign(BOB_KEY, digest), _sign(BOB_OPERATOR_KEY, digest));
+        _activate(false);
+        vm.warp(issuer.startTime() + 6 * issuer.periodSeconds());
+
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(BOB_KEY, BOB_OPERATOR_KEY, bobSub, 3, 6, 0);
+        duties[1] = _duty(ALICE_KEY, ALICE_OPERATOR_KEY, aliceSub, 4, 6, 0);
+        AcceptedPackageV1 memory accepted = _package(duties, false, 3, 4, 6);
+        operator.setApproval(false);
+        source.accept(service, accepted, duties);
+        assertTrue(service.acceptedPackages(ZkSysServiceTypesV1.hashPackage(accepted)));
+        assertEq(service.rewardedSuccesses(vm.addr(ALICE_KEY), 6), 1);
+        assertEq(service.rewardedSuccesses(bobSubscription.account, 6), 0);
+        assertEq(service.dutySlots(bobSubscription.account, 6), 0);
+
+        operator.setApproval(true);
+        source.accept(service, accepted, duties);
+        assertEq(service.rewardedSuccesses(vm.addr(ALICE_KEY), 6), 1);
+        assertEq(service.rewardedSuccesses(bobSubscription.account, 6), 0);
     }
 
     function testBootstrapClosedPeriodStillRejectsEmptyQualificationReport() public {
@@ -1505,6 +1558,37 @@ contract ZkSysProverServiceRegistryV1Test is ServiceTestBaseV1 {
         assertFalse(service.serviceActive());
     }
 
+    function testPendingBootstrapReceiptsCanQualifyAfterActivationBeforeFirstPeriod() public {
+        _qualify(ALICE_KEY, ALICE_OPERATOR_KEY, 1);
+        bytes32 sub = _subscribe(BOB_KEY, BOB_OPERATOR_KEY);
+        address bob = vm.addr(BOB_KEY);
+        DutySuccessV1[] memory duties = new DutySuccessV1[](2);
+        duties[0] = _duty(BOB_KEY, BOB_OPERATOR_KEY, sub, 3, 0, 0);
+        duties[1] = _duty(BOB_KEY, BOB_OPERATOR_KEY, sub, 4, 0, 1);
+        AcceptedPackageV1 memory pending = _package(duties, true, 3, 4, 0);
+
+        vm.warp(service.rosterCutoff(0));
+        bytes32 root = service.publishRosterPage(0, _candidates(false));
+        source.activate(service, VK, root);
+        source.bootstrap(service, pending, duties);
+        source.bootstrap(service, pending, duties);
+
+        assertEq(service.bootstrapSuccesses(bob), 2);
+        assertTrue(service.verifiedForSequencer(bob, vm.addr(SEQUENCER_KEY)));
+        assertEq(service.rewardedSuccesses(bob, 0), 0);
+        assertEq(service.publishedRosterRoot(0), root);
+        assertEq(service.qualifiedWrapperCount(0), 1);
+        assertEq(service.totalAdmittedBonusWeight(0), 35_000 ether);
+        assertEq(service.qualifiedWrapper(bob, 1).account, bob);
+        assertEq(service.totalAdmittedBonusWeight(1), 100_000 ether);
+
+        vm.warp(issuer.startTime());
+        DutySuccessV1[] memory noDuties = new DutySuccessV1[](0);
+        AcceptedPackageV1 memory late = _package(noDuties, true, 5, 6, 0);
+        vm.expectRevert(ZkSysProverServiceRegistryV1.WrongServiceMode.selector);
+        source.bootstrap(service, late, noDuties);
+    }
+
     function testChildReceiverAuthenticatesGatewayMessageAndPayload() public {
         uint64 nonce = vm.getNonce(address(this));
         address predictedRegistry = vm.computeCreateAddress(address(this), nonce + 1);
@@ -1565,7 +1649,7 @@ contract ZkSysWrapperCoordinatorV1Test is ServiceTestBaseV1 {
                 rosterSource: rosters,
                 sequencer: vm.addr(SEQUENCER_KEY),
                 childChainId: block.chainid,
-                childChainAddress: CHAIN,
+                childChainAddress: address(gate),
                 policyHash: POLICY,
                 productionVkHash: VK,
                 initialParent: keccak256("genesis-parent"),
@@ -1586,6 +1670,7 @@ contract ZkSysWrapperCoordinatorV1Test is ServiceTestBaseV1 {
     function _proposed() internal view returns (AcceptedPackageV1 memory accepted) {
         accepted = _basePackage();
         accepted.rosterRoot = rosters.root();
+        accepted.chainAddress = address(gate);
     }
 
     function _signed(AcceptedPackageV1 memory proposed)
@@ -1851,7 +1936,7 @@ contract ZkSysWrapperCoordinatorV1Test is ServiceTestBaseV1 {
             rosterSource: rosters,
             sequencer: vm.addr(SEQUENCER_KEY),
             childChainId: block.chainid,
-            childChainAddress: CHAIN,
+            childChainAddress: address(gate),
             policyHash: POLICY,
             productionVkHash: VK,
             initialParent: keccak256("genesis-parent"),

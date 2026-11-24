@@ -17,6 +17,9 @@ use metrics::Metrics;
 use parking_lot::RwLock;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
     sync::{atomic::{AtomicBool, Ordering}, Arc},
     time::{Duration, Instant},
 };
@@ -28,9 +31,10 @@ enum DestMode { Wallet, Random }
 #[command(author, version, about)]
 struct Args {
     #[arg(long)] rpc_url: String,
-    #[arg(long)] rich_privkey: String,
-    #[arg(long, default_value = "legal winner thank year wave sausage worth useful legal winner thank yellow")]
-    mnemonic: String,
+    /// Owner-only file containing the dedicated load-test funder's private key.
+    #[arg(long)] rich_privkey_file: PathBuf,
+    /// Owner-only file containing a private mnemonic for the funded test wallets.
+    #[arg(long)] mnemonic_file: PathBuf,
     #[arg(long, default_value_t = 10)] wallets: u32,
     #[arg(long)] duration: humantime::Duration,
     #[arg(long, default_value_t = 1000)] max_in_flight: u32,
@@ -44,18 +48,46 @@ struct Args {
     #[arg(long, default_value = "TTK")]       erc20_symbol: String,
 }
 
+fn read_signing_input(path: &Path, label: &str) -> anyhow::Result<String> {
+    use anyhow::Context;
+    const MAX_INPUT_BYTES: u64 = 4096;
+
+    let metadata = path.symlink_metadata().with_context(|| format!("cannot stat {label} file"))?;
+    anyhow::ensure!(metadata.is_file(), "{label} input must be a regular file");
+    let file = File::open(path).with_context(|| format!("cannot open {label} file"))?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(metadata.is_file(), "{label} input must be a regular file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        anyhow::ensure!(metadata.permissions().mode() & 0o077 == 0, "{label} file must be owner-only");
+    }
+    let mut input = String::new();
+    file.take(MAX_INPUT_BYTES + 1).read_to_string(&mut input)?;
+    anyhow::ensure!(
+        input.len() as u64 <= MAX_INPUT_BYTES && !input.trim().is_empty(),
+        "{label} file must contain a nonempty input of at most {MAX_INPUT_BYTES} bytes"
+    );
+    Ok(input)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     //-------------------------------- env ----------------------------------//
     let args = Args::parse();
+    anyhow::ensure!(args.wallets > 0, "--wallets must be positive");
     anyhow::ensure!(*args.receipt_timeout > Duration::ZERO, "--receipt-timeout must be positive");
+    let rich_wallet: LocalWallet = read_signing_input(&args.rich_privkey_file, "funding key")?
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid funding key"))?;
+    let mnemonic = read_signing_input(&args.mnemonic_file, "test wallet mnemonic")?;
     let provider = Provider::<Http>::try_from(&args.rpc_url)?
         .interval(Duration::from_millis(100));
     let chain_id = provider.get_chainid().await?.as_u64();
 
     //-------------------------------- signers ------------------------------//
-    let rich_wallet: LocalWallet =
-        args.rich_privkey.parse::<LocalWallet>()?.with_chain_id(chain_id);
+    let rich_wallet = rich_wallet.with_chain_id(chain_id);
     let rich_std_arc = Arc::new(SignerMiddleware::new(provider.clone(), rich_wallet.clone()));
     let rich_nm_arc  = Arc::new(SignerMiddleware::new(
         NonceManagerMiddleware::new(provider.clone(), rich_wallet.address()),
@@ -63,7 +95,8 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     //-------------------------------- wallets + ETH prefund ---------------//
-    let wallets = wallets::derive(&args.mnemonic, args.wallets, chain_id)?;
+    let wallets = wallets::derive(mnemonic.trim(), args.wallets, chain_id)
+        .map_err(|_| anyhow::anyhow!("invalid test wallet mnemonic"))?;
     let addrs: Vec<_> = wallets.iter().map(|w| w.address()).collect();
 
     let base_eth: U256 = args.amount_fund.parse()?;

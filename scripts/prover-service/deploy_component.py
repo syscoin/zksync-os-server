@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy one cross-chain priority or service-message prerequisite after native deployment."""
+"""Deploy one prover service component after native deployment."""
 import argparse
 import fcntl
 import hashlib
@@ -13,6 +13,7 @@ import deploy_gate as common
 from zksys_keeper_cast import CastSigner
 from zksys_keeper_transactions import TransactionError, _same_transaction
 from service_transaction_driver import ServiceTransactionDriver
+import keeper
 import relay
 import service
 import zksys_membership_keeper as membership
@@ -29,9 +30,6 @@ def component_config(raw):
     base = {'kind', 'chain_id', 'genesis_hash', 'sender', 'factory_salt', 'create2_code_hash',
             'gas_limit', 'gas_price', 'keystore', 'password_file', 'policy_hash'}
     shapes = {
-        'root_priority_source': {'mailbox', 'mailbox_code_hash', 'bridgehub', 'bridgehub_code_hash',
-                                 'child_chain_id', 'gateway_receiver', 'gateway_chain_id', 'inclusion_delay'},
-        'gateway_checkpoint_receiver': {'root_source', 'child_chain_id'},
         'root_message_sink': {'publisher', 'gateway_gate', 'bridgehub', 'bridgehub_code_hash', 'gateway_chain_id',
                               'gateway_chain_address', 'gateway_chain_code_hash', 'registry_chain_id',
                               'registry_receiver'},
@@ -64,15 +62,14 @@ def component_config(raw):
             continue
         require(type(value[key]) is str and common.ADDRESS.fullmatch(value[key]), 'invalid ' + key)
         value[key] = value[key].lower()
-        if key != 'gateway_receiver':
-            require(value[key] != ZERO, 'zero ' + key)
+        require(value[key] != ZERO, 'zero ' + key)
     for key in hashes:
         if key not in value:
             continue
         require(type(value[key]) is str and common.HASH.fullmatch(value[key]), 'invalid ' + key)
         value[key] = value[key].lower()
         require(int(value[key], 16) != 0, 'zero ' + key)
-    for key in ('chain_id', 'child_chain_id', 'registry_chain_id', 'inclusion_delay', 'gas_limit', 'gas_price',
+    for key in ('chain_id', 'child_chain_id', 'registry_chain_id', 'gas_limit', 'gas_price',
                 'mailbox_chain_id', 'period_seconds', 'future_blocks', 'confirmations', 'first_batch',
                 'turn_seconds'):
         if key in value:
@@ -80,16 +77,7 @@ def component_config(raw):
     if 'gateway_chain_id' in value:
         require(type(value['gateway_chain_id']) is int and value['gateway_chain_id'] >= 0,
                 'invalid gateway_chain_id')
-    if value['kind'] == 'root_priority_source':
-        require((value['gateway_receiver'] == ZERO) == (value['gateway_chain_id'] == 0), 'receiver and Gateway id mismatch')
-        require(value['child_chain_id'] != value['chain_id'], 'invalid child chain')
-        require(value['inclusion_delay'] < 2**64, 'invalid inclusion delay')
-        if value['gateway_chain_id']:
-            require(len({value['gateway_chain_id'], value['chain_id'], value['child_chain_id']}) == 3,
-                    'invalid Gateway chain')
-    elif value['kind'] == 'gateway_checkpoint_receiver':
-        require(value['child_chain_id'] != value['chain_id'], 'invalid child chain')
-    elif value['kind'] == 'root_message_sink':
+    if value['kind'] == 'root_message_sink':
         require(value['gateway_chain_id'] > 0 and len({value['chain_id'], value['gateway_chain_id'],
                                                        value['registry_chain_id']}) == 3, 'invalid lane chain ids')
     elif value['kind'] == 'roster_receiver':
@@ -132,14 +120,7 @@ def build(cfg):
     component = common.cast('compute-address', factory, '--nonce', '1').split()[-1].lower()
     require(common.ADDRESS.fullmatch(component), 'invalid predicted component address')
     kind = cfg['kind']
-    if kind == 'root_priority_source':
-        init = component_bytecode('ZkSysPriorityGuardV1', 'ZkSysRootPrioritySourceV1') + common.encode(
-            'constructor(address,address,address,uint256,bytes32,uint64)', cfg['mailbox'], cfg['bridgehub'],
-            cfg['gateway_receiver'], cfg['gateway_chain_id'], cfg['policy_hash'], cfg['inclusion_delay'])
-    elif kind == 'gateway_checkpoint_receiver':
-        init = component_bytecode('ZkSysPriorityGuardV1', 'ZkSysPriorityCheckpointReceiverV1') + common.encode(
-            'constructor(address,uint256,bytes32)', cfg['root_source'], cfg['child_chain_id'], cfg['policy_hash'])
-    elif kind == 'root_message_sink':
+    if kind == 'root_message_sink':
         args = '(' + ','.join(str(cfg[key]) for key in ('publisher', 'gateway_gate', 'bridgehub', 'gateway_chain_id',
                     'gateway_chain_address', 'registry_chain_id', 'registry_receiver', 'policy_hash')) + ')'
         init = component_bytecode('ZkSysRootServiceV1', 'ZkSysRootServiceMessageSinkV1') + common.encode(
@@ -184,10 +165,7 @@ def verify_inputs(rpc, cfg):
     for address, expected in pins:
         code = common.rpc_code(rpc, address)
         require(code != '0x' and common.digest(code) == expected, 'pinned contract code mismatch')
-    if cfg['kind'] == 'root_priority_source':
-        actual = int(common.call_word(rpc, cfg['mailbox'], 'getChainId()'), 16)
-        require(actual == cfg['child_chain_id'], 'mailbox child chain mismatch')
-    elif cfg['kind'] == 'root_message_sink':
+    if cfg['kind'] == 'root_message_sink':
         actual = int(common.call_word(rpc, cfg['gateway_chain_address'], 'getChainId()'), 16)
         require(actual == cfg['gateway_chain_id'], 'gateway chain mismatch')
         data = '0x' + relay.selector('getZKChain(uint256)').hex() + format(cfg['gateway_chain_id'], '064x')
@@ -218,22 +196,18 @@ def verify_inputs(rpc, cfg):
         require((sink != ZERO) == cfg['native_root_draw'], 'draw lane topology mismatch')
 
 
-def verify_source_drained(rpc, cfg):
-    if cfg['kind'] != 'root_priority_source':
-        return
-    common.verify_queue_drained(rpc, {'chain': cfg['mailbox']})
-
-
 def verify_coordinator_parent(rpc, cfg, plan):
     if cfg['kind'] != 'coordinator':
         return
     gate = cfg['gate']
     require(common.call_address(rpc, gate, 'coordinator()') == ZERO, 'gate already has a coordinator')
     require(int(common.call_word(rpc, gate, 'serviceActive()'), 16) == 0, 'gate already active')
-    require(int(common.call_word(rpc, gate, 'priorityWorkId()'), 16) == 0, 'bootstrap work is still open')
     require(common.call_word(rpc, gate, 'lastAcceptedPackage()') == cfg['initial_parent'], 'bootstrap parent changed')
     verified = int(common.call_word(rpc, cfg['child_chain_address'], 'getTotalBatchesVerified()'), 16)
     require(verified + 1 == cfg['first_batch'], 'bootstrap next batch changed')
+    frozen = keeper.decode_package(keeper.raw_call(rpc, gate, 'bootstrapPackage()', 'latest'))
+    # Installation observes native progress and retires bootstrap work whose first batch was proved independently.
+    require(frozen['batchFrom'] <= verified, 'bootstrap work is still open')
     if cfg['native_root_draw']:
         common.assert_address(rpc, cfg['root_source'], 'coordinator()', plan['component'])
 
@@ -249,19 +223,7 @@ def attest_component(rpc, cfg, plan):
     address = plan['component']
     if cfg['kind'] not in ('root_draw_receiver', 'root_draw', 'native_root_draw'):
         require(common.call_word(rpc, address, 'policyHash()') == cfg['policy_hash'], 'component policy mismatch')
-    if cfg['kind'] == 'root_priority_source':
-        for field, selector in [('mailbox', 'mailbox()'), ('bridgehub', 'bridgehub()'),
-                                ('gateway_receiver', 'gatewayReceiver()')]:
-            common.assert_address(rpc, address, selector, cfg[field])
-        for field, selector in [('child_chain_id', 'childChainId()'), ('gateway_chain_id', 'gatewayChainId()'),
-                                ('inclusion_delay', 'inclusionDelay()')]:
-            require(int(common.call_word(rpc, address, selector), 16) == cfg[field], selector + ' mismatch')
-    elif cfg['kind'] == 'gateway_checkpoint_receiver':
-        alias = (int(cfg['root_source'], 16) + int('1111000000000000000000000000000000001111', 16)) % 2**160
-        common.assert_address(rpc, address, 'aliasedRootSource()', '0x' + format(alias, '040x'))
-        require(int(common.call_word(rpc, address, 'childChainId()'), 16) == cfg['child_chain_id'],
-                'receiver child chain mismatch')
-    elif cfg['kind'] == 'root_message_sink':
+    if cfg['kind'] == 'root_message_sink':
         for field, selector in [('publisher', 'publisher()'), ('gateway_gate', 'gatewayGate()'), ('bridgehub', 'bridgehub()'),
                                 ('gateway_chain_address', 'gatewayChainAddress()'),
                                 ('registry_receiver', 'registryReceiver()')]:
@@ -379,7 +341,6 @@ def main():
     if not factory_exists:
         target, data, step = *factory_tx, 'factory'
     elif not attest_component(rpc, cfg, plan):
-        verify_source_drained(rpc, cfg)
         verify_coordinator_parent(rpc, cfg, plan)
         target, data, step = *component_tx, 'component'
     else:

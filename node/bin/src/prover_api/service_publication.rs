@@ -1,5 +1,5 @@
 //! Durable handoff to a service wallet. Files are hints; only canonical settlement receipts
-//! for the exact native command authorize downstream batch execution.
+//! and authenticated native settlement gaps authorize downstream batch execution.
 use crate::config::ServicePublicationConfig;
 use alloy::{
     consensus::Transaction as _,
@@ -7,7 +7,7 @@ use alloy::{
     primitives::{Address, B256, Bytes, U256, keccak256},
     providers::Provider,
     rpc::types::{BlockId, BlockNumberOrTag},
-    sol_types::{SolCall, SolEvent, SolValue},
+    sol_types::{SolEvent, SolValue},
 };
 use anyhow::Context;
 use async_trait::async_trait;
@@ -32,6 +32,10 @@ use zksync_os_l1_sender::{
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 use zksync_os_provider::NodeProvider;
+
+mod native_settlement;
+mod regrouping;
+use native_settlement::{NativeBatch, NativeObservation};
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -134,7 +138,8 @@ impl Work {
             batch_outputs: command.service_batch_outputs(),
         };
         anyhow::ensure!(
-            !work.chain_address.is_zero()
+            !work.gate.is_zero()
+                && !work.chain_address.is_zero()
                 && !work.execution_chain_id.is_zero()
                 && !work.settlement_chain_id.is_zero(),
             "service publication requires native chain identity"
@@ -219,8 +224,8 @@ impl Work {
         } else {
             PackagePhaseV1::Bootstrap
         };
-        // These historical phase fields only reconstruct calldata. Successful execution by the
-        // pinned gate, checked below, authenticates the former live turn and endorsements.
+        // The retained sidecar supplies historical phase fields. Successful execution by the
+        // pinned gate authenticates the former live turn and endorsements.
         Ok(ValidationContextV1 {
             child_chain_id: self.execution_chain_id,
             child_chain_address: self.chain_address,
@@ -264,11 +269,41 @@ impl PipelineComponent for ProofPublication {
             reporter.enter_state(GenericComponentState::Active);
             match command {
                 L1SenderCommand::Passthrough(mut batch) => {
-                    let work = publication.journal.work_for_batch(&batch, &publication)?;
-                    let work_hash = keccak256(serde_json::to_vec(&work)?);
-                    if !confirmed_work_hashes.contains(&work_hash) {
-                        publication.wait_for_work(&work, None).await?;
-                        confirmed_work_hashes.insert(work_hash);
+                    if let Some(work) = publication
+                        .journal
+                        .work_for_batch(&batch, &publication)
+                        .await?
+                    {
+                        let work_hash = keccak256(serde_json::to_vec(&work)?);
+                        if !confirmed_work_hashes.contains(&work_hash) {
+                            let native =
+                                NativeBatch::from_batch(&batch, work.required_confirmations);
+                            if !publication.wait_for_work(&work, &native).await? {
+                                confirmed_work_hashes.insert(work_hash);
+                            }
+                        }
+                    } else {
+                        let native = NativeBatch::from_batch(
+                            &batch,
+                            publication.confirmation_policy.required_confirmations(),
+                        );
+                        loop {
+                            match tokio::time::timeout(
+                                publication.config.rpc_timeout,
+                                native.confirmed_gap(&publication),
+                            )
+                            .await??
+                            {
+                                NativeObservation::Confirmed(_) => break,
+                                NativeObservation::Pending => {
+                                    tokio::time::sleep(publication.config.poll_interval).await
+                                }
+                                NativeObservation::NoGap => anyhow::bail!(
+                                    "proved batch {} has no retained service work or canonical native gap",
+                                    batch.batch_number()
+                                ),
+                            }
+                        }
                     }
                     batch.set_stage(ProofCommand::PASSTHROUGH_STAGE);
                     output.send_and_record(*batch, &reporter).await?;
@@ -306,17 +341,32 @@ impl ServicePublication {
     /// Startup must authenticate covered wrappers before the ordinary recovery frontier can
     /// retire them. This path never resubmits or recomputes an already accepted native proof.
     pub(super) async fn confirm_command(&self, command: &ProofCommand) -> anyhow::Result<()> {
-        let (work, _, _) = self
+        let (work, directory, work_hash) = self
             .journal
             .stage(&Work::new(command, self)?, self.config.max_records)?;
-        self.wait_for_work(&work, Some(command)).await
+        self.reactivate_if_next(&work, &directory, work_hash)
+            .await?;
+        let native = NativeBatch::from_work(&work, work.batch_from)?;
+        anyhow::ensure!(
+            !self.wait_for_work(&work, &native).await?,
+            "native settlement overtook service work {}-{}; restart for canonical batch discovery",
+            work.batch_from,
+            work.batch_to
+        );
+        Ok(())
     }
 
-    async fn wait_for_work(
-        &self,
-        work: &Work,
-        command: Option<&ProofCommand>,
-    ) -> anyhow::Result<()> {
+    /// Returns true only when a confirmed native advance invalidates the retained aggregate.
+    pub(super) async fn confirm_recovery(&self, command: &ProofCommand) -> anyhow::Result<bool> {
+        let work = self
+            .journal
+            .stage(&Work::new(command, self)?, self.config.max_records)?
+            .0;
+        let native = NativeBatch::from_work(&work, work.batch_from)?;
+        self.wait_for_work(&work, &native).await
+    }
+
+    async fn wait_for_work(&self, work: &Work, native: &NativeBatch) -> anyhow::Result<bool> {
         let (_, directory, work_hash) = self.journal.stage(work, self.config.max_records)?;
         tracing::info!(batch_from=work.batch_from, batch_to=work.batch_to,
             directory=%directory.display(), "native proof awaiting canonical service receipt");
@@ -331,7 +381,7 @@ impl ServicePublication {
                             && !handoff.transaction_hash.is_zero(),
                         "service handoff identity mismatch"
                     );
-                    self.observe(work, work_hash, &handoff, command).await
+                    self.observe(work, work_hash, &handoff).await
                 };
                 match tokio::time::timeout(self.config.rpc_timeout, result).await {
                     Ok(Ok(Some(confirmed))) => {
@@ -339,7 +389,7 @@ impl ServicePublication {
                             &directory.join("confirmed.json"),
                             &serde_json::to_vec(&confirmed)?,
                         )?;
-                        return Ok(());
+                        return Ok(false);
                     }
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
@@ -350,6 +400,23 @@ impl ServicePublication {
                     }
                 }
             }
+            match tokio::time::timeout(self.config.rpc_timeout, native.confirmed_gap(self)).await {
+                Ok(Ok(NativeObservation::Confirmed(event_block))) => {
+                    // This marker only disambiguates overlapping work directories after
+                    // reaggregation. Passthrough still authenticates each batch on chain.
+                    atomic_write(
+                        &directory.join("superseded.json"),
+                        &serde_json::to_vec(&event_block)?,
+                    )?;
+                    tracing::info!(batch_from=work.batch_from, batch_to=work.batch_to, %event_block, "native settlement superseded service work");
+                    return Ok(true);
+                }
+                Ok(Ok(NativeObservation::Pending | NativeObservation::NoGap)) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "could not authenticate native settlement progress")
+                }
+                Err(_) => tracing::warn!("native settlement check timed out"),
+            }
             tokio::time::sleep(self.config.poll_interval).await;
         }
     }
@@ -359,7 +426,6 @@ impl ServicePublication {
         work: &Work,
         work_hash: B256,
         handoff: &Handoff,
-        command: Option<&ProofCommand>,
     ) -> anyhow::Result<Option<Confirmed>> {
         let provider = &self.provider;
         anyhow::ensure!(
@@ -400,10 +466,12 @@ impl ServicePublication {
                 && transaction.tx_hash() == handoff.transaction_hash
                 && transaction.block_hash() == Some(block_hash)
                 && transaction.block_number() == Some(block_number)
-                && transaction.to() == Some(work.gate)
-                && receipt.to == Some(work.gate)
-                && transaction.value().is_zero(),
-            "service transaction differs from exact native gate call"
+                && transaction.to() == receipt.to,
+            "service transaction differs from its mined receipt"
+        );
+        anyhow::ensure!(
+            transaction.to() != Some(work.gate) || transaction.value().is_zero(),
+            "direct service gate submission carries value"
         );
         let package_hash = hash_package(&handoff.sidecar.accepted_package);
         let bootstrap = handoff.sidecar.candidate.is_none();
@@ -426,9 +494,11 @@ impl ServicePublication {
                 "noncanonical service acceptance log"
             );
             let event = IZkSysProofGateV1::ServicePackageAccepted::decode_log(&log.inner)?.data;
+            if event.packageHash != package_hash {
+                continue;
+            }
             anyhow::ensure!(
-                event.packageHash == package_hash
-                    && event.from == work.batch_from
+                event.from == work.batch_from
                     && event.to == work.batch_to
                     && event.bootstrap == bootstrap,
                 "service acceptance event differs from retained package"
@@ -484,18 +554,13 @@ impl ServicePublication {
             0
         };
         let context = work.context(&handoff.sidecar, first_service_period)?;
-        let calldata = if let Some(command) = command {
-            command
-                .service_submission(work.gate, &handoff.sidecar, &context)?
-                .calldata
-        } else {
-            handoff.sidecar.validate(&context, &work.proof_data)?;
-            encode_historical_calldata(work, &handoff.sidecar)
-        };
+        // Anyone can relay the endorsed package. The pinned gate authenticates the package
+        // and proof regardless of how the submitting wallet encoded the transaction.
         anyhow::ensure!(
-            transaction.input() == &calldata,
-            "service transaction differs from exact native gate call"
+            handoff.sidecar.batch_outputs == work.batch_outputs,
+            "service outputs differ from retained native work"
         );
+        handoff.sidecar.validate(&context, &work.proof_data)?;
         let canonical = provider
             .get_block_by_number(BlockNumberOrTag::Number(block_number))
             .await?
@@ -513,7 +578,10 @@ impl ServicePublication {
                 && canonical_tip.header.hash == tip.header.hash
                 && again.block_hash == Some(block_hash)
                 && again.block_number == Some(block_number)
+                && again.transaction_hash == handoff.transaction_hash
                 && again.status()
+                && again.to == receipt.to
+                && again.inner.logs() == receipt.inner.logs()
                 && U256::from(provider.get_chain_id().await?) == work.settlement_chain_id,
             "service receipt changed during canonical confirmation check"
         );
@@ -523,36 +591,9 @@ impl ServicePublication {
             transaction_hash: handoff.transaction_hash,
             block_hash,
             block_number,
-            calldata_hash: keccak256(&calldata),
+            calldata_hash: keccak256(transaction.input()),
             package_hash,
         }))
-    }
-}
-
-fn encode_historical_calldata(work: &Work, sidecar: &ProverServiceSidecarV1) -> Bytes {
-    if let Some(candidate) = &sidecar.candidate {
-        IZkSysProofGateV1::submitCall {
-            accepted: sidecar.accepted_package.clone(),
-            duties: sidecar.duties.clone(),
-            outputs: sidecar.batch_outputs.clone(),
-            proofData: work.proof_data.clone(),
-            candidate: candidate.clone(),
-            candidateProof: sidecar.candidate_proof.clone(),
-            sequencerSignature: sidecar.sequencer_signature.clone(),
-            wrapperSignature: sidecar.wrapper_signature.clone(),
-        }
-        .abi_encode()
-        .into()
-    } else {
-        IZkSysProofGateV1::submitBootstrapCall {
-            accepted: sidecar.accepted_package.clone(),
-            duties: sidecar.duties.clone(),
-            outputs: sidecar.batch_outputs.clone(),
-            proofData: work.proof_data.clone(),
-            sequencerSignature: sidecar.sequencer_signature.clone(),
-        }
-        .abi_encode()
-        .into()
     }
 }
 
@@ -580,24 +621,18 @@ impl Journal {
         })
     }
 
-    fn work_for_batch(
+    async fn work_for_batch(
         &self,
         batch: &SignedBatchEnvelope<FriProof>,
         publication: &ServicePublication,
-    ) -> anyhow::Result<Work> {
+    ) -> anyhow::Result<Option<Work>> {
         let mut found = None;
-        let entries = fs::read_dir(&self.directory)?
-            .take(publication.config.max_records + 2)
-            .collect::<Result<Vec<_>, _>>()?;
-        anyhow::ensure!(
-            entries.len() <= publication.config.max_records + 1,
-            "service publication journal is over capacity"
-        );
-        for entry in entries {
-            if entry.file_name() == ".lock" {
+        let mut receipt_work = None;
+        for entry in self.entries(publication.config.max_records)? {
+            private_directory(&entry.path())?;
+            if read_private(&entry.path().join("superseded.json"))?.is_some() {
                 continue;
             }
-            private_directory(&entry.path())?;
             let Some(bytes) = read_private(&entry.path().join("work.json"))? else {
                 continue;
             };
@@ -605,14 +640,28 @@ impl Journal {
             if batch.batch_number() < work.batch_from || batch.batch_number() > work.batch_to {
                 continue;
             }
+            let work_hash = keccak256(&bytes);
+            let target = if self.regrouped(&entry.path(), &work, work_hash)?.is_some() {
+                // A formerly parked proof can be accepted when its exact range becomes current.
+                // A matching receipt takes it back through the ordinary authentication path.
+                if !publication
+                    .has_acceptance_hint(&entry.path(), &work, work_hash)
+                    .await?
+                {
+                    continue;
+                }
+                &mut receipt_work
+            } else {
+                &mut found
+            };
             work.matches_batch(batch, publication)?;
             anyhow::ensure!(
-                found.is_none(),
+                target.is_none(),
                 "ambiguous service work for passthrough batch"
             );
-            found = Some(work);
+            *target = Some(work);
         }
-        found.context("proved service batch has no retained native publication work")
+        Ok(receipt_work.or(found))
     }
 
     fn stage(&self, work: &Work, max_records: usize) -> anyhow::Result<(Work, PathBuf, B256)> {
@@ -622,14 +671,7 @@ impl Journal {
             "service work exceeds durable bound"
         );
         let work_hash = keccak256(&encoded);
-        let name = format!(
-            "{}-{}-{}-{:x}",
-            work.execution_chain_id,
-            work.batch_from,
-            work.batch_to,
-            keccak256(&work.proof_data)
-        );
-        let directory = self.directory.join(name);
+        let directory = self.work_directory(work);
         if !directory.try_exists()? {
             let count = fs::read_dir(&self.directory)?.try_fold(
                 0,

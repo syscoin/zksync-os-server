@@ -13,7 +13,9 @@ SSH_KEY_PATH="${SSH_KEY_PATH:-}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/gateway/ui/blockscout}"
 PROJECT_NAME="blockscout-${INSTANCE}"
 REMOTE_DIR_B64="$(printf '%s' "${REMOTE_DIR}" | base64 | tr -d '\n')"
-API_SENSITIVE_ENDPOINTS_KEY_B64="$(printf '%s' "${API_SENSITIVE_ENDPOINTS_KEY:-}" | base64 | tr -d '\n')"
+api_key_b64="$(printf '%s' "${API_SENSITIVE_ENDPOINTS_KEY:-}" | base64 | tr -d '\n')"
+solc_list_url_b64="$(printf '%s' "${SMART_CONTRACT_VERIFIER_SOLC_LIST_URL:-}" | base64 | tr -d '\n')"
+unset API_SENSITIVE_ENDPOINTS_KEY SMART_CONTRACT_VERIFIER_SOLC_LIST_URL
 
 if [[ -z "${REMOTE_HOST}" ]]; then
   echo "REMOTE_HOST is required, for example ubuntu@explorer-host" >&2
@@ -53,7 +55,7 @@ cp \"\${tmp_dir}/envs/\${instance}.env\" \"\${remote_dir}/envs/\${instance}.env\
 '"
 
 # SYSCOIN: OpenSSH joins command arguments before the remote shell parses them.
-# Quote each value there too: local quotes alone lose an empty optional API key.
+# Quote each value there too so optional arguments keep their positions.
 quote_remote_argument() {
   local value="$1" escaped_quote="'\\''"
   printf "'"
@@ -64,24 +66,29 @@ quote_remote_argument() {
   printf "%s'" "${value}"
 }
 # SYSCOIN: Compose runs remotely, so local verifier overrides must cross SSH too.
-remote_command="bash -s -- $(quote_remote_argument "${REMOTE_DIR}") $(quote_remote_argument "${INSTANCE}") $(quote_remote_argument "${PROJECT_NAME}") $(quote_remote_argument "${API_SENSITIVE_ENDPOINTS_KEY_B64}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_IMAGE:-}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_PULL_POLICY:-}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_SOLC_LIST_URL:-}")"
-ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_command}" <<'REMOTE_SCRIPT'
+remote_command="bash -s -- $(quote_remote_argument "${REMOTE_DIR}") $(quote_remote_argument "${INSTANCE}") $(quote_remote_argument "${PROJECT_NAME}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_IMAGE:-}") $(quote_remote_argument "${SMART_CONTRACT_VERIFIER_PULL_POLICY:-}")"
+{
+  # Base64 keeps the SSH input assignments single-line and shell-safe.
+  printf 'api_key_b64=%s\nsolc_list_url_b64=%s\n' "${api_key_b64}" "${solc_list_url_b64}"
+  cat <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 remote_dir="$1"
 instance="$2"
 project_name="$3"
-api_sensitive_endpoints_key="$(printf '%s' "$4" | base64 -d)"
+api_sensitive_endpoints_key="$(printf '%s' "${api_key_b64}" | base64 -d)"
+solc_list_url="$(printf '%s' "${solc_list_url_b64}" | base64 -d)"
+unset api_key_b64 solc_list_url_b64
 
 # SYSCOIN: Export only supplied overrides; otherwise retain env-file/default values.
+if [[ -n "$4" ]]; then
+  export SMART_CONTRACT_VERIFIER_IMAGE="$4"
+fi
 if [[ -n "$5" ]]; then
-  export SMART_CONTRACT_VERIFIER_IMAGE="$5"
+  export SMART_CONTRACT_VERIFIER_PULL_POLICY="$5"
 fi
-if [[ -n "$6" ]]; then
-  export SMART_CONTRACT_VERIFIER_PULL_POLICY="$6"
-fi
-if [[ -n "$7" ]]; then
-  export SMART_CONTRACT_VERIFIER_SOLC_LIST_URL="$7"
+if [[ -n "${solc_list_url}" ]]; then
+  export SMART_CONTRACT_VERIFIER_SOLC_LIST_URL="${solc_list_url}"
 fi
 
 cd "${remote_dir}"
@@ -114,6 +121,10 @@ upsert_secret_env() {
   chmod 600 "${secrets_file}"
 }
 
+if [[ "${api_sensitive_endpoints_key}" == *$'\r'* || "${api_sensitive_endpoints_key}" == *$'\n'* ]]; then
+  echo "API_SENSITIVE_ENDPOINTS_KEY must be a single line" >&2
+  exit 1
+fi
 if [[ -n "${api_sensitive_endpoints_key}" ]]; then
   upsert_secret_env "API_SENSITIVE_ENDPOINTS_KEY" "${api_sensitive_endpoints_key}"
 fi
@@ -142,3 +153,4 @@ docker compose \
   -p "${project_name}" \
   up -d --force-recreate proxy
 REMOTE_SCRIPT
+} | ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_command}"

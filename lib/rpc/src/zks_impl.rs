@@ -24,7 +24,7 @@ use zksync_os_contract_interface::settlement_layer_intervals::{
 };
 use zksync_os_genesis::{GenesisInput, GenesisInputSource};
 use zksync_os_l1_watcher::{CommittedBatchProvider, util::find_l1_execute_block_by_batch_number};
-use zksync_os_merkle_tree_api::flat::StorageSlotProof;
+use zksync_os_merkle_tree_api::{MAX_TREE_DEPTH, flat::StorageSlotProof};
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
 use zksync_os_rpc_api::{
     types::{
@@ -35,6 +35,17 @@ use zksync_os_rpc_api::{
 };
 use zksync_os_storage_api::{PersistedBatch, RepositoryError, StateError, read_multichain_root};
 use zksync_os_types::L2_TO_L1_TREE_SIZE;
+
+const MAX_STORAGE_PROOF_KEYS: usize = 256;
+const STORAGE_PROOF_RESPONSE_OVERHEAD: usize = 1024;
+// A non-membership proof carries two paths. Budget each sibling as a quoted hex hash and
+// delimiter, with additional space for the surrounding leaf values and metadata.
+const STORAGE_PROOF_BYTES_PER_KEY: usize = 2 * MAX_TREE_DEPTH as usize * 69 + 1024;
+
+fn storage_proof_key_limit(max_response_bytes: u32) -> usize {
+    let available = (max_response_bytes as usize).saturating_sub(STORAGE_PROOF_RESPONSE_OVERHEAD);
+    MAX_STORAGE_PROOF_KEYS.min(available / STORAGE_PROOF_BYTES_PER_KEY)
+}
 
 pub struct ZksNamespace<RpcStorage> {
     bridgehub_address: Address,
@@ -62,6 +73,7 @@ pub struct ZksNamespace<RpcStorage> {
     // to use persisted finalized batches.
     committed_batch_provider: CommittedBatchProvider,
     commitment_tree_reader: InteropCommitmentTreeReader<RpcStorage>,
+    max_storage_proof_keys: usize,
 }
 
 // SYSCOIN: The live committed-batch fallback is intentionally narrower than the persisted RPC
@@ -157,6 +169,7 @@ impl<RpcStorage> ZksNamespace<RpcStorage> {
         eth_call_handler: EthCallHandler<RpcStorage>,
         // SYSCOIN: Carry the non-zero per-request replay ceiling into the shared IMT reader.
         max_imt_reconstruction_leaves: NonZeroU64,
+        max_response_bytes: u32,
     ) -> Self {
         Self {
             bridgehub_address,
@@ -179,6 +192,7 @@ impl<RpcStorage> ZksNamespace<RpcStorage> {
                 eth_call_handler,
                 max_imt_reconstruction_leaves,
             ),
+            max_storage_proof_keys: storage_proof_key_limit(max_response_bytes),
         }
     }
 }
@@ -424,6 +438,11 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
         keys: &[B256],
         batch_number: u64,
     ) -> ZksResult<Option<BatchStorageProof>> {
+        if keys.len() > self.max_storage_proof_keys {
+            return Err(ZksError::TooManyStorageProofKeys {
+                max_keys: self.max_storage_proof_keys,
+            });
+        }
         let Some(batch) = self.storage.batch().get_batch_by_number(batch_number)? else {
             return Ok(None);
         };
@@ -677,6 +696,8 @@ pub type ZksResult<Ok> = Result<Ok, ZksError>;
 /// General `zks` namespace errors
 #[derive(Debug, thiserror::Error)]
 pub enum ZksError {
+    #[error("storage proofs accept at most {max_keys} keys per request")]
+    TooManyStorageProofKeys { max_keys: usize },
     /// Historical block could not be found on this node (e.g., pruned).
     #[error("historical block {0} is not available")]
     BlockNotAvailable(BlockNumber),
@@ -722,15 +743,25 @@ pub enum ZksError {
 #[cfg(test)]
 mod tests {
     use super::{
-        IntervalSettlementLayer, LogProofTarget, SettlementProofRoute, ZksError,
-        permits_optimistic_gateway_batch, require_batch_log_index,
-        select_settlement_proof_l1_provider, settlement_proof_route,
+        IntervalSettlementLayer, LogProofTarget, MAX_STORAGE_PROOF_KEYS,
+        STORAGE_PROOF_BYTES_PER_KEY, STORAGE_PROOF_RESPONSE_OVERHEAD, SettlementProofRoute,
+        ZksError, permits_optimistic_gateway_batch, require_batch_log_index,
+        select_settlement_proof_l1_provider, settlement_proof_route, storage_proof_key_limit,
         with_gateway_settlement_route_deadline,
     };
     use crate::log_proof_utils::SETTLEMENT_PROOF_TIMEOUT;
     use alloy::primitives::B256;
     use std::sync::Arc;
     use tokio::sync::{Semaphore, oneshot};
+
+    #[test]
+    fn storage_proof_key_limit_respects_worst_case_response_and_work_cap() {
+        assert_eq!(storage_proof_key_limit(0), 0);
+        let one_key = (STORAGE_PROOF_RESPONSE_OVERHEAD + STORAGE_PROOF_BYTES_PER_KEY) as u32;
+        assert_eq!(storage_proof_key_limit(one_key - 1), 0);
+        assert_eq!(storage_proof_key_limit(one_key), 1);
+        assert_eq!(storage_proof_key_limit(u32::MAX), MAX_STORAGE_PROOF_KEYS);
+    }
 
     // SYSCOIN: A configured archive endpoint is authoritative for historical proof reads; the
     // live endpoint is only the absence fallback, never a retry target after archive failure.

@@ -2,18 +2,11 @@
 pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
-import {
-    GateVerifier,
-    GateSettlement,
-    GatePriorityCheckpoint,
-    GateMessenger,
-    GateDrawSource
-} from "./ZkSysProofGate.t.sol";
+import {GateVerifier, GateSettlement, GateMessenger, GateDrawSource} from "./ZkSysProofGate.t.sol";
 import {RootDrawHub} from "./ZkSysRootDraw.t.sol";
 import {ServiceClockMockV1, ServiceMembershipMockV1, ServiceMessageVerifierMockV1} from "./ZkSysProverServiceV1.t.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
 import {ZkSysProofGateV1} from "contracts/src/zksys/ZkSysProofGateV1.sol";
-import {ZkSysPriorityGuardV1, IZkSysPriorityMailboxV1} from "contracts/src/zksys/ZkSysPriorityGuardV1.sol";
 import {ZkSysProverServiceRegistryV1} from "contracts/src/zksys/ZkSysProverServiceRegistryV1.sol";
 import {ZkSysWrapperCoordinatorV1} from "contracts/src/zksys/ZkSysWrapperCoordinatorV1.sol";
 import {ZkSysRootServiceMessageSinkV1, ZkSysNativeRootDrawV1} from "contracts/src/zksys/ZkSysRootServiceV1.sol";
@@ -170,30 +163,22 @@ contract ZkSysGatewayServiceV1Test is Test {
         gateway.settlement = new GatewayMerkleSettlement(gateway.verifier);
         gateway.settlement.setChainId(GATEWAY);
         hub.setChain(GATEWAY, address(gateway.settlement));
-        GatePriorityCheckpoint childCheckpoint = new GatePriorityCheckpoint(POLICY);
-        GatePriorityCheckpoint rootCheckpoint = new GatePriorityCheckpoint(POLICY);
-        rootCheckpoint.setChainId(GATEWAY);
 
         vm.chainId(GATEWAY);
-        address predictedGate = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
-        ZkSysPriorityGuardV1 guard = new ZkSysPriorityGuardV1(
-            predictedGate, IZkSysPriorityMailboxV1(address(child.settlement)), childCheckpoint, POLICY, 100, 600, 64
-        );
         child.gate = new ZkSysProofGateV1(
             child.settlement,
             child.settlement,
             vm.addr(SEQUENCER_KEY),
             POLICY,
             child.verifier.vkHash(),
-            guard,
             IZkSysServiceMessageSinkV1(address(0))
         );
         child.settlement.configure(address(child.gate), bytes32(0));
 
         vm.chainId(ROOT);
         uint64 nonce = vm.getNonce(address(this));
-        predictedGate = vm.computeCreateAddress(address(this), nonce + 2);
-        address predictedReceiver = vm.computeCreateAddress(address(this), nonce + 3);
+        address predictedGate = vm.computeCreateAddress(address(this), nonce + 1);
+        address predictedReceiver = vm.computeCreateAddress(address(this), nonce + 2);
         sink = new ZkSysRootServiceMessageSinkV1(
             ZkSysRootServiceMessageSinkV1.Configuration({
                 publisher: predictedGate,
@@ -206,12 +191,8 @@ contract ZkSysGatewayServiceV1Test is Test {
                 policyHash: POLICY
             })
         );
-        guard = new ZkSysPriorityGuardV1(
-            predictedGate, IZkSysPriorityMailboxV1(address(gateway.settlement)), rootCheckpoint, POLICY, 100, 600, 64
-        );
-        gateway.gate = new ZkSysProofGateV1(
-            gateway.settlement, gateway.settlement, vm.addr(SEQUENCER_KEY), POLICY, ROOT_VK, guard, sink
-        );
+        gateway.gate =
+            new ZkSysProofGateV1(gateway.settlement, gateway.settlement, vm.addr(SEQUENCER_KEY), POLICY, ROOT_VK, sink);
         gateway.settlement.configure(address(gateway.gate), bytes32(0));
 
         vm.chainId(CHILD);

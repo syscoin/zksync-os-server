@@ -22,6 +22,7 @@ class MainnetEdgeIdentityTests(unittest.TestCase):
             GATEWAY_CHAIN_ID="57570", EDGE_CHAIN_ID="5757", PROVER_MODE="gpu",
             GATEWAY_PROVER_MODE="gpu", EDGE_PROVER_MODE="gpu",
             SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER="false", PYTHONDONTWRITEBYTECODE="1",
+            BITCOIN_DA_RPC_USER="fixture-user", BITCOIN_DA_RPC_PASSWORD="fixture-password",
         )
 
     def run_common(self, command, **overrides):

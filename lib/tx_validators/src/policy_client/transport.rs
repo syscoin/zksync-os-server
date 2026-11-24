@@ -1,6 +1,6 @@
 //! HTTP transport for `PolicyClient` calls to the policy service.
 //!
-//! Two transports are supported: `http://host:port` (TCP) and
+//! Two transports are supported: HTTPS or loopback HTTP (TCP), and
 //! `unix:///path/to.sock` (UDS). Both are built into a single
 //! `reqwest::Client`; `PolicyClient` is unaware of the underlying scheme.
 
@@ -63,14 +63,19 @@ impl Transport {
                 auth_value.set_sensitive(true);
                 let mut headers = Self::base_headers();
                 headers.insert(AUTHORIZATION, auth_value);
-                let client = reqwest::Client::builder()
+                let mut builder = reqwest::Client::builder()
                     .default_headers(headers)
-                    .build()?;
+                    .redirect(reqwest::redirect::Policy::none());
+                if url.scheme() == "http" {
+                    builder = builder.no_proxy();
+                }
+                let client = builder.build()?;
                 Ok(Self { client, base_url })
             }
             TransportConfig::Unix { socket_path } => {
                 let client = reqwest::Client::builder()
                     .default_headers(Self::base_headers())
+                    .redirect(reqwest::redirect::Policy::none())
                     .unix_socket(socket_path)
                     .build()?;
                 Ok(Self {

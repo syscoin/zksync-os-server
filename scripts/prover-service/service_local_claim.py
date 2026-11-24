@@ -199,7 +199,6 @@ class Hooks(receipts.Hooks):
 class ClaimRunner(machine.ReceiptRunner):
     def __init__(self, journal, save, driver, zksys_rpc, hooks, *, clock=time.time):
         super().__init__(journal, save, driver, zksys_rpc, zksys_rpc, hooks, clock=clock)
-        storage._normalize(journal, 'claim')
 
     def index_discovery(self, changes):
         for key, value in changes.items():
@@ -369,7 +368,7 @@ def main():
             journal = storage.load(path, 'claim')
             s.require(journal.get('version') == 1 and journal.get('identity') == identity, 'claim_journal_identity_changed')
         else:
-            journal = storage.journal.State({'version': 1, 'identity': identity, 'transactions': {}, 'records': {}, 'split': [], 'history': []})
+            journal = storage.new_claim_state(identity)
             storage.save(path, journal, 'claim')
         save = lambda value: storage.save(path, value, 'claim')
         driver = ServiceTransactionDriver(journal, save, signer.sign, signer.decode, signer.hash_raw)

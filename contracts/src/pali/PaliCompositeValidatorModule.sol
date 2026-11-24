@@ -16,6 +16,7 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
     bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
     bytes4 internal constant EIP1271_FAILED = 0xffffffff;
 
+    error AlreadyInitialized();
     error DuplicateChildValidator(address validator);
     error InvalidChildValidator(address validator);
     error InvalidCompositeThreshold(uint64 childCount, uint64 threshold);
@@ -24,6 +25,9 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
     mapping(address account => uint64) private _threshold;
 
     function onInstall(bytes calldata initData) public override {
+        if (_threshold[msg.sender] != 0 || _children[msg.sender].length != 0) {
+            revert AlreadyInitialized();
+        }
         (address[] memory children, uint64 threshold_) = abi.decode(initData, (address[], uint64));
         _setPolicy(msg.sender, children, threshold_);
     }

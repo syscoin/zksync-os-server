@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import relay
 import service as s
@@ -132,6 +133,29 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, 'source_block_changed'):
             d.hydrate(gateway, self.cfg, reports[0], str(self.root))
 
+    def test_direct_receipt_requires_matching_package_and_report(self):
+        event, receipt, tx = self.accepted_receipt()
+        gateway = Rpc(99, self.head, self.gate, event, receipt, tx)
+        cursor = {'gateway': 7, 'l1': 8}
+        with patch.object(d, 'decode_gate_duties', return_value=None):
+            with self.assertRaisesRegex(s.Error, 'accepted_report_identity_mismatch'):
+                d.discover(gateway, self.empty_l1, {**self.cfg, 'child_chain_address': a(999)}, cursor, self.roots)
+        with patch.object(s, 'report_hash', return_value=h(999)):
+            with self.assertRaisesRegex(s.Error, 'duty_report_hash_mismatch'):
+                d.discover(gateway, self.empty_l1, self.cfg, cursor, self.roots)
+        with patch.object(s, 'report_hash', side_effect=s.Error('cast_failed')):
+            with self.assertRaisesRegex(s.Error, 'cast_failed'):
+                d.discover(gateway, self.empty_l1, self.cfg, cursor, self.roots)
+
+    def test_unusable_sidecar_fails_closed_before_direct_calldata_fallback(self):
+        event, receipt, tx = self.accepted_receipt()
+        gateway = Rpc(99, self.head, self.gate, event, receipt, tx)
+        sidecar = {**self.item, 'duties': []}
+        item = {'package_hash': self.package, 'mode': 'service', 'sidecar': sidecar}
+        s.write_new(self.root / (self.package[2:] + '.json'), item)
+        with self.assertRaisesRegex(s.Error, 'relay_artifact_mismatch'):
+            d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
+
     def test_sidecar_recovers_router_submission(self):
         event, receipt, tx = self.accepted_receipt()
         tx['to'] = a(999)
@@ -233,7 +257,7 @@ class DiscoveryTests(unittest.TestCase):
             d.discover(gateway, self.empty_l1, self.cfg, cursor, self.roots)
         self.assertEqual(cursor, {'gateway': 7, 'l1': 8})
 
-    def test_multiple_gate_events_are_processed_in_order(self):
+    def accepted_and_activation_rpc(self):
         accepted_event, accepted_receipt, tx = self.accepted_receipt()
         root, vk, activation_hash = h(1011), h(1012), h(25)
         activation_event = {'address': self.gate, 'topics': [d.ACTIVATED, '0x' + '00' * 12 + a(200)[2:]],
@@ -259,14 +283,33 @@ class DiscoveryTests(unittest.TestCase):
                     self.calls.append((method, params))
                     return copy.deepcopy(activation_receipt)
                 return super().call(method, params)
-        gateway = MultipleRpc(99, self.head, self.gate, accepted_event, accepted_receipt, tx, vk)
+        return MultipleRpc(99, self.head, self.gate, accepted_event, accepted_receipt, tx, vk)
+
+    def test_multiple_gate_events_are_processed_in_order(self):
+        gateway = self.accepted_and_activation_rpc()
         cursor, reports = d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
         self.assertEqual(cursor['gateway'], 8)
         self.assertEqual([report['kind'] for report in reports], ['accepted', 'activation'])
-        self.assertEqual([report['sourceTransactionHash'] for report in reports], [h(22), activation_hash])
+        self.assertEqual([report['sourceTransactionHash'] for report in reports], [h(22), h(25)])
         logs_queries = [params[0] for method, params in gateway.calls if method == 'eth_getLogs']
         self.assertEqual(logs_queries, [{'blockHash': h(7), 'address': self.gate,
                                          'topics': [[d.ACCEPTED, d.ACTIVATED]]}])
+
+    def test_unrecognized_direct_duty_encoding_advances_scan_and_hydrates_from_sidecar(self):
+        gateway = self.accepted_and_activation_rpc()
+        with patch.object(s, 'encode_duty', return_value=b'unavailable local encoding'):
+            cursor, reports = d.discover(gateway, self.empty_l1, self.cfg, {'gateway': 7, 'l1': 8}, self.roots)
+            self.assertEqual(cursor, {'gateway': 8, 'l1': 8})
+            self.assertEqual([report['kind'] for report in reports], ['unresolved', 'activation'])
+            unresolved = json.loads(json.dumps(reports[0]))
+            self.assertIsNone(d.hydrate(gateway, self.cfg, unresolved, str(self.root)))
+            self.assertNotIn('duties', unresolved)
+        item = {'package_hash': self.package, 'mode': 'service', 'sidecar': self.item}
+        s.write_new(self.root / (self.package[2:] + '.json'), item)
+        with patch.object(d, 'decode_gate_calldata', side_effect=AssertionError('expected sidecar recovery')):
+            recovered = d.hydrate(gateway, self.cfg, unresolved, str(self.root))
+        self.assertEqual(recovered['id'], unresolved['id'])
+        self.assertEqual((recovered['accepted'], recovered['duties']), (self.accepted, self.duties))
 
     def test_malformed_filtered_event_fails_closed(self):
         event, receipt, tx = self.accepted_receipt()

@@ -165,7 +165,8 @@ AGE-SECRET-KEY-...
 ```
 
 Encryption is randomized, so the live gate verifies presence only inside its writer-owned session.
-Recovery decrypts every session copy and requires the decoded records for a block/hash to agree.
+Recovery decrypts every selected session copy and requires the decoded records for a block/hash
+to agree. The default selection includes every session.
 
 ## Recovery
 
@@ -192,9 +193,35 @@ If the archive was encrypted, recovery decrypts downloaded objects in memory whe
 version (`--kms-key-version`) or an age identity (`--identity-file` / `--age-secret-key`) is
 provided. Decrypted replay records are not written to disk.
 
-The recovery logic requires all session copies for each canonical block/hash to decode to the same
-replay record. It then starts from the anchor, extracts the previous block hash from each record,
+The recovery logic requires all selected session copies for each canonical block/hash to decode
+to the same replay record. It then starts from the anchor, extracts the previous block hash from each record,
 walks backward until block `0`, and writes the canonical chain into RocksDB from genesis upward.
+
+When recovering from a shared archive, use `--trusted-session` on both commands to scope the
+restore to exact session IDs recorded independently in trusted writer logs or a reviewed inventory.
+Repeat the option for each trusted session needed to cover the full chain from the anchor. The
+download lists each selected writer prefix directly on filesystem, S3 and GCS backends. Copies
+in the selected sessions must still agree. Use storage access controls that reserve each selected
+prefix to its corresponding writer.
+
+Recovery marks an imported WAL pending until the node replays it through the
+trusted anchor. Retain the deployment's `database_identity.json` from a healthy
+node or trusted backup. Put that file and the imported WAL in a fresh database
+root, then run a replay-only main
+node with `network.enabled`, `consensus.enabled`, `batcher.enabled` and
+`service_publication.enabled` set to `false`, `replay_archive.type` set to `Noop`,
+and `sequencer.rebuild` unset. The node checks configured genesis and starts RPC
+after the applier verifies the anchored replay. If interrupted, restart with the
+same database root and verification profile to resume.
+
+After the log reports that the imported replay reached its trusted anchor,
+restart with the intended production configuration. An external node can then
+catch up from its trusted peers when settlement has advanced beyond the backup.
+Normal main-node startup requires its WAL to cover the latest committed L2 block.
+This check validates replay
+execution through the supplied anchor. Use trusted archive sources for the exact
+replay inputs. WALs imported by older releases lack this marker and require a
+fresh import to run this verification path.
 
 ## CLI
 

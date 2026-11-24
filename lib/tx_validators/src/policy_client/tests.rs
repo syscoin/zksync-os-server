@@ -295,9 +295,9 @@ fn invalid_url_rejected_at_construction() {
 }
 
 #[test]
-fn http_url_accepted_at_construction() {
-    let mut cfg = Config {
-        url: "http://policy.local:9000".into(),
+fn https_url_accepted_at_construction() {
+    let cfg = Config {
+        url: "https://policy.local:9000".into(),
         component: Component::Rpc,
         auth_token: Some("token".into()),
         request_timeout: Duration::from_millis(500),
@@ -306,7 +306,6 @@ fn http_url_accepted_at_construction() {
         bypass_from: Default::default(),
         trace_limits: DEFAULT_POLICY_TRACE_LIMITS,
     };
-    cfg.auth_token = Some("token".into());
     assert!(PolicyClient::new(cfg).is_ok());
 }
 
@@ -314,7 +313,7 @@ fn http_url_accepted_at_construction() {
 fn invalid_http_auth_token_rejected_at_construction() {
     // SYSCOIN: malformed operator-provided secrets must not panic node startup.
     let err = PolicyClient::new(Config {
-        url: "http://policy.local:9000".into(),
+        url: "https://policy.local:9000".into(),
         component: Component::Rpc,
         auth_token: Some("token\n".into()),
         request_timeout: Duration::from_millis(500),
@@ -333,7 +332,7 @@ fn invalid_http_auth_token_rejected_at_construction() {
 }
 
 #[test]
-fn https_url_rejected_at_construction() {
+fn https_url_requires_token_at_construction() {
     assert!(
         PolicyClient::new(Config {
             url: "https://policy.local:9000".into(),

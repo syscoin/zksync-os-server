@@ -63,7 +63,7 @@ use crate::provider::{ProviderKind, ProviderResponseByteBudget, build_node_provi
 use crate::tree_manager::TreeManager;
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Bytes, keccak256};
+use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Bytes, U256, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol_types::SolCall;
@@ -89,6 +89,7 @@ use zksync_os_contract_interface::l1_discovery::{
     BatchVerificationSL, L1State, L2_BRIDGEHUB_ADDRESS,
 };
 use zksync_os_contract_interface::models::BatchDaInputMode;
+use zksync_os_contract_interface::prover_service_v1::IZkSysProofGateV1;
 use zksync_os_contract_interface::{
     IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call, ZkChain,
 };
@@ -139,7 +140,7 @@ use zksync_os_sequencer::execution::block_context_provider::{BlockContextProvide
 use zksync_os_sequencer::execution::{BlockApplier, BlockCanonizer, BlockExecutor, FeeProvider};
 use zksync_os_state_full_diffs::FullDiffsState;
 use zksync_os_status_server::{StatusServerState, run_status_server};
-use zksync_os_storage::db::{BlockReplayStorage, ExecutedBatchStorage};
+use zksync_os_storage::db::{ArchiveReplayRecovery, BlockReplayStorage, ExecutedBatchStorage};
 use zksync_os_storage::in_memory::Finality;
 use zksync_os_storage::lazy::RepositoryManager;
 use zksync_os_storage_api::{
@@ -388,6 +389,7 @@ fn edge_da_admission_config(
     }
 
     Ok(Some(zksync_os_rpc::EdgeDaAdmissionConfig {
+        max_concurrent_checks: usize::from(config.rpc_config.max_concurrent_edge_da_checks.get()),
         commit_tx_target,
         rpc_url: rpc_url
             .context(
@@ -600,7 +602,11 @@ async fn authenticate_l1_archive_genesis_upgrade(
     })
 }
 
-pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
+pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
+    config
+        .batcher_config
+        .resolve_bitcoin_da_auth()
+        .expect("invalid Bitcoin DA RPC configuration");
     let BoundListeners {
         rpc: rpc_listener,
         status: prebound_status_listener,
@@ -835,6 +841,35 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     )
     .await;
 
+    let archive_recovery = block_replay_storage
+        .archive_recovery()
+        .expect("failed to read replay archive verification state");
+    if let Some(recovery) = archive_recovery {
+        assert!(
+            node_role.is_main()
+                && !config.network_config.enabled
+                && !config.consensus_config.enabled
+                && !config.batcher_config.enabled
+                && !config.service_publication_config.enabled
+                && config.sequencer_config.rebuild.is_none()
+                && matches!(
+                    config.replay_archive_config,
+                    config::ReplayArchiveConfig::Noop
+                ),
+            "archive replay verification requires a replay-only main node with networking, consensus, batching, service publication and archive writes disabled, and no rebuild"
+        );
+        assert!(
+            block_replay_storage.latest_record() == recovery.anchor_block
+                && block_replay_storage.get_canonical_block_hash(recovery.anchor_block)
+                    == Some(recovery.anchor_hash),
+            "replay archive import did not complete at its trusted anchor; recover to a fresh WAL"
+        );
+        block_replay_storage
+            .verify_archive_recovery_genesis(&genesis)
+            .await
+            .expect("replay archive genesis does not match the configured chain");
+    }
+
     // Apply the `from_block_hash` idempotency guard once, up front, to derive the *effective*
     // rebuild config used for the rest of startup. If the configured rebuild already ran on a
     // prior startup (hash no longer matches), it is dropped here so BOTH the L1 revert (stage 1,
@@ -908,6 +943,15 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     } else {
         gateway_provider.clone().unwrap()
     };
+    if config.service_publication_config.enabled {
+        tokio::time::timeout(
+            config.service_publication_config.rpc_timeout,
+            validate_service_gate(&config, &l1_state, &sl_provider, chain_id),
+        )
+        .await
+        .expect("timed out validating the deployed service gate")
+        .expect("invalid deployed service gate");
+    }
     // SYSCOIN: Settlement mode is discovered from the L1 diamond, not from the
     // optional Gateway provider config. A Gateway RPC may be configured before
     // or after migration while the chain still settles directly on L1.
@@ -936,6 +980,19 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         .expect("configured pubdata mode does not match the canonical settlement topology");
     }
     if node_role.is_main() {
+        if block_production_enabled(&config)
+            && config.sequencer_config.max_blocks_to_produce != Some(0)
+        {
+            let recipient = config.sequencer_config.fee_collector_address;
+            assert!(
+                !recipient.is_zero(),
+                "block production requires `sequencer.fee_collector_address`"
+            );
+            assert!(
+                l1_state.l1_chain_id == 31337 || recipient != config::DEVELOPMENT_FEE_COLLECTOR,
+                "the development fee collector is only supported on the local development L1"
+            );
+        }
         // SYSCOIN: Enforce the effective on-chain batch-verification signer policy at startup.
         validate_batch_verification_startup_policy(
             &config.batch_verification_config,
@@ -1060,15 +1117,32 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         last_l1_executed_block,
     };
 
-    node_startup_state.assert_consistency();
+    node_startup_state.assert_consistency(archive_recovery.map(|recovery| recovery.anchor_block));
+    if let Some(recovery) = archive_recovery
+        && recovery.verified_through.is_none()
+    {
+        // A saved repository or state snapshot could supply unverified input to the first VM
+        // replay. Start from genesis with fresh derived data before trusting any progress.
+        assert!(
+            node_startup_state.repositories_persisted_block == 0
+                && node_startup_state.tree_last_block == 0
+                && *node_startup_state.state_block_range_available.end() == 0,
+            "initial replay archive verification requires fresh derived state; restore to a fresh database root"
+        );
+        block_replay_storage
+            .initialize_archive_recovery()
+            .expect("failed to persist replay archive verification start");
+    }
 
     // SYSCOIN: Authenticate the consensus-pinned fee tank from the latest executed local state
     // before networking, transaction acceptance, or block production can start. First boot may
     // legitimately precede deployment; production restarts opt into mandatory presence.
     let syscoin_gas_tank_required = syscoin_require_gas_tank_from_env()
         .expect("invalid SYSCOIN_REQUIRE_GAS_TANK startup policy");
-    validate_syscoin_gas_tank_local_state(&state, syscoin_gas_tank_required)
-        .expect("failed to authenticate the canonical zkSYS gas-tank deployment");
+    if archive_recovery.is_none() {
+        validate_syscoin_gas_tank_local_state(&state, syscoin_gas_tank_required)
+            .expect("failed to authenticate the canonical zkSYS gas-tank deployment");
+    }
 
     if let Some(from_block_number) = rebuild_options.as_ref().map(|o| o.from_block_number)
         && node_role.is_main()
@@ -1119,6 +1193,13 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     } else {
         // No batches committed - starting from genesis.
         0
+    };
+    let starting_block = if let Some(recovery) = archive_recovery {
+        // Startup heuristics and forced starts may only rewind an imported prefix. Only the
+        // verification checkpoint from a prior replay can authorize skipping imported blocks.
+        starting_block.min(recovery.verified_through.unwrap_or(0).saturating_add(1))
+    } else {
+        starting_block
     };
 
     tracing::info!(
@@ -1482,7 +1563,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
 
     // The base token price updater owns the price channel and hands back a cloneable handle.
     // External nodes don't run the updater, so they get a `pending` handle whose value stays unset.
-    let base_token_price_handle = if node_role.is_main() {
+    let base_token_price_handle = if node_role.is_main() && archive_recovery.is_none() {
         let external_price_api_client_config = config
             .external_price_api_client_config
             .clone()
@@ -1730,6 +1811,8 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     )
     .await;
     let (replay_archive_sender, replay_archiver) = replay_archive.unzip();
+    let archive_recovery_verification =
+        archive_recovery.map(|recovery| (recovery, block_replay_storage.clone()));
     let archiving_block_replay_storage =
         ReplayArchivingWriteReplay::new(block_replay_storage, replay_archive_sender);
     if let Some(inserted_genesis_replay_record) = inserted_genesis_replay_record {
@@ -1802,6 +1885,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             reserved_prover_api_socket,
             genesis_replay_completed,
             startup_rebuild_target_gate_sender,
+            archive_recovery_verification,
         )
         .await
     } else {
@@ -1827,6 +1911,11 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         )
         .await
     };
+
+    if archive_recovery.is_some() {
+        validate_syscoin_gas_tank_local_state(&state, syscoin_gas_tank_required)
+            .expect("failed to authenticate the zkSYS gas tank in the verified replay state");
+    }
 
     // SYSCOIN: RPC admission receives only the authenticated live address. On a fresh Gateway,
     // the execution/replay pipeline above is already running and can process the priority
@@ -2064,6 +2153,36 @@ fn validate_deployed_verifier_prover_policy(
         prover_api_config.proof_storage.batch_with_proof_capacity.0
             >= MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY,
         "external real proving requires prover_api.proof_storage.batch_with_proof_capacity of at least 8 GiB"
+    );
+    Ok(())
+}
+
+/// Authenticate the configured gate against the selected settlement chain before publishing work.
+async fn validate_service_gate(
+    config: &Config,
+    l1_state: &L1State,
+    provider: &NodeProvider,
+    child_chain_id: u64,
+) -> anyhow::Result<()> {
+    let service = &config.service_publication_config;
+    let settlement_block = provider
+        .get_block_by_number(l1_state.sl_block_number.into())
+        .await?
+        .context("settlement provider did not return the startup block")?;
+    let block = BlockId::hash_canonical(settlement_block.header.hash);
+    let chain_address = l1_state.diamond_proxy_address_sl();
+    anyhow::ensure!(
+        keccak256(provider.get_code_at(service.gate).block_id(block).await?)
+            == service.gate_code_hash,
+        "service gate runtime does not match reviewed pin"
+    );
+    let gate = IZkSysProofGateV1::new(service.gate, provider.clone());
+    anyhow::ensure!(
+        gate.chain().block(block).call().await? == chain_address
+            && gate.childChainId().block(block).call().await? == U256::from(child_chain_id)
+            && gate.timelock().block(block).call().await? == l1_state.validator_timelock_sl
+            && gate.policyHash().block(block).call().await? == service.policy_hash,
+        "service gate identity does not match the selected settlement chain"
     );
     Ok(())
 }
@@ -2355,6 +2474,39 @@ async fn release_gateway_target_after_startup_rebuild(
     })
 }
 
+async fn verify_imported_replay_prefix(
+    storage: &BlockReplayStorage,
+    recovery: ArchiveReplayRecovery,
+    applied_blocks: &mut watch::Receiver<Option<BlockNumber>>,
+) -> anyhow::Result<()> {
+    if recovery.anchor_block == 0 {
+        anyhow::ensure!(
+            storage.advance_archive_recovery(0)?,
+            "genesis anchor was not verified"
+        );
+        tracing::info!("verified the imported replay archive at its trusted genesis anchor");
+        return Ok(());
+    }
+    // Ignore the startup seed. Every subsequent publication came from the applier after VM,
+    // WAL, state and repository checks on a contiguous replay starting at a verified boundary.
+    loop {
+        applied_blocks
+            .changed()
+            .await
+            .context("block applier ended before archive verification")?;
+        let applied = *applied_blocks.borrow_and_update();
+        if let Some(block) = applied
+            && storage.advance_archive_recovery(block)?
+        {
+            tracing::info!(
+                block,
+                "verified the imported replay archive through its trusted anchor"
+            );
+            return Ok(());
+        }
+    }
+}
+
 // SYSCOIN: Read the newest stable phase while proving the sole stage sender is still alive. If a
 // closed channel retains one unseen phase, consume it and then reject closure on the second check.
 fn observe_liveness_bound_startup_phase(
@@ -2536,6 +2688,7 @@ async fn run_main_node_pipeline(
     // SYSCOIN: Present only when Gateway-local target discovery was deliberately deferred across
     // a startup rebuild. The applied-block frontier, not command enqueue, releases this barrier.
     startup_rebuild_target_gate: Option<oneshot::Sender<()>>,
+    archive_recovery: Option<(ArchiveReplayRecovery, BlockReplayStorage)>,
 ) -> PipelineHandles {
     let native_da = || {
         native_da_evidence_for_mode(
@@ -2570,6 +2723,7 @@ async fn run_main_node_pipeline(
     // SYSCOIN: Preserve a consumer for the existing durable-applier signal before the executor
     // receiver is moved into the pipeline. It is read only when a rebuild gate exists.
     let mut startup_rebuild_applied_block_receiver = applied_block_number_receiver.clone();
+    let mut archive_recovery_applied_blocks = applied_block_number_receiver.clone();
 
     // SYSCOIN: Only a node that can produce compact-DA blocks needs the pre-persistence ceiling.
     // Read-only verifier / RPC consumers still authenticate the target, but have no local
@@ -2650,6 +2804,11 @@ async fn run_main_node_pipeline(
         let pipeline = pipeline.pipe(NoOpSink::new());
         let components = pipeline.components();
         pipeline.spawn();
+        if let Some((recovery, storage)) = archive_recovery {
+            verify_imported_replay_prefix(&storage, recovery, &mut archive_recovery_applied_blocks)
+                .await
+                .expect("failed to verify the imported replay archive prefix");
+        }
         release_gateway_target_after_startup_rebuild(
             startup_rebuild_target_gate,
             &mut startup_rebuild_applied_block_receiver,

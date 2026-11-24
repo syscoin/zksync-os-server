@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -121,6 +122,31 @@ class ReleaseTests(unittest.TestCase):
             network.assert_not_called()
 
 
+class DescriptorTests(unittest.TestCase):
+    def test_release_helper_is_read_as_source_data(self):
+        app = b"bound application source"
+        app_hash = hashlib.sha256(app).hexdigest()
+        binding = {
+            "descriptor_sha256": DESCRIPTOR,
+            "versions_sha256": "6" * 64,
+            "identity_sha256": dict.fromkeys(GATE.FIXTURE_IDENTITIES, "7" * 64),
+        }
+        files = dict.fromkeys(GATE.APP_SOURCE_PATHS, app)
+        files[GATE.RELEASE_HELPER] = (
+            "raise RuntimeError('release helpers must never run on the publication runner')\n"
+            f"CANONICAL_BINDING = {binding!r}\n"
+            f"APP_SOURCES = {dict.fromkeys(GATE.APP_SOURCE_PATHS, app_hash)!r}\n"
+        ).encode()
+        files["integration-tests/src/fixture_backend.rs"] = (
+            f'const TRUSTED_DESCRIPTORS: &[(&str, &str)] = &[("v32.0", "{DESCRIPTOR}")];'
+        ).encode()
+        with patch.object(GATE, "blob", side_effect=files.__getitem__), patch.object(GATE, "git", return_value=""):
+            self.assertEqual(GATE.descriptor_hash(), DESCRIPTOR)
+            files[next(iter(GATE.APP_SOURCE_PATHS))] += b"modified"
+            with self.assertRaisesRegex(ValueError, "source SHA-256 mismatch"):
+                GATE.descriptor_hash()
+
+
 class WorkflowTests(unittest.TestCase):
     def publishing_steps(self, workflow, name):
         text = (WORKFLOWS / workflow).read_text().split("\njobs:\n", 1)[1]
@@ -228,30 +254,39 @@ class WorkflowTests(unittest.TestCase):
 
     def test_versioned_docker_qualification_precedes_publication_and_keeps_main_latest(self):
         docker = (WORKFLOWS / "docker.yml").read_text()
-        steps = self.publishing_steps("docker.yml", "build-images")
-        builds = [step for step in steps if "uses: docker/build-push-action@" in step]
+        build_job = docker.split("\n  build-images:\n", 1)[1].split("\n  publish-image:\n", 1)[0]
+        self.assertNotIn("write", build_job)
+        self.assertNotIn("docker/login-action@", build_job)
+        self.assertNotIn("secrets.", build_job)
+        self.assertIn("actions/upload-artifact@", build_job)
+        builds = [step for step in build_job.split("\n      - name: ") if "uses: docker/build-push-action@" in step]
         self.assertEqual(len(builds), 1)
         build = builds[0]
-        push = self.live_check_before(
-            steps, "skopeo copy --all --preserve-digests", '"${checker}"',
-            versioned=True, versioned_write=True,
-        )
-        self.assertLess(steps.index(build), steps.index(push))
-        self.assertIn("push: ${{ !(inputs.tag_name || github.ref_type == 'tag') }}", build)
-        self.assertIn(
-            "outputs: ${{ (inputs.tag_name || github.ref_type == 'tag') && "
-            "format('type=oci,tar=false,dest={0}/versioned-image', runner.temp) || '' }}", build,
+        self.assertIn("push: false", build)
+        self.assertIn("outputs: type=oci,tar=false,dest=${{ runner.temp }}/server-image", build)
+        self.assertEqual(
+            [line.strip() for line in build.splitlines() if line.strip().startswith("tags:")],
+            ["tags: ${{ needs.resolve-source.outputs.image_name }}:${{ needs.resolve-source.outputs.version }}"],
         )
         self.assertNotIn("provenance:", build)
-        attest = self.live_check_before(steps, "push-to-registry: true", '"${checker}"', versioned=True)
+
+        steps = self.publishing_steps("docker.yml", "publish-image")
+        self.trusted_checkout(steps, "qualification-tooling")
+        self.assertTrue(any("artifact-ids: ${{ needs.build-images.outputs.artifact_id }}" in step for step in steps))
+        self.assertFalse(any("uses: docker/build-push-action@" in step for step in steps))
+        checker = "../qualification-tooling/.github/scripts/check-canonical-qualification.py"
+        push = self.live_check_before(
+            steps, "skopeo copy --all --preserve-digests", checker, versioned=True,
+        )
+        attest = self.live_check_before(steps, "push-to-registry: true", checker, versioned=True)
         for gate in (push, attest):
-            self.assertIn("RELEASE_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}", gate)
-            self.assertIn("TOOLING_SHA: ${{ job.workflow_sha }}", gate)
-            self.assertIn('git show "${TOOLING_SHA}:.github/scripts/check-canonical-qualification.py"', gate)
-        self.assertIn('| cmp - "${checker}"', attest)
-        self.assertIn("type=raw,value=latest,enable=", docker)
+            self.assertIn("RELEASE_SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}", gate)
+            self.assertIn("working-directory: release-source", gate)
+        publish = next(step for step in steps if "skopeo copy --all --preserve-digests" in step)
+        self.assertIn('publish_tag "${VERSION}"', publish)
+        self.assertRegex(publish, r'if \[\[ "\$\{PUBLISH_LATEST\}" == true \]\]; then\s+publish_tag latest\s+fi')
         self.assertIn("github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.tag_name == ''",
-                      docker)
+                      publish)
 
 
 if __name__ == "__main__":

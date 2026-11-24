@@ -23,23 +23,20 @@ class JournalTests(unittest.TestCase):
     def reload(self):
         self.state = journal.load(self.path, list_fields=("audit.events",))
 
-    def test_optional_map_attachment_is_read_only_until_transactional_save(self):
+    def test_missing_operations_table_stops_open_without_recreating_it(self):
         self.state["operations"]["accepted"] = {"status": "accepted", "assignment": {"batch_number": 1}}
         with patch.object(journal, "MAX_ROWS", 1):
             self.save()
+        self.state.database.execute("DROP TABLE map_operations")
         self.state.database.close()
         database = self.path.with_name(self.path.name + ".sqlite3")
         before = {path: path.read_bytes() for path in (self.path, database)}
-        loaded = journal.load(self.path, map_fields=("operations", "known_receipts"), list_fields=("audit.events",))
-        self.assertEqual(loaded["known_receipts"], {})
+        with self.assertRaisesRegex(s.Error, "journal_table_missing"):
+            self.reload()
+        with self.assertRaisesRegex(s.Error, "journal_table_missing"):
+            with journal.snapshot(self.path, list_fields=("audit.events",)):
+                pass
         self.assertEqual({path: path.read_bytes() for path in before}, before)
-        loaded["known_receipts"]["receipt"] = {"lane": "child", "assignment": {"batch_number": 1}, "duty": {"slot": 0}}
-        journal.save(self.path, loaded, map_fields=("operations", "known_receipts"), list_fields=("audit.events",))
-        loaded.database.close()
-        reloaded = journal.load(self.path, map_fields=("operations", "known_receipts"), list_fields=("audit.events",))
-        self.assertEqual(reloaded["known_receipts"]["receipt"]["duty"], {"slot": 0})
-        self.assertEqual(reloaded["operations"]["accepted"]["status"], "accepted")
-        reloaded.database.close()
 
     def test_interrupted_marker_publication_recovers_committed_rows_and_counters(self):
         self.state["operations"]["pending"] = {"status": "submission_pending", "lease": "original"}
@@ -112,14 +109,32 @@ class JournalTests(unittest.TestCase):
         self.reload()
         self.assertEqual(self.state["operations"]["pending"], row)
 
-    def test_legacy_migration_does_not_invent_an_authenticated_audit(self):
-        self.state.pop("audit")
+    def test_indexed_journal_cannot_open_with_missing_audit_metadata(self):
         self.state["operations"]["pending"] = {"status": "submission_pending", "lease": "original"}
         with patch.object(journal, "MAX_ROWS", 1):
-            journal.save(self.path, self.state)
-        restored = journal.load(self.path, list_fields=("audit.events",))
-        self.assertNotIn("audit", restored)
-        self.assertEqual(restored["operations"]["pending"]["lease"], "original")
+            self.save()
+        db = self.state.database
+        metadata = s.decode_json(db.execute("SELECT value FROM metadata WHERE key='state'").fetchone()[0])
+        del metadata["audit"]
+        db.execute("UPDATE metadata SET value=? WHERE key='state'", (s.canonical(metadata),))
+        db.close()
+        with self.assertRaisesRegex(s.Error, "journal_field_missing"):
+            self.reload()
+        with self.assertRaisesRegex(s.Error, "journal_field_missing"):
+            with journal.snapshot(self.path, list_fields=("audit.events",)):
+                pass
+
+    def test_indexed_journal_cannot_recreate_a_missing_event_table(self):
+        self.state["audit"]["events"].append({"event": "ready"})
+        with patch.object(journal, "MAX_INLINE_EVENTS", 1):
+            self.save()
+        self.state.database.execute("DROP TABLE list_audit_events")
+        self.state.database.close()
+        with self.assertRaisesRegex(s.Error, "journal_table_missing"):
+            self.reload()
+        with self.assertRaisesRegex(s.Error, "journal_table_missing"):
+            with journal.snapshot(self.path, list_fields=("audit.events",)):
+                pass
 
     def test_completed_history_does_not_grow_working_metadata_or_read_cache(self):
         with patch.object(journal, "MAX_ROWS", 2):

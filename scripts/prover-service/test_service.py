@@ -197,6 +197,36 @@ class ServiceTests(unittest.TestCase):
     def setUp(self):
         self.f = copy.deepcopy(self.base)
 
+    def test_keccak_rejects_incomplete_tool_output_as_unavailable(self):
+        for output in (b"", b"0x01", b"0x" + b"AF" * 32):
+            process = subprocess.CompletedProcess(["cast"], 0, output, b"")
+            with self.subTest(output=output), patch.object(s.subprocess, "run", return_value=process):
+                with self.assertRaisesRegex(s.Error, "^cast_failed$"):
+                    s.keccak(b"fixture")
+
+    def test_eoa_verifier_distinguishes_wrong_signer_from_tool_failure(self):
+        request = self.prepared["wrapper_request"]
+        signature = sign(request, "wrapper")
+        s.verify_eoa(request, signature)
+        with self.assertRaisesRegex(s.Error, "^invalid_signature$"):
+            s.verify_eoa(request, sign(request, "operator"))
+        for r in (0, s.SECP256K1_ORDER):
+            with self.subTest(r=r), self.assertRaisesRegex(s.Error, "^noncanonical_signature$"):
+                s.verify_eoa(request, f"0x{r:064x}" + signature[66:])
+        for error in (OSError("unavailable"), subprocess.TimeoutExpired("cast", 30)):
+            with self.subTest(error=error), patch.object(s.subprocess, "run", side_effect=error):
+                with self.assertRaisesRegex(s.Error, "^cast_failed$"):
+                    s.verify_eoa(request, signature)
+        other_signer = self.prepared["sequencer_request"]["signer"]
+        for code, stdout, stderr in (
+                (1, b"", b"verification backend unavailable"),
+                (1, b"", f"Error: Validation failed. Address {other_signer} did not sign this message.".encode()),
+                (0, f"Validation succeeded. Address {other_signer} signed this message.".encode(), b"")):
+            process = subprocess.CompletedProcess(["cast"], code, stdout, stderr)
+            with self.subTest(process=process), patch.object(s.subprocess, "run", return_value=process):
+                with self.assertRaisesRegex(s.Error, "^cast_failed$"):
+                    s.verify_eoa(request, signature)
+
     def test_mixed_period_package_preserves_original_credit_and_rotated_operator(self):
         f = aggregate_fixture(rotated=True)
         prepared = prepare(f)

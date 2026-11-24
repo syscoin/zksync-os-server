@@ -55,6 +55,7 @@ const ZKS_INTERNAL_ERROR_MESSAGE: &str = "Internal error";
 // contain the full URL, including userinfo or query-string API keys.
 fn zks_internal_error_log_summary(err: &ZksError) -> &'static str {
     match err {
+        ZksError::TooManyStorageProofKeys { .. } => "too many storage proof keys",
         ZksError::BlockNotAvailable(_) => "historical block unavailable",
         ZksError::TxNotAvailable(_) => "historical transaction unavailable",
         ZksError::TransactionNotInBatch { .. } => "transaction/batch index inconsistency",
@@ -71,6 +72,7 @@ fn zks_internal_error_log_summary(err: &ZksError) -> &'static str {
 impl<Ok> ToRpcResult<Ok, ZksError> for Result<Ok, ZksError> {
     fn to_rpc_result(self) -> RpcResult<Ok> {
         self.map_err(|err| match err {
+            ZksError::TooManyStorageProofKeys { .. } => invalid_params_rpc_err(err.to_string()),
             // SYSCOIN: Public contention and the configured reconstruction ceiling are expected
             // capacity outcomes. Return fixed busy responses without attacker-amplifiable logs.
             ZksError::CommitmentTree(InteropCommitmentTreeError::ReconstructionBusy) => {
@@ -165,6 +167,10 @@ impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTr
             EthSendRawTransactionError::PolicySimulationBusy => rpc_error_with_code(
                 jsonrpsee::types::error::SERVER_IS_BUSY_CODE,
                 "Policy simulation service is busy",
+            ),
+            EthSendRawTransactionError::EdgeDaAdmissionBusy => rpc_error_with_code(
+                jsonrpsee::types::error::SERVER_IS_BUSY_CODE,
+                err.to_string(),
             ),
         })
     }

@@ -7,15 +7,65 @@ mod tests;
 use alloy::primitives::{Address, address};
 use async_trait::async_trait;
 use secrecy::SecretString;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
+use url::{Host, Url};
 use zksync_os_types::TokenApiRatio;
 
 /// ZK token address on Ethereum Mainnet
 pub const ZK_L1_ADDRESS: Address = address!("0x66a5cfb2e9c529f14fe6364ad1075df3a649c0a5");
 pub const ETH_DECIMALS: u8 = 18;
 pub const ZK_DECIMALS: u8 = 18;
+
+fn price_client(
+    base_url: &str,
+    headers: reqwest::header::HeaderMap,
+    timeout: Duration,
+) -> anyhow::Result<(Url, reqwest::Client)> {
+    let url = Url::parse(base_url).map_err(|_| anyhow::anyhow!("Invalid price API URL"))?;
+    let loopback = match url.host() {
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    anyhow::ensure!(
+        url.scheme() == "https" || (url.scheme() == "http" && loopback),
+        "Remote price API endpoints require HTTPS"
+    );
+    anyhow::ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "Use the configured API key instead of embedding credentials in the price API URL"
+    );
+    let mut builder = reqwest::Client::builder()
+        .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout);
+    if url.scheme() == "http" {
+        builder = builder.no_proxy();
+    }
+    Ok((url, builder.build().map_err(reqwest::Error::without_url)?))
+}
+
+async fn read_price_response<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> anyhow::Result<T> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(reqwest::Error::without_url)?
+    {
+        anyhow::ensure!(
+            chunk.len() <= limit - body.len(),
+            "Price API response exceeds {limit} bytes"
+        );
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|_| anyhow::anyhow!("Invalid price API response JSON"))
+}
 
 /// Enum representing the token for which the ratio is fetched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,8 +1,7 @@
-use crate::{APIToken, PriceApiClient};
+use crate::{APIToken, PriceApiClient, price_client, read_price_response};
 use anyhow::Context;
 use async_trait::async_trait;
 use num::ToPrimitive;
-use reqwest;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -11,10 +10,16 @@ use std::time::Duration;
 use url::Url;
 use zksync_os_types::TokenApiRatio;
 
-#[derive(Debug)]
 pub struct CoinGeckoPriceAPIClient {
     base_url: Url,
     client: reqwest::Client,
+}
+
+impl std::fmt::Debug for CoinGeckoPriceAPIClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CoinGeckoPriceAPIClient")
+            .finish_non_exhaustive()
+    }
 }
 
 const DEFAULT_COINGECKO_API_URL: &str = "https://pro-api.coingecko.com";
@@ -31,12 +36,6 @@ impl CoinGeckoPriceAPIClient {
         api_key: Option<SecretString>,
         client_timeout: Duration,
     ) -> anyhow::Result<Self> {
-        tracing::debug!(
-            ?base_url,
-            ?client_timeout,
-            "Creating CoinGeckoPriceAPIClient"
-        );
-
         let mut headers = HeaderMap::new();
         headers.insert(
             HeaderName::from_static(USER_AGENT_HEADER),
@@ -48,18 +47,12 @@ impl CoinGeckoPriceAPIClient {
             value.set_sensitive(true);
             headers.insert(HeaderName::from_static(COINGECKO_AUTH_HEADER), value);
         }
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(client_timeout)
-            .build()
-            .context("Failed to build reqwest client")?;
-
-        let base_url = base_url.unwrap_or(DEFAULT_COINGECKO_API_URL.to_string());
-
-        Ok(Self {
-            base_url: Url::parse(&base_url).context("Failed to parse CoinGecko URL")?,
-            client,
-        })
+        let (base_url, client) = price_client(
+            base_url.as_deref().unwrap_or(DEFAULT_COINGECKO_API_URL),
+            headers,
+            client_timeout,
+        )?;
+        Ok(Self { base_url, client })
     }
 }
 
@@ -85,15 +78,19 @@ impl PriceApiClient for CoinGeckoPriceAPIClient {
         let decimals = token.decimals();
         let price_url = self.base_url.join(&path).expect("failed to join URL path");
 
-        let response = self.client.get(price_url).send().await?;
+        let response = self
+            .client
+            .get(price_url)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
         anyhow::ensure!(
             response.status().is_success(),
-            "Http error while fetching token price. Status: {}, token: {token_id}, msg: {}",
-            response.status(),
-            response.text().await.unwrap_or(String::new())
+            "Http error while fetching token price. Status: {}, token: {token_id}",
+            response.status()
         );
 
-        let cg_response = response.json::<CoinGeckoPriceResponse>().await?;
+        let cg_response: CoinGeckoPriceResponse = read_price_response(response, 64 * 1024).await?;
         let price_f64 = cg_response
             .get_price(&token_id, &"usd".to_owned())
             .with_context(|| format!("Price not found for token: {token_id}"))?;

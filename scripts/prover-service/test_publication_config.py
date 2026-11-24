@@ -5,7 +5,7 @@ from pathlib import Path
 import publication_config as publication
 import service as s
 from test_keeper import NativeRpc, setup
-from test_service import fixture, h
+from test_service import a, fixture, h
 
 
 class PublicationConfigTests(unittest.TestCase):
@@ -25,7 +25,9 @@ class PublicationConfigTests(unittest.TestCase):
             str(Path(self.directory.name).resolve()), vk or settings['vk_hash'])
 
     def test_preview_checks_canonical_contracts_and_emits_one_lane(self):
-        output = self.preview()['service_publication']
+        overlay = self.preview()
+        self.assertEqual(set(overlay), {'service_publication'})
+        output = overlay['service_publication']
         self.assertEqual(output['gate'], self.config['settings']['proof_gate'])
         self.assertEqual(output['coordinator'], self.config['settings']['coordinator'])
         self.assertEqual(output['directory'], str(Path(self.directory.name).resolve()))
@@ -40,14 +42,14 @@ class PublicationConfigTests(unittest.TestCase):
         self.config['settings']['coordinator'] = s.ZERO_ADDRESS
         self.config['policy']['coordinator_code_hash'] = s.ZERO
         self.rpc.item['mode'] = 'bootstrap'
-        self.rpc.guard_work_missing = True
+        self.rpc.frozen_bootstrap["batchFrom"] = 0
         output = self.preview()['service_publication']
         self.assertEqual(output['coordinator'], s.ZERO_ADDRESS)
         self.assertEqual(output['coordinator_code_hash'], s.ZERO)
 
     def test_rejects_configuration_with_uninstalled_coordinator(self):
         self.rpc.item['mode'] = 'bootstrap'
-        self.rpc.guard_work_missing = True
+        self.rpc.frozen_bootstrap["batchFrom"] = 0
         with self.assertRaisesRegex(s.Error, 'phase_pin_mismatch'):
             self.preview()
 

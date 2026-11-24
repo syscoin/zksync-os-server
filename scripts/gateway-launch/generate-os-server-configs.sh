@@ -93,43 +93,7 @@ fi
 : "${BITCOIN_DA_MISSING_BLOB_RECOVERY_TIMEOUT:=}"
 : "${BITCOIN_DA_COOKIE_FILE:=}"
 
-resolve_syscoin_cookie_file() {
-  local cookie_file datadir network candidate
-  cookie_file="${BITCOIN_DA_COOKIE_FILE:-}"
-  if [ -n "${cookie_file}" ] && [ -f "${cookie_file}" ]; then
-    printf '%s\n' "${cookie_file}"
-    return 0
-  fi
-
-  datadir="${SYSCOIN_DATADIR:-${HOME}/.syscoin}"
-  network="${SYSCOIN_NETWORK:-}"
-  if [ -n "${network}" ]; then
-    candidate="${datadir}/${network}/.cookie"
-    if [ -f "${candidate}" ]; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
-  fi
-
-  candidate="${datadir}/testnet3/.cookie"
-  if [ -f "${candidate}" ]; then
-    printf '%s\n' "${candidate}"
-    return 0
-  fi
-
-  return 1
-}
-
-COOKIE_FILE="$(resolve_syscoin_cookie_file || true)"
-
-if [ -z "${BITCOIN_DA_RPC_URL}" ] && [ -n "${COOKIE_FILE}" ]; then
-  BITCOIN_DA_RPC_URL="http://127.0.0.1:18370"
-fi
-if { [ -z "${BITCOIN_DA_RPC_USER}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD}" ]; } && [ -n "${COOKIE_FILE}" ]; then
-  COOKIE="$(< "${COOKIE_FILE}")"
-  : "${BITCOIN_DA_RPC_USER:=${COOKIE%%:*}}"
-  : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
-fi
+gl_validate_bitcoin_da_credentials
 
 if [ "${GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET}" = false ] &&
   [ "${L1_RPC_URL_WAS_SET}" = false ] &&
@@ -237,6 +201,7 @@ export GATEWAY_ARCHIVE_L1_RPC_URL
 export BITCOIN_DA_RPC_URL
 export BITCOIN_DA_RPC_USER
 export BITCOIN_DA_RPC_PASSWORD
+export BITCOIN_DA_COOKIE_FILE
 export BITCOIN_DA_PODA_URL
 export BITCOIN_DA_WALLET_NAME
 export BITCOIN_DA_ADDRESS_LABEL
@@ -284,6 +249,7 @@ fi
 
 python3 - <<'PY'
 from pathlib import Path
+import hashlib
 import json
 import os
 import re
@@ -890,7 +856,15 @@ bytecode_supplier = eco_contracts["zksync_os_ctm"]["l1_bytecodes_supplier_addr"]
 
 def nginx_prover_api_server_block(domain: str, prover_api_port: str) -> str:
     domain = normalize_dns_name(domain, "prover API nginx domain")
-    return f"""server {{
+    spool = "zksys_prover_" + hashlib.sha256(domain.encode()).hexdigest()[:16]
+    return f"""# Bound buffered worker downloads across all clients of this vhost.
+map $uri ${spool}_pick {{
+    default "";
+    ~^/prover-jobs/v1/(FRI|SNARK)/pick/?$ $server_name;
+}}
+limit_conn_zone ${spool}_pick zone={spool}:1m;
+
+server {{
     listen 80;
     listen [::]:80;
     server_name {domain};
@@ -920,6 +894,8 @@ server {{
     }}
 
     location / {{
+        limit_conn {spool} 8;
+        limit_conn_status 429;
         proxy_pass http://127.0.0.1:{prover_api_port};
         proxy_http_version 1.1;
         # SYSCOIN: Stream request bodies so node-side Basic Auth runs before buffering and the
@@ -929,6 +905,7 @@ server {{
         # This drains the node side and releases any response slot independently of client pace.
         proxy_buffering on;
         proxy_max_temp_file_size 512m;
+        proxy_temp_path /var/lib/nginx/{spool} 1 2;
         proxy_ignore_headers X-Accel-Buffering;
         # SYSCOIN: The prover client has a 600-second request backstop. Keep the public proxy
         # alive slightly longer so native FRI verification / SNARK preflight, not nginx's
@@ -950,6 +927,7 @@ def materialize_chain(
     chain_name: str,
     chain_id: str,
     pubdata_mode: str,
+    rpc_bind_host: str,
     rpc_port: str,
     prover_api_port: str,
     status_port: str,
@@ -961,6 +939,8 @@ def materialize_chain(
     # SYSCOIN: edge chains in RelayedL2Calldata mode publish pubdata directly to Bitcoin DA and
     # relay only compact blob hashes to Gateway, so they need the same DA plumbing as Blobs mode.
     uses_syscoin_da_refs = pubdata_mode in ("Blobs", "RelayedL2Calldata")
+    if uses_syscoin_da_refs and not os.environ["BITCOIN_DA_RPC_URL"]:
+        raise SystemExit("BITCOIN_DA_RPC_URL and explicit authentication are required for Bitcoin DA")
     source_dir = gateway_dir / "chains" / chain_name / "configs"
     if not source_dir.exists():
         raise FileNotFoundError(f"missing selected chain config directory: {source_dir}")
@@ -1139,7 +1119,7 @@ def materialize_chain(
                 else []
             ),
             "rpc:",
-            f"  address: 0.0.0.0:{rpc_port}",
+            f"  address: {rpc_bind_host}:{rpc_port}",
             "prover_api:",
             *(
                 ["  enabled: false"]
@@ -1183,10 +1163,18 @@ def materialize_chain(
                     if chain_name == "gateway"
                     else []
                 ),
-                f"  bitcoin_da_rpc_url: {os.environ['BITCOIN_DA_RPC_URL']}",
-                # SYSCOIN: match cookie refresh encoding for byte-exact check-only after help/start.
-                f"  bitcoin_da_rpc_user: {yaml_scalar(os.environ['BITCOIN_DA_RPC_USER'])}",
-                f"  bitcoin_da_rpc_password: {yaml_scalar(os.environ['BITCOIN_DA_RPC_PASSWORD'])}",
+                f"  bitcoin_da_rpc_url: {yaml_scalar(os.environ['BITCOIN_DA_RPC_URL'])}",
+                *(
+                    [
+                        f"  bitcoin_da_cookie_file: {yaml_scalar(os.environ['BITCOIN_DA_COOKIE_FILE'])}",
+                        f"  bitcoin_da_cookie_rpc_url: {yaml_scalar(os.environ['BITCOIN_DA_RPC_URL'])}",
+                    ]
+                    if os.environ["BITCOIN_DA_COOKIE_FILE"]
+                    else [
+                        f"  bitcoin_da_rpc_user: {yaml_scalar(os.environ['BITCOIN_DA_RPC_USER'])}",
+                        f"  bitcoin_da_rpc_password: {yaml_scalar(os.environ['BITCOIN_DA_RPC_PASSWORD'])}",
+                    ]
+                ),
                 f"  bitcoin_da_poda_url: {os.environ['BITCOIN_DA_PODA_URL']}",
                 f"  bitcoin_da_wallet_name: {os.environ['BITCOIN_DA_WALLET_NAME']}",
                 f"  bitcoin_da_address_label: {os.environ['BITCOIN_DA_ADDRESS_LABEL']}",
@@ -1220,75 +1208,6 @@ def materialize_chain(
 
     config_path = out_dir / "config.yaml"
     start_config_args = f'--config "{config_path}"'
-
-    refresh_cookie_block = ""
-    if uses_syscoin_da_refs:
-        refresh_cookie_block = f"""
-resolve_syscoin_cookie_file() {{
-  local cookie_file datadir network candidate
-  cookie_file="${{BITCOIN_DA_COOKIE_FILE:-}}"
-  if [ -n "${{cookie_file}}" ] && [ -f "${{cookie_file}}" ]; then
-    printf '%s\\n' "${{cookie_file}}"
-    return 0
-  fi
-
-  datadir="${{SYSCOIN_DATADIR:-${{HOME}}/.syscoin}}"
-  network="${{SYSCOIN_NETWORK:-}}"
-  if [ -n "${{network}}" ]; then
-    candidate="${{datadir}}/${{network}}/.cookie"
-    if [ -f "${{candidate}}" ]; then
-      printf '%s\\n' "${{candidate}}"
-      return 0
-    fi
-  fi
-
-  candidate="${{datadir}}/testnet3/.cookie"
-  if [ -f "${{candidate}}" ]; then
-    printf '%s\\n' "${{candidate}}"
-    return 0
-  fi
-  return 1
-}}
-
-COOKIE_FILE="$(resolve_syscoin_cookie_file || true)"
-if [ -n "${{COOKIE_FILE}}" ]; then
-  # SYSCOIN: keep cookie-derived credentials out of process argv.
-  python3 - "{config_path}" "${{COOKIE_FILE}}" <<'PYCOOKIE'
-import json
-import re
-import sys
-from pathlib import Path
-
-config_path = Path(sys.argv[1])
-cookie_path = Path(sys.argv[2])
-cookie = cookie_path.read_text(encoding="utf-8").rstrip("\\r\\n")
-rpc_user, separator, rpc_password = cookie.partition(":")
-if separator != ":" or not rpc_user or not rpc_password:
-    raise SystemExit(f"invalid Syscoin RPC cookie format in {{cookie_path}}")
-text = config_path.read_text(encoding="utf-8")
-text, user_count = re.subn(
-    r"^(\\s*bitcoin_da_rpc_user:\\s*).*$",
-    lambda m: f"{{m.group(1)}}{{json.dumps(rpc_user)}}",
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-text, password_count = re.subn(
-    r"^(\\s*bitcoin_da_rpc_password:\\s*).*$",
-    lambda m: f"{{m.group(1)}}{{json.dumps(rpc_password)}}",
-    text,
-    count=1,
-    flags=re.MULTILINE,
-)
-if user_count != 1 or password_count != 1:
-    raise SystemExit(f"failed to patch Syscoin RPC credentials in {{config_path}}")
-config_path.write_text(text, encoding="utf-8")
-print(f"gateway-launch: refreshed Syscoin RPC credentials in {{config_path}}")
-PYCOOKIE
-else
-  echo "gateway-launch: Syscoin cookie not found; using existing credentials in {config_path}" >&2
-fi
-"""
 
     operator_lock_block = ""
     if chain_name != os.environ["GATEWAY_CHAIN_NAME"]:
@@ -1343,7 +1262,7 @@ export GATEWAY_DIR="{gateway_dir}"
 export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
 export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"
 export EDGE_CHAIN_ID="{os.environ["EDGE_CHAIN_ID"]}"
-export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}{operator_lock_block}
+export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{operator_lock_block}
 exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- {runner_mode} {start_config_args}
 """
     write_text(out_dir / "start-node.sh", start_script)
@@ -1365,6 +1284,8 @@ if not edge_only:
         chain_name=os.environ["GATEWAY_CHAIN_NAME"],
         chain_id=os.environ["GATEWAY_CHAIN_ID"],
         pubdata_mode="Blobs",
+        # The allowlisted Gateway ingress proxies to this same-host listener.
+        rpc_bind_host="127.0.0.1",
         rpc_port=os.environ["GATEWAY_OS_RPC_PORT"],
         prover_api_port=os.environ["GATEWAY_PROVER_API_PORT"],
         status_port=os.environ["GATEWAY_STATUS_PORT"],
@@ -1379,6 +1300,7 @@ if materialize_edge_config == "true":
         chain_name=os.environ["EDGE_CHAIN_NAME"],
         chain_id=os.environ["EDGE_CHAIN_ID"],
         pubdata_mode="RelayedL2Calldata",
+        rpc_bind_host="0.0.0.0",
         rpc_port=os.environ["EDGE_OS_RPC_PORT"],
         prover_api_port=os.environ["EDGE_PROVER_API_PORT"],
         status_port=os.environ["EDGE_STATUS_PORT"],

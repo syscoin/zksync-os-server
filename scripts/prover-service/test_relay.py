@@ -33,7 +33,6 @@ class RpcErrorTests(unittest.TestCase):
 def relay_policy(settings):
     return {"schema_version": 1, "account": s.cast("wallet", "address", "--private-key", KEYS["account"]).lower(),
             "gate_code_hash": s.keccak(b"gate-code"), "coordinator_code_hash": s.keccak(b"coordinator-code"),
-            "priority_guard_code_hash": s.keccak(b"priority-code"),
             "gas_limit": 1000000, "max_fee_per_gas": "0x64", "max_priority_fee_per_gas": "0x2",
             "max_total_fee_wei": hex(100000000), "confirmations": 2, "min_turn_seconds": 30,
             "max_head_age_seconds": 120, "rpc_timeout_seconds": 15,
@@ -80,13 +79,27 @@ class FakeRpc:
         self.turn = item["sidecar"]["accepted_package"]["turn"]
         self.selected, self.deadline, self.opened = 0, self.now + 200, True
         self.frozen_override, self.chain_override, self.reorg_anchor, self.stage_store = None, None, False, None
-        self.guard_work_missing, self.guard_expired, self.witness = False, False, True
+        self.native_proved = item["sidecar"]["accepted_package"]["batchFrom"] - 1
+        self.observed_native = self.native_proved
+        self.observed_history = {}
+        self.gate_deployment = 0
+
+    def block(self, number):
+        if hex(number) not in self.blocks:
+            block_hash = h(90 + number) if 90 + number <= 255 else "0x" + s.word(90 + number).hex()
+            self.blocks[hex(number)] = {"number": hex(number), "hash": block_hash, "timestamp": hex(self.now)}
+        return self.blocks[hex(number)]
 
     def advance(self, seconds=30, blocks=1):
+        self.observed_history[s.uint(self.head["number"])] = self.observed_native
         self.now += seconds
         number = s.uint(self.head["number"]) + blocks
-        self.head = {"number": hex(number), "hash": h(110 + number - 20), "timestamp": hex(self.now)}
-        self.blocks[self.head["number"]] = copy.deepcopy(self.head)
+        self.head = copy.deepcopy(self.block(number))
+
+    def accept_package(self):
+        self.parent = self.item["package_hash"]
+        self.opened = False
+        self.native_proved = self.observed_native = self.item["sidecar"]["accepted_package"]["batchTo"]
 
     def accept_receipt(self, status=1, logs=True):
         tx_hash = s.keccak(s.raw_hex(self.sent[-1]))
@@ -97,7 +110,7 @@ class FakeRpc:
                         "logs": [log] if status and logs else []}
         self.nonce = self.pending_nonce = 1
         if status:
-            self.parent = self.item["package_hash"]
+            self.accept_package()
 
     def call(self, method, params):
         self.calls.append((method, copy.deepcopy(params)))
@@ -106,12 +119,17 @@ class FakeRpc:
         if method == "eth_getBlockByNumber":
             if params[0] == "latest":
                 return copy.deepcopy(self.head)
-            value = copy.deepcopy(self.blocks.get(params[0]))
+            number = s.uint(params[0])
+            value = copy.deepcopy(self.block(number)) if number <= s.uint(self.head["number"]) else None
             if self.reorg_anchor and value:
                 value["hash"] = h(99)
             return value
         if method == "eth_getCode":
-            codes = {self.settings["proof_gate"]: b"gate-code", self.settings["coordinator"]: b"coordinator-code", a(123): b"priority-code"}
+            codes = {self.settings["proof_gate"]: b"gate-code", self.settings["coordinator"]: b"coordinator-code"}
+            if params[0] == self.settings["proof_gate"]:
+                block = next(b for b in self.blocks.values() if b["hash"] == params[1]["blockHash"])
+                if s.uint(block["number"]) < self.gate_deployment:
+                    return "0x"
             return "0x" + codes[params[0]].hex()
         if method == "eth_getTransactionCount":
             return hex(self.pending_nonce if params[1] == "pending" else self.nonce)
@@ -120,7 +138,13 @@ class FakeRpc:
         if method == "eth_getTransactionReceipt":
             return copy.deepcopy(self.receipt)
         if method == "eth_getLogs":
-            return copy.deepcopy(self.logs)
+            query = params[0]
+            if "blockHash" in query:
+                return copy.deepcopy([log for log in self.logs if log["blockHash"] == query["blockHash"]])
+            first, last = s.uint(query["fromBlock"]), s.uint(query["toBlock"])
+            if last - first > 10000:
+                raise r.RpcError(-32602)
+            return copy.deepcopy([log for log in self.logs if first <= s.uint(log["blockNumber"]) <= last])
         if method == "eth_sendRawTransaction":
             if self.stage_store:
                 state = self.stage_store.load(self.settings, self.limits)
@@ -142,13 +166,19 @@ class FakeRpc:
                     raise r.RpcError(3)
                 return "0x"
             accepted = self.item["sidecar"]["accepted_package"]
-            work_id = s.keccak(s.raw_hex(accepted["parent"]) + s.word(accepted["batchFrom"]))
-            if tx["data"] == "0x" + r.selector("work()").hex():
-                return "0x" + (s.raw_hex(work_id) + s.raw_hex(h(124)) + s.raw_hex(h(125))
-                                + b"".join(s.word(value) for value in (accepted["batchFrom"], 1 if self.guard_expired else 1000,
-                                                                        0, 4, 2, 2))).hex()
+            if tx["data"] == "0x" + r.selector("observedNativeBatch()").hex():
+                block_hash = params[1]["blockHash"]
+                if block_hash == self.head["hash"]:
+                    return "0x" + s.word(self.observed_native).hex()
+                number = next(s.uint(b["number"]) for b in self.blocks.values() if b["hash"] == block_hash)
+                previous = max((height for height in self.observed_history if height <= number), default=None)
+                value = self.observed_history[previous] if previous is not None else accepted["batchFrom"] - 1
+                return "0x" + s.word(value).hex()
             normalized = {**accepted, "turn": 0, "proofHash": s.ZERO, "wrapper": s.ZERO_ADDRESS, "wrapperBeneficiary": s.ZERO_ADDRESS}
+            if tx["data"] == "0x" + r.selector("bootstrapPackage()").hex():
+                return "0x" + s.encode_fields(s.PACKAGE, normalized).hex()
             values = {
+                "getTotalBatchesVerified()": self.native_proved,
                 "chain()": self.settings["chain_address"], "childChainId()": s.uint(self.settings["execution_chain_id"]),
                 "sequencer()": self.settings["sequencer"], "policyHash()": self.settings["policy_hash"],
                 "productionVkHash()": self.settings["vk_hash"], "lastAcceptedPackage()": self.parent,
@@ -159,8 +189,6 @@ class FakeRpc:
                 "frozenPackageHash()": self.frozen_override or s.struct_hash("AcceptedPackageV1", s.PACKAGE, normalized),
                 "currentTurn()": self.turn, "selectedWrapperIndex()": self.selected, "turnDeadline()": self.deadline,
                 "rosterRoot()": accepted["rosterRoot"],
-                "priorityGuard()": a(123), "priorityWorkId()": s.ZERO if self.guard_work_missing else work_id,
-                "priorityCursor()": 0, "maxProofWorkSeconds()": 500, "prefixWitness(bytes32)": self.witness,
                 "bootstrapDigest(" + r.abi_tuple(s.PACKAGE) + ")": self.item["digest"],
                 "packageDigest(" + r.abi_tuple(s.PACKAGE) + ")": self.item["digest"]}
             for signature, value in values.items():
@@ -256,7 +284,8 @@ class RelayTests(unittest.TestCase):
             relay.export_handoff(self.operation_id, work, True)
 
     def test_external_parent_hint_resolves_accepting_transaction_when_logs_arrive(self):
-        self.rpc.parent = self.item["package_hash"]
+        self.rpc.gate_deployment = s.uint(self.rpc.head["number"])
+        self.rpc.accept_package()
         self.relayer().step(self.operation_id, True)
         self.assertIsNone(self.relayer().state["operations"][self.operation_id]["acceptance"]["transaction_hash"])
         included = copy.deepcopy(self.rpc.head)
@@ -267,6 +296,50 @@ class RelayTests(unittest.TestCase):
         result = self.relayer().step(self.operation_id, True)
         self.assertEqual(result["status"], "accepted_elsewhere")
         self.assertEqual(self.relayer().state["operations"][self.operation_id]["acceptance"]["transaction_hash"], h(90))
+        self.assertFalse(self.signatures())
+
+    def external_acceptance(self):
+        self.rpc.accept_package()
+        block = copy.deepcopy(self.rpc.head)
+        self.rpc.logs = [{"address": self.settings["proof_gate"], "topics": r.acceptance_topics(self.item),
+                          "data": "0x" + s.word(0).hex(), "transactionHash": h(90),
+                          "blockNumber": block["number"], "blockHash": block["hash"]}]
+        return block
+
+    def test_receipt_only_recovers_external_acceptance_after_long_gateway_outage(self):
+        self.relayer().step(self.operation_id, True)
+        original = self.relayer().state["operations"][self.operation_id]
+        self.rpc.advance(blocks=27)
+        included = self.external_acceptance()
+        self.rpc.advance(blocks=15000)
+        self.rpc.parent = h(201)
+        result = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(result["next_action"], "export_acceptance_and_reconcile_own_nonce")
+        self.assertEqual(result["acceptance"]["block_hash"], included["hash"])
+        self.assertEqual(result["acceptance"]["transaction_hash"], h(90))
+        queries = [params[0] for method, params in self.rpc.calls if method == "eth_getLogs"]
+        self.assertEqual(queries, [{"address": self.settings["proof_gate"], "topics": r.acceptance_topics(self.item),
+                                    "blockHash": included["hash"]}])
+        after = self.relayer().state["operations"][self.operation_id]
+        self.assertEqual(after["unsigned_transaction"], original["unsigned_transaction"])
+        self.assertEqual(after["raw_transaction"], original["raw_transaction"])
+        self.assertEqual(len(self.rpc.sent), 1)
+
+    def test_new_relayer_staged_after_acceptance_recovers_exact_earlier_block(self):
+        self.rpc.advance(blocks=15000)
+        included = self.external_acceptance()
+        self.rpc.advance(blocks=3)
+        self.rpc.parent = h(201)
+        self.store = r.Store.initialize(Path(self.temp.name) / "late-relay", self.settings, self.limits)
+        operation_id = self.relayer().stage(self.item)
+        self.rpc.calls.clear()
+        result = self.relayer().step(operation_id, True)
+        self.assertEqual(result["status"], "accepted_elsewhere")
+        self.assertEqual(result["acceptance"]["transaction_hash"], h(90))
+        self.assertEqual(result["acceptance"]["block_hash"], included["hash"])
+        history = [s.uint(params[0]) for method, params in self.rpc.calls
+                   if method == "eth_getBlockByNumber" and params[0] != "latest"]
+        self.assertGreaterEqual(min(history), s.uint(included["number"]) - 1)
         self.assertFalse(self.signatures())
 
     def test_export_handoff_rejects_symlinked_node_directory(self):
@@ -409,6 +482,15 @@ class RelayTests(unittest.TestCase):
                 self.rpc.turn = self.item["sidecar"]["accepted_package"]["turn"]
                 self.rpc.frozen_override = None
 
+    def test_native_advance_retires_unsigned_package_without_a_service_receipt(self):
+        relayer = self.relayer()
+        operation = relayer.stage(self.item)
+        self.rpc.native_proved = self.item["sidecar"]["accepted_package"]["batchFrom"]
+        result = relayer.step(operation, execute=True)
+        self.assertEqual(result["status"], "stale_unsigned")
+        self.assertIsNone(relayer.state["operations"][operation]["acceptance"])
+        self.assertFalse(self.rpc.sent)
+
     def test_stale_inflight_never_resigns_or_rebroadcasts(self):
         self.relayer().step(self.operation_id, execute=True)
         self.rpc.turn += 1
@@ -417,6 +499,30 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(result["status"], "authorization_stale_inflight")
         self.assertEqual(len(self.signatures()), 1)
         self.assertEqual(len(self.rpc.sent), 1)
+
+    def test_regrouped_publication_reconciles_existing_nonce_and_authenticated_receipt(self):
+        self.relayer().step(self.operation_id, True)
+        self.rpc.advance()
+        old = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(old["status"], "authorization_stale_inflight")
+        self.assertIsNone(old["acceptance"])
+        self.assertEqual(len(self.rpc.sent), 1)
+        self.rpc.accept_receipt()
+        self.rpc.advance()
+        settled = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(settled["status"], "accepted")
+        self.assertEqual(settled["acceptance"]["source"], "receipt_event")
+        self.assertEqual(len(self.signatures()), 1)
+
+    def test_regrouped_publication_preserves_interrupted_wallet_reservation(self):
+        self.wallet.interrupt = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.relayer().step(self.operation_id, True)
+        retired = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(retired["status"], "authorization_stale_inflight")
+        self.assertEqual(retired["next_action"], "wait_for_receipt_no_resign")
+        self.assertEqual(len(self.signatures()), 1)
+        self.assertFalse(self.rpc.sent)
 
     def test_unknown_consumed_nonce_does_not_replace_authorization(self):
         self.relayer().step(self.operation_id, execute=True)
@@ -427,15 +533,39 @@ class RelayTests(unittest.TestCase):
 
     def test_acceptance_elsewhere_with_pending_own_nonce_keeps_reservation(self):
         self.relayer().step(self.operation_id, execute=True)
-        self.rpc.parent = self.item["package_hash"]
+        self.rpc.accept_package()
         self.rpc.advance()
         result = self.relayer().step(self.operation_id, execute=True)
         self.assertEqual(result["status"], "accepted_with_pending_nonce")
         self.assertEqual(result["next_action"], "wait_for_own_nonce_receipt")
         self.assertEqual(len(self.rpc.sent), 1)
 
+    def test_receipt_only_external_handoff_requires_exact_confirmed_gate_event(self):
+        self.relayer().step(self.operation_id, True)
+        work = Path(self.temp.name).resolve() / "node-work"
+        work.mkdir(mode=0o700)
+        s.write_new(work / "work.json", self.node_work())
+        included = copy.deepcopy(self.rpc.head)
+        self.rpc.accept_package()
+        self.relayer().step(self.operation_id, True, receipt_only=True)
+        with self.assertRaisesRegex(s.Error, "relay_acceptance_not_confirmed"):
+            self.relayer().export_handoff(self.operation_id, work, True)
+
+        self.rpc.logs = [{"address": self.settings["proof_gate"], "topics": r.acceptance_topics(self.item),
+                          "data": "0x" + s.word(0).hex(), "transactionHash": h(90),
+                          "blockNumber": included["number"], "blockHash": included["hash"]}]
+        self.relayer().step(self.operation_id, True, receipt_only=True)
+        with self.assertRaisesRegex(s.Error, "relay_acceptance_not_confirmed"):
+            self.relayer().export_handoff(self.operation_id, work, True)
+        self.rpc.advance()
+        result = self.relayer().step(self.operation_id, True, receipt_only=True)
+        self.assertEqual(result["next_action"], "export_acceptance_and_reconcile_own_nonce")
+        self.assertNotIn(result["status"], r.TERMINAL)
+        self.assertEqual(self.relayer().export_handoff(self.operation_id, work, True)["transaction_hash"], h(90))
+        self.assertEqual(len(self.rpc.sent), 1)
+
     def test_external_acceptance_before_signing_finishes_without_wallet(self):
-        self.rpc.parent = self.item["package_hash"]
+        self.rpc.accept_package()
         self.assertEqual(self.relayer().step(self.operation_id, execute=True)["status"], "accepted_unconfirmed")
         self.rpc.advance()
         self.assertEqual(self.relayer().step(self.operation_id, execute=True)["status"], "accepted_elsewhere")
@@ -556,18 +686,6 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(result["next_action"], "wait_for_existing_wallet_reservation")
         self.assertEqual(len(self.signatures()), 1)
         self.assertEqual(len(self.rpc.sent), 1)
-
-    def test_missing_expired_or_unsatisfied_priority_work_never_signs(self):
-        for flag, value, reason in (("guard_work_missing", True, "priority_work_not_frozen"),
-                                    ("guard_expired", True, "priority_checkpoint_needs_refresh"),
-                                    ("witness", False, "priority_prefix_witness_missing")):
-            with self.subTest(flag=flag):
-                setattr(self.rpc, flag, value)
-                result = self.relayer().step(self.operation_id, execute=True)
-                self.assertEqual(result["context"]["reason"], reason)
-                self.assertEqual(self.signatures(), [])
-                self.rpc.guard_work_missing = self.rpc.guard_expired = False
-                self.rpc.witness = True
 
 
 if __name__ == "__main__":

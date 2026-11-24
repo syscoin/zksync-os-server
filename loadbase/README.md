@@ -4,10 +4,12 @@ Built by LLM.
 
 Is not included in workspace as we don't want to use some packages used by this tool (e.g. Ethers) 
 
-to run:
-```
+Store the dedicated funding key and private test-wallet mnemonic in separate regular files readable only by their owner. Run this from the `loadbase` directory, substituting the paths to those files.
+
+```sh
 cargo run --release -- --rpc-url 'http://127.0.0.1:3050' \
---rich-privkey 0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110 \
+--rich-privkey-file /path/to/funding-key \
+--mnemonic-file /path/to/test-wallet-mnemonic \
 --duration 240m \
 --max-in-flight 50 \
 --wallets 100 \

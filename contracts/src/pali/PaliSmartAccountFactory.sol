@@ -21,6 +21,7 @@ contract PaliSmartAccountFactory {
     error InvalidAccountEntryPoint(address accountEntryPoint, address factoryEntryPoint);
     error InvalidImplementation(address implementation);
     error OnlySenderCreator(address caller);
+    error UnsupportedBootstrapValidator(address validator);
 
     address public immutable implementation;
     address public immutable entryPoint;
@@ -29,8 +30,17 @@ contract PaliSmartAccountFactory {
     /// this contract. Gating createAccount on it prevents anyone else from
     /// triggering deployments outside the 4337 flow.
     address public immutable senderCreator;
+    address public immutable ecdsaValidator;
+    address public immutable p256Validator;
+    address public immutable slhDsaValidator;
 
-    constructor(address implementation_, address entryPoint_) {
+    constructor(
+        address implementation_,
+        address entryPoint_,
+        address ecdsaValidator_,
+        address p256Validator_,
+        address slhDsaValidator_
+    ) {
         if (implementation_.code.length == 0) {
             revert InvalidImplementation(implementation_);
         }
@@ -38,9 +48,15 @@ contract PaliSmartAccountFactory {
         if (accountEntryPoint != entryPoint_) {
             revert InvalidAccountEntryPoint(accountEntryPoint, entryPoint_);
         }
+        if (ecdsaValidator_.code.length == 0) revert UnsupportedBootstrapValidator(ecdsaValidator_);
+        if (p256Validator_.code.length == 0) revert UnsupportedBootstrapValidator(p256Validator_);
+        if (slhDsaValidator_.code.length == 0) revert UnsupportedBootstrapValidator(slhDsaValidator_);
         implementation = implementation_;
         entryPoint = entryPoint_;
         senderCreator = IEntryPointSenderCreator(entryPoint_).senderCreator();
+        ecdsaValidator = ecdsaValidator_;
+        p256Validator = p256Validator_;
+        slhDsaValidator = slhDsaValidator_;
     }
 
     function createAccount(bytes32 salt, bytes memory initCode) public payable returns (address account) {
@@ -100,6 +116,17 @@ contract PaliSmartAccountFactory {
     }
 
     function _deploymentCode(bytes memory initCode) internal view returns (bytes memory) {
+        (ModuleInit[] memory validators,,,) =
+            abi.decode(initCode, (ModuleInit[], ModuleInit[], ModuleInit, ModuleInit[]));
+        if (validators.length == 0) revert PaliSmartAccount.InvalidInitialValidator();
+        for (uint256 i = 0; i < validators.length; ++i) {
+            address validator = validators[i].module;
+            // Only these validators have supported installation during proxy construction.
+            if (validator != ecdsaValidator && validator != p256Validator && validator != slhDsaValidator) {
+                revert UnsupportedBootstrapValidator(validator);
+            }
+        }
+
         return abi.encodePacked(
             type(ERC1967Proxy).creationCode,
             abi.encode(implementation, abi.encodeCall(PaliSmartAccount.initializeAccount, (initCode)))

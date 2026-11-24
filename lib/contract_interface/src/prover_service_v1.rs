@@ -125,6 +125,8 @@ alloy::sol! {
         function chainConfigHash() external view returns (bytes32);
         function coordinator() external view returns (address);
         function lastAcceptedPackage() external view returns (bytes32);
+        function initialNativeBatch() external view returns (uint64);
+        function observedNativeBatch() external view returns (uint64);
         function serviceActive() external view returns (bool);
         function bootstrapDigest(AcceptedPackageV1 accepted) external view returns (bytes32);
         function installCoordinator(address coordinator_) external;
@@ -140,6 +142,7 @@ alloy::sol! {
             bytes proofData, WrapperCandidateV1 candidate, bytes32[] candidateProof,
             bytes sequencerSignature, bytes wrapperSignature
         ) external;
+        event NativeSettlementAdvanced(uint64 indexed from, uint64 indexed to, bytes32 nativeBatchHash);
         event ServicePackageAccepted(bytes32 indexed packageHash, uint64 indexed from, uint64 indexed to, bool bootstrap);
         event ServiceActivated(address indexed coordinator, bytes32 qualifiedRosterRoot);
     }

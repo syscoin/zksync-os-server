@@ -623,7 +623,7 @@ class CrossEpochWrapperTests(unittest.TestCase):
     audit = WrapperTests.audit
     publish = WrapperTests.publish
 
-    def cross_epoch(self, streamed=False):
+    def cross_epoch(self, streamed=False, retained_pin=False):
         import test_coordinator_cross_epoch as cross
         case = cross.CrossEpochCoordinatorTests("test_old_accepted_range_settles_with_current_roster_and_original_credit")
         case.setUpClass()
@@ -643,6 +643,10 @@ class CrossEpochWrapperTests(unittest.TestCase):
         self.keeper = copy.deepcopy(case.config["keeper"])
         self.keeper["policy"]["expected_operator"] = self.f["proposal"]["candidate"]["operator"]
         self.keeper["enrollment"]["audit_trust_dir"] = str(self.root / "trust")
+        if retained_pin:
+            self.keeper["enrollment"]["block_hash"] = h(100)
+            io.immutable_json(self.root / "trust" / "period-6.json",
+                              {"schema_version": 1, "period": 6, "enrollment_block_hash": h(101)})
         self.config = {**self.config, "keeper": self.keeper}
         self.store = w.initialize(self.root / "cross-wrapper", self.config)
         self.wallet = TypedWallet(self.store.root / "signatures")
@@ -704,7 +708,7 @@ class CrossEpochWrapperTests(unittest.TestCase):
         self.assertEqual((self.p.enqueues, self.wallet.calls), ([], []))
 
     def test_pool_revalidates_cross_epoch_permit_from_independent_configured_pins(self):
-        self.cross_epoch()
+        self.cross_epoch(retained_pin=True)
         self.queue()
         permit = io.private_json(self.store.root / "jobs" / self.work_hash[2:] / "permit.json")
         with patch.object(k, "registry_rpc_for", return_value=self.registry_rpc):

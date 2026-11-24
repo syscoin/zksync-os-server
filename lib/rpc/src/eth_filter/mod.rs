@@ -5,6 +5,7 @@ use crate::types::QueryLimits;
 mod pending;
 use pending::{FullTransactionsReceiver, PendingTransactionKind, PendingTransactionsReceiver};
 mod registry;
+pub(crate) use registry::bounded_log_filter;
 use registry::{FilterKind, FilterRegistry};
 mod scan;
 use alloy::eips::{BlockId, BlockNumberOrTag};

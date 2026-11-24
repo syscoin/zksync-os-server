@@ -161,9 +161,10 @@ discovery continues, but new updates, including urgent removals, wait. Monitor
 oldest unsent removal, finality lag, transaction failures, insufficient funds,
 process health and stale discovery; set and enforce an operator-owned maximum
 lag. A live `--watch` process does not establish successful synchronization.
-The current exact receipt-block state checks fail closed if a later transaction
-in the same block supersedes a delivered update or activation; operator
-reconciliation is required. Before launch, test initial sync, removals, address
+The keeper can retire a verified successful membership delivery when the same
+canonical block already holds a newer authenticated observation. Activation
+reconciliation still checks finalized effective and pending weight. Before launch,
+test initial sync, removals, address
 changes, delayed delivery, failed L2 execution, restart after ambiguous
 broadcast, finality outage, signer/funding failures and serial-outbox backlog on
 the intended Gateway topology. The focused mock tests do not establish this

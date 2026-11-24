@@ -297,6 +297,12 @@ pub async fn run_component_fixture_bootstrap(
             encryption: zksync_os_server::config::ReplayArchiveEncryptionConfig::Noop,
         };
     }
+    let verified_anchor = tokio::time::timeout(
+        Duration::from_secs(deadline_unix.saturating_sub(now())),
+        crate::component_replay::verify_pending_replay(&config),
+    )
+    .await
+    .context("component archive verification deadline")??;
     let runtime = RuntimeBuilder::new(
         RuntimeConfig::default().with_tokio(TokioConfig::existing_handle(Handle::current())),
     )
@@ -305,6 +311,14 @@ pub async fn run_component_fixture_bootstrap(
     let mut term = signal(SignalKind::terminate())?;
     let booted = tokio::select! {
         ports = zksync_os_server::run(&runtime, config) => {
+            if let Some(anchor) = verified_anchor {
+                let provider = alloy::providers::ProviderBuilder::new()
+                    .connect_http(format!("http://127.0.0.1:{}", ports.rpc).parse()?);
+                tokio::time::timeout(
+                    Duration::from_secs(deadline_unix.saturating_sub(now())),
+                    crate::component_replay::wait_for_anchor(&provider, anchor),
+                ).await.context("component normal RPC anchor deadline")??;
+            }
             println!("{}", json!({"scope": "AnvilComponentOnly", "rpc_port": ports.rpc}));
             true
         },

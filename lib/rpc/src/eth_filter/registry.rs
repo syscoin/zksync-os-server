@@ -55,6 +55,29 @@ impl FilterKind {
     }
 }
 
+/// Rebuild retained criteria so oversized input allocations and cached blooms are dropped.
+pub(crate) fn bounded_log_filter(
+    mut filter: Filter,
+    max_terms: NonZeroU32,
+) -> Result<Filter, EthFilterError> {
+    let terms = filter
+        .topics
+        .iter()
+        .fold(filter.address.len(), |total, topic| {
+            total.saturating_add(topic.len())
+        });
+    if terms > max_terms.get() as usize {
+        return Err(EthFilterError::FilterCriteriaTooLarge {
+            max_terms: max_terms.get(),
+        });
+    }
+    filter.address = filter.address.iter().copied().collect();
+    for topic in &mut filter.topics {
+        *topic = topic.iter().copied().collect();
+    }
+    Ok(filter)
+}
+
 /// Manages installed filters, serialized change polls, and stale-filter eviction.
 #[derive(Clone)]
 pub(crate) struct FilterRegistry {
@@ -82,26 +105,8 @@ impl FilterRegistry {
         }
     }
 
-    /// SYSCOIN: Bound retained variable-sized criteria, not just the installed-filter count.
-    /// Rebuild the sets so excess input allocation capacity and cached blooms are not retained.
-    /// Stateless `eth_getLogs` does not pass through this installation-only limit.
-    pub(crate) fn bounded_log_filter(&self, mut filter: Filter) -> Result<Filter, EthFilterError> {
-        let terms = filter
-            .topics
-            .iter()
-            .fold(filter.address.len(), |total, topic| {
-                total.saturating_add(topic.len())
-            });
-        if terms > self.max_filter_terms.get() as usize {
-            return Err(EthFilterError::FilterCriteriaTooLarge {
-                max_terms: self.max_filter_terms.get(),
-            });
-        }
-        filter.address = filter.address.iter().copied().collect();
-        for topic in &mut filter.topics {
-            *topic = topic.iter().copied().collect();
-        }
-        Ok(filter)
+    pub(crate) fn bounded_log_filter(&self, filter: Filter) -> Result<Filter, EthFilterError> {
+        bounded_log_filter(filter, self.max_filter_terms)
     }
 
     // SYSCOIN: Reserve atomically before allocation rather than checking a concurrent map's len.

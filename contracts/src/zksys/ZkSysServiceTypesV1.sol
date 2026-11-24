@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+interface IZkSysVerifiedFrontierV1 {
+    function getTotalBatchesVerified() external view returns (uint256);
+}
+
 struct ProverSubscriptionV1 {
     address account;
     address operator;

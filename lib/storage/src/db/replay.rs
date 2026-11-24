@@ -1,6 +1,8 @@
 use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Sealed, U256};
+use anyhow::Context as _;
 use std::convert::TryInto;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use vise::Unit;
 use vise::{Buckets, Histogram, Metrics};
@@ -32,6 +34,17 @@ pub struct BlockReplayStorage {
     db: RocksDB<BlockReplayColumnFamily>,
     /// Shared by all blocks; stripped rows don't persist it (see [`StoredBlockContextV2`]).
     chain_id: u64,
+    archive_recovery_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, bincode::Encode, bincode::Decode)]
+pub struct ArchiveReplayRecovery {
+    pub anchor_block: BlockNumber,
+    #[bincode(with_serde)]
+    pub anchor_hash: BlockHash,
+    /// Greatest consecutively replayed block. None identifies the first startup before genesis
+    /// and the fresh derived stores have been verified.
+    pub verified_through: Option<BlockNumber>,
 }
 
 /// Column families for storage of block replay commands.
@@ -114,6 +127,7 @@ impl NamedColumnFamily for BlockReplayColumnFamily {
 impl BlockReplayStorage {
     /// Key under `Latest` CF for tracking the highest block number.
     const LATEST_KEY: &'static [u8] = b"latest_block";
+    const ARCHIVE_RECOVERY_KEY: &'static [u8] = b"syscoin_archive_recovery_v1";
 
     pub async fn new(db_path: &Path, genesis: &Genesis) -> (Self, Option<Sealed<ReplayRecord>>) {
         let db = RocksDB::<BlockReplayColumnFamily>::new(db_path)
@@ -123,25 +137,13 @@ impl BlockReplayStorage {
         let this = Self {
             db,
             chain_id: genesis.chain_id(),
+            archive_recovery_lock: Arc::default(),
         };
         let inserted_genesis = if this.latest_record_checked().is_none() {
-            let genesis_tx = genesis.genesis_upgrade_tx().await;
-            let genesis_context = &genesis.state().await.context;
-            let genesis_hash = genesis.state().await.header.hash();
             tracing::info!(
                 "block replay DB is empty, assuming start of the chain; appending genesis"
             );
-            let genesis_record = ReplayRecord {
-                block_context: *genesis_context,
-                transactions: vec![],
-                previous_block_timestamp: 0,
-                node_version: NODE_SEMVER_VERSION.clone(),
-                protocol_version: genesis_tx.protocol_version.clone(),
-                block_output_hash: B256::ZERO,
-                force_preimages: genesis_tx.force_deploy_preimages.clone(),
-                starting_cursors: BlockStartCursors::default(),
-            };
-            let sealed_genesis_record = Sealed::new_unchecked(genesis_record, genesis_hash);
+            let sealed_genesis_record = Self::genesis_replay_record(genesis).await;
             this.write_replay_unchecked(sealed_genesis_record.clone(), true);
             Some(sealed_genesis_record)
         } else {
@@ -158,7 +160,155 @@ impl BlockReplayStorage {
         let db = RocksDB::<BlockReplayColumnFamily>::new(db_path)
             .expect("Failed to open BlockReplayStorage")
             .with_sync_writes();
-        Self { db, chain_id }
+        Self {
+            db,
+            chain_id,
+            archive_recovery_lock: Arc::default(),
+        }
+    }
+
+    async fn genesis_replay_record(genesis: &Genesis) -> Sealed<ReplayRecord> {
+        let genesis_tx = genesis.genesis_upgrade_tx().await;
+        let genesis_state = genesis.state().await;
+        let record = ReplayRecord {
+            block_context: genesis_state.context,
+            transactions: vec![],
+            previous_block_timestamp: 0,
+            node_version: NODE_SEMVER_VERSION.clone(),
+            protocol_version: genesis_tx.protocol_version.clone(),
+            block_output_hash: B256::ZERO,
+            force_preimages: genesis_tx.force_deploy_preimages.clone(),
+            starting_cursors: BlockStartCursors::default(),
+        };
+        Sealed::new_unchecked(record, genesis_state.header.hash())
+    }
+
+    /// Quarantine an empty WAL before writing any archive rows.
+    pub fn begin_archive_recovery(
+        &self,
+        anchor_block: BlockNumber,
+        anchor_hash: BlockHash,
+    ) -> anyhow::Result<()> {
+        let _guard = self
+            .archive_recovery_lock
+            .lock()
+            .expect("archive recovery metadata lock is poisoned");
+        anyhow::ensure!(
+            self.latest_record_checked().is_none() && self.archive_recovery()?.is_none(),
+            "archive recovery requires an empty replay WAL"
+        );
+        let recovery = ArchiveReplayRecovery {
+            anchor_block,
+            anchor_hash,
+            verified_through: None,
+        };
+        self.write_archive_recovery(Some(&recovery))
+    }
+
+    /// Returns the durable quarantine and replay progress left by archive recovery.
+    pub fn archive_recovery(&self) -> anyhow::Result<Option<ArchiveReplayRecovery>> {
+        let Some(bytes) = self
+            .db
+            .get_cf(BlockReplayColumnFamily::Latest, Self::ARCHIVE_RECOVERY_KEY)?
+        else {
+            return Ok(None);
+        };
+        let (recovery, len): (ArchiveReplayRecovery, _) =
+            bincode::decode_from_slice(&bytes, bincode::config::standard())
+                .context("invalid archive replay recovery metadata")?;
+        anyhow::ensure!(
+            len == bytes.len()
+                && recovery
+                    .verified_through
+                    .is_none_or(|verified| { verified == 0 || verified < recovery.anchor_block }),
+            "invalid archive replay recovery progress"
+        );
+        Ok(Some(recovery))
+    }
+
+    /// Records the first startup's successful genesis and fresh derived-store checks.
+    pub fn initialize_archive_recovery(&self) -> anyhow::Result<()> {
+        let _guard = self
+            .archive_recovery_lock
+            .lock()
+            .expect("archive recovery metadata lock is poisoned");
+        let mut recovery = self
+            .archive_recovery()?
+            .context("cannot initialize archive recovery without a trusted anchor")?;
+        if recovery.verified_through.is_none() {
+            recovery.verified_through = Some(0);
+            self.write_archive_recovery(Some(&recovery))?;
+        }
+        Ok(())
+    }
+
+    /// Persists progress after the caller has validated and applied every pending row through
+    /// `applied_block`. A coalesced notification can cover several consecutive blocks.
+    /// Returns true when the trusted anchor was reached and the quarantine was cleared.
+    pub fn advance_archive_recovery(&self, applied_block: BlockNumber) -> anyhow::Result<bool> {
+        let _guard = self
+            .archive_recovery_lock
+            .lock()
+            .expect("archive recovery metadata lock is poisoned");
+        let Some(mut recovery) = self.archive_recovery()? else {
+            return Ok(false);
+        };
+        let verified_through = recovery
+            .verified_through
+            .context("archive replay recovery must be initialized before advancing")?;
+        anyhow::ensure!(
+            applied_block <= recovery.anchor_block,
+            "archive recovery progress exceeds the trusted anchor"
+        );
+        if applied_block < recovery.anchor_block && applied_block <= verified_through {
+            return Ok(false);
+        }
+        let applied_hash = self
+            .read_canonical_block_hash(applied_block)
+            .with_context(|| {
+                format!("missing canonical hash for recovered block {applied_block}")
+            })?;
+        if applied_block == recovery.anchor_block {
+            anyhow::ensure!(
+                applied_hash == recovery.anchor_hash,
+                "recovered anchor hash differs from the trusted archive anchor"
+            );
+            self.write_archive_recovery(None)?;
+            return Ok(true);
+        }
+        recovery.verified_through = Some(applied_block);
+        self.write_archive_recovery(Some(&recovery))?;
+        Ok(false)
+    }
+
+    pub async fn verify_archive_recovery_genesis(&self, genesis: &Genesis) -> anyhow::Result<()> {
+        let expected = Self::genesis_replay_record(genesis).await;
+        anyhow::ensure!(
+            self.read_canonical_block_hash(0) == Some(expected.hash())
+                && self.get_replay_record_identity(0) == Some(expected.consensus_identity()),
+            "recovered genesis record differs from the configured deployment"
+        );
+        Ok(())
+    }
+
+    fn write_archive_recovery(
+        &self,
+        recovery: Option<&ArchiveReplayRecovery>,
+    ) -> anyhow::Result<()> {
+        let mut batch = self.db.new_write_batch();
+        if let Some(recovery) = recovery {
+            let bytes = bincode::encode_to_vec(recovery, bincode::config::standard())?;
+            batch.put_cf(
+                BlockReplayColumnFamily::Latest,
+                Self::ARCHIVE_RECOVERY_KEY,
+                &bytes,
+            );
+        } else {
+            batch.delete_cf(BlockReplayColumnFamily::Latest, Self::ARCHIVE_RECOVERY_KEY);
+        }
+        self.db
+            .write(batch)
+            .context("persist archive replay recovery metadata")
     }
 
     fn write_replay_unchecked(&self, sealed_record: Sealed<ReplayRecord>, is_canonical: bool) {
@@ -918,6 +1068,68 @@ mod tests {
             chain.push(Sealed::new_unchecked(record, fake_hash(number)));
         }
         chain
+    }
+
+    #[tokio::test]
+    async fn archive_recovery_preserves_quarantine_and_progress_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let chain = make_chain(4);
+        let anchor = chain[3].hash();
+        {
+            let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+            storage.begin_archive_recovery(3, anchor).unwrap();
+            for record in chain {
+                storage.write(record, false).await.unwrap();
+            }
+        }
+        {
+            let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+            assert_eq!(
+                storage.archive_recovery().unwrap(),
+                Some(ArchiveReplayRecovery {
+                    anchor_block: 3,
+                    anchor_hash: anchor,
+                    verified_through: None,
+                })
+            );
+            storage.initialize_archive_recovery().unwrap();
+            assert!(!storage.advance_archive_recovery(2).unwrap());
+            assert!(!storage.advance_archive_recovery(1).unwrap());
+        }
+        {
+            let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+            assert_eq!(
+                storage
+                    .archive_recovery()
+                    .unwrap()
+                    .unwrap()
+                    .verified_through,
+                Some(2)
+            );
+            assert!(storage.advance_archive_recovery(3).unwrap());
+        }
+        let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+        assert_eq!(storage.archive_recovery().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn archive_recovery_genesis_anchor_stays_pending_after_initialization() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+        let record = make_chain(1).pop().unwrap();
+        storage.begin_archive_recovery(0, record.hash()).unwrap();
+        storage.write(record, false).await.unwrap();
+        storage.initialize_archive_recovery().unwrap();
+        assert_eq!(
+            storage
+                .archive_recovery()
+                .unwrap()
+                .unwrap()
+                .verified_through,
+            Some(0)
+        );
+        assert!(storage.advance_archive_recovery(0).unwrap());
+        assert_eq!(storage.archive_recovery().unwrap(), None);
     }
 
     /// Overwrites the embedded block hashes of a stored canonical row with garbage.

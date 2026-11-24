@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -107,6 +108,77 @@ class PrivateLaunchFileTests(unittest.TestCase):
         self.assertEqual(result.stdout, "normal launch output\n")
         self.assertEqual(path.read_text(), result.stdout)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_public_raw_funder_requires_an_explicit_non_development_key(self):
+        common = LAUNCHER.with_name("_common.sh")
+        development_key = re.search(r"local development_key=(0x[0-9a-f]{64})", common.read_text())[1]
+        env = {
+            "PATH": os.environ["PATH"],
+            "COMMON": str(common),
+            "FUNDER_SIGNER": "private-key",
+            "GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV": "true",
+        }
+        command = [
+            "bash", "-ec",
+            'source "$COMMON"; gl_validate_funder_signer_config; test -n "$FUNDER_PRIVATE_KEY"',
+        ]
+        for network, chain in (("tanenbaum", "5700"), ("mainnet", "57")):
+            for key, error in (
+                (None, "unset required env: FUNDER_PRIVATE_KEY"),
+                ("", "unset required env: FUNDER_PRIVATE_KEY"),
+                (development_key.upper(), "Anvil development key"),
+            ):
+                with self.subTest(network=network, error=error):
+                    overrides = {} if key is None else {"FUNDER_PRIVATE_KEY": key}
+                    result = subprocess.run(
+                        command, env={**env, **overrides, "L1_NETWORK": network, "L1_CHAIN_ID": chain},
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(error, result.stderr)
+            result = subprocess.run(
+                command, env={**env, "FUNDER_PRIVATE_KEY": "0x" + "4" * 64,
+                              "L1_NETWORK": network, "L1_CHAIN_ID": chain},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run(
+            command, env={**env, "L1_NETWORK": "localhost", "L1_CHAIN_ID": "31337"},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_public_funding_rejects_imported_development_account_before_rpc(self):
+        common = LAUNCHER.with_name("_common.sh")
+        wallets = self.directory / "wallets.yaml"
+        wallets.write_text("governor:\n  address: '0x" + "5" * 40 + "'\n")
+        cast_calls = self.directory / "cast-calls"
+        cast = self.directory / "cast"
+        cast.write_text(
+            '#!/usr/bin/env bash\nprintf "%s\n" "$1" >> "$CAST_CALLS"\n'
+            '[[ "$1" == "wallet" ]] || exit 1\n'
+            'printf "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\n"\n'
+        )
+        cast.chmod(0o700)
+        result = subprocess.run(
+            ["bash", "-ec", 'source "$COMMON"; gl_fund_wallets_yaml'],
+            env={
+                "PATH": str(self.directory) + os.pathsep + os.environ["PATH"],
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "COMMON": str(common),
+                "WALLETS_YAML_PATHS": str(wallets),
+                "GATEWAY_DIR": str(self.directory),
+                "L1_RPC_URL": "https://root.example.invalid",
+                "L1_NETWORK": "tanenbaum",
+                "L1_CHAIN_ID": "5700",
+                "FUNDER_SIGNER": "ledger",
+                "CAST_CALLS": str(cast_calls),
+            },
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("development account cannot fund a public network", result.stderr)
+        self.assertEqual(cast_calls.read_text(), "wallet\n")
 
     def test_failed_rpc_diagnostic_omits_the_url(self):
         source = LAUNCHER.read_text(encoding="utf-8")

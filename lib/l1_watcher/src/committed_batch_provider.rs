@@ -1,5 +1,5 @@
 use crate::util;
-use alloy::eips::BlockId;
+use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::primitives::{BlockNumber, TxHash};
 use alloy::providers::Provider;
 use anyhow::Context;
@@ -41,7 +41,7 @@ const WAIT_FOR_BATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 ///
 /// SYSCOIN: Startup lookup remains interval-aware rather than using one L1-only commit sweep.
 /// Historical Gateway intervals require different providers, while archive-backed L1 results are
-/// accepted only across stable live/archive tips and after live-hash validation.
+/// accepted only across stable live/archive tips and after checking the live hash and range.
 #[derive(Debug, Clone)]
 pub struct CommittedBatchProvider {
     inner: Arc<RwLock<Inner>>,
@@ -361,6 +361,20 @@ pub async fn fetch_live_committed_batch(
     batch_number: u64,
     max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<(DiscoveredCommittedBatch, TxHash)> {
+    let (batch, tx_hash, _) = fetch_live_committed_batch_with_location(
+        diamond_proxy,
+        batch_number,
+        max_l1_blocks_to_scan,
+    )
+    .await?;
+    Ok((batch, tx_hash))
+}
+
+async fn fetch_live_committed_batch_with_location(
+    diamond_proxy: &ZkChain<NodeProvider>,
+    batch_number: u64,
+    max_l1_blocks_to_scan: u64,
+) -> anyhow::Result<(DiscoveredCommittedBatch, TxHash, BlockNumber)> {
     let latest = diamond_proxy.provider().get_block_number().await?;
     let total_committed = diamond_proxy
         .get_total_batches_committed(latest.into())
@@ -393,7 +407,7 @@ pub async fn fetch_live_committed_batch(
         "batch {batch_number} reconstructed from settlement-layer block {live_commit_block} does \
          not match the live stored batch hash {live_hash}",
     );
-    Ok((batch, commit_tx_hash))
+    Ok((batch, commit_tx_hash, live_commit_block))
 }
 
 // SYSCOIN: Helpers below implement the archive/live startup lookup policy for
@@ -555,12 +569,13 @@ fn retry_if_tips_changed(
 async fn archive_batch_lookup_outcome(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
-    batch: DiscoveredCommittedBatch,
+    located_batch: (DiscoveredCommittedBatch, TxHash, BlockNumber),
     tips_before_fetch: ProviderTips,
     attempt: usize,
     batch_number: u64,
     max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<ArchiveLookupOutcome> {
+    let (batch, commit_tx_hash, commit_block) = located_batch;
     let tips_after_fetch = match read_provider_tips_or_live_fallback(
         live_proxy,
         archive_provider,
@@ -597,7 +612,15 @@ async fn archive_batch_lookup_outcome(
         return Ok(outcome);
     }
 
-    if let Err(validation_err) = validate_archive_batch_against_live(live_proxy, &batch).await {
+    if let Err(validation_err) = validate_archive_batch_against_live(
+        live_proxy,
+        &batch,
+        commit_tx_hash,
+        commit_block,
+        max_l1_blocks_to_scan,
+    )
+    .await
+    {
         let validation_err = format!("{validation_err:#}");
         tracing::warn!(
             batch_number,
@@ -611,7 +634,7 @@ async fn archive_batch_lookup_outcome(
             batch_number,
             max_l1_blocks_to_scan,
             format!(
-                "archive committed batch {batch_number} failed live hash validation \
+                "archive committed batch {batch_number} failed live settlement validation \
                  (archive tip {}, live tip {}): {validation_err}",
                 tips_after_fetch.archive, tips_after_fetch.live,
             ),
@@ -660,7 +683,7 @@ async fn archive_batch_lookup_outcome(
         batch_number,
         live_tip = tips_after_validation.live,
         archive_tip = tips_after_validation.archive,
-        "archive committed batch hash matches live state",
+        "archive committed batch hash and range match live settlement",
     );
     Ok(ArchiveLookupOutcome::Batch(batch))
 }
@@ -690,12 +713,17 @@ async fn fetch_batch_with_archive_fallback(
 
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     for attempt in 0..2 {
-        match fetch_live_committed_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await
+        match fetch_live_committed_batch_with_location(
+            &archive_proxy,
+            batch_number,
+            max_l1_blocks_to_scan,
+        )
+        .await
         {
-            Ok((batch, _commit_tx_hash)) => match archive_batch_lookup_outcome(
+            Ok(located_batch) => match archive_batch_lookup_outcome(
                 live_proxy,
                 archive_provider,
-                batch,
+                located_batch,
                 tips,
                 attempt,
                 batch_number,
@@ -741,14 +769,27 @@ async fn fetch_batch_with_archive_fallback(
     .await
 }
 
-// SYSCOIN: A behind archive can still serve valid historical commit calldata.
-// Validate the decoded batch against live latest state before accepting it.
+// The live provider authenticates the archive's transaction and range without needing the
+// historical contract state used by the archive to locate the commit.
 async fn validate_archive_batch_against_live(
     live_proxy: &ZkChain<NodeProvider>,
     batch: &DiscoveredCommittedBatch,
+    commit_tx_hash: TxHash,
+    commit_block: BlockNumber,
+    max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<()> {
+    let provider = live_proxy.provider();
+    let live_tip = provider
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .context("live provider returned no settlement tip")?
+        .header;
+    anyhow::ensure!(
+        commit_block <= live_tip.inner.number,
+        "archive commit block is ahead of the live settlement tip"
+    );
     let live_batch_hash = live_proxy
-        .stored_batch_hash(batch.number(), BlockId::latest())
+        .stored_batch_hash(batch.number(), BlockId::hash_canonical(live_tip.hash))
         .await
         .with_context(|| {
             format!(
@@ -761,12 +802,78 @@ async fn validate_archive_batch_against_live(
         live_batch_hash == archive_batch_hash,
         "archive batch hash {archive_batch_hash} does not match live stored batch hash {live_batch_hash}",
     );
+    let live_commit_block = provider
+        .get_block_by_number(commit_block.into())
+        .await?
+        .context("archive commit location has no canonical live settlement block")?
+        .header;
+    anyhow::ensure!(
+        live_commit_block.inner.number == commit_block,
+        "live settlement provider returned the wrong commit block number"
+    );
+    let (commit_log, live_commit_tx_hash) = util::find_commit_log(
+        live_proxy,
+        BlockId::hash_canonical(live_commit_block.hash),
+        batch.number(),
+    )
+    .await?
+    .context("archive commit location has no matching live settlement event")?;
+    validate_archive_commit_event(
+        batch,
+        commit_tx_hash,
+        live_commit_tx_hash,
+        commit_log.firstBlockNumber..=commit_log.lastBlockNumber,
+    )?;
+    // The matched event survived the end of its block. A later revert invalidates that
+    // historical range even if a subsequent commitment reuses the same stored batch hash.
+    if let Some(next_block) = commit_block.checked_add(1) {
+        anyhow::ensure!(
+            util::find_latest_l1_revert(
+                live_proxy,
+                batch.number(),
+                next_block,
+                max_l1_blocks_to_scan
+            )
+            .await?
+            .is_none(),
+            "archive batch {} has a later settlement revert",
+            batch.number(),
+        )
+    }
+    for header in [live_commit_block, live_tip] {
+        let canonical_block = provider
+            .get_block_by_number(header.inner.number.into())
+            .await?
+            .context("live settlement block disappeared during archive batch validation")?;
+        anyhow::ensure!(
+            canonical_block.header.hash == header.hash,
+            "live settlement reorged during archive batch validation"
+        );
+    }
+    Ok(())
+}
+
+fn validate_archive_commit_event(
+    batch: &DiscoveredCommittedBatch,
+    archive_tx_hash: TxHash,
+    live_tx_hash: TxHash,
+    live_range: std::ops::RangeInclusive<BlockNumber>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        archive_tx_hash == live_tx_hash
+            && batch.block_range == live_range
+            && !live_range.is_empty(),
+        "archive batch range or transaction differs from live settlement event for batch {}",
+        batch.number(),
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Inner, load_persisted_batch, startup_batch_numbers};
+    use super::{
+        Inner, load_persisted_batch, startup_batch_numbers, validate_archive_commit_event,
+    };
     use alloy::primitives::B256;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -777,6 +884,22 @@ mod tests {
     #[test]
     fn prioritizes_frontier_batches_once() {
         assert_eq!(startup_batch_numbers(10, 8, 8, 8), (vec![8, 10], vec![9]));
+    }
+
+    #[test]
+    fn archive_batch_requires_exact_live_commit_transaction_and_range() {
+        let batch = discovered_batch(7, 70, 79);
+        let commit_tx_hash = B256::repeat_byte(1);
+        assert!(
+            validate_archive_commit_event(&batch, commit_tx_hash, commit_tx_hash, 70..=79).is_ok()
+        );
+        assert!(
+            validate_archive_commit_event(&batch, commit_tx_hash, commit_tx_hash, 70..=80).is_err()
+        );
+        assert!(
+            validate_archive_commit_event(&batch, commit_tx_hash, B256::repeat_byte(2), 70..=79)
+                .is_err()
+        );
     }
 
     #[test]

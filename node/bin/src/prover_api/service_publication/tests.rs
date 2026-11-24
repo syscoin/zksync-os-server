@@ -8,7 +8,7 @@ use alloy::{
         json_rpc::ErrorPayload,
         types::{Block, Transaction},
     },
-    sol_types::SolValue,
+    sol_types::{SolCall, SolValue},
     transports::mock::Asserter,
 };
 use serde_json::{Value, json};
@@ -34,6 +34,33 @@ async fn provider(asserter: &Asserter) -> NodeProvider {
     )
     .await
     .unwrap()
+}
+
+fn gate_calldata(work: &Work, sidecar: &ProverServiceSidecarV1) -> Bytes {
+    if let Some(candidate) = &sidecar.candidate {
+        IZkSysProofGateV1::submitCall {
+            accepted: sidecar.accepted_package.clone(),
+            duties: sidecar.duties.clone(),
+            outputs: sidecar.batch_outputs.clone(),
+            proofData: work.proof_data.clone(),
+            candidate: candidate.clone(),
+            candidateProof: sidecar.candidate_proof.clone(),
+            sequencerSignature: sidecar.sequencer_signature.clone(),
+            wrapperSignature: sidecar.wrapper_signature.clone(),
+        }
+        .abi_encode()
+        .into()
+    } else {
+        IZkSysProofGateV1::submitBootstrapCall {
+            accepted: sidecar.accepted_package.clone(),
+            duties: sidecar.duties.clone(),
+            outputs: sidecar.batch_outputs.clone(),
+            proofData: work.proof_data.clone(),
+            sequencerSignature: sidecar.sequencer_signature.clone(),
+        }
+        .abi_encode()
+        .into()
+    }
 }
 
 async fn fixture(
@@ -105,7 +132,7 @@ async fn fixture(
         work.timelock,
     )
     .unwrap();
-    let calldata = encode_historical_calldata(&work, &sidecar);
+    let calldata = gate_calldata(&work, &sidecar);
     let handoff = Handoff {
         schema_version: 1,
         work_hash: keccak256(serde_json::to_vec(&work).unwrap()),
@@ -116,9 +143,14 @@ async fn fixture(
 }
 
 fn transaction(work: &Work, calldata: Bytes) -> Transaction {
+    transaction_to(work, work.gate, calldata, U256::ZERO)
+}
+
+fn transaction_to(work: &Work, destination: Address, calldata: Bytes, value: U256) -> Transaction {
     let tx = TxLegacy {
         chain_id: Some(work.settlement_chain_id.to::<u64>()),
-        to: TxKind::Call(work.gate),
+        to: TxKind::Call(destination),
+        value,
         input: calldata,
         gas_limit: 1_000_000,
         gas_price: 1,
@@ -216,7 +248,7 @@ async fn confirms_exact_bootstrap_and_service_receipts_at_inclusive_depth() {
         asserter.push_success(&receipt);
         asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
         let confirmed = publication
-            .observe(&work, handoff.work_hash, &handoff, None)
+            .observe(&work, handoff.work_hash, &handoff)
             .await
             .unwrap()
             .unwrap();
@@ -241,7 +273,7 @@ async fn insufficient_depth_preserves_pending_work() {
     );
     assert!(
         publication
-            .observe(&work, handoff.work_hash, &handoff, None)
+            .observe(&work, handoff.work_hash, &handoff)
             .await
             .unwrap()
             .is_none()
@@ -249,18 +281,20 @@ async fn insufficient_depth_preserves_pending_work() {
 }
 
 #[tokio::test]
-async fn rejects_foreign_calldata_missing_event_reverted_receipt_and_wrong_runtime() {
-    for mutation in ["calldata", "event", "reverted", "runtime"] {
+async fn rejects_direct_value_missing_event_reverted_receipt_and_wrong_runtime() {
+    for (mutation, expected) in [
+        ("value", "direct service gate submission carries value"),
+        ("event", "expected exactly one service acceptance"),
+        ("reverted", "service transaction reverted"),
+        (
+            "runtime",
+            "service gate runtime does not match reviewed pin",
+        ),
+    ] {
         let asserter = Asserter::new();
         let (publication, work, mut handoff, calldata, _temp) = fixture(&asserter, true).await;
-        let tx = transaction(
-            &work,
-            if mutation == "calldata" {
-                Bytes::from_static(b"other proof")
-            } else {
-                calldata.clone()
-            },
-        );
+        let value = U256::from(u8::from(mutation == "value"));
+        let tx = transaction_to(&work, work.gate, calldata, value);
         handoff.transaction_hash = tx.tx_hash();
         let mut receipt = receipt(&work, &handoff);
         if mutation == "event" {
@@ -272,16 +306,67 @@ async fn rejects_foreign_calldata_missing_event_reverted_receipt_and_wrong_runti
         push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
         if mutation == "runtime" {
             asserter.push_success(&Bytes::from_static(b"unreviewed"));
-        } else if mutation == "calldata" {
-            push_contracts(&asserter, &work);
         }
         let error = publication
-            .observe(&work, handoff.work_hash, &handoff, None)
+            .observe(&work, handoff.work_hash, &handoff)
             .await
             .unwrap_err();
-        if mutation == "calldata" {
-            assert!(error.to_string().contains("exact native gate call"));
+        assert!(error.to_string().contains(expected), "{mutation}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn routed_receipt_requires_unique_canonical_event_and_retained_commitments() {
+    for (mutation, expected) in [
+        ("destination", "differs from its mined receipt"),
+        ("foreign gate", "exactly one service acceptance"),
+        ("foreign package", "exactly one service acceptance"),
+        ("duplicate", "exactly one service acceptance"),
+        ("range", "differs from retained package"),
+        ("proof", "mismatched manifest, report or proof"),
+        ("duties", "mismatched manifest, report or proof"),
+        ("outputs", "outputs differ from retained native work"),
+        ("changed receipt", "changed during canonical confirmation"),
+    ] {
+        let asserter = Asserter::new();
+        let (publication, work, mut handoff, _, _temp) = fixture(&asserter, false).await;
+        let router = Address::repeat_byte(90);
+        let tx = transaction_to(&work, router, Bytes::from_static(b"forward"), U256::from(1));
+        handoff.transaction_hash = tx.tx_hash();
+        if mutation == "proof" {
+            handoff.sidecar.accepted_package.proofHash = B256::repeat_byte(91);
+        } else if mutation == "duties" {
+            handoff.sidecar.duties.clear();
+        } else if mutation == "outputs" {
+            handoff.sidecar.batch_outputs[0].settlementChainId += U256::from(1);
         }
+        let mut receipt = receipt(&work, &handoff);
+        receipt["to"] = json!(router);
+        match mutation {
+            "destination" => receipt["to"] = json!(work.gate),
+            "foreign gate" => receipt["logs"][0]["address"] = json!(router),
+            "foreign package" => receipt["logs"][0]["topics"][1] = json!(B256::repeat_byte(90)),
+            "duplicate" => {
+                let mut duplicate = receipt["logs"][0].clone();
+                duplicate["logIndex"] = json!("0x1");
+                receipt["logs"].as_array_mut().unwrap().push(duplicate);
+            }
+            "range" => receipt["logs"][0]["topics"][2] = json!(B256::ZERO),
+            _ => {}
+        }
+        push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
+        push_contracts(&asserter, &work);
+        if mutation == "changed receipt" {
+            asserter.push_success(&block(42, B256::repeat_byte(42)));
+            asserter.push_success(&block(44, B256::repeat_byte(44)));
+            receipt["logs"] = json!([]);
+            asserter.push_success(&receipt);
+        }
+        let err = publication
+            .observe(&work, handoff.work_hash, &handoff)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(expected), "{mutation}: {err}");
     }
 }
 
@@ -292,7 +377,7 @@ async fn historical_service_receipt_rejects_duty_before_pinned_first_period() {
     handoff.sidecar.duties[0].period = 4;
     handoff.sidecar.accepted_package.reportHash =
         zksync_os_contract_interface::prover_service_v1::hash_report(&handoff.sidecar.duties);
-    let calldata = encode_historical_calldata(&work, &handoff.sidecar);
+    let calldata = gate_calldata(&work, &handoff.sidecar);
     let tx = transaction(&work, calldata);
     handoff.transaction_hash = tx.tx_hash();
     push_start(
@@ -305,7 +390,7 @@ async fn historical_service_receipt_rejects_duty_before_pinned_first_period() {
     );
     push_contracts(&asserter, &work);
     let error = publication
-        .observe(&work, handoff.work_hash, &handoff, None)
+        .observe(&work, handoff.work_hash, &handoff)
         .await
         .unwrap_err();
     assert_eq!(
@@ -340,7 +425,7 @@ async fn rejects_reorg_and_receipt_disappearance_after_historical_checks() {
         asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
         assert!(
             publication
-                .observe(&work, handoff.work_hash, &handoff, None)
+                .observe(&work, handoff.work_hash, &handoff)
                 .await
                 .is_err(),
             "{mutation}"
@@ -393,27 +478,21 @@ fn handoff_rejects_symlinks_hardlinks_and_unknown_fields() {
     );
 }
 
-#[tokio::test]
-async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_on_activation() {
-    use crate::prover_api::{
-        snark_proof_journal::SnarkProofJournal, test_util::create_test_batch_envelope_with_data,
-    };
-    use zksync_os_batch_types::batcher_model::{BatchSignatureData, RealSnarkProof, SnarkProof};
+fn publication_batches(work: &Work, from: u64, to: u64) -> Vec<SignedBatchEnvelope<FriProof>> {
+    use crate::prover_api::test_util::create_test_batch_envelope_with_data;
+    use zksync_os_batch_types::batcher_model::BatchSignatureData;
     use zksync_os_types::ProtocolSemanticVersion;
-
-    let asserter = Asserter::new();
-    let (mut publication, old_work, mut handoff, _, temporary) = fixture(&asserter, true).await;
     let mut batches = Vec::new();
     let mut previous = None;
-    for number in 1..=2 {
+    for number in from..=to {
         let mut batch = create_test_batch_envelope_with_data(
             number,
             ProtocolSemanticVersion::new(0, 32, 0),
             FriProof::AlreadySubmittedToL1,
         );
-        batch.batch.chain_address = old_work.chain_address;
-        batch.batch.batch_info.commit_info.chain_id = old_work.execution_chain_id.to::<u64>();
-        batch.batch.batch_info.commit_info.sl_chain_id = old_work.settlement_chain_id.to::<u64>();
+        batch.batch.chain_address = work.chain_address;
+        batch.batch.batch_info.commit_info.chain_id = work.execution_chain_id.to::<u64>();
+        batch.batch.batch_info.commit_info.sl_chain_id = work.settlement_chain_id.to::<u64>();
         batch.signature_data = BatchSignatureData::AlreadyCommitted;
         if let Some(previous) = previous {
             batch.batch.previous_stored_batch_info = previous
@@ -421,6 +500,158 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         previous = Some(batch.batch.batch_info.clone().into_stored());
         batches.push(batch);
     }
+    batches
+}
+
+#[tokio::test]
+async fn routed_service_package_forwards_its_batches_live_and_after_journal_restart() {
+    check_external_publication_after_restart(true).await;
+}
+
+#[tokio::test]
+async fn independently_endorsed_direct_package_forwards_its_batches_live_and_after_journal_restart()
+{
+    check_external_publication_after_restart(false).await;
+}
+
+async fn check_external_publication_after_restart(forwarded: bool) {
+    use zksync_os_batch_types::batcher_model::{RealSnarkProof, SnarkProof};
+
+    async fn forward_batches(
+        publication: ServicePublication,
+        commands: Vec<L1SenderCommand<ProofCommand>>,
+    ) -> Vec<SignedBatchEnvelope<FriProof>> {
+        let (input_tx, input_rx) = mpsc::channel(commands.len());
+        let (output_tx, mut output_rx) = mpsc::channel(2);
+        let (reporter, _state) = ComponentStateReporter::new("routed_service_publication");
+        for command in commands {
+            input_tx.send(command).await.unwrap();
+        }
+        drop(input_tx);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ProofPublication::Service(publication).run(
+                PeekableReceiver::new(input_rx),
+                output_tx,
+                reporter,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let batches = vec![output_rx.try_recv().unwrap(), output_rx.try_recv().unwrap()];
+        assert_eq!(
+            (batches[0].batch_number(), batches[1].batch_number()),
+            (1, 2)
+        );
+        batches
+    }
+
+    let asserter = Asserter::new();
+    let (publication, fixture_work, mut handoff, _, _temp) = fixture(&asserter, false).await;
+    let (confirmed_tx, mut confirmed_rx) = mpsc::unbounded_channel();
+    let command = ProofCommand::new_durable(
+        publication_batches(&fixture_work, 1, 2),
+        SnarkProof::Real(RealSnarkProof {
+            proof: vec![7; 1408],
+            proving_execution_version: 8,
+        }),
+        "retained-proof".to_owned(),
+        confirmed_tx,
+    );
+    let work = Work::new(&command, &publication).unwrap();
+    let (_, directory, work_hash) = publication.journal.stage(&work, 256).unwrap();
+    handoff.work_hash = work_hash;
+    handoff.sidecar.accepted_package.proofHash = keccak256(&work.proof_data);
+    handoff.sidecar.duties.clear();
+    handoff.sidecar.accepted_package.reportHash =
+        zksync_os_contract_interface::prover_service_v1::hash_report(&[]);
+    handoff.sidecar.batch_outputs = work.batch_outputs.clone();
+    let tx = if forwarded {
+        transaction_to(
+            &work,
+            Address::repeat_byte(90),
+            Bytes::from_static(b"forward"),
+            U256::from(1),
+        )
+    } else {
+        // The RPC fixture attests a package submitted with a different contract-wallet endorsement.
+        let mut submitted = handoff.sidecar.clone();
+        submitted.wrapper_signature =
+            Bytes::from_static(b"independent contract wallet endorsement");
+        let input = gate_calldata(&work, &submitted);
+        assert_ne!(input, gate_calldata(&work, &handoff.sidecar));
+        transaction(&work, input)
+    };
+    handoff.transaction_hash = tx.tx_hash();
+    atomic_write(
+        &directory.join("relay.json"),
+        &serde_json::to_vec(&handoff).unwrap(),
+    )
+    .unwrap();
+    let mut receipt = receipt(&work, &handoff);
+    receipt["to"] = json!(tx.to());
+    if forwarded {
+        let following = IZkSysProofGateV1::ServicePackageAccepted {
+            packageHash: B256::repeat_byte(91),
+            from: 3,
+            to: 4,
+            bootstrap: false,
+        }
+        .encode_log_data();
+        let mut other = receipt["logs"][0].clone();
+        other["topics"] = json!(following.topics());
+        other["data"] = json!(following.data);
+        other["logIndex"] = json!("0x1");
+        receipt["logs"].as_array_mut().unwrap().push(other);
+    }
+    let push_observation = || {
+        push_start(&asserter, &work, &handoff, &tx, &receipt, 44);
+        push_contracts(&asserter, &work);
+        asserter.push_success(&block(42, B256::repeat_byte(42)));
+        asserter.push_success(&block(44, B256::repeat_byte(44)));
+        asserter.push_success(&receipt);
+        asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
+    };
+    let config = publication.config.clone();
+    let provider = publication.provider.clone();
+    push_observation();
+    let batches = forward_batches(publication, vec![L1SenderCommand::SendToL1(command)]).await;
+    assert_eq!(confirmed_rx.try_recv().unwrap(), "retained-proof");
+    let confirmed: Confirmed = serde_json::from_slice(
+        &read_private(&directory.join("confirmed.json"))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(confirmed.calldata_hash, keccak256(tx.input()));
+    assert_eq!(
+        confirmed.package_hash,
+        hash_package(&handoff.sidecar.accepted_package)
+    );
+
+    let restarted =
+        ServicePublication::new(config, provider, ConfirmationPolicy::new(3), work.timelock)
+            .unwrap();
+    push_observation();
+    let passthrough = batches
+        .into_iter()
+        .map(|batch| L1SenderCommand::Passthrough(Box::new(batch)))
+        .collect();
+    forward_batches(restarted, passthrough).await;
+}
+
+#[tokio::test]
+async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_on_activation() {
+    use crate::prover_api::{
+        snark_proof_journal::SnarkProofJournal, test_util::create_test_batch_envelope_with_data,
+    };
+    use zksync_os_batch_types::batcher_model::{RealSnarkProof, SnarkProof};
+    use zksync_os_types::ProtocolSemanticVersion;
+
+    let asserter = Asserter::new();
+    let (mut publication, old_work, mut handoff, _, temporary) = fixture(&asserter, true).await;
+    let batches = publication_batches(&old_work, 1, 2);
     let (native, _confirmations) = SnarkProofJournal::open(temporary.path()).await.unwrap();
     native
         .persist(
@@ -432,8 +663,18 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         )
         .await
         .unwrap();
-    assert!(native.covered_service_commands(1).await.unwrap().is_empty());
-    let covered = native.covered_service_commands(2).await.unwrap();
+    assert!(
+        native
+            .intersecting_service_commands(0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        native.intersecting_service_commands(1).await.unwrap().len(),
+        1
+    );
+    let covered = native.intersecting_service_commands(2).await.unwrap();
     assert_eq!(covered.len(), 1);
     let command = &covered[0];
     let work = Work::new(command, &publication).unwrap();
@@ -463,10 +704,7 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         )
         .unwrap()
         .calldata;
-    assert_eq!(
-        calldata,
-        encode_historical_calldata(&work, &handoff.sidecar)
-    );
+    assert_eq!(calldata, gate_calldata(&work, &handoff.sidecar));
     let tx = transaction(&work, calldata);
     handoff.transaction_hash = tx.tx_hash();
     atomic_write(
@@ -495,8 +733,9 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         publication
             .journal
             .work_for_batch(&command.as_ref()[0], &publication)
+            .await
             .unwrap(),
-        work
+        Some(work)
     );
     let mut wrong = create_test_batch_envelope_with_data(
         1,
@@ -509,6 +748,7 @@ async fn covered_native_restart_waits_for_receipt_and_preserves_bootstrap_work_o
         publication
             .journal
             .work_for_batch(&wrong, &publication)
+            .await
             .is_err()
     );
     let fake = ProofCommand::new(vec![wrong], SnarkProof::Fake);
@@ -535,10 +775,120 @@ async fn restart_cannot_lower_the_frozen_confirmation_depth() {
         );
         assert!(
             publication
-                .observe(&work, handoff.work_hash, &handoff, None)
+                .observe(&work, handoff.work_hash, &handoff)
                 .await
                 .unwrap()
                 .is_none()
         );
     }
 }
+
+#[tokio::test]
+async fn native_observations_authorize_only_the_matching_batch() {
+    // In all cases native batches 1 and 2 are proved. Batch 2 was service-accepted
+    // in the same settlement block as the first observation, so it still needs its receipt.
+    for (number, initial, matching_hash) in [
+        (1, 0, true),
+        (2, 0, true),
+        (1, 0, false),
+        (1, 1, true),
+        (2, 1, true),
+    ] {
+        let asserter = Asserter::new();
+        let (publication, work, _, _, _temporary) = fixture(&asserter, true).await;
+        let native = NativeBatch::from_work(&work, number).unwrap();
+        let (_, batches, _) =
+            <(StoredBatch, Vec<StoredBatch>, Vec<U256>)>::abi_decode_params_validate(
+                &work.proof_data[1..],
+            )
+            .unwrap();
+        let first_hash = keccak256(batches[0].abi_encode());
+        let safe_block = block(1, B256::repeat_byte(1));
+        let frontier = 2u64;
+
+        asserter.push_success(&Bytes::from(frontier.abi_encode()));
+        asserter.push_success(&block(3, B256::repeat_byte(3)));
+        asserter.push_success(&safe_block);
+        asserter.push_success(&Bytes::from(U256::from(frontier).abi_encode()));
+        asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
+        asserter.push_success(&Bytes::from_static(b"gate"));
+        for result in [
+            work.chain_address.abi_encode(),
+            work.execution_chain_id.abi_encode(),
+            work.policy_hash.abi_encode(),
+            work.timelock.abi_encode(),
+            frontier.abi_encode(),
+            initial.abi_encode(),
+        ] {
+            asserter.push_success(&Bytes::from(result));
+        }
+        if number > initial {
+            // Gate deployment at block one pins the binary search to this block.
+            asserter.push_success(&U64::from(1));
+            asserter.push_success(&Bytes::from_static(b"gate"));
+            asserter.push_success(&Bytes::new());
+            asserter.push_success(&safe_block);
+            if initial == 0 {
+                let observation = IZkSysProofGateV1::NativeSettlementAdvanced {
+                    from: 1,
+                    to: 1,
+                    nativeBatchHash: first_hash,
+                }
+                .encode_log_data();
+                asserter.push_success(&json!([{"address":work.gate, "data":observation.data,
+                    "topics":observation.topics(),"blockNumber":"0x1","blockHash":safe_block.header.hash,
+                    "logIndex":"0x0","transactionIndex":"0x0","transactionHash":B256::repeat_byte(17),"removed":false}]));
+                if number == 1 {
+                    asserter.push_success(&Bytes::from(first_hash.abi_encode()));
+                }
+            } else {
+                asserter.push_success(&json!([]));
+            }
+        }
+        if number == 1 {
+            let stored = if matching_hash {
+                first_hash
+            } else {
+                B256::ZERO
+            };
+            asserter.push_success(&Bytes::from(stored.abi_encode()));
+            if matching_hash {
+                asserter.push_success(&safe_block);
+                asserter.push_success(&safe_block);
+                asserter.push_success(&U64::from(work.settlement_chain_id.to::<u64>()));
+            }
+        }
+        let (_, directory, _) = publication.journal.stage(&work, 256).unwrap();
+        if number == 1 && matching_hash {
+            assert!(publication.wait_for_work(&work, &native).await.unwrap());
+            let evidence = read_private(&directory.join("superseded.json"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<B256>(&evidence).unwrap(),
+                safe_block.header.hash
+            );
+        } else {
+            let result = native.confirmed_gap(&publication).await;
+            if number == 1 {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("differs from local proof")
+                );
+            } else {
+                assert_eq!(result.unwrap(), NativeObservation::NoGap);
+            }
+            assert!(!directory.join("superseded.json").exists());
+        }
+        asserter.push_success(&Bytes::from(0u64.abi_encode()));
+        assert_eq!(
+            native.confirmed_gap(&publication).await.unwrap(),
+            NativeObservation::Pending
+        );
+        assert!(!directory.join("confirmed.json").exists());
+    }
+}
+
+mod regrouping;

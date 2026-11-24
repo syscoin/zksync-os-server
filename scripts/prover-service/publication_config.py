@@ -40,16 +40,11 @@ def preview(config, rpc, now, lane, execution_id, settlement_id, directory, vk_h
     s.require((status['mode'] == 'bootstrap') == (coordinator == s.ZERO_ADDRESS), 'phase_pin_mismatch')
 
     # Reuse the canonical head from keeper.status, then recheck that head after
-    # the verifier, priority guard and prover authority reads.
+    # the verifier and prover authority reads.
     head = status['head']
     anchor = {'blockHash': head['hash'], 'requireCanonical': True}
     gate, chain = settings['proof_gate'], settings['chain_address']
     call = lambda target, signature, encoded=b'', kind='uint': r.call_word(rpc, target, signature, anchor, encoded, kind)
-    guard = call(gate, 'priorityGuard()', kind='address')
-    k.check_code(rpc, guard, pins['priority_guard_code_hash'], anchor, 'priority_guard_code_changed')
-    s.require(call(guard, 'acceptanceGate()', kind='address') == gate
-              and call(guard, 'chain()', kind='address') == chain
-              and call(guard, 'policyHash()', kind='bytes32') == settings['policy_hash'], 'priority_guard_changed')
     verifier = call(gate, 'productionVerifier()', kind='address')
     plonk = call(gate, 'plonkVerifier()', kind='address')
     s.require(call(chain, 'getVerifier()', kind='address') == verifier
