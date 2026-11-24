@@ -1,0 +1,27 @@
+# Apply explicitly after docker-compose.yml on a staging host.
+name: blockscout-upgrade-${CHAIN_ID:?set CHAIN_ID in the chain env file}
+
+services:
+  db:
+    healthcheck:
+      # The PostgreSQL bootstrap server accepts Unix socket connections before the final TCP listener starts.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U blockscout -d blockscout"]
+
+  backend:
+    image: ${BLOCKSCOUT_UPGRADE_BACKEND_IMAGE:?set the candidate backend repository}@sha256:${BLOCKSCOUT_UPGRADE_BACKEND_SHA256:?set the candidate backend digest}
+
+  frontend:
+    image: ${BLOCKSCOUT_UPGRADE_FRONTEND_IMAGE:?set the candidate frontend repository}@sha256:${BLOCKSCOUT_UPGRADE_FRONTEND_SHA256:?set the candidate frontend digest}
+    environment:
+      NEXT_PUBLIC_API_PROTOCOL: http
+      NEXT_PUBLIC_API_HOST: "127.0.0.1"
+      NEXT_PUBLIC_API_PORT: "${BLOCKSCOUT_UPGRADE_PORT:?set an unused loopback port}"
+      NEXT_PUBLIC_APP_PROTOCOL: http
+      NEXT_PUBLIC_APP_HOST: "127.0.0.1"
+      NEXT_PUBLIC_APP_PORT: "${BLOCKSCOUT_UPGRADE_PORT:?set an unused loopback port}"
+      NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL: ws
+
+  proxy:
+    # Replace the entire base port mapping so the candidate stays on loopback.
+    ports: !override
+      - "127.0.0.1:${BLOCKSCOUT_UPGRADE_PORT:?set an unused loopback port}:80"

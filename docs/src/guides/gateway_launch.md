@@ -1776,6 +1776,9 @@ admin IPs. The Gateway Blockscout env hides RPC docs/links and disables the
 Next.js proxy so the public explorer API remains available without turning the
 explorer into a public Gateway RPC passthrough.
 
+Stage Blockscout image changes with the isolated upgrade overlay described in
+`scripts/explorer/blockscout/UPGRADE.md`.
+
 After the zkSYS explorer has indexed its reviewed token contracts, publish the
 ERC-20 icons through the supported authenticated Blockscout token-info API using
 `scripts/explorer/blockscout/TOKEN-METADATA.md`.
