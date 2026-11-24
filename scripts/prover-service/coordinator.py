@@ -1101,6 +1101,7 @@ class Coordinator:
             return self.maintenance(identifier, produce(), produce, execute)
         request = k.rebind_request(self.settings, bundle["request"], chain, roster)
         self.prepare(request, evidence, payload)
+        operator = request["proposal"]["candidate"]["operator"]
         work_page = op.get("work_cursor", 0)
         result = self.result(identifier, execute)
         if result:
@@ -1127,7 +1128,7 @@ class Coordinator:
                 return {"next_action": "await_node_publication", "native_status": outcome}
             expected = None
             for work_hash, meta, _ in self.wrapper_work_items(identifier, work_page):
-                if not meta["checked"] or meta.get("ignored"):
+                if not meta["checked"] or meta.get("ignored") or meta["operator"] != operator:
                     continue
                 result = io.private_json(directory / (work_hash[2:] + ".result.json"))
                 if result["prepared"] is None:
@@ -1138,7 +1139,13 @@ class Coordinator:
                                   enrollment=self.enrollment_for(request))
                 if result["prepared"] != expected:
                     continue
-                s.verify_eoa(expected["wrapper_request"], result["wrapper_signature"])
+                try:
+                    s.verify_eoa(expected["wrapper_request"], result["wrapper_signature"])
+                except s.Error:
+                    # A signed result envelope can carry an unusable package endorsement.
+                    # Keep both the selected proof and the candidate for the next poll
+                    # because a local signature verifier failure can be transient.
+                    continue
                 signature = self.sign(expected["sequencer_request"], execute)
                 if not execute:
                     return {"next_action": "would_endorse_package"}
@@ -1158,7 +1165,6 @@ class Coordinator:
                 op["lease"], op["status"] = None, "picking"
                 self.save()
             return {"next_action": "renew_expired_native_lease_same_frozen_payload"}
-        operator = request["proposal"]["candidate"]["operator"]
         inbox = self.config["operator_inboxes"].get(operator)
         if inbox is None:
             return {"next_action": "await_selected_operator_transport", "operator": operator,

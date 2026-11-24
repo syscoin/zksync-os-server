@@ -202,7 +202,7 @@ class CoordinatorTests(unittest.TestCase):
         self.rpc.opened = True
         return identifier, bundle
 
-    def returned(self, work, bare=False):
+    def returned(self, work, bare=False, *, endorsement_key="wrapper"):
         directory = Path(self.controller.state["operations"][self.controller.state["active"]]["works"][work["work_hash"]]["directory"])
         envelope = io.private_json(directory / "work.json")
         request = envelope["body"]["request"]
@@ -210,7 +210,7 @@ class CoordinatorTests(unittest.TestCase):
                         request["subscriptions"], request["duties"], request["proposal"], self.f["snark"], self.f["fri_payload"])
         result = {"schema_version": 1, "work_hash": work["work_hash"], "proof": self.f["snark"],
                   "prepared": None if bare else prepared,
-                  "wrapper_signature": "0x" if bare else sign(prepared["wrapper_request"], "wrapper")}
+                  "wrapper_signature": "0x" if bare else sign(prepared["wrapper_request"], endorsement_key)}
         signed = {"result": result, "operator_signature": sign(io.result_request(self.f["settings"], work["work_hash"],
                                         result, self.f["proposal"]["candidate"]["operator"]), "wrapper")}
         io.immutable_json(directory / "result.json", signed)
@@ -972,6 +972,43 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(body["proof"], self.f["snark"])
         self.assertEqual(body["request"]["proposal"]["accepted_package"]["turn"], self.rpc.turn)
         self.assertEqual(len(self.native.calls), 2)
+
+    def test_same_proof_relay_skips_unusable_endorsement_and_retries_local_verification(self):
+        identifier, _ = self.frozen()
+        bad = self.controller.step(True)
+        prepared = self.returned(bad, endorsement_key="operator")
+        self.publication(prepared)
+        self.rpc.item["digest"] = prepared["sequencer_request"]["digest"]
+        controller = self.controller_reload()
+        with patch.object(controller, "sign", wraps=controller.sign) as signer:
+            good = controller.step(True)
+        self.assertEqual(good["next_action"], "await_selected_wrapper")
+        self.assertNotEqual(good["work_hash"], bad["work_hash"])
+        self.assertNotIn(prepared["sequencer_request"], [args[0] for args, _ in signer.call_args_list])
+        op = controller.state["operations"][identifier]
+        selected = copy.deepcopy(op["proof"])
+        self.assertIsNone(op["relay"])
+        self.assertEqual(self.returned(good), prepared)
+        controller.result(identifier, True)
+        def bad_first(identifier, page):
+            items = c.Coordinator.wrapper_work_items(controller, identifier, page)
+            return sorted(items, key=lambda entry: entry[0] != bad["work_hash"])
+        verify = s.verify_eoa
+        def unavailable(request, signature):
+            if request == prepared["wrapper_request"]:
+                raise s.Error("cast_failed")
+            return verify(request, signature)
+        with patch.object(controller, "wrapper_work_items", side_effect=bad_first), \
+                patch.object(s, "verify_eoa", side_effect=unavailable), \
+                patch.object(controller, "sign", wraps=controller.sign) as signer:
+            self.assertEqual(controller.step(True)["next_action"], "await_selected_wrapper")
+        self.assertNotIn(prepared["sequencer_request"], [args[0] for args, _ in signer.call_args_list])
+        controller = self.controller_reload()
+        with patch.object(controller, "wrapper_work_items", side_effect=bad_first), \
+                patch.object(controller, "sign", wraps=controller.sign) as signer:
+            self.assertEqual(controller.step(True)["next_action"], "relay_dual_endorsed_package")
+        self.assertIn(prepared["sequencer_request"], [args[0] for args, _ in signer.call_args_list])
+        self.assertEqual(controller.state["operations"][identifier]["proof"], selected)
 
     def test_ambiguous_pick_blocks_second_acquisition_after_restart(self):
         self.native.responses.append(OSError("connection dropped"))
