@@ -428,14 +428,18 @@ class TransactionsTests(unittest.TestCase):
         self.assertEqual(len(self.rpc.sent), 2)
 
     def test_confirmed_roster_call_does_not_block_native_observation(self):
-        legacy = self.identifier
+        roster_call = self.identifier
         self.step()
         self.confirm()
-        before = copy.deepcopy(self.store.load(self.settings, self.limits)["operations"][legacy])
+        before = copy.deepcopy(self.store.load(self.settings, self.limits)["operations"][roster_call])
         descriptor = self.scoped()
-        self.assertNotEqual(descriptor["operation_id"], legacy)
+        self.assertNotEqual(descriptor["operation_id"], roster_call)
         self.assertEqual(self.step()["status"], "broadcast")
-        self.assertEqual(self.store.load(self.settings, self.limits)["operations"][legacy], before)
+        self.assertEqual(self.store.load(self.settings, self.limits)["operations"][roster_call], before)
+
+    def test_native_observation_requires_its_planned_scope(self):
+        with self.assertRaisesRegex(s.Error, "native_observation_scope_required"):
+            self.runner().stage(self.observation())
 
     def test_scopes_do_not_make_nonrepeatable_calls_repeatable(self):
         identifier = self.another()

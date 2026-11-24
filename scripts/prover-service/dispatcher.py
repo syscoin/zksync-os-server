@@ -141,6 +141,8 @@ class Dispatcher:
         self.now = int(time.time()) if now is None else now
         self.state = journal.load(store.root / "state.json", list_fields=("audit.events",))
         s.require(self.state["schema_version"] == 1, "unsupported_journal")
+        s.require(type(self.state.get("audit")) is dict and {"identity", "events", "head"} <= self.state["audit"].keys(),
+                  "dispatcher_audit_missing")
         s.require(type(self.state["subscriptions"]) is list and bool(self.state["subscriptions"]),
                   "dispatcher_requires_enrolled_subscribers")
         self.settings = s.config(self.state["settings"])
@@ -166,7 +168,7 @@ class Dispatcher:
         self.enrollment = enrollment
 
     def _record_verified_enrollment(self, authority, rpc):
-        # Older journals have no verification receipt. Check their persisted anchor and lane pins before recording one.
+        # Initialization can stop after saving the state but before saving its verification receipt.
         state = self.state
         s.require(authority.normalized_snapshot == authority.snapshot
                   and authority.anchor == s.canonical(state["enrollment"]),
@@ -182,15 +184,10 @@ class Dispatcher:
         return self.auth[self.state["operations"][operation]["lane"]] if type(self.auth) is dict else self.auth
 
     def save(self):
-        journal.save(self.store.root / "state.json", self.state,
-                     list_fields=("audit.events",) if "audit" in self.state else ())
+        journal.save(self.store.root / "state.json", self.state, list_fields=("audit.events",))
 
     def record(self, kind, payload):
-        # Old journals lack the authenticated history needed to reconstruct fair dispatch.
-        # They may finish their existing work, but can never export an invented audit prefix.
-        ledger = self.state.get("audit")
-        if ledger is None:
-            return
+        ledger = self.state["audit"]
         events = ledger["events"]
         s.require(self.now >= (events[-1]["at"] if events else self.state["enrollment"]["timestamp"]),
                   "audit_clock_regressed")
@@ -536,7 +533,6 @@ class Dispatcher:
                 "assignments": [], "retries": []}
 
     def audit_payload(self, lane, batch_from, batch_to, *, event_root=None, export_events=True):
-        s.require("audit" in self.state, "legacy_journal_has_no_authenticated_audit_history")
         self.range_manifest_payload(lane, batch_from, batch_to)
         ledger, settings = self.state["audit"], self.state["lanes"][lane]["settings"]
         s.require(self.now >= (ledger["events"][-1]["at"] if ledger["events"]

@@ -52,7 +52,7 @@ class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.reports = [{'id': str(i), 'kind': 'accepted', 'fromRoot': True, 'bootstrap': False,
                          'sourceBlockNumber': '0x1', 'sourceLogIndex': hex(i)} for i in range(1, 4)]
-        self.state = {'transactions': {}}
+        self.state = local.storage.new_claim_state('claim')
         self.saved = []
         self.driver = FakeDriver(self.state)
         self.hooks = Hooks(self.reports)

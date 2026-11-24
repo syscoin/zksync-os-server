@@ -22,9 +22,9 @@ from test_service import fixture, h
 
 
 def state():
-    return {'version': 1, 'identity': 'a' * 64, 'transactions': {}, 'records': {},
-            'cursor': {'gateway': 10, 'l1': 11}, 'split': [], 'history': [],
-            'rootRequests': {}, 'rootRequestHashes': {}}
+    initial = storage.new_claim_state('a' * 64)
+    initial['cursor'] = {'gateway': 10, 'l1': 11}
+    return initial
 
 
 class ReceiptStorageAdversarialTests(unittest.TestCase):
@@ -33,9 +33,11 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'claim.json'
 
-    def legacy(self, value):
-        relay.atomic_json(self.path, value)
-        return storage.load(self.path, 'claim')
+    def stage_claim(self, value):
+        storage.save(self.path, state(), 'claim')
+        live = storage.load(self.path, 'claim')
+        live.update(value)
+        return live
 
     def test_claim_worker_external_completion_survives_indexed_restart(self):
         old = state()
@@ -44,7 +46,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         pending = {'id': 'pending', 'kind': 'accepted', 'fromRoot': True, 'bootstrap': False,
                    'sourceBlockNumber': '0x1', 'sourceLogIndex': '0x0'}
         old['records']['pending'] = {'report': pending, 'status': 'pending', 'nextRetryAt': 0, 'failures': 0}
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         storage.save(self.path, live, 'claim')
         hooks = ClaimHooks([])
         hooks.already_claimed = lambda report: h(12)
@@ -59,7 +61,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
 
     def test_inflight_claim_restarts_with_identical_saved_transaction(self):
         old = state()
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         report = {'id': 'pending', 'kind': 'accepted', 'fromRoot': True, 'bootstrap': False,
                   'sourceBlockNumber': '0x1', 'sourceLogIndex': '0x0'}
         hooks = ClaimHooks([report])
@@ -92,7 +94,10 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         report = report_values(fixture(), True)
         report['id'] = 'pending'
         old['records']['pending'] = {'report': report, 'status': 'pending', 'nextRetryAt': 0, 'failures': 0}
-        live = self.legacy(old)
+        digest = s.keccak(native.receipts.report_message(report))
+        old['rootRequests']['9'] = {'batch': 9, 'messageHash': digest}
+        old['rootRequestHashes'][digest] = True
+        live = self.stage_claim(old)
         with patch.object(journal, 'MAX_ROWS', 1):
             storage.save(self.path, live, 'claim')
         live.database.close()
@@ -106,15 +111,20 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
                 finally:
                     con.close()
         native_state = {'transactions': {}, 'records': {}, 'split': [], 'history': []}
+        inbox = self.path.with_name('requests.json')
+        storage.publish_descriptor(inbox, 'requests', self.path, old['identity'])
         worker = native.Runner(native_state, lambda _: None, None, None, None, Hook(),
-                               claim_journal=str(self.path), claim_identity=old['identity'])
+                               claim_journal=str(self.path), claim_identity=old['identity'],
+                               requests_file=str(inbox), requests_identity='requests')
         worker.discover()
         self.assertIn('pending', native_state['records'])
+        self.assertEqual(worker.bundled, {digest})
 
     def test_root_worker_restarts_inflight_and_persists_delivery(self):
         root_path = Path(self.tmp.name) / 'root.json'
         digest, root = h(55), h(33)
-        old = {'version': 1, 'identity': 'root', 'completed': [{'batch': 1, 'messageHash': s.ZERO}],
+        first = {'batch': 1, 'messageHash': s.ZERO}
+        old = {'version': 1, 'identity': 'root', 'completed': {storage.completed_key(first): first},
                'transactions': {'root': {'state': 'submitted', 'raw': '0x1234', 'txHash': h(4),
                   'metadata': {'batch': 9, 'messageHash': digest, 'root': root}}}, 'nextRetryAt': 0, 'history': []}
         relay.atomic_json(root_path, old)
@@ -143,7 +153,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
     def test_gateway_releases_request_snapshot_before_hook_work(self):
         old = state()
         old['rootRequests'] = {'9': {'batch': 9, 'messageHash': s.ZERO}}
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         with patch.object(journal, 'MAX_ROWS', 1):
             storage.save(self.path, live, 'claim')
         live.database.close()
@@ -171,7 +181,9 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
                                      'status': 'complete'} for i in range(512)}
         old['records']['child'] = {'report': {'id': 'child', 'fromRoot': False, 'kind': 'activation'},
                                    'status': 'pending'}
-        live = self.legacy(old)
+        old['rootPending']['child'] = True
+        old['activations']['child'] = old['records']['child']['report']
+        live = self.stage_claim(old)
         storage.save(self.path, live, 'claim')
         hooks = local.Hooks.__new__(local.Hooks)
         hooks.proof = lambda report: {'blockOrBatchNumber': 9}
@@ -184,27 +196,6 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         self.assertNotIn('child', restored['rootPending'])
         self.assertEqual(restored['rootRequests']['9'], {'batch': 9, 'messageHash': s.ZERO})
 
-    def test_legacy_cached_proof_without_request_is_recovered(self):
-        old = state()
-        old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'},
-                                     'status': 'complete'} for i in range(512)}
-        old['records']['child'] = {'report': {'id': 'child', 'fromRoot': False, 'kind': 'activation'},
-                                   'status': 'complete', 'rootProof': {'blockOrBatchNumber': 9}}
-        live = self.legacy(old)
-        storage.save(self.path, live, 'claim')
-        self.assertIn('child', live['rootPending'])
-        hooks = local.Hooks.__new__(local.Hooks)
-        def no_refetch(report):
-            raise AssertionError('cached proof should be used')
-        hooks.proof = no_refetch
-        hooks.collect_requests(live['records'], live['rootRequests'], live['rootRequestHashes'], live['rootPending'])
-        storage.save(self.path, live, 'claim')
-        live.database.close()
-        restored = storage.load(self.path, 'claim')
-        self.addCleanup(restored.database.close)
-        self.assertEqual(restored['rootRequests']['9'], {'batch': 9, 'messageHash': s.ZERO})
-        self.assertNotIn('child', restored['rootPending'])
-
     def test_proof_transport_failure_cannot_drop_earlier_root_request(self):
         old = state()
         old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'},
@@ -212,7 +203,9 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         for name in ('child-a', 'child-b'):
             old['records'][name] = {'report': {'id': name, 'fromRoot': False, 'kind': 'activation'},
                                     'status': 'pending'}
-        live = self.legacy(old)
+            old['rootPending'][name] = True
+            old['activations'][name] = old['records'][name]['report']
+        live = self.stage_claim(old)
         storage.save(self.path, live, 'claim')
         hooks = local.Hooks.__new__(local.Hooks)
         def fail_second(report):
@@ -244,7 +237,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'},
                                      'status': 'complete'} for i in range(512)}
         old['records']['pending'] = {'report': report, 'status': 'complete', 'nextRetryAt': 0, 'failures': 0}
-        source = self.legacy(old)
+        source = self.stage_claim(old)
         storage.save(self.path, source, 'claim')
         source.database.close()
         native_path = Path(self.tmp.name) / 'native.json'
@@ -263,10 +256,10 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         self.addCleanup(restored.database.close)
         self.assertEqual(restored['records']['pending']['status'], 'complete')
 
-    def test_completed_history_can_exceed_old_16_mib_limit(self):
+    def test_completed_history_can_exceed_16_mib(self):
         old = state()
         old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'}, 'status': 'complete'} for i in range(512)}
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         storage.save(self.path, live, 'claim')
         for i in range(100000):
             live['history'].append({'ids': ['child:0x' + format(i, '064x')],
@@ -279,7 +272,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         self.assertEqual(len(restored['history']), 100000)
         self.assertEqual(restored['history'][99999]['ids'], ['child:0x' + format(99999, '064x')])
 
-    def test_migration_preserves_active_transaction_and_mutations_across_restart(self):
+    def test_indexed_storage_preserves_active_transaction_and_mutations_across_restart(self):
         old = state()
         old['transactions'] = {'claim': {'state': 'submitted', 'raw': '0x1234', 'txHash': '0x' + '42' * 32}}
         old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'}, 'status': 'complete'} for i in range(512)}
@@ -287,7 +280,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         old['history'] = [{'ids': [str(i)], 'status': 'complete'} for i in range(1100)]
         old['rootRequests'] = {'9': {'batch': 9, 'messageHash': '0x' + '33' * 32}}
         old['rootRequestHashes'] = {'0x' + '33' * 32: True}
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         storage.save(self.path, live, 'claim')
         self.assertTrue(self.path.with_name(self.path.name + '.sqlite3').is_file())
         live['records']['pending']['status'] = 'complete'
@@ -307,7 +300,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
     def test_crash_between_database_commit_and_marker_recovers_exact_source(self):
         old = state()
         old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'}, 'status': 'complete'} for i in range(512)}
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         real_atomic = journal._atomic
         def interrupted(path, value):
             if value.get('storage_version') == 2:
@@ -326,44 +319,10 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         storage.save(self.path, restored, 'claim')
         self.assertEqual(s.read_json(self.path, private=True)['storage_version'], 2)
 
-    def test_legacy_request_and_root_completed_lists_survive_migration(self):
-        old = state()
-        old['rootRequests'] = [{'batch': 1, 'messageHash': s.ZERO},
-                               {'batch': 2, 'messageHash': '0x' + '22' * 32}]
-        old.pop('rootRequestHashes')
-        old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'},
-                                     'status': 'complete'} for i in range(512)}
-        old['records']['child'] = {'report': {'id': 'child', 'fromRoot': False, 'kind': 'activation'},
-                                   'status': 'pending'}
-        claim = self.legacy(old)
-        storage.save(self.path, claim, 'claim')
-        claim.database.close()
-        restored = storage.load(self.path, 'claim')
-        self.addCleanup(restored.database.close)
-        self.assertEqual(restored['rootRequests']['1'], old['rootRequests'][0])
-        self.assertEqual(restored['rootRequests']['2'], old['rootRequests'][1])
-        self.assertIn('0x' + '22' * 32, restored['rootRequestHashes'])
-        self.assertIn('child', restored['rootPending'])
-        self.assertEqual(restored['activations']['child'], old['records']['child']['report'])
-        root_path = Path(self.tmp.name) / 'root.json'
-        completed = [{'batch': 1, 'messageHash': s.ZERO}, {'batch': 1, 'messageHash': '0x' + '22' * 32}]
-        root = {'version': 1, 'identity': 'root', 'transactions': {}, 'nextRetryAt': 0,
-                'completed': completed, 'history': []}
-        relay.atomic_json(root_path, root)
-        with patch.object(journal, 'MAX_ROWS', 1):
-            root_live = storage.load(root_path, 'root')
-            storage.save(root_path, root_live, 'root')
-        root_live.database.close()
-        root_restored = storage.load(root_path, 'root')
-        self.addCleanup(root_restored.database.close)
-        self.assertEqual(len(root_restored['completed']), 2)
-        self.assertEqual(root_restored['completed'][storage.completed_key(completed[0])], completed[0])
-        self.assertEqual(root_restored['completed'][storage.completed_key(completed[1])], completed[1])
-
-    def test_migration_rejects_altered_legacy_source(self):
+    def test_database_promotion_rejects_changed_inline_journal(self):
         old = state()
         old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'}, 'status': 'complete'} for i in range(512)}
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         real_atomic = journal._atomic
         def interrupted(path, value):
             if value.get('storage_version') == 2:
@@ -374,7 +333,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
                 storage.save(self.path, live, 'claim')
         if live.database is not None:
             live.database.close()
-        altered = copy.deepcopy(old)
+        altered = state()
         altered['cursor']['gateway'] = 13
         relay.atomic_json(self.path, altered)
         with self.assertRaisesRegex(s.Error, 'journal_migration_source_changed'):
@@ -384,7 +343,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         old = state()
         old['records'] = {str(i): {'report': {'id': str(i), 'fromRoot': True, 'kind': 'accepted'}, 'status': 'complete'} for i in range(512)}
         old['rootRequests'] = {'9': {'batch': 9, 'messageHash': s.ZERO}}
-        live = self.legacy(old)
+        live = self.stage_claim(old)
         storage.save(self.path, live, 'claim')
         live.database.close()
         inbox = Path(self.tmp.name) / 'requests.json'
@@ -419,7 +378,7 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
 
     def test_descriptor_rejects_wrong_identity_and_missing_or_symlink_journal(self):
         old = state()
-        self.legacy(old)
+        self.stage_claim(old)
         inbox = Path(self.tmp.name) / 'requests.json'
         storage.publish_descriptor(inbox, 'request-identity', self.path, 'wrong-claim-identity')
         with self.assertRaisesRegex(s.Error, 'claim_journal_identity_changed'):
@@ -438,16 +397,6 @@ class ReceiptStorageAdversarialTests(unittest.TestCase):
         storage.publish_descriptor(inbox, 'request-identity', Path(self.tmp.name) / 'missing', old['identity'])
         with self.assertRaises(FileNotFoundError):
             with storage.request_snapshot(inbox, 'request-identity'):
-                pass
-
-    def test_legacy_request_snapshot_validates_identity(self):
-        inbox = Path(self.tmp.name) / 'requests.json'
-        relay.atomic_json(inbox, {'version': 1, 'identity': 'good', 'requests': [{'batch': 1, 'messageHash': s.ZERO}]})
-        with storage.request_snapshot(inbox, 'good') as (requests, descriptor):
-            self.assertEqual(list(requests), [{'batch': 1, 'messageHash': s.ZERO}])
-            self.assertIsNone(descriptor)
-        with self.assertRaisesRegex(s.Error, 'invalid_root_requests'):
-            with storage.request_snapshot(inbox, 'other'):
                 pass
 
 

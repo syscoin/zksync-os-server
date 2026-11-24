@@ -171,6 +171,7 @@ class Transactions:
 
     def stage(self, call, invocation=None):
         frozen = intent(self.settings, self.limits, call, invocation)
+        s.require(call["action"] not in REPEATABLE or invocation is not None, "native_observation_scope_required")
         operation_id = r.sha256(frozen)
         with self.store.lock():
             self.state = self.store.load(self.settings, self.limits)
@@ -195,7 +196,9 @@ class Transactions:
     def _validate(self, operation_id, op):
         fields = ("call", "status", "unsigned_transaction", "raw_transaction", "transaction_hash",
                   "broadcast_attempts", "last_broadcast_at", "last_error", "receipt")
-        s.exact(op, fields + (("invocation",) if "invocation" in op else ()))
+        s.exact(op, fields + (("invocation",) if op["call"]["action"] in REPEATABLE else ()))
+        if op["call"]["action"] in REPEATABLE:
+            s.require(op["invocation"] is not None, "native_observation_scope_required")
         s.require(r.sha256(intent(self.settings, self.limits, op["call"], op.get("invocation"))) == operation_id,
                   "maintenance_intent_changed")
         s.require(op["status"] in STATUSES and s.uint(op["broadcast_attempts"], 32) <= self.limits["max_broadcast_attempts"],

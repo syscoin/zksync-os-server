@@ -119,7 +119,6 @@ class Wrapper:
         self.store, self.clock = store, clock
         self.config = configuration(io.private_json(store.root / "configuration.json"))
         self.state = journal.load(store.root / "wrapper.json", map_fields=JOURNAL_FIELDS)
-        self.state.setdefault("known_receipts", {})
         s.require(self.state["schema_version"] == 1
                   and self.state["configuration_sha256"] == io.digest(self.config), "wrapper_configuration_changed")
         self.keeper = self.config["keeper"]

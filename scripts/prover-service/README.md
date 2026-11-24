@@ -446,6 +446,8 @@ commands hold an exclusive process lock. Assignment and audit history continue
 on disk within the same period identity, without a lifetime assignment count
 cutoff. Large journals migrate from JSON to an indexed SQLite store, retaining
 the account cursor, credit slots, readiness nonces, leases and signed receipts.
+Every initialized journal includes its audit ledger. A missing ledger stops the
+dispatcher before it can assign or submit work.
 Keep the metadata file and its database together when backing up or restoring;
 the small JSON metadata file alone is not a complete journal. Audit history is
 streamed and checked as one complete hash chain, with bounded records and
@@ -523,8 +525,10 @@ pick. Period and phase changes create a separately verified journal.
 
 The receipt is trusted through the dispatcher's private host storage. When
 restoring a trusted journal, omit any receipt whose provenance is unknown.
-The dispatcher then verifies enrollment against the registry on first use. Older journals follow
-the same path. The coordinator and wrapper independently verify their evidence.
+The dispatcher then verifies the full roster and lane bindings against the registry
+on first use. It also performs this check if initialization stopped after writing
+`state.json` and before writing the receipt. The coordinator and wrapper
+independently verify their evidence.
 Low-level `service.py duty`, `offered-duty`, and
 `package` commands can use the same boundary with both `--registry-rpc-file` and
 `--enrollment-block-hash` before their subcommand; the RPC connection file has
@@ -545,8 +549,8 @@ accepted receipts are audited but excluded from the rewarded duty report.
 `report` distinguishes offered credit opportunities from native successes and
 says whether the whole quota was offered. Operators choose when to sign readiness;
 this adapter does not implement bans for declining further work.
-Upgrade the dispatcher, service tools and wrapper audit together before exporting
-post-quota work or streamed audit history; older tools reject these handoffs.
+Use the dispatcher, service tools and wrapper audit from the same release when
+exporting post-quota work or streamed audit history.
 Sparse demand is not an asserted service failure and never creates synthetic
 successes or reward weight.
 

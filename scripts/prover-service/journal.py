@@ -54,15 +54,23 @@ def _connection(path):
     return Database(connection)
 
 
+def _require_table(connection, name):
+    s.require(connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone(),
+              "journal_table_missing")
+
+
 class SQLiteMap(MutableMapping):
-    def __init__(self, connection, name, *, owns_connection=False):
+    def __init__(self, connection, name, *, create, owns_connection=False):
         s.require(name.replace("_", "").isalnum(), "invalid_journal_table")
         self.connection, self.name, self.owns_connection = connection, name, owns_connection
         self.cache, self.original, self.deleted = {}, {}, set()
-        connection.execute(f"CREATE TABLE IF NOT EXISTS {name} (position INTEGER PRIMARY KEY AUTOINCREMENT, "
-                           "key TEXT UNIQUE NOT NULL, value BLOB NOT NULL, account TEXT, lane TEXT, batch TEXT, status TEXT)")
-        connection.execute(f"CREATE INDEX IF NOT EXISTS {name}_batch ON {name}(lane,batch,position)")
-        connection.execute(f"CREATE INDEX IF NOT EXISTS {name}_account ON {name}(account,status)")
+        if create:
+            connection.execute(f"CREATE TABLE {name} (position INTEGER PRIMARY KEY AUTOINCREMENT, "
+                               "key TEXT UNIQUE NOT NULL, value BLOB NOT NULL, account TEXT, lane TEXT, batch TEXT, status TEXT)")
+            connection.execute(f"CREATE INDEX {name}_batch ON {name}(lane,batch,position)")
+            connection.execute(f"CREATE INDEX {name}_account ON {name}(account,status)")
+        else:
+            _require_table(connection, name)
 
     def __getitem__(self, key):
         if key in self.deleted:
@@ -178,9 +186,12 @@ class SQLiteMap(MutableMapping):
 
 
 class SQLiteEvents(Sequence):
-    def __init__(self, connection, name):
+    def __init__(self, connection, name, *, create):
         self.connection, self.name, self.pending = connection, name, []
-        connection.execute(f"CREATE TABLE IF NOT EXISTS {name}(sequence INTEGER PRIMARY KEY,value BLOB NOT NULL)")
+        if create:
+            connection.execute(f"CREATE TABLE {name}(sequence INTEGER PRIMARY KEY,value BLOB NOT NULL)")
+        else:
+            _require_table(connection, name)
         self.committed = connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
 
     def __len__(self):
@@ -225,8 +236,17 @@ def _field(state, path):
     keys = path.split(".")
     target = state
     for key in keys[:-1]:
+        s.require(isinstance(target.get(key), dict), "journal_field_missing")
         target = target[key]
+    s.require(keys[-1] in target, "journal_field_missing")
     return target, keys[-1]
+
+
+def _stored_state(value, map_fields, list_fields):
+    for field in (*map_fields, *list_fields):
+        parent, key = _field(value, field)
+        s.require(isinstance(parent[key], dict if field in map_fields else list), "invalid_journal_field")
+    return State(value)
 
 
 def _metadata(state, map_fields, list_fields):
@@ -244,20 +264,16 @@ def _metadata(state, map_fields, list_fields):
     return result
 
 
-def _attach(state, connection, map_fields, list_fields):
-    result = State(state)
+def _attach(state, connection, map_fields, list_fields, *, new_database=False):
+    result = _stored_state(state, map_fields, list_fields)
     result.database = connection
     for path in map_fields:
         parent, key = _field(result, path)
         name = "map_" + path.replace(".", "_")
-        exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
-        # Attaching a newly introduced optional map must not change a dry-run journal.
-        parent[key] = SQLiteMap(connection, name) if exists else parent.get(key, {})
+        parent[key] = SQLiteMap(connection, name, create=new_database)
     for path in list_fields:
-        if path == "audit.events" and "audit" not in result:
-            continue
         parent, key = _field(result, path)
-        parent[key] = SQLiteEvents(connection, "list_" + path.replace(".", "_"))
+        parent[key] = SQLiteEvents(connection, "list_" + path.replace(".", "_"), create=new_database)
     return result
 
 
@@ -292,7 +308,7 @@ def load(path, *, map_fields=("operations",), list_fields=()):
     database = path.with_name(path.name + ".sqlite3")
     if not database.exists():
         s.require(marker.get("storage_version") != 2, "journal_database_missing")
-        return State(marker)
+        return _stored_state(marker, map_fields, list_fields)
     connection = _connection(database)
     try:
         row = connection.execute("SELECT value FROM metadata WHERE key='state'").fetchone()
@@ -349,7 +365,7 @@ def snapshot(path, *, map_fields=("operations",), list_fields=()):
     s.require(not database.is_symlink(), "journal_database_symlink")
     if not database.exists():
         s.require(marker.get("storage_version") != 2, "journal_database_missing")
-        yield State(marker)
+        yield _stored_state(marker, map_fields, list_fields)
         return
     s.require(database.is_file() and database.stat().st_mode & 0o077 == 0, "private_journal_database_required")
     connection = sqlite3.connect(database.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None)
@@ -362,16 +378,13 @@ def snapshot(path, *, map_fields=("operations",), list_fields=()):
             origin = connection.execute("SELECT value FROM metadata WHERE key='origin'").fetchone()
             s.require(origin is not None and origin[0] == hashlib.sha256(raw).hexdigest(),
                       "journal_migration_source_changed")
-        state = State(_decode(row[0]))
+        state = _stored_state(_decode(row[0]), map_fields, list_fields)
         for field in (*map_fields, *list_fields):
-            if field == "audit.events" and "audit" not in state:
-                continue
             parent, key = _field(state, field)
             name = ("map_" if field in map_fields else "list_") + field.replace(".", "_")
             s.require(name.replace("_", "").isalnum(), "invalid_journal_table")
-            exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
-            if exists:
-                parent[key] = _SnapshotMap(connection, name) if field in map_fields else _SnapshotEvents(connection, name)
+            _require_table(connection, name)
+            parent[key] = _SnapshotMap(connection, name) if field in map_fields else _SnapshotEvents(connection, name)
         yield state
         connection.execute("COMMIT")
     finally:
@@ -394,11 +407,9 @@ def save(path, state, *, map_fields=("operations",), list_fields=()):
         connection = _connection(temporary)
         metadata = _metadata(state, map_fields, list_fields)
         connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value BLOB NOT NULL)")
-        replacement = _attach(copy.deepcopy(metadata), connection, map_fields, list_fields)
+        replacement = _attach(copy.deepcopy(metadata), connection, map_fields, list_fields, new_database=True)
         for field in map_fields:
             parent, key = _field(replacement, field)
-            if not isinstance(parent[key], SQLiteMap):
-                parent[key] = SQLiteMap(connection, "map_" + field.replace(".", "_"))
             source, source_key = _field(state, field)
             parent[key].update(source[source_key])
         for field in list_fields:
@@ -445,16 +456,7 @@ def save(path, state, *, map_fields=("operations",), list_fields=()):
             raise
     metadata = _metadata(state, map_fields, list_fields)
     connection.execute("BEGIN IMMEDIATE")
-    attached = []
     try:
-        for field in map_fields:
-            parent, key = _field(state, field)
-            if not isinstance(parent[key], SQLiteMap):
-                original = parent[key]
-                replacement = SQLiteMap(connection, "map_" + field.replace(".", "_"))
-                replacement.update(original)
-                parent[key] = replacement
-                attached.append((parent, key, original))
         for field in (*map_fields, *list_fields):
             parent, key = _field(state, field)
             parent[key].flush()
@@ -462,8 +464,6 @@ def save(path, state, *, map_fields=("operations",), list_fields=()):
         connection.execute("COMMIT")
     except BaseException:
         connection.execute("ROLLBACK")
-        for parent, key, original in attached:
-            parent[key] = original
         raise
     for field in (*map_fields, *list_fields):
         parent, key = _field(state, field)
@@ -478,7 +478,7 @@ def disk_map(root, name):
     # Audit replay is disposable; only successful independent checkpoints are retained.
     connection.execute("PRAGMA synchronous=OFF")
     connection.execute("PRAGMA journal_mode=MEMORY")
-    return SQLiteMap(connection, name, owns_connection=True)
+    return SQLiteMap(connection, name, create=True, owns_connection=True)
 
 
 def range_items(mapping, lane, start, end):

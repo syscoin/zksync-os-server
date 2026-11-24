@@ -107,19 +107,13 @@ class Runner(machine.ReceiptRunner):
         if self.requests_file:
             inbox_path = Path(self.requests_file)
             if not inbox_path.exists() and not inbox_path.is_symlink(): return
-            inbox = io.private_json(inbox_path)
-            s.require(type(inbox) is dict and inbox.get('identity') == self.requests_identity, 'native_request_inbox_changed')
-            if inbox.get('version') == 1:
-                s.exact(inbox, ('version', 'identity', 'requests'))
-                s.require(type(inbox['requests']) is list, 'native_request_inbox_changed')
-            else:
-                s.exact(inbox, ('version', 'identity', 'claimJournal', 'claimIdentity'))
-                s.require(inbox['version'] == 2 and Path(inbox['claimJournal']) == claim_path
-                          and inbox['claimIdentity'] == self.claim_identity, 'native_request_inbox_changed')
+            inbox = storage.read_descriptor(inbox_path, self.requests_identity)
+            s.require(Path(inbox['claimJournal']) == claim_path and inbox['claimIdentity'] == self.claim_identity,
+                      'native_request_inbox_changed')
         with journal.snapshot(claim_path, map_fields=storage.CLAIM_MAPS, list_fields=storage.HISTORY) as source:
             s.require(source.get('version') == 1 and source.get('identity') == self.claim_identity,
                       'native_claim_journal_changed')
-            storage._normalize(source, 'claim')
+            storage.require_maps(source, storage.CLAIM_MAPS)
             s.exact(source.get('cursor'), ('gateway', 'l1'))
             cursor = dict(source['cursor'])
             records = dict(journal.status_items(source['records'], ('pending',)))
@@ -130,11 +124,7 @@ class Runner(machine.ReceiptRunner):
                 if observed is not None:
                     records[key] = observed
             self.bundled = set()
-            if inbox and inbox['version'] == 1:
-                for item in inbox['requests']:
-                    storage.request_key(item)
-                    self.bundled.add(item['messageHash'])
-            elif inbox:
+            if inbox:
                 for value in records.values():
                     report = value['report']
                     if report['fromRoot'] and report['kind'] in ('accepted', 'unresolved'):

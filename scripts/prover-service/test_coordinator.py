@@ -27,6 +27,16 @@ from test_service import KEYS, a, h, sign, fixture
 from test_adapter import release
 
 
+def seed_retained_proof(controller, identifier, proof):
+    directory = controller.directory(identifier)
+    work_hash = h(192)
+    result = {"schema_version": 1, "work_hash": work_hash, "proof": proof, "prepared": None, "wrapper_signature": "0x"}
+    io.immutable_json(directory / (work_hash[2:] + ".result.json"), result)
+    io.immutable_json(directory / "proof.json", proof)
+    controller.state["operations"][identifier]["proof"] = {
+        "work_hash": work_hash, "result_sha256": io.digest(result), "proof_sha256": io.digest(proof)}
+
+
 class Wallet:
     def __init__(self, settings):
         self.settings, self.calls = settings, []
@@ -293,9 +303,6 @@ class CoordinatorTests(unittest.TestCase):
         evidence = {**full, "previous_batch": full["batches"][1]["stored"], "batches": full["batches"][2:]}
         self.native.responses += [(200, {}, {**payload, "lease_token": h(191)}), (200, {}, evidence)]
         self.assertEqual(self.controller_reload().step(True)["next_action"], "resume_after_confirmed_native_observation")
-        # The first receipt-only release stored this reservation under the observation-specific name.
-        self.controller.state["native_observation_receipt"] = self.controller.state.pop("maintenance_receipt")
-        self.controller.save()
         self.assertEqual(self.controller_reload().step(True)["next_action"], "native_advance_requires_new_range")
         self.assertEqual(self.controller_reload().step(True)["next_action"], "wait_for_existing_wallet_reservation")
         new = self.controller.state["active"]
@@ -375,12 +382,12 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
 
     def test_pending_package_open_cannot_hold_the_native_observation_slot_after_restart(self):
-        self.check_pending_package_open_recovery(legacy_observation=True)
+        self.check_pending_package_open_recovery(poll_before_observation=True)
 
     def test_replacement_package_cannot_adopt_the_old_package_open_reservation(self):
-        self.check_pending_package_open_recovery(legacy_observation=False)
+        self.check_pending_package_open_recovery(poll_before_observation=False)
 
-    def check_pending_package_open_recovery(self, *, legacy_observation):
+    def check_pending_package_open_recovery(self, *, poll_before_observation):
         self.continuous_dispatch(batch_count=4)
         old = self.acquired()
         self.assertEqual(self.controller.step(True)["status"], "broadcast")
@@ -392,15 +399,11 @@ class CoordinatorTests(unittest.TestCase):
         original = reservation()
 
         self.rpc.native_proved = 2
-        if legacy_observation:
+        if poll_before_observation:
             self.controller_reload().step(True)
-            self.assertNotEqual(self.controller_reload().state.get("native_observation"), pending)
+            self.assertIsNone(self.controller_reload().state.get("native_observation"))
+            self.assertEqual(self.controller.state["maintenance_receipt"], pending["operation_id"])
             self.assertEqual(self.rpc.sent, [original["raw_transaction"]])
-
-            # An older coordinator could journal the pending package open as the observation.
-            self.controller.state.pop("maintenance_receipt", None)
-            self.controller.state["native_observation"] = copy.deepcopy(pending)
-            self.controller.save()
         self.rpc.advance()
         self.rpc.observed_native = 2
         self.rpc.advance()
@@ -421,15 +424,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNotNone(self.controller.state["operations"][active]["bundle"])
         self.assertNotEqual(self.controller.state["operations"][active]["maintenance"], pending)
         self.assertNotIn("native_observation", self.controller_reload().state)
-        if not legacy_observation:
-            # Old package planning could also attach the same reservation directly to the replacement lease.
-            self.controller.state.pop("maintenance_receipt", None)
-            self.controller.state["operations"][active]["maintenance"] = copy.deepcopy(pending)
-            self.controller.save()
-            self.controller_reload().step(True)
-            self.assertIsNone(self.controller_reload().state["operations"][active]["maintenance"])
-            self.assertEqual(self.controller.state["maintenance_receipt"], pending["operation_id"])
-            self.assertEqual(self.controller.state["active"], active)
+        self.assertEqual(self.controller.state["maintenance_receipt"], pending["operation_id"])
         self.assertEqual(len(self.native.calls), 4)
         self.assertIsNone(reservation()["receipt"])
         for field in ("unsigned_transaction", "raw_transaction", "transaction_hash"):
@@ -616,8 +611,8 @@ class CoordinatorTests(unittest.TestCase):
             "native_proved": 2, "native_batch_hash": s.keccak(s.encode_fields(s.STORED, full["batches"][1]["stored"]))})
         if retained:
             io.immutable_json(directory / "evidence.json", evidence)
-            io.immutable_json(directory / "proof.json", proof)
-            self.controller.state["operations"][identifier].update(publication=str(root), proof=io.digest(proof))
+            seed_retained_proof(self.controller, identifier, proof)
+            self.controller.state["operations"][identifier]["publication"] = str(root)
             self.controller.save()
         return identifier, native, root
 
@@ -658,9 +653,8 @@ class CoordinatorTests(unittest.TestCase):
         proof = {**native["snark"], "from_batch_number": 4, "proof": base64.b64encode(b"b" * (44 * 32)).decode()}
         directory = self.controller.directory(old)
         io.immutable_json(directory / "evidence.json", evidence)
-        io.immutable_json(directory / "proof.json", proof)
+        seed_retained_proof(self.controller, old, proof)
         op = self.controller.state["operations"][old]
-        op["proof"] = io.digest(proof)
         payload = io.private_json(directory / "payload.json")
         op["publication"] = str(root)
         self.assertIsNone(self.controller.retire_regrouped(old, payload, False))
@@ -746,7 +740,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(io.private_json(publication / "relay.json")["transaction_hash"], self.rpc.receipt["transactionHash"])
         self.assertEqual(len(self.rpc.sent), 1)
 
-    def test_archived_handoff_reconciles_own_receipt_and_requires_restore_for_unknown_delivery(self):
+    def test_archived_delivered_handoff_reconciles_own_receipt_after_restart(self):
         old, publication, store, relay_id = self.publish_signed_three_batch_relay()
         signed = list(self.rpc.sent)
         accepted_tx = h(90)
@@ -759,24 +753,12 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.controller_reload().step(True)["transaction_hash"], accepted_tx)
         self.assertEqual(io.private_json(publication / "relay.json")["transaction_hash"], accepted_tx)
         self.assertEqual(self.controller.state["operations"][old]["status"], "settled_with_pending_nonce")
-        archived = publication.rename(self.base / "archived-publication")
+        publication.rename(self.base / "archived-publication")
         new = self.controller.reserve()
         self.controller_reload().reconcile_regrouped(True)
         self.assertNotIn("handoff_restore_required", self.controller.state["operations"][old])
         self.assertEqual(self.controller.state["active"], new)
 
-        # Older journals cannot establish which acceptance hint was delivered before archival.
-        del self.controller.state["operations"][old]["handed_off_tx"]
-        self.controller.save()
-        self.controller_reload().reconcile_regrouped(True)
-        self.assertEqual(self.controller.state["operations"][old]["handoff_restore_required"], accepted_tx)
-        self.assertIn(old, self.controller.state["regrouped_pending"])
-        archived.rename(publication)
-        self.controller_reload().reconcile_regrouped(True)
-        self.assertNotIn("handoff_restore_required", self.controller.state["operations"][old])
-        self.assertEqual(self.controller.state["operations"][old]["handed_off_tx"], accepted_tx)
-
-        publication.rename(archived)
         self.rpc.accept_receipt(status=0, logs=False)
         self.rpc.advance()
         self.now = self.rpc.now
@@ -1109,7 +1091,7 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(op["bundle"], io.digest(bundle))
         self.assertEqual(io.private_json(self.controller.directory(identifier) / "payload.json"), self.f["fri_payload"])
 
-    def test_frozen_range_renews_after_256_empty_attempts_and_recovers_old_journal(self):
+    def test_frozen_range_renews_after_256_empty_attempts_and_interrupted_archival(self):
         identifier, bundle = self.frozen()
         self.controller.step(True)
         op = self.controller.state["operations"][identifier]
@@ -1127,8 +1109,20 @@ class CoordinatorTests(unittest.TestCase):
         chain = self.controller.status()
         with patch.object(self.controller, "status", return_value=chain), \
                 patch.object(self.controller, "dispatcher_for", side_effect=lambda _: nullcontext()):
-            for _ in range(255):
+            for _ in range(254):
                 self.assertEqual(self.controller.acquire(identifier, True), "native_queue_empty")
+            save = self.controller.save
+            def interrupt_after_archive():
+                if op["lease"] is None:
+                    raise InterruptedError("before clearing the archived lease from the journal")
+                save()
+            with patch.object(self.controller, "save", side_effect=interrupt_after_archive):
+                with self.assertRaises(InterruptedError):
+                    self.controller.acquire(identifier, True)
+        calls = len(self.native.calls)
+        self.assertEqual(self.controller_reload().acquire(identifier, True), "native_queue_empty")
+        self.assertEqual(len(self.native.calls), calls)
+        op = self.controller.state["operations"][identifier]
         self.assertEqual(op["leases"], original_leases)
         self.assertIsNone(op["lease"])
         archives = sorted(directory.glob("lease-*/attempt.json"))
@@ -1142,16 +1136,11 @@ class CoordinatorTests(unittest.TestCase):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
             self.assertEqual((query["snark_batch_from"], query["snark_batch_to"]), (["1"], ["2"]))
 
-        # Older coordinators retained empty attempts in this list and had no sidecar.
-        op["leases"].extend(io.private_json(path) for path in archives[:255])
-        for path in archives[:255]:
-            path.unlink()
-        self.controller.save()
         self.native.responses.append((200, {}, {**self.f["fri_payload"], "lease_token": h(181)}))
         self.assertIsNone(self.controller_reload().acquire(identifier, True))
         op = self.controller.state["operations"][identifier]
-        self.assertEqual(len(op["leases"]), 1)
-        self.assertEqual(io.private_json(directory / original_leases[0]["name"] / "attempt.json"), original_leases[0])
+        self.assertEqual(op["leases"][:-1], original_leases)
+        self.assertEqual(op["leases"][-1]["name"], op["lease"])
         self.assertNotIn(directory / op["lease"] / "attempt.json", archives)
         self.assertEqual(len(self.native.calls), 259)
         self.assertTrue(all(path.is_file() for path in archives))
@@ -1400,14 +1389,11 @@ class CoordinatorTests(unittest.TestCase):
     def test_257th_wrapper_request_is_delivered_and_its_response_survives_restart(self):
         identifier, _ = self.frozen()
         first = self.controller.step(True)
-        op = self.controller.state["operations"][identifier]
         operator = first["operator"]
         inbox = self.base / "inbox"
-        # Upgrade a full journal in the old on-disk format.
-        op.pop("wrapper_indexed")
         for index in range(255):
-            work_hash = h(index)
-            op["works"][work_hash] = {"directory": str(inbox / work_hash[2:]), "operator": operator, "checked": False}
+            work_hash = h(index + 1)
+            self.assertTrue(self.controller.record_wrapper_work(identifier, work_hash, inbox / work_hash[2:], operator))
         self.controller.save()
         self.rpc.turn += 1
         work = self.controller_reload().step(True)
@@ -1443,25 +1429,46 @@ class CoordinatorTests(unittest.TestCase):
             history = io.private_json(self.controller.directory(identifier) / "wrapper-work-0.json")
             self.assertTrue(history[first["work_hash"]]["checked"])
 
-    def test_upgrade_finds_signed_wrapper_result_missing_from_legacy_journal(self):
+    def test_restart_materializes_selected_archived_result_before_competing_valid_proof(self):
         identifier, _ = self.frozen()
-        work = self.controller.step(True)
-        self.returned(work, bare=True)
-        op = self.controller.state["operations"][identifier]
-        op["works"].clear()
-        op.pop("wrapper_indexed")
-        self.controller.save()
-        source = self.base / "inbox" / work["work_hash"][2:]
-        envelope = io.private_json(source / "work.json")
-        envelope["body"]["native_lease_deadline"] += 1
-        other_hash = s.keccak(s.canonical(envelope["body"]))
-        other = io.directory(self.base / "inbox" / other_hash[2:], create=True)
-        io.immutable_json(other / "work.json", envelope)
-        self.rpc.turn += 1
+        selected = self.controller.step(True)
+        self.returned(selected, bare=True)
+        inbox_result = self.base / "inbox" / selected["work_hash"][2:] / "result.json"
+        response = io.private_json(inbox_result)
+        inbox_result.unlink()
+        with patch.object(c, "WRAPPER_WORK_PAGE_SIZE", 1):
+            self.rpc.turn += 1
+            competing = self.controller_reload().step(True)
+        io.immutable_json(inbox_result, response)
+        alternate = {**self.f["snark"], "proof": base64.b64encode(
+            b"distinct-valid-wrapper-fixture".ljust(c.proof_check.SNARK_BYTES, b"\0")).decode()}
+        directory = self.controller.directory(identifier)
+        proof_path = directory / "proof.json"
+        write = io.immutable_json
+        def interrupt(path, value, *args, **kwargs):
+            if path == proof_path:
+                raise InterruptedError("before selected proof materialization")
+            return write(path, value, *args, **kwargs)
+        with patch.object(io, "immutable_json", side_effect=interrupt), self.assertRaises(InterruptedError):
+            self.controller_reload().result(identifier, True)
+        op = self.controller_reload().state["operations"][identifier]
+        self.assertEqual(op["proof"], {"work_hash": selected["work_hash"], "result_sha256": io.digest(response["result"]),
+                                      "proof_sha256": io.digest(self.f["snark"])})
+        self.assertFalse(proof_path.exists())
+        self.assertFalse(io.private_json(directory / "wrapper-work-0.json")[selected["work_hash"]]["checked"])
+        inbox_result.unlink()
+        with patch.dict(self.f, snark=alternate):
+            self.returned(competing, bare=True)
+        self.assertEqual(self.controller_reload().step(False)["next_action"], "would_submit_verified_native_snark")
+        self.assertFalse(proof_path.exists())
         self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
         self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
-        self.assertTrue(self.controller.state["operations"][identifier]["works"][work["work_hash"]]["checked"])
-        self.assertNotIn(other_hash, self.controller.state["operations"][identifier]["works"])
+        self.assertEqual(io.private_json(proof_path), self.f["snark"])
+        self.assertEqual(json.loads(self.native.calls[-1][2])["proof"], self.f["snark"]["proof"])
+        self.assertTrue(io.private_json(directory / "wrapper-work-0.json")[selected["work_hash"]]["checked"])
+        competitor = self.controller.state["operations"][identifier]["works"][competing["work_hash"]]
+        self.assertTrue(competitor["ignored"])
+        self.assertNotIn("error", competitor)
 
     def test_invalid_old_result_cannot_starve_current_valid_proof(self):
         identifier, _ = self.frozen()
@@ -1585,16 +1592,6 @@ class CoordinatorTests(unittest.TestCase):
         self.assertEqual(self.controller.state["operations"], {})
         self.assertEqual(len(list((self.control_store.root / "jobs").glob("*/completed.json"))), 1)
 
-    def test_period_journal_parent_selects_the_onchain_roster_period(self):
-        journals = io.directory(self.base / "journals", create=True)
-        self.root.resolve().rename(journals / "5")
-        self.config["dispatcher_dir"] = str(journals)
-        self.control_store = c.initialize(self.base / "period-control", self.config)
-        self.controller_reload()
-        _, bundle = self.frozen()
-        self.assertEqual(bundle["request"]["manifest"]["payload"]["period"], 5)
-        self.assertEqual(len(bundle["request"]["duties"]), 2)
-
     def test_existing_next_period_journal_is_selected_without_replacing_trusted_anchor(self):
         subscriptions = copy.deepcopy(self.f["subscriptions"])
         for signed in subscriptions:
@@ -1612,9 +1609,12 @@ class CoordinatorTests(unittest.TestCase):
                                  self.config["endpoint"], registry_rpc)
         self.controller.registry_rpc = registry_rpc
         original = copy.deepcopy(self.controller.keeper["enrollment"])
-        with self.controller.dispatcher_for({"roster": {"period": 6}}) as dispatch:
-            self.assertEqual(dispatch.store.root, child.root)
-            self.assertEqual(dispatch.state["period"], 6)
+        for directory in (self.root.resolve(), child.root):
+            with self.subTest(directory=directory):
+                self.controller.config["dispatcher_dir"] = str(directory)
+                with self.controller.dispatcher_for({"roster": {"period": 6}}) as dispatch:
+                    self.assertEqual(dispatch.store.root, child.root)
+                    self.assertEqual(dispatch.state["period"], 6)
         self.assertEqual(self.controller.keeper["enrollment"], original)
         self.controller.keeper["enrollment"]["block_hash"] = h(101)
         with self.assertRaisesRegex(s.Error, "unknown_period_journal"):
@@ -1695,7 +1695,7 @@ class CoordinatorMaintenanceTests(unittest.TestCase):
     def recover(self, execute=True):
         pending = self.pending()
         if pending is not None:
-            self.rpc.operation_id = pending if isinstance(pending, str) else pending["operation_id"]
+            self.rpc.operation_id = pending["operation_id"]
         return self.controller.recover_maintenance(self.identifier, execute, None, self.f["evidence"], self.f["fri_payload"])
 
     def confirm(self, status=1):

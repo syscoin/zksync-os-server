@@ -260,12 +260,12 @@ time, unavailable witnesses and uncertain transactions produce wait/recovery
 states instead of synthetic work or service credit. No production end-to-end
 deployment or live GPU run is established by the local regression tests.
 
-`dispatcher_dir` may name the initial journal with automatically created
-`periods/<period>-<phase>/` journals, a particular period journal, or a legacy
-private parent containing one initialized journal per period (`5/`, `6/`).
+Set `dispatcher_dir` to the initial dispatcher journal or one of its automatically
+created `periods/<period>-<phase>/` journals. Either path uses the same journal
+tree for rollover and recovery.
 The coordinator selects the frozen/opening roster period before acquiring new
 work and taking its signed snapshot. Its keeper pin must match that journal.
-Retain older journals, coordinator/wrapper state, and pool configurations until
+Retain journals from earlier roster periods, coordinator/wrapper state, and pool configurations until
 their pending work and uncertain allocations are reconciled. The FRI dispatcher
 creates the next journal only from finalized registry time and complete eligible
 enrollment; operators sign fresh readiness for its new identity. Provision the
@@ -322,8 +322,10 @@ Control packages still require a legal native aggregate of at least two batches,
 the selected wrapper, and a current permit.
 
 A package already frozen for an older period retains that period and control
-status across repairs and clock changes. A new current-period package cannot pay
-old-period slots. Publish rosters and perform draws before the configured cutoff.
+status across repairs and clock changes. A new service package can credit earlier
+accepted duties in its batch range while their original round remains eligible for
+credit. Once that round closes, its duties still count toward batch coverage.
+Publish rosters and perform draws before the configured cutoff.
 Measure FRI, wrapping, delivery, and finality times when setting the period lead,
 grace, and turn durations; the keeper cannot make an already late duty creditable.
 Sparse demand remains unoffered work, not a fabricated success or failure.

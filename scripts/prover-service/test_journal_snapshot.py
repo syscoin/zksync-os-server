@@ -58,9 +58,9 @@ class JournalSnapshotTests(unittest.TestCase):
         self.state.database.close()
         database = self.path.with_name(self.path.name + ".sqlite3")
         before = {path: path.read_bytes() for path in (self.path, database)}
-        with journal.snapshot(self.path, map_fields=("operations", "optional")) as state:
+        with journal.snapshot(self.path, list_fields=("audit.events",)) as state:
             self.assertEqual(journal.peek(state["operations"], "one")["status"], "offered")
-            self.assertEqual(state.get("optional", {}), {})
+            self.assertEqual(list(state["audit"]["events"]), [{"kind": "old"}])
         self.assertEqual({path: path.read_bytes() for path in before}, before)
         changed = s.read_json(self.path, private=True)
         changed["nonce"] = 99

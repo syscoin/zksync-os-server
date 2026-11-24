@@ -26,51 +26,26 @@ def completed_key(item):
     return request_key(item) + ':' + item['messageHash']
 
 
-def _normalize(state, kind):
-    state.setdefault('history', [])
-    if kind in ('claim', 'native'):
-        state.setdefault('records', {})
-    if kind == 'claim':
-        requests = state.setdefault('rootRequests', {})
-        if isinstance(requests, list):
-            converted = {}
-            for item in requests:
-                key = request_key(item)
-                s.require(key not in converted or converted[key] == item, 'conflicting_root_requests')
-                converted[key] = item
-            state['rootRequests'] = requests = converted
-        s.require(isinstance(requests, Mapping), 'invalid_root_requests')
-        if state.get('receiptIndexVersion') != 1:
-            state['rootRequestHashes'] = {item['messageHash']: True for item in requests.values()
-                                          if item['messageHash'] != s.ZERO}
-            pending, activations = {}, {}
-            for key, value in state['records'].items():
-                report = value['report']
-                if not report['fromRoot']:
-                    proof = value.get('rootProof')
-                    if proof is None or str(s.uint(proof['blockOrBatchNumber'])) not in requests:
-                        pending[key] = True
-                if report['kind'] == 'activation':
-                    activations[key] = report
-            state['rootPending'], state['activations'] = pending, activations
-            state['receiptIndexVersion'] = 1
-    if kind == 'root':
-        completed = state.setdefault('completed', {})
-        if isinstance(completed, list):
-            state['completed'] = {completed_key(item): item for item in completed}
-    return state
+def new_claim_state(identity):
+    return journal.State({'version': 1, 'identity': identity, 'transactions': {}, 'split': [], 'history': [],
+                          **{field: {} for field in CLAIM_MAPS}})
 
 
 def fields(kind):
     return {'claim': CLAIM_MAPS, 'native': NATIVE_MAPS, 'root': ROOT_MAPS}[kind]
 
 
+def require_maps(state, map_fields):
+    s.require(all(isinstance(state.get(field), Mapping) for field in map_fields), 'invalid_receipt_journal_maps')
+
+
 def load(path, kind):
-    return _normalize(journal.load(path, map_fields=fields(kind), list_fields=HISTORY), kind)
+    state = journal.load(path, map_fields=fields(kind), list_fields=HISTORY)
+    require_maps(state, fields(kind))
+    return state
 
 
 def save(path, state, kind):
-    _normalize(state, kind)
     journal.save(path, state, map_fields=fields(kind), list_fields=HISTORY)
 
 
@@ -79,21 +54,20 @@ def publish_descriptor(path, identity, claim_path, claim_identity):
                              'claimIdentity': claim_identity})
 
 
+def read_descriptor(path, identity):
+    inbox = io.private_json(path)
+    s.exact(inbox, ('version', 'identity', 'claimJournal', 'claimIdentity'))
+    s.require(inbox['version'] == 2 and inbox['identity'] == identity and type(inbox['claimJournal']) is str
+              and Path(inbox['claimJournal']).is_absolute() and type(inbox['claimIdentity']) is str,
+              'invalid_root_requests')
+    return inbox
+
+
 @contextmanager
 def request_snapshot(path, identity):
-    inbox = io.private_json(path)
-    s.require(type(inbox) is dict and inbox.get('identity') == identity, 'invalid_root_requests')
-    if inbox.get('version') == 1:
-        s.exact(inbox, ('version', 'identity', 'requests'))
-        s.require(type(inbox['requests']) is list, 'invalid_root_requests')
-        yield inbox['requests'], None
-    else:
-        s.exact(inbox, ('version', 'identity', 'claimJournal', 'claimIdentity'))
-        s.require(inbox['version'] == 2 and type(inbox['claimJournal']) is str
-                  and Path(inbox['claimJournal']).is_absolute() and type(inbox['claimIdentity']) is str,
-                  'invalid_root_requests')
-        with journal.snapshot(inbox['claimJournal'], map_fields=CLAIM_MAPS, list_fields=HISTORY) as state:
-            s.require(state.get('version') == 1 and state.get('identity') == inbox['claimIdentity'],
-                      'claim_journal_identity_changed')
-            _normalize(state, 'claim')
-            yield state['rootRequests'].values(), inbox
+    inbox = read_descriptor(path, identity)
+    with journal.snapshot(inbox['claimJournal'], map_fields=CLAIM_MAPS, list_fields=HISTORY) as state:
+        s.require(state.get('version') == 1 and state.get('identity') == inbox['claimIdentity'],
+                  'claim_journal_identity_changed')
+        require_maps(state, CLAIM_MAPS)
+        yield state['rootRequests'].values(), inbox

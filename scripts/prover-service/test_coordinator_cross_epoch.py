@@ -218,11 +218,7 @@ class CrossEpochCoordinatorTests(unittest.TestCase):
         self.assertEqual(restored, old)
         self.assertEqual(self.controller.state["operations"][identifier]["snapshot_directory"], ".")
 
-    def test_legacy_period_directories_recover_old_snapshot_intent_and_credit(self):
-        journals = io.directory(self.base / "legacy-journals", create=True)
-        self.root = self.root.rename(journals / "5")
-        self.store = d.Store(self.root)
-        self.config["dispatcher_dir"] = str(journals)
+    def test_restart_after_snapshot_intent_preserves_original_duties_across_rollover(self):
         trust = self.rollover_store()
         identifier = self.acquired()
         with patch.object(self.controller, "export_context_events", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
@@ -231,20 +227,21 @@ class CrossEpochCoordinatorTests(unittest.TestCase):
         intent = (directory / "snapshot-intent.json").read_bytes()
         old_registry = self.registry_rpc
         self.handoff(retain_coordinator=True)
-        self.current_store.root.rename(journals / "6")
         io.immutable_json(trust / "period-6.json", {"schema_version": 1, "period": 6, "enrollment_block_hash": h(101)})
-        retained = self.root.rename(journals / "retained")
-        d.initialize(self.root, self.f["settings"], self.f["subscriptions"], 5,
-                     "https://trusted.example/", old_registry)
+        empty = d.initialize(self.base / "empty-journal", self.f["settings"], self.f["subscriptions"], 5,
+                             "https://trusted.example/", old_registry)
+        state_path = self.root / "state.json"
+        saved_state = state_path.rename(self.base / "original-dispatcher-state.json")
+        (empty.root / "state.json").rename(state_path)
         with self.assertRaisesRegex(s.Error, "rollover_audit_prefix_changed"):
             self.controller_reload().step(True)
         self.assertEqual(self.rpc.sent, [])
-        self.root.rename(journals / "empty")
-        retained.rename(self.root)
+        saved_state.replace(state_path)
         self.assertEqual(self.controller_reload().step(True)["status"], "broadcast")
         revised = self.controller.snapshot(identifier, *self.controller.status(), True)
         accepted = revised["request"]["proposal"]["accepted_package"]
         self.assertEqual((accepted["period"], accepted["batchFrom"], accepted["batchTo"]), (6, 1, 2))
+        self.assertEqual(revised["request"]["duties"], json.loads(intent)["snapshot"]["duties"])
         self.assertEqual([duty["period"] for duty in revised["request"]["duties"]], [5, 5])
         self.assertEqual(self.check_audit(revised, identifier)["covered_batches"], [1, 2])
         self.assertEqual((directory / "snapshot-intent.json").read_bytes(), intent)
