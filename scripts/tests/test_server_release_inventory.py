@@ -418,10 +418,14 @@ class StockLauncherBindingTests(unittest.TestCase):
 
     def test_generated_en_launchers_already_export_their_pinned_source_root(self):
         deployer = (ROOT / "scripts/explorer/blockscout/deploy-zksys-en-rpc.sh").read_text()
-        function = re.search(r"(?m)^def write_node_script\(.*?^providers =", deployer, re.S).group()
-        function = function.rsplit("\nproviders =", 1)[0]
+        remote_script = deployer.split("<<'REMOTE_SCRIPT'\n", 1)[1]
+        python_code = "import base64\n" + remote_script.split("import base64\n", 1)[1].split("\nPY\n", 1)[0]
+        tree = ast.parse(python_code)
+        function = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "write_node_script"
+        )
         context = dict(Path=Path, stat=stat, q=shlex.quote)
-        exec(compile(ast.parse(function), "en-start-template", "exec"), context)
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "en-start-template", "exec"), context)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "server source"

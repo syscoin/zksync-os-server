@@ -157,6 +157,7 @@ pub struct SnarkReadinessWait {
 pub enum SnarkJobEligibility {
     Eligible,
     Incompatible,
+    PriorityBudgetExceeded,
     ResponseCapacityExceeded {
         required_bytes: usize,
         max_bytes: usize,
@@ -1405,6 +1406,17 @@ impl<T: Clone> ProverJobMap<T> {
                     ends_at_incompatible_boundary = true;
                     break;
                 }
+                SnarkJobEligibility::PriorityBudgetExceeded => {
+                    if candidate_jobs.len() < 2 {
+                        return SnarkJobPick::Unwrappable {
+                            batch_from,
+                            batch_to: entry.metadata.batch_number,
+                            fittable_fris: candidate_jobs.len(),
+                        };
+                    }
+                    capacity_limited = true;
+                    break;
+                }
                 SnarkJobEligibility::ResponseCapacityExceeded {
                     required_bytes,
                     max_bytes,
@@ -1631,6 +1643,17 @@ impl<T: Clone> ProverJobMap<T> {
                         eligible_fris: candidate_jobs.len(),
                         oldest_eligible_age: oldest_loaded_age,
                     });
+                }
+                SnarkJobEligibility::PriorityBudgetExceeded => {
+                    if candidate_jobs.len() < 2 {
+                        return SnarkJobPick::Unwrappable {
+                            batch_from: head.batch_from(),
+                            batch_to: batch_number,
+                            fittable_fris: candidate_jobs.len(),
+                        };
+                    }
+                    capacity_limited = true;
+                    break;
                 }
                 SnarkJobEligibility::ResponseCapacityExceeded {
                     required_bytes,

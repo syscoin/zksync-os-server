@@ -26,12 +26,25 @@ const RAFT_PROTOCOL_VERSION: usize = 1;
 const RAFT_PROTOCOL_MESSAGE_COUNT: u8 = 2;
 const RAFT_OUTBOUND_CHANNEL_CAPACITY: usize = 64;
 
+type RaftReply = Result<RaftResponse, String>;
+
 #[derive(Debug)]
 struct PendingRequest {
     // SYSCOIN: Keep the intended peer with the request so spoofed responses can be diagnosed.
     peer_id: PeerId,
     connection_id: u64,
-    response_tx: oneshot::Sender<Result<RaftResponse, String>>,
+    response_tx: oneshot::Sender<RaftReply>,
+}
+
+struct PendingResponse {
+    id: RequestId,
+    pending: Arc<DashMap<RequestId, PendingRequest>>,
+}
+
+impl Drop for PendingResponse {
+    fn drop(&mut self) {
+        self.pending.remove(&self.id);
+    }
 }
 
 // async-trait adds must_use to a future that already carries the annotation.
@@ -132,30 +145,38 @@ impl RaftRouter {
         &self,
         peer_id: PeerId,
         req: RaftRequest,
-    ) -> Result<oneshot::Receiver<Result<RaftResponse, String>>, RaftTransportError> {
+    ) -> Result<
+        impl Future<Output = Result<RaftReply, oneshot::error::RecvError>>,
+        RaftTransportError,
+    > {
         let Some(channels) = self.peers.get(&peer_id) else {
             tracing::debug!(%peer_id, connected = self.peers.len(), "raft request failed: peer not connected");
             return Err(RaftTransportError::NotConnected(peer_id));
         };
-        let senders = channels.value().clone();
-        drop(channels);
-
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
 
         let mut msg = RaftWireMessage::Request { id, req };
-        for ch in &senders {
+        for ch in channels.value() {
+            // Hold the shard until the request is tracked so a fast response cannot race insertion.
+            let dashmap::mapref::entry::Entry::Vacant(entry) = self.pending.entry(id) else {
+                return Err(RaftTransportError::SendFailed(peer_id));
+            };
             match ch.sender.send(msg) {
                 Ok(()) => {
-                    self.pending.insert(
+                    entry.insert(PendingRequest {
+                        peer_id,
+                        connection_id: ch.connection_id,
+                        response_tx: tx,
+                    });
+                    let pending = PendingResponse {
                         id,
-                        PendingRequest {
-                            peer_id,
-                            connection_id: ch.connection_id,
-                            response_tx: tx,
-                        },
-                    );
-                    return Ok(rx);
+                        pending: Arc::clone(&self.pending),
+                    };
+                    return Ok(async move {
+                        let _pending = pending;
+                        rx.await
+                    });
                 }
                 Err(tokio::sync::mpsc::error::SendError(returned)) => {
                     // This channel is dead (receiver dropped); its Drop will call unregister_peer.
@@ -425,10 +446,11 @@ impl Drop for RaftConnection {
             self.router.pending.len(),
         );
         self.task.abort();
-        self.router
-            .cancel_pending_for_connection(self.connection_id);
+        // Stop new requests from selecting this connection before draining its tracked requests.
         self.router
             .unregister_peer(&self.peer_id, self.connection_id);
+        self.router
+            .cancel_pending_for_connection(self.connection_id);
     }
 }
 
@@ -525,7 +547,6 @@ mod tests {
     use alloy::primitives::b512;
     use openraft::raft::VoteRequest;
     use reth_network_peers::PeerId;
-    use tokio::sync::oneshot::error::TryRecvError;
 
     fn peer_id(byte: u8) -> PeerId {
         PeerId::repeat_byte(byte)
@@ -570,25 +591,41 @@ mod tests {
             .register_peer(peer2, peer2_tx)
             .expect("peer2 is authorized");
 
-        let mut response_rx = router
+        let response_rx = router
             .send_request(peer1, vote_request(peer1))
             .expect("peer1 is connected");
+        let mut response_rx = std::pin::pin!(response_rx);
         let sent = peer1_rx.try_recv().expect("request sent to peer1");
         let RaftWireMessage::Request { id, .. } = sent else {
             panic!("expected raft request");
         };
 
         router.complete_response(id, peer2_connection_id, Err("spoofed".to_string()));
-        assert!(matches!(response_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(futures::FutureExt::now_or_never(response_rx.as_mut()).is_none());
 
         router.complete_response(id, peer1_connection_id, Err("legitimate".to_string()));
         assert_eq!(
-            response_rx
-                .try_recv()
+            futures::FutureExt::now_or_never(response_rx)
+                .expect("response ready")
                 .expect("response delivered")
                 .expect_err("test sends an error response"),
             "legitimate"
         );
+    }
+
+    #[test]
+    fn dropping_response_wait_removes_the_pending_request() {
+        let peer = peer_id(0x11);
+        let router = RaftRouter::new([peer]);
+        let (sender, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        router.register_peer(peer, sender).unwrap();
+        let response = router.send_request(peer, vote_request(peer)).unwrap();
+        let RaftWireMessage::Request { id, .. } = requests.try_recv().unwrap() else {
+            panic!("expected raft request");
+        };
+        assert!(router.pending.contains_key(&id));
+        drop(response);
+        assert!(!router.pending.contains_key(&id));
     }
 
     #[test]

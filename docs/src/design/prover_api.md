@@ -108,11 +108,11 @@ FRI-transport limit. Tokenless SNARK peeks retain their independent 256 MiB cap.
 advertising insufficient capacity receives no lease and
 does not fault the shared manager; an unservable aggregate at the hard server cap remains fatal.
 
-Nginx therefore drains the node response and releases any scarce pick permit without waiting for
-the remote prover to read the buffered copy. An unbuffered tunnel or direct container-network bind
-is not a supported remote ingress; provision nginx temporary storage for all three concurrent FRI
-responses (384 MiB each) and one SNARK response (512 MiB), with each per-response spool at least
-as large as its node clamp. The generated public
+Nginx drains the node response and releases its pick permit while the remote worker reads the
+buffered copy. The generated vhost limits FRI and SNARK pick transfers together to eight active
+downloads through downstream completion. Additional picks get a retriable HTTP 429. Provision
+at least 4 GiB of usable temporary storage per generated vhost for these downloads, plus
+filesystem overhead. The generated public
 vhost returns 404 for tokenless FRI/SNARK peek and failed-proof debug routes; operators may use
 those diagnostics only through the node's trusted loopback.
 

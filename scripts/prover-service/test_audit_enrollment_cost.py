@@ -1,11 +1,16 @@
 import copy
 import functools
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import audit
+import dispatcher
 import enrollment
+import period_routing
 import service as s
+from test_service import KEYS, sign
 
 
 def address(number):
@@ -131,12 +136,64 @@ class AuditEnrollmentCostTests(unittest.TestCase):
     def test_child_full_roster_needs_one_1546_call_scan(self):
         self.validate_full_roster({"child": self.child_lane}, 1546)
 
+    def test_startup_and_rollover_keep_the_complete_257_subscriber_roster(self):
+        extra = copy.deepcopy(self.subscriptions[-1])
+        extra["subscription"].update(account=address(1256), operator=address(2256))
+        expected = self.subscriptions + [extra]
+        rpc = FullRosterRegistry(self.settings, self.gateway, list(reversed(expected)), self.anchor)
+        batches = []
+
+        def contract_page(registry, signature, arguments, anchor):
+            batches.append((signature, len(arguments), anchor))
+            return [rpc.contract(registry, signature, args, anchor) for args in arguments]
+
+        rpc.contract_page = contract_page
+        block_hash = self.anchor["block_hash"]
+        pinned = period_routing.PinnedRpc(rpc, {"hash": block_hash, "timestamp": hex(self.anchor["timestamp"])})
+        rolled, anchor = enrollment.registry_enrollment_snapshot(self.settings, 5, pinned, block_hash)
+        with tempfile.TemporaryDirectory() as root:
+            store = dispatcher._initialize_from_snapshot(Path(root) / "period", self.settings, rolled, 5,
+                    "https://child.example/", pinned, anchor, {"settings": self.gateway, "endpoint": "https://gateway.example/"})
+            journal = s.read_json(store.root / "state.json", private=True)
+        self.assertEqual(journal["enrollment"], self.anchor)
+        self.assertEqual(journal["cursor"], journal["journal_id"])
+        self.assertEqual(set(journal["accounts"]), {entry["subscription"]["account"] for entry in expected})
+        self.assertEqual([entry["subscription"] for entry in journal["subscriptions"]],
+                         [entry["subscription"] for entry in expected])
+        signatures = ["friSubscriberAt(address,uint64,uint256)", "isEligibleFriSubscriber(address,address,uint64)",
+                      "subscriptionAt(address,address,uint64)", "subscription(bytes32)", "operatorAccountAt(address,uint64)",
+                      "seniorBonus(address)"]
+        for signature in signatures:
+            self.assertEqual([size for name, size, _ in batches if name == signature], [32] * 8 + [1])
+        self.assertEqual([call[2] for call in rpc.calls if call[:2] == ("eth_call", "supportedLane(uint256)")],
+                         [(s.uint(self.settings["execution_chain_id"]),), (s.uint(self.gateway["execution_chain_id"]),)])
+        self.assertEqual({anchor for _, _, anchor in batches}, {block_hash})
+        with self.assertRaisesRegex(s.Error, "omits_or_adds"):
+            enrollment.enrollment_snapshot(self.settings, rolled[:-1], 5, pinned)
+
     def test_child_gateway_full_roster_needs_two_3092_call_scans(self):
         for gateway_first in (False, True):
             with self.subTest(gateway_first=gateway_first):
                 lanes = ({"gateway": self.gateway_lane, "child": self.child_lane} if gateway_first else
                          {"child": self.child_lane, "gateway": self.gateway_lane})
                 self.validate_full_roster(lanes, 3092)
+
+    def test_manifest_accepts_authenticated_1001_member_snapshot(self):
+        settings = {**self.settings, "sequencer": s.cast("wallet", "address", "--private-key", KEYS["sequencer"]).lower()}
+        template = self.subscriptions[0]["subscription"]
+        subscriptions = [{"subscription": {**template, "account": address(1000 + n), "operator": address(3000 + n),
+                                           "sequencer": settings["sequencer"]}, "signature": "0x"}
+                         for n in range(1001)]
+        registry = FullRosterRegistry(settings, self.gateway, subscriptions, self.anchor)
+        authority = s.EnrollmentAuthority(settings, subscriptions, 5, registry, self.anchor["block_hash"])
+        payload = {"schema_version": 1, "chain_id": settings["execution_chain_id"], "chain_address": settings["chain_address"],
+                   "sequencer": settings["sequencer"], "period": 5, "previous_cursor": word_hash(1),
+                   "subscription_snapshot_hash": s.keccak(s.canonical(subscriptions)), "assignments": [], "retries": []}
+        manifest = {"payload": payload, "sequencer_signature": sign(s.manifest_request(settings, payload), "sequencer")}
+        _, validated = s.validate_manifest(settings, manifest, subscriptions, {}, allow_empty=True, enrollment=authority)
+        self.assertEqual(len(validated), 1001)
+        with self.assertRaisesRegex(s.Error, "invalid_subscription_snapshot"):
+            s.validate_manifest(settings, manifest, subscriptions, {}, allow_empty=True)
 
 
 if __name__ == "__main__":

@@ -93,7 +93,7 @@ def config(raw):
                 'max_priority_per_package', 'gas_limit', 'gas_price'):
         require(type(value[key]) is int and value[key] > 0, 'invalid ' + key)
     require(value['chain_id'] != value['child_chain_id'], 'settlement and child chain ids must differ')
-    require(value['max_priority_per_package'] <= 1024, 'priority package limit exceeds contract maximum')
+    require(2 <= value['max_priority_per_package'] <= 1024, 'priority package limit must be in 2..1024')
     for key in ('max_snapshot_age', 'max_proof_work_seconds', 'max_priority_per_package'):
         require(value[key] < 2**64, 'invalid ' + key)
     for key in ('keystore', 'password_file'):

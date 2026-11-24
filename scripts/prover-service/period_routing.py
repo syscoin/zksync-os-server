@@ -22,11 +22,7 @@ def _state(store):
 
 
 def _view(rpc, settings, anchor, signature, *values):
-    if hasattr(rpc, "contract"):
-        return rpc.contract(settings["registry"], signature, values, anchor)
-    return s.raw_hex(rpc.call("eth_call", [{"to": settings["registry"],
-        "data": s.cast("calldata", signature, *map(str, values))},
-        {"blockHash": anchor, "requireCanonical": True}]))
+    return enrollment.registry_view(rpc, settings["registry"], anchor, signature, *values)
 
 
 class PinnedRpc:
@@ -40,49 +36,11 @@ class PinnedRpc:
 
     def contract(self, address, signature, values, anchor):
         s.require(anchor == self.block["hash"], "period_enrollment_anchor_changed")
-        if hasattr(self.rpc, "contract"):
-            return self.rpc.contract(address, signature, values, anchor)
-        return s.raw_hex(self.rpc.call("eth_call", [{"to": address,
-            "data": s.cast("calldata", signature, *map(str, values))},
-            {"blockHash": anchor, "requireCanonical": True}]))
+        return enrollment.registry_view(self.rpc, address, anchor, signature, *values)
 
-
-def _subscriptions(rpc, settings, period, anchor):
-    view = lambda signature, *values: _view(rpc, settings, anchor, signature, *values)
-    count = enrollment.fixed_word(view("friSubscriberCount(address,uint64)", settings["sequencer"], period))
-    s.require(count <= 256, "enrollment_exceeds_dispatcher_capacity")
-    subscriptions, accounts = [], set()
-    for index in range(count):
-        raw = view("friSubscriberAt(address,uint64,uint256)", settings["sequencer"], period, index)
-        s.require(len(raw) == 32 and raw[:12] == bytes(12), "invalid_enrollment_account")
-        account = s.nonzero("0x" + raw[12:].hex(), 20)
-        s.require(account not in accounts, "duplicate_enrollment_account")
-        accounts.add(account)
-        eligible = enrollment.fixed_word(view("isEligibleFriSubscriber(address,address,uint64)", account,
-                                             settings["sequencer"], period))
-        s.require(eligible in (0, 1), "invalid_enrollment_eligibility")
-        if not eligible:
-            continue
-        hashed = view("subscriptionAt(address,address,uint64)", account, settings["sequencer"], period)
-        s.nonzero("0x" + hashed.hex())
-        s.require(len(hashed) == 32, "invalid_subscription_hash")
-        encoded = view("subscription(bytes32)", "0x" + hashed.hex())
-        s.require(len(encoded) == 32 * len(s.SUBSCRIPTION), "invalid_stored_subscription")
-        subscription = {}
-        for index, (name, kind) in enumerate(s.SUBSCRIPTION):
-            word = encoded[index * 32:(index + 1) * 32]
-            if kind == "address":
-                s.require(word[:12] == bytes(12), "invalid_subscription_address")
-                subscription[name] = "0x" + word[12:].hex()
-            else:
-                subscription[name] = s.uint(int.from_bytes(word, "big"), int(kind[4:]))
-        s.require(subscription["account"] == account and s.raw_hex(s.subscription_request(settings, subscription)["struct_hash"])
-                  == hashed and s.encode_fields(s.SUBSCRIPTION, subscription) == encoded,
-                  "stored_subscription_mismatch")
-        # Canonical subscribe() already authenticated both historical consents, including ERC-1271.
-        subscriptions.append({"subscription": subscription, "signature": "0x"})
-    s.require(subscriptions, "period_has_no_eligible_subscribers")
-    return subscriptions
+    def contract_page(self, address, signature, arguments, anchor):
+        s.require(anchor == self.block["hash"], "period_enrollment_anchor_changed")
+        return enrollment.registry_page(self.rpc, address, anchor, signature, arguments)
 
 
 def _existing(base_store, base, period, journal_id=None, phase=None, enrollment_block_hash=None):
@@ -170,7 +128,7 @@ def current_store(base_store, registry_rpc, now, *, requested_period=None, reque
     if found is not None:
         return found
     pinned = PinnedRpc(registry_rpc, block)
-    subscriptions = _subscriptions(pinned, settings, period, anchor)
+    subscriptions, enrollment_anchor = enrollment.registry_enrollment_snapshot(settings, period, pinned, anchor)
     parent = base_store.root / "periods"
     if not parent.exists():
         parent.mkdir(mode=0o700)
@@ -179,7 +137,8 @@ def current_store(base_store, registry_rpc, now, *, requested_period=None, reque
     destination = parent / f"{period}-{phase}"
     temporary = parent / (".period-" + uuid.uuid4().hex)
     gateway = base["lanes"].get("gateway")
-    d.initialize(temporary, settings, subscriptions, period, base["endpoint"], pinned, gateway=gateway)
+    d._initialize_from_snapshot(temporary, settings, subscriptions, period, base["endpoint"], pinned,
+                                enrollment_anchor, gateway=gateway)
     os.replace(temporary, destination)
     d.sync_dir(parent)
     return d.Store(destination)

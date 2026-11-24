@@ -54,6 +54,7 @@ pub(crate) struct BatchInfoAccumulator {
     pub l2_to_l1_logs_count: u64,
     pub block_count: u64,
     pub tx_count: u64,
+    pub priority_tx_count: u64,
     pub has_upgrade_tx: bool,
     pub interop_roots_count: u64,
     pub should_seal_for_gateway_migration: bool,
@@ -67,6 +68,7 @@ pub(crate) struct BatchInfoAccumulator {
     // Limits
     pub blocks_per_batch_limit: u64,
     pub tx_per_batch_limit: u64,
+    pub priority_txs_per_batch_limit: Option<u64>,
     pub batch_pubdata_limit_bytes: u64,
     pub interop_roots_per_batch_limit: u64,
     // SYSCOIN: Match native replay's configured ValidatorTimelock target when counting refs.
@@ -77,6 +79,7 @@ impl BatchInfoAccumulator {
     pub fn new(
         blocks_per_batch_limit: u64,
         tx_per_batch_limit: u64,
+        priority_txs_per_batch_limit: Option<u64>,
         batch_pubdata_limit_bytes: u64,
         interop_roots_per_batch_limit: u64,
         compact_edge_da_commit_target: Address,
@@ -84,6 +87,7 @@ impl BatchInfoAccumulator {
         Self {
             blocks_per_batch_limit,
             tx_per_batch_limit,
+            priority_txs_per_batch_limit,
             batch_pubdata_limit_bytes,
             interop_roots_per_batch_limit,
             compact_edge_da_commit_target,
@@ -105,6 +109,13 @@ impl BatchInfoAccumulator {
             .sum::<usize>() as u64;
         self.block_count += 1;
         self.tx_count += replay_record.transactions.len() as u64;
+        if self.priority_txs_per_batch_limit.is_some() {
+            self.priority_tx_count += replay_record
+                .transactions
+                .iter()
+                .filter(|tx| tx.tx_type() == ZkTxType::L1)
+                .count() as u64;
+        }
         self.execution_versions
             .insert(replay_record.block_context.execution_version);
         self.protocol_versions
@@ -174,6 +185,11 @@ impl BatchInfoAccumulator {
         self.forwarded_da_refs_count > SYSCOIN_DA_MAX_REFS_PER_BATCH
     }
 
+    pub fn exceeds_priority_tx_limit(&self) -> bool {
+        self.priority_txs_per_batch_limit
+            .is_some_and(|limit| self.priority_tx_count > limit)
+    }
+
     /// Checks if the batch should be sealed based on the content of the blocks.
     /// e.g. due to the block count limit, tx count limit, or pubdata size limit.
     pub fn should_seal(&self) -> bool {
@@ -192,6 +208,16 @@ impl BatchInfoAccumulator {
                 count = self.forwarded_da_refs_count,
                 limit = SYSCOIN_DA_MAX_REFS_PER_BATCH,
                 "Batcher: reached forwarded Bitcoin DA ref limit"
+            );
+            return true;
+        }
+
+        if self.exceeds_priority_tx_limit() {
+            BATCHER_METRICS.seal_reason[&"priority_txs_per_batch"].inc();
+            tracing::debug!(
+                count = self.priority_tx_count,
+                limit = ?self.priority_txs_per_batch_limit,
+                "Batcher: reached priority transaction limit"
             );
             return true;
         }
@@ -311,7 +337,8 @@ mod tests {
     use semver::Version;
     use zksync_os_storage_api::{BlockContext, BlockHashes, ReplayRecord};
     use zksync_os_types::{
-        BlockOutput, BlockPubdata, BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion,
+        BlockOutput, BlockPubdata, BlockStartCursors, ExecutionVersion, L1PriorityEnvelope,
+        L1PriorityTx, ProtocolSemanticVersion, SystemTxEnvelope, ZkTransaction,
     };
 
     fn dummy_block_output(pubdata: BlockPubdata) -> BlockOutput {
@@ -360,7 +387,7 @@ mod tests {
 
     #[test]
     fn accumulator_tracks_pubdata_used_not_pubdata_length() {
-        let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100, Address::ZERO);
+        let mut accumulator = BatchInfoAccumulator::new(100, 20, None, 100, 100, Address::ZERO);
 
         accumulator
             .add(
@@ -375,7 +402,7 @@ mod tests {
 
     #[test]
     fn pubdata_seal_limit_uses_pubdata_used() {
-        let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100, Address::ZERO);
+        let mut accumulator = BatchInfoAccumulator::new(100, 20, None, 100, 100, Address::ZERO);
 
         accumulator
             .add(
@@ -415,6 +442,77 @@ mod tests {
 
         assert!(accumulator.exceeds_forwarded_da_refs_limit());
         assert!(accumulator.should_seal());
+    }
+
+    fn priority_transaction(nonce: u64) -> ZkTransaction {
+        L1PriorityEnvelope {
+            inner: L1PriorityTx {
+                hash: B256::ZERO,
+                initiator: Address::ZERO,
+                to: Address::ZERO,
+                gas_limit: 200_000,
+                gas_per_pubdata_byte_limit: 800,
+                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 0,
+                nonce,
+                value: U256::ZERO,
+                to_mint: U256::ZERO,
+                refund_recipient: Address::ZERO,
+                input: Default::default(),
+                factory_deps: Vec::new(),
+                marker: Default::default(),
+            },
+        }
+        .into()
+    }
+
+    #[test]
+    fn priority_limit_counts_priority_transactions_across_blocks() {
+        let output = dummy_block_output(BlockPubdata::new(0));
+        let mut replay = dummy_replay_record();
+        replay.transactions = vec![
+            priority_transaction(0),
+            SystemTxEnvelope::set_interop_fee(U256::ZERO, 1).into(),
+        ];
+        let mut accumulator = BatchInfoAccumulator::new(
+            100,
+            20,
+            Some(2),
+            super::COMMIT_TX_PUBDATA_OVERHEAD + 100,
+            100,
+            Address::ZERO,
+        );
+        accumulator.add(&output, &replay).unwrap();
+        assert_eq!(accumulator.priority_tx_count, 1);
+        assert!(!accumulator.should_seal());
+
+        replay.transactions = vec![priority_transaction(1)];
+        replay.starting_cursors.l1_priority_id = 1;
+        accumulator.add(&output, &replay).unwrap();
+        assert_eq!(accumulator.priority_tx_count, 2);
+        assert!(!accumulator.should_seal());
+
+        replay.transactions = vec![priority_transaction(2)];
+        replay.starting_cursors.l1_priority_id = 2;
+        accumulator.add(&output, &replay).unwrap();
+        assert!(accumulator.exceeds_priority_tx_limit());
+        assert!(accumulator.should_seal());
+    }
+
+    #[test]
+    fn priority_limit_applies_to_first_block_when_enabled() {
+        let mut accumulator = BatchInfoAccumulator {
+            block_count: 1,
+            priority_tx_count: 3,
+            priority_txs_per_batch_limit: Some(2),
+            ..Default::default()
+        };
+        assert!(accumulator.exceeds_priority_tx_limit());
+        assert!(accumulator.should_seal());
+
+        accumulator.priority_txs_per_batch_limit = None;
+        assert!(!accumulator.exceeds_priority_tx_limit());
+        assert!(!accumulator.should_seal());
     }
 
     #[test]

@@ -98,8 +98,9 @@ the gate. Both lanes, their supervised prover-role handoff, checkpoint and roste
 relays, real duty reports and activation messages must be completed before the
 service can start.
 
-For the supervised fresh launch, stop the initial proof sender and reconcile all
-of its submitted proof transactions before deploying the gate and guard. Use the
+For the supervised launch, pause production and drain pending batches and priority
+requests. Finish and reconcile all ordinary proofs and executions before deploying
+the gate and guard at the common committed, verified and executed frontier. Use the
 existing chain administrator to grant the gate the prover role and remove that
 role from the initial sender. The gate requires itself to be the sole holder of
 the role; confirm this and the guard's native batch and priority cursors before

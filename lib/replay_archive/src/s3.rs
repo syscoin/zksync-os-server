@@ -286,10 +286,21 @@ impl ReplayArchiveStorageReader for S3ReplayArchiveReader {
         &self,
         page_token: Option<String>,
     ) -> anyhow::Result<ReplayArchiveKeyPage> {
+        self.list_keys_page_for_session(None, page_token).await
+    }
+
+    async fn list_keys_page_for_session(
+        &self,
+        session: Option<&ReplayArchiveSession>,
+        page_token: Option<String>,
+    ) -> anyhow::Result<ReplayArchiveKeyPage> {
         let mut request = self
             .client
             .list_objects_v2()
             .bucket(&self.config.bucket_base_url);
+        if let Some(session) = session {
+            request = request.prefix(format!("{session}/"));
+        }
         if let Some(token) = page_token {
             request = request.continuation_token(token);
         }

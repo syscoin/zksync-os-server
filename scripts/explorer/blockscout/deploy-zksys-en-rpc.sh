@@ -164,13 +164,13 @@ PY
 }
 
 host_from_url() {
-  python3 - "$1" <<'PY'
+  printf '%s' "$1" | python3 -c '
 import sys
 from urllib.parse import urlparse
 
-host = urlparse(sys.argv[1]).hostname
+host = urlparse(sys.stdin.read()).hostname
 print(host or "")
-PY
+'
 }
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new)
@@ -193,7 +193,7 @@ print(json.dumps(provider, separators=(",", ":")))
 PY
   )"
 elif [[ -n "${SEQUENCER_REMOTE_HOST}" ]]; then
-  remote_provider_cmd="python3 - $(shell_join "${SOURCE_ZKSYS_CONFIG}" "${DEFAULT_GATEWAY_RPC_URL}")"
+  remote_provider_cmd="python3 - $(shell_join "${SOURCE_ZKSYS_CONFIG}")"
   provider_json="$(
     ssh "${ssh_opts[@]}" "${SEQUENCER_REMOTE_HOST}" \
       "${remote_provider_cmd}" <<'PY'
@@ -205,7 +205,6 @@ from pathlib import Path
 import yaml
 
 config_path = Path(sys.argv[1])
-default_gateway_rpc_url = sys.argv[2]
 data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 if not isinstance(data, dict):
     raise SystemExit(f"invalid zksys config: {config_path}")
@@ -219,11 +218,6 @@ if not providers["l1_provider"].get("rpc_url"):
 if not providers["gateway_provider"].get("rpc_url"):
     raise SystemExit(f"missing gateway_provider.rpc_url in {config_path}")
 
-gateway_rpc_url = providers["gateway_provider"]["rpc_url"]
-gateway_rpc_host = urlparse(gateway_rpc_url).hostname
-if gateway_rpc_host in {"127.0.0.1", "localhost", "::1"}:
-    providers["gateway_provider"]["rpc_url"] = default_gateway_rpc_url
-
 l1_rpc_url = providers["l1_provider"]["rpc_url"]
 l1_rpc_host = urlparse(l1_rpc_url).hostname
 if l1_rpc_host in {"127.0.0.1", "localhost", "::1"}:
@@ -233,6 +227,19 @@ if l1_rpc_host in {"127.0.0.1", "localhost", "::1"}:
     )
 print(json.dumps(providers, separators=(",", ":")))
 PY
+  )"
+  provider_json="$(
+    printf '%s\n%s' "${provider_json}" "${DEFAULT_GATEWAY_RPC_URL}" | python3 -c '
+import json
+import sys
+from urllib.parse import urlparse
+
+providers = json.loads(sys.stdin.readline())
+gateway = providers["gateway_provider"]
+if urlparse(gateway["rpc_url"]).hostname in {"127.0.0.1", "localhost", "::1"}:
+    gateway["rpc_url"] = sys.stdin.read()
+print(json.dumps(providers, separators=(",", ":")))
+'
   )"
 else
   cat >&2 <<'EOF'
@@ -385,7 +392,12 @@ if [[ "${ZKSYS_GAS_TANK_ADDRESS}" != "${PUBLISHED_GAS_TANK_ADDRESS}" ]]; then
   exit 1
 fi
 
-provider_b64="$(printf '%s' "${provider_json}" | base64 | tr -d '\n')"
+connection_b64="$(printf '%s\n%s' "${provider_json}" "${MAIN_NODE_RPC_URL}" | base64 | tr -d '\n')"
+unset ZKSYS_EN_L1_RPC_URL ZKSYS_EN_GATEWAY_RPC_URL MAIN_NODE_RPC_URL DEFAULT_GATEWAY_RPC_URL
+
+if [[ "${UPLOAD_REPO}" == "true" ]]; then
+  source_revision="$(git -C "${REPO_ROOT}" rev-parse --verify 'HEAD^{commit}')"
+fi
 
 # Invalidate the prior deployment before uploading source or replacing generated
 # configuration. Existing processes keep running, but a later restart cannot
@@ -398,24 +410,17 @@ remote_prebuilt_stamps=(
 ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "rm -f -- $(shell_join "${remote_prebuilt_stamps[@]}")"
 
 if [[ "${UPLOAD_REPO}" == "true" ]]; then
-  echo "Uploading zksync-os-server tree to ${REMOTE_HOST}:${REMOTE_OS_SERVER_PATH}"
+  echo "Uploading zksync-os-server revision ${source_revision} to ${REMOTE_HOST}:${REMOTE_OS_SERVER_PATH}"
   remote_os_server_path_q="$(shell_join "${REMOTE_OS_SERVER_PATH}")"
-  tar \
-    --exclude .git \
-    --exclude target \
-    --exclude .cursor \
-    --exclude build-artifacts \
-    -C "${REPO_ROOT}" \
-    -cf - . | ssh "${ssh_opts[@]}" "${REMOTE_HOST}" \
+  git -C "${REPO_ROOT}" archive --format=tar "${source_revision}" |
+    ssh "${ssh_opts[@]}" "${REMOTE_HOST}" \
       "set -euo pipefail; mkdir -p ${remote_os_server_path_q}; tar -C ${remote_os_server_path_q} -xf -"
 fi
 
 remote_install_cmd="bash -s -- $(shell_join \
-  "${provider_b64}" \
   "${REMOTE_BASE_DIR}" \
   "${REMOTE_OS_SERVER_PATH}" \
   "${MAIN_NODE_ENODE}" \
-  "${MAIN_NODE_RPC_URL}" \
   "${CHAIN_ID}" \
   "${PROTOCOL_VERSION}" \
   "${PUBLIC_RPC_BIND_HOST}" \
@@ -439,36 +444,37 @@ remote_install_cmd="bash -s -- $(shell_join \
   "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" \
   "${ZKSYS_GAS_TANK_ADDRESS}")"
 
-ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_install_cmd}" <<'REMOTE_SCRIPT'
+{
+  # Keep provider credentials in the SSH input and off every process command line.
+  printf 'connection_b64=%s\n' "${connection_b64}"
+  cat <<'REMOTE_SCRIPT'
 set -euo pipefail
 
-PROVIDER_B64="$1"
-REMOTE_BASE_DIR="$2"
-REMOTE_OS_SERVER_PATH="$3"
-MAIN_NODE_ENODE="$4"
-MAIN_NODE_RPC_URL="$5"
-CHAIN_ID="$6"
-PROTOCOL_VERSION="$7"
-PUBLIC_RPC_BIND_HOST="$8"
-PUBLIC_RPC_PORT="$9"
-PUBLIC_P2P_ADDRESS="${10}"
-PUBLIC_P2P_PORT="${11}"
-PUBLIC_STATUS_PORT="${12}"
-PUBLIC_PROMETHEUS_PORT="${13}"
-DEBUG_RPC_BIND_HOST="${14}"
-DEBUG_RPC_PORT="${15}"
-DEBUG_P2P_ADDRESS="${16}"
-DEBUG_P2P_PORT="${17}"
-DEBUG_STATUS_PORT="${18}"
-DEBUG_PROMETHEUS_PORT="${19}"
-DEBUG_RPC_RATE_LIMITS="${20}"
-START_SERVICES="${21}"
-INSTALL_BUILD_DEPS="${22}"
-START_PUBLIC_SERVICE="${23}"
-START_DEBUG_SERVICE="${24}"
-PUBLIC_RPC_RATE_LIMITS="${25}"
-SYSCOIN_EDGE_DA_COMMIT_TARGET="${26}"
-ZKSYS_GAS_TANK_ADDRESS="${27}"
+REMOTE_BASE_DIR="${1}"
+REMOTE_OS_SERVER_PATH="${2}"
+MAIN_NODE_ENODE="${3}"
+CHAIN_ID="${4}"
+PROTOCOL_VERSION="${5}"
+PUBLIC_RPC_BIND_HOST="${6}"
+PUBLIC_RPC_PORT="${7}"
+PUBLIC_P2P_ADDRESS="${8}"
+PUBLIC_P2P_PORT="${9}"
+PUBLIC_STATUS_PORT="${10}"
+PUBLIC_PROMETHEUS_PORT="${11}"
+DEBUG_RPC_BIND_HOST="${12}"
+DEBUG_RPC_PORT="${13}"
+DEBUG_P2P_ADDRESS="${14}"
+DEBUG_P2P_PORT="${15}"
+DEBUG_STATUS_PORT="${16}"
+DEBUG_PROMETHEUS_PORT="${17}"
+DEBUG_RPC_RATE_LIMITS="${18}"
+START_SERVICES="${19}"
+INSTALL_BUILD_DEPS="${20}"
+START_PUBLIC_SERVICE="${21}"
+START_DEBUG_SERVICE="${22}"
+PUBLIC_RPC_RATE_LIMITS="${23}"
+SYSCOIN_EDGE_DA_COMMIT_TARGET="${24}"
+ZKSYS_GAS_TANK_ADDRESS="${25}"
 
 if [[ ! -d "${REMOTE_OS_SERVER_PATH}" ]]; then
   echo "missing remote zksync-os-server checkout: ${REMOTE_OS_SERVER_PATH}" >&2
@@ -555,12 +561,10 @@ fi
 
 install -d -m 0755 "${REMOTE_BASE_DIR}"
 
-python3 - \
-  "${PROVIDER_B64}" \
+python3 - 3<<<"${connection_b64}" \
   "${REMOTE_BASE_DIR}" \
   "${REMOTE_OS_SERVER_PATH}" \
   "${MAIN_NODE_ENODE}" \
-  "${MAIN_NODE_RPC_URL}" \
   "${CHAIN_ID}" \
   "${PROTOCOL_VERSION}" \
   "${PUBLIC_RPC_BIND_HOST}" \
@@ -674,6 +678,13 @@ def provider_lines(name: str, provider: dict) -> list[str]:
     return lines
 
 
+def read_connection():
+    with os.fdopen(3, "rb") as stream:
+        decoded = base64.b64decode(stream.read().strip(), validate=True)
+    providers_json, main_node_rpc_url = decoded.split(b"\n", 1)
+    return json.loads(providers_json), main_node_rpc_url.decode("utf-8")
+
+
 def write_node_script(
     path: Path,
     repo: Path,
@@ -721,37 +732,36 @@ exec bash {q(str(repo / "scripts/gateway-launch/run-os-server-with-patched-zksyn
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-providers = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
-base_dir = Path(sys.argv[2])
-repo = Path(sys.argv[3])
-main_node_enode = sys.argv[4]
-main_node_rpc_url = sys.argv[5]
-chain_id = sys.argv[6]
-protocol = sys.argv[7]
-syscoin_edge_da_commit_target = sys.argv[22]
-zksys_gas_tank_address = sys.argv[23]
+providers, main_node_rpc_url = read_connection()
+base_dir = Path(sys.argv[1])
+repo = Path(sys.argv[2])
+main_node_enode = sys.argv[3]
+chain_id = sys.argv[4]
+protocol = sys.argv[5]
+syscoin_edge_da_commit_target = sys.argv[20]
+zksys_gas_tank_address = sys.argv[21]
 
 public = {
     "name": "zksys-public",
     "debug": False,
-    "rpc_bind": sys.argv[8],
-    "rpc_port": sys.argv[9],
-    "p2p_address": sys.argv[10],
-    "p2p_port": sys.argv[11],
-    "status_port": sys.argv[12],
-    "prometheus_port": sys.argv[13],
-    "rate_limits": parse_rate_limits(sys.argv[21]),
+    "rpc_bind": sys.argv[6],
+    "rpc_port": sys.argv[7],
+    "p2p_address": sys.argv[8],
+    "p2p_port": sys.argv[9],
+    "status_port": sys.argv[10],
+    "prometheus_port": sys.argv[11],
+    "rate_limits": parse_rate_limits(sys.argv[19]),
 }
 debug = {
     "name": "zksys-debug",
     "debug": True,
-    "rpc_bind": sys.argv[14],
-    "rpc_port": sys.argv[15],
-    "p2p_address": sys.argv[16],
-    "p2p_port": sys.argv[17],
-    "status_port": sys.argv[18],
-    "prometheus_port": sys.argv[19],
-    "rate_limits": parse_rate_limits(sys.argv[20]),
+    "rpc_bind": sys.argv[12],
+    "rpc_port": sys.argv[13],
+    "p2p_address": sys.argv[14],
+    "p2p_port": sys.argv[15],
+    "status_port": sys.argv[16],
+    "prometheus_port": sys.argv[17],
+    "rate_limits": parse_rate_limits(sys.argv[18]),
 }
 
 for instance in (public, debug):
@@ -848,6 +858,7 @@ for instance in (public, debug):
         enforce_runtime_nofile=True,
     )
 PY
+unset connection_b64
 
 # Prepare binaries from the immutable canonical consensus constants before
 # installing or restarting the services. Runtime restarts must not clone,
@@ -890,3 +901,4 @@ echo "installed zksys EN configs under ${REMOTE_BASE_DIR}"
 echo "public RPC upstream: http://${PUBLIC_RPC_BIND_HOST}:${PUBLIC_RPC_PORT}"
 echo "Blockscout/debug RPC upstream: http://host.docker.internal:${DEBUG_RPC_PORT} (host bind ${DEBUG_RPC_BIND_HOST}:${DEBUG_RPC_PORT})"
 REMOTE_SCRIPT
+} | ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_install_cmd}"

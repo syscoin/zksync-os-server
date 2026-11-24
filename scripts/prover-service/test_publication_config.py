@@ -5,7 +5,7 @@ from pathlib import Path
 import publication_config as publication
 import service as s
 from test_keeper import NativeRpc, setup
-from test_service import fixture, h
+from test_service import a, fixture, h
 
 
 class PublicationConfigTests(unittest.TestCase):
@@ -14,6 +14,7 @@ class PublicationConfigTests(unittest.TestCase):
         self.config, _, item = setup(self.fixture)
         self.rpc = NativeRpc(self.fixture, self.config, item)
         self.rpc.opened = False
+        self.rpc.status_overrides[a(123), 'maxPriorityPerPackage()'] = 64
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
 
@@ -25,11 +26,18 @@ class PublicationConfigTests(unittest.TestCase):
             str(Path(self.directory.name).resolve()), vk or settings['vk_hash'])
 
     def test_preview_checks_canonical_contracts_and_emits_one_lane(self):
-        output = self.preview()['service_publication']
+        overlay = self.preview()
+        self.assertEqual(overlay['batcher']['priority_package_limit'], 64)
+        output = overlay['service_publication']
         self.assertEqual(output['gate'], self.config['settings']['proof_gate'])
         self.assertEqual(output['coordinator'], self.config['settings']['coordinator'])
         self.assertEqual(output['directory'], str(Path(self.directory.name).resolve()))
         self.assertFalse(self.rpc.sent)
+
+    def test_incompatible_priority_limit_is_rejected(self):
+        self.rpc.status_overrides[a(123), 'maxPriorityPerPackage()'] = 1
+        with self.assertRaisesRegex(s.Error, 'unsupported_priority_package_limit'):
+            self.preview()
 
     def test_rejects_wrong_lane_chain_and_vk(self):
         for kwargs in ({'lane': 'gateway'}, {'execution': 999}, {'settlement': 999}, {'vk': h(55)}):

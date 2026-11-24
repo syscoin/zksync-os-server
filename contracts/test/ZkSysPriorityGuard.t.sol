@@ -18,6 +18,7 @@ contract PriorityMailboxMock is IZkSysPriorityMailboxV1 {
     uint256 public height;
     bytes32 public root = keccak256("");
     uint256 public cursor;
+    uint256 public committed;
     uint256 public verified;
     uint256 public executed;
     bool public legacy;
@@ -34,9 +35,14 @@ contract PriorityMailboxMock is IZkSysPriorityMailboxV1 {
     }
 
     function setProgress(uint256 verified_, uint256 executed_, uint256 cursor_) external {
+        committed = verified_;
         verified = verified_;
         executed = executed_;
         cursor = cursor_;
+    }
+
+    function setCommitted(uint256 value) external {
+        committed = value;
     }
 
     function setLegacy(bool value) external {
@@ -77,6 +83,10 @@ contract PriorityMailboxMock is IZkSysPriorityMailboxV1 {
 
     function getTotalBatchesVerified() external view returns (uint256) {
         return verified;
+    }
+
+    function getTotalBatchesCommitted() external view returns (uint256) {
+        return committed;
     }
 
     function getTotalBatchesExecuted() external view returns (uint256) {
@@ -206,6 +216,10 @@ contract ZkSysPriorityGuardTest is Test {
         mailbox.setProgress(0, 0, 5);
         vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
         new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
+        mailbox.setProgress(7, 7, 4);
+        mailbox.setCommitted(8);
+        vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
+        new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
         mailbox.setProgress(7, 6, 4);
         vm.expectRevert(ZkSysPriorityGuardV1.InvalidConfiguration.selector);
         new ZkSysPriorityGuardV1(address(this), mailbox, receiver, POLICY, 50, 200, 2);
@@ -299,6 +313,26 @@ contract ZkSysPriorityGuardTest is Test {
         guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
         _witness(0, 1, 1);
         guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
+    }
+
+    function testRefreshKeepsOriginalPrefixAndNextWorkSeesNewOverdueRequests() public {
+        guard.open(WORK, 1);
+        _witness(0, 1, 1);
+        guard.consume(WORK, 2, _counts(1, 1), _hashes(0, 1, 1));
+        mailbox.setProgress(2, 0, 0);
+
+        guard.open(WORK, 3);
+        vm.warp(1_201);
+        vm.roll(101);
+        _relay();
+        guard.refreshExpired(WORK);
+        guard.consume(WORK, 4, _counts(0, 0), _hashes(0, 0, 0));
+        mailbox.setProgress(4, 0, 0);
+
+        guard.open(WORK, 5);
+        _witness(2, 1, 1);
+        guard.consume(WORK, 6, _counts(1, 1), _hashes(2, 1, 1));
+        assertEq(guard.priorityCursor(), 4);
     }
 
     function testFreshWorkCannotRefreshOrBeOverwritten() public {

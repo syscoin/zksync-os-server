@@ -48,7 +48,7 @@ pub enum AccessType {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// `http://host:port` or `unix:///path/to.sock`.
+    /// HTTPS, local loopback HTTP, or `unix:///path/to.sock`.
     pub url: String,
     /// Identifies which call site this client serves; partitions metrics so
     /// RPC traffic and sequencer block-build traffic are reportable separately.
@@ -66,7 +66,7 @@ pub struct Config {
     /// Exhaustion fails closed without submitting a partial trace to `/judge`.
     pub trace_limits: TraceLimits,
     /// Bearer token sent as `Authorization: Bearer <token>` on every request.
-    /// Required for `http://`; ignored (with a warning) for `unix://` where
+    /// Required for TCP; ignored (with a warning) for `unix://` where
     /// socket-path permissions are the access control.
     pub auth_token: Option<SecretString>,
 }
@@ -86,17 +86,39 @@ struct PolicyClientInner {
 #[derive(Clone, Debug)]
 pub struct PolicyClient(Arc<PolicyClientInner>);
 
+pub fn validate_endpoint(url: &url::Url) -> anyhow::Result<()> {
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    match url.scheme() {
+        "https" | "unix" => {}
+        "http" if loopback => {}
+        "http" => anyhow::bail!("remote policy service URLs require HTTPS"),
+        _ => anyhow::bail!("unsupported URL scheme for policy service"),
+    }
+    anyhow::ensure!(
+        url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "policy service URL cannot include user info, a query, or a fragment"
+    );
+    Ok(())
+}
+
 impl PolicyClient {
     pub fn new(config: Config) -> anyhow::Result<Self> {
         let parsed = url::Url::parse(&config.url)
             .map_err(|e| anyhow::anyhow!("invalid policy service URL: {e}"))?;
+        validate_endpoint(&parsed)?;
         let transport_config = match parsed.scheme() {
-            "http" => TransportConfig::Http {
+            "http" | "https" => TransportConfig::Http {
                 url: parsed,
                 auth_token: config
                     .auth_token
-                    .clone()
-                    .expect("auth_token is required for http://; enforced by config validation"),
+                    .ok_or_else(|| anyhow::anyhow!("auth_token is required for TCP transport"))?,
             },
             "unix" => {
                 if config.auth_token.is_some() {
@@ -109,7 +131,7 @@ impl PolicyClient {
                     socket_path: std::path::PathBuf::from(parsed.path()),
                 }
             }
-            other => anyhow::bail!("unsupported URL scheme `{other}` (expected `http` or `unix`)"),
+            _ => unreachable!("validated scheme"),
         };
         let transport = Transport::from_config(transport_config)
             .map_err(|e| anyhow::anyhow!("failed to build transport: {e}"))?;

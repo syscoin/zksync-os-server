@@ -14,8 +14,9 @@ paths have been tested and recovery from the exceptional authorized batch revert
 described in [the service design](../../docs/src/design/prover_service_v1.md)
 has been qualified.
 For a supervised launch, verify that both gates' bootstrap reports are recorded
-in the registry before delivering both activation messages. Activation is
-permissionless and another caller can bypass worker ordering.
+in the registry before the first service period starts. The workers prioritize
+bootstrap reports, and the registry accepts authenticated reports before that
+deadline even if the activation messages arrive first.
 
 ## Prepare configuration
 

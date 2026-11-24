@@ -70,6 +70,7 @@ pub struct Config {
     /// one-shot empty block needed to complete an interop bundle's two-FRI proving group.
     pub interop_companion_idle_delay: Duration,
     pub max_transactions_in_block: usize,
+    pub priority_tx_limit: Option<u64>,
     pub interop_roots_per_block: u64,
 }
 
@@ -324,10 +325,11 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     allowed_to_finish_early: false,
                 }
             } else {
-                SealPolicy::Decide(
-                    self.config.block_time,
-                    self.config.max_transactions_in_block,
-                )
+                SealPolicy::Decide {
+                    block_time: self.config.block_time,
+                    tx_limit: self.config.max_transactions_in_block,
+                    priority_tx_limit: self.config.priority_tx_limit,
+                }
             },
             invalid_tx_policy: InvalidTxPolicy::RejectAndContinue {
                 mark_in_source: !is_empty_interop_companion,

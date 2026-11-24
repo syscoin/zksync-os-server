@@ -15,6 +15,8 @@ The audited issuance curve and supply cap are unchanged. There is no new fixed
 50% pool. Passive weight is native stake plus the existing 100,000 Sentry base
 weight. An authenticated membership observation must establish at least 210,240
 Core blocks of age before a Sentry can subscribe for proving service.
+The dispatcher reads each period's complete enrollment in pages pinned to one
+finalized registry block. Eligibility and operator bindings use that same block.
 
 Registration and probation contribute **zero bonus weight** to the denominator.
 Completing the configured quota of distinct, accepted, nonempty canonical batch
@@ -79,6 +81,10 @@ operator for FRI and SNARK wrapping; single-service subscriptions are rejected.
 A batch can supply at most one canonical duty credit; a slot cannot
 be counted twice. Retry attempts and splitting an aggregate do not create another
 credit for the same batch. An empty companion can settle, but earns no duty credit.
+An ERC-1271 work adapter must validate each signature within 100,000 EVM gas.
+If that contract rejects a duty signature at delivery, the full authenticated
+report is recorded and only that duty is skipped. Replaying the report cannot
+credit the skipped duty later.
 
 The child registry owns one enrollment, one quota bitmap per account and period,
 and one bonus admission ledger for both execution chains. Each lane has an
@@ -180,12 +186,12 @@ At least one authenticated child bootstrap receipt must establish the child's VK
 before activation; its report may be empty if all qualifying duties came from
 Gateway. Gateway qualification cannot establish or overwrite that child pin.
 
-During the supervised launch, confirm that all bootstrap reports from both gates
-have reached the registry before relaying both activation messages. The automatic
-claim worker waits for its discovered bootstrap reports, but activation relay is
-permissionless: another caller can deliver both activations first. Once the
-registry activates, it rejects remaining bootstrap reports, so the worker's
-ordering alone cannot enforce this launch requirement.
+Each gate closes bootstrap work when it installs its coordinator. The child
+registry can receive authenticated bootstrap reports and activation in either
+order before the first service period starts. During the supervised launch,
+confirm that the remaining bootstrap reports from both gates arrive before that
+deadline. A qualification credited after the roster cutoff can only affect a
+later period.
 
 The first roster is transported by native bootstrap proofs before coordinator
 installation. After a gate activates, its ready first roster may jointly authorize
@@ -228,7 +234,7 @@ canonical alias of that immutable root source can install a checkpoint. The sour
 finds the overdue prefix by a bounded binary search over native append-order
 timestamps. All existing priority requests must drain before guard construction,
 which requires the native priority cursor to equal the total request count and
-all verified batches to be executed. Timestamp coverage begins at the source's
+the committed, verified and executed frontiers to agree. Timestamp coverage begins at the source's
 immutable deployment cursor.
 
 The mandatory `ZkSysPriorityGuardV1` freezes a fresh authenticated checkpoint when
@@ -245,7 +251,8 @@ execution cannot credit the same prefix again.
 
 Later queue arrivals do not invalidate an in-flight proof. Work expires after the
 immutable proof window; `refreshPriorityCheckpoint` then requires a fresh root
-checkpoint and new prefix witness while retaining the wrapper clock and selection.
+checkpoint and new prefix witness while retaining the original required prefix,
+wrapper clock and selection. Subsequent packages use the newer overdue frontier.
 An empty package remains legal only when the frozen overdue requirement is empty.
 Snapshot freshness, inclusion delay, proof duration, and the per-package cap are
 explicit deployment policy. A backlog drains in ordered bounded chunks as packages
@@ -324,8 +331,8 @@ queue.
 Only verifier-backed FRI acceptance or recovery of the identical retained proof
 and metadata can produce an accepted duty. Safe exports omit BasicAuth and lease
 capabilities. The adapter is an EOA/file-handoff workflow with one journal per
-sequencer/period/phase, not a public worker server. Its fixed snapshot is bounded
-to 256 enrolled accounts. Retained assignments and audit history continue in
+sequencer/period/phase, not a public worker server. A period's journal retains
+the complete eligible roster. Retained assignments and audit history continue in
 an indexed on-disk journal under the same period identity; there is no lifetime
 assignment count cutoff. Large JSON journals migrate to SQLite while preserving
 their exact cursors, nonces, credit slots and recovery records. The metadata file

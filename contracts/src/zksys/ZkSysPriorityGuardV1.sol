@@ -12,6 +12,7 @@ interface IZkSysPriorityMailboxV1 {
     function getPriorityTransactionTimestamp(uint256 index) external view returns (uint256);
     function getFirstUnprocessedPriorityTx() external view returns (uint256);
     function isPriorityQueueActive() external view returns (bool);
+    function getTotalBatchesCommitted() external view returns (uint256);
     function getTotalBatchesVerified() external view returns (uint256);
     function getTotalBatchesExecuted() external view returns (uint256);
 }
@@ -257,13 +258,14 @@ contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
             gate_ == address(0) || address(chain_).code.length == 0 || address(receiver_).code.length == 0
                 || policyHash_ == bytes32(0) || receiver_.policyHash() != policyHash_
                 || receiver_.childChainId() != chain_.getChainId() || maxSnapshotAge_ == 0 || maxProofWorkSeconds_ == 0
-                || maxPriorityPerPackage_ == 0 || maxPriorityPerPackage_ > 1024
+                || maxPriorityPerPackage_ < 2 || maxPriorityPerPackage_ > 1024
         ) revert InvalidConfiguration();
         uint256 verified = chain_.getTotalBatchesVerified();
         uint256 cursor = chain_.getFirstUnprocessedPriorityTx();
         if (
-            verified != chain_.getTotalBatchesExecuted() || verified > type(uint64).max || cursor > type(uint64).max
-                || cursor != chain_.getTotalPriorityTxs() || chain_.isPriorityQueueActive()
+            verified != chain_.getTotalBatchesCommitted() || verified != chain_.getTotalBatchesExecuted()
+                || verified > type(uint64).max || cursor > type(uint64).max || cursor != chain_.getTotalPriorityTxs()
+                || chain_.isPriorityQueueActive()
         ) revert InvalidConfiguration();
         acceptanceGate = gate_;
         chain = chain_;
@@ -286,18 +288,24 @@ contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
         if (work.id != bytes32(0) || workId == bytes32(0) || uint256(batchFrom) != uint256(lastVerifiedBatch) + 1) {
             revert InvalidWork();
         }
-        _freeze(workId, batchFrom);
+        PriorityCheckpointV1 memory checkpoint = _checkpoint();
+        uint256 cap = uint256(priorityCursor) + maxPriorityPerPackage;
+        uint64 requiredEnd = checkpoint.overdueEnd > priorityCursor ? checkpoint.overdueEnd : priorityCursor;
+        if (requiredEnd > cap) requiredEnd = uint64(cap);
+        _freeze(workId, batchFrom, checkpoint, requiredEnd);
     }
 
     function refreshExpired(bytes32 workId) external onlyGate {
         Work memory previous = work;
         if (previous.id != workId || workId == bytes32(0)) revert InvalidWork();
         if (block.timestamp <= uint256(previous.openedAt) + maxProofWorkSeconds) revert InvalidWork();
-        _freeze(workId, previous.batchFrom);
+        // A fresh root authenticates the witness after expiry. The already-open range keeps its
+        // inclusion obligation, since its committed batches cannot incorporate later requests.
+        _freeze(workId, previous.batchFrom, _checkpoint(), previous.requiredEnd);
     }
 
-    function _freeze(bytes32 workId, uint64 batchFrom) private {
-        PriorityCheckpointV1 memory checkpoint = checkpointReceiver.latestCheckpoint();
+    function _checkpoint() private view returns (PriorityCheckpointV1 memory checkpoint) {
+        checkpoint = checkpointReceiver.latestCheckpoint();
         if (
             checkpoint.rootBlockNumber == 0 || checkpoint.root == bytes32(0)
                 || checkpoint.rootTimestamp > block.timestamp
@@ -307,11 +315,15 @@ contract ZkSysPriorityGuardV1 is IZkSysPriorityGuardV1 {
                 || checkpoint.overdueEnd > checkpoint.total || checkpoint.treeHeight > 64
                 || block.timestamp > type(uint64).max
         ) revert InvalidCheckpoint();
+    }
+
+    function _freeze(bytes32 workId, uint64 batchFrom, PriorityCheckpointV1 memory checkpoint, uint64 requiredEnd)
+        private
+    {
         uint256 cap = uint256(priorityCursor) + maxPriorityPerPackage;
-        uint64 requiredEnd = checkpoint.overdueEnd > priorityCursor ? checkpoint.overdueEnd : priorityCursor;
-        if (requiredEnd > cap) requiredEnd = uint64(cap);
         uint64 maxEnd = checkpoint.total;
         if (maxEnd > cap) maxEnd = uint64(cap);
+        if (requiredEnd > maxEnd) revert InvalidCheckpoint();
         work = Work({
             id: workId,
             checkpointHash: keccak256(abi.encode(checkpoint, block.timestamp)),

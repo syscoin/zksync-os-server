@@ -101,6 +101,34 @@ class ActivationRaceTest(unittest.TestCase):
 
 
 class SupersededStateTest(unittest.TestCase):
+    def test_membership_delivery_can_be_superseded_at_the_receipt_block(self):
+        class L2:
+            height = 10
+            timestamp = 1_001
+
+            def call(self, method, args):
+                assert method == 'eth_call'
+                assert args[1] == {'blockHash': BLOCK, 'requireCanonical': True}
+                return '0x' + word(self.height) + word(self.timestamp)
+
+        l2 = L2()
+        hook = hooks_module.Hooks(None, None, l2, {}, {'membership': A}, lambda _: None)
+
+        def delivered():
+            return hook.verify_delivery({'blockHash': BLOCK}, {}, [(A, 8, 100)], 9, 1_000)
+
+        with patch.object(hooks_module.k, 'member_at', return_value=(0, 0)) as member_at:
+            self.assertTrue(delivered())
+            member_at.assert_not_called()
+            l2.height = 9
+            l2.timestamp = 1_000
+            self.assertFalse(delivered())
+            member_at.return_value = (8, 100)
+            self.assertTrue(delivered())
+            l2.height = 10
+            l2.timestamp = 999
+            self.assertFalse(delivered())
+
     def test_requires_finalized_membership_active_weight_and_no_pending_sentry(self):
         later = '0x' + '55' * 32
         class L2:

@@ -440,7 +440,8 @@ pick/submit API. It is opt-in (`--execute` is required), runs on the trusted
 sequencer host, and never receives wallet private keys. Keep one protected journal
 per sequencer, period, and bootstrap/service phase. Never run competing journals
 or rewind a journal from a backup: the durable cursor and per-account slots are the
-allocation authority. The adapter supports up to 256 enrolled accounts; its
+allocation authority. The adapter enumerates all registered accounts in pages of
+32 at one finalized block, then checks the complete eligible roster. Its
 commands hold an exclusive process lock. Assignment and audit history continue
 on disk within the same period identity, without a lifetime assignment count
 cutoff. Large journals migrate from JSON to an indexed SQLite store, retaining
@@ -453,7 +454,7 @@ quota. Each signed streamed audit needs its own private artifact directory with
 an `audit-events/` subdirectory; keep that complete archive with the audit JSON
 when transporting or restoring it. Auditors currently replay from genesis using
 temporary disk indexes, so CPU and I/O work grow with the epoch history; this is
-not constant-time verification. The separate 256-account enrollment bound still applies. Fair
+not constant-time verification. Fair
 allocation assumes the trusted sequencer preserves authenticated
 readiness requests and delivers its signed offers; the journal does not prove
 that a malicious sequencer has withheld neither. This is a trusted dispatcher,
@@ -469,8 +470,8 @@ The supplied account list must exactly match the on-chain FRI subscriber
 enumeration at that block after explicit membership eligibility checks.
 Removed or otherwise ineligible entries need no supplied subscription. Every
 enrolled operator must subscribe to both services (`services: 3`); there is no separate wrapper-only
-pool. The 256-account bound applies
-to enumerated registrations, including ineligible ones.
+pool. A page boundary does not end enumeration. The immutable snapshot and
+exported artifacts still need to fit the dispatcher's file-size limits.
 
 The account snapshot is fixed for that journal, so finish bootstrap enrollment
 before initializing it. A later bootstrap applicant waits for the next assessment
@@ -513,8 +514,18 @@ operator review.
 
 Every subsequent dispatcher command requires
 `--registry-rpc https://trusted-child-rpc.example/` before the subcommand.
-It authenticates the journal's exact snapshot at its retained
-canonical enrollment block. Low-level `service.py duty`, `offered-duty`, and
+The dispatcher records successful enrollment verification in the private journal
+as `verified-enrollment.json`. Subsequent commands check the exact roster, both
+lane configurations, period and enrollment anchor against that receipt. They
+check the RPC chain ID and read the registry policy at the pinned canonical
+block. This avoids fetching every subscription again for each ready message or
+pick. Period and phase changes create a separately verified journal.
+
+The receipt is trusted through the dispatcher's private host storage. When
+restoring a trusted journal, omit any receipt whose provenance is unknown.
+The dispatcher then verifies enrollment against the registry on first use. Older journals follow
+the same path. The coordinator and wrapper independently verify their evidence.
+Low-level `service.py duty`, `offered-duty`, and
 `package` commands can use the same boundary with both `--registry-rpc-file` and
 `--enrollment-block-hash` before their subcommand; the RPC connection file has
 exactly `url` and `authorization` fields and must be private. These trusted inputs
