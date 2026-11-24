@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.24.6](https://github.com/syscoin/zksync-os-server/compare/v0.24.5...v0.24.6) (2026-11-24)
+
+
+### Features
+
+* **explorer:** add isolated Blockscout upgrade staging ([de8eec5](https://github.com/syscoin/zksync-os-server/commit/de8eec5064ac9e122888e2dd792496656ad918ef))
+* **explorer:** add isolated Blockscout upgrade staging ([0d85b5a](https://github.com/syscoin/zksync-os-server/commit/0d85b5a231c009fcbce52d9ae6a12c6e6d2d4192))
+
+
+### Bug Fixes
+
+* **audit:** preserve publication, admission and archive recovery workflows ([4271dfc](https://github.com/syscoin/zksync-os-server/commit/4271dfc07d1e2b47360696d127969b2775ff8f78))
+* **ci:** qualify audit dependencies and batch policy fixtures ([600ec5c](https://github.com/syscoin/zksync-os-server/commit/600ec5c10d7e33bbd3eb222f25b3bdbb48f16ac4))
+* **deps:** use patched URL parser in native release lock ([3c95ad1](https://github.com/syscoin/zksync-os-server/commit/3c95ad145039a79b0a35759f2af656bed438d74d))
+* harden Pali validator installation and factory bootstrap ([88922e2](https://github.com/syscoin/zksync-os-server/commit/88922e2e6b1bb41651d59026fe45cc660488be5b))
+* **prover-api:** expose regrouping checks to startup recovery ([1d5fe21](https://github.com/syscoin/zksync-os-server/commit/1d5fe21ce6158227abff767a47826bfe89f7dc67))
+* **prover-service:** confirm forwarded packages and retry journal promotion reads ([048d6a4](https://github.com/syscoin/zksync-os-server/commit/048d6a479e18f96c18744e111472e8878440c1c9))
+* **prover-service:** continue past unusable wrapper endorsements ([c7b7a5f](https://github.com/syscoin/zksync-os-server/commit/c7b7a5fc5ade826c6a0f60c9ee9101f625411f26))
+* **prover-service:** follow canonical native settlement for V1 work ([ea88b49](https://github.com/syscoin/zksync-os-server/commit/ea88b49013c268bc0dbc080f4e48e04161783a6d))
+* **prover-service:** follow canonical native settlement for V1 work ([d4f8481](https://github.com/syscoin/zksync-os-server/commit/d4f84819df32309bc81322aaa0d2f4306ec687db))
+* **prover-service:** keep foreign wallet reservations out of proof work ([1585543](https://github.com/syscoin/zksync-os-server/commit/1585543d2ccea8f09a6ecb9be43c1cd8ad9cb3e6))
+* **prover-service:** page complete Sentry rosters without an enrollment cap ([5fd855a](https://github.com/syscoin/zksync-os-server/commit/5fd855aca9d17324ba730d3d9b1723f3c8562ef2))
+* **prover-service:** preserve bootstrap rental and verifier checks ([dbd72ac](https://github.com/syscoin/zksync-os-server/commit/dbd72ac39981b517e92976f705b0c9b81adf3bb5))
+* **prover-service:** recognize independently relayed direct receipts ([1a839f2](https://github.com/syscoin/zksync-os-server/commit/1a839f238917942a862b75c5d40bd3e34a236821))
+* **prover-service:** reconcile expired future leases and confirmed external settlement ([6b0f5d1](https://github.com/syscoin/zksync-os-server/commit/6b0f5d1744724204e54b2812a803953a6d31a5c7))
+* **prover-service:** recover across roster changes and repeated work assignments ([8ba6672](https://github.com/syscoin/zksync-os-server/commit/8ba66725023dcf111c475212976342aa08d05ab3))
+* **prover-service:** recover frozen renewals, maintenance plans and archived handoffs ([d5915a6](https://github.com/syscoin/zksync-os-server/commit/d5915a65817e9c2b09ce4abc9c6f0a85ead6cf93))
+* **prover-service:** recover selected proofs and retire prelaunch journal formats ([6887fb8](https://github.com/syscoin/zksync-os-server/commit/6887fb811870031d52ed703aac2fde24fb6a4f19))
+* **prover-service:** recover settled receipts and align handoff limits ([855886e](https://github.com/syscoin/zksync-os-server/commit/855886e73da97191a2253a628a670f3c42ca59bf))
+* **prover-service:** regroup stranded batches after native settlement ([fc50796](https://github.com/syscoin/zksync-os-server/commit/fc5079627aaec2c7ea963f7d8474a3569e4a7a4e))
+* **prover-service:** reject wrapper results that exceed the JSON nesting limit ([e011559](https://github.com/syscoin/zksync-os-server/commit/e01155974b18796faea19fa9819350b49373bb6f))
+* **prover-service:** release superseded proof work with a pending relay ([a23eba3](https://github.com/syscoin/zksync-os-server/commit/a23eba3c174e307ab954d25f6bc846a43ce1fa0c))
+* **prover-service:** resume proof pickup after external native observation ([b1ea8cf](https://github.com/syscoin/zksync-os-server/commit/b1ea8cf6b8deed3205b1b09e54ccd2aec984b753))
+* **prover-service:** retry indeterminate wrapper results across polls ([a10dba6](https://github.com/syscoin/zksync-os-server/commit/a10dba656489d682b68bad94a661e0781edf242a))
+* **prover-service:** reuse verified enrollment in V1 dispatch journals ([39e048f](https://github.com/syscoin/zksync-os-server/commit/39e048f34f0f9c08e7ae70c6e37b0e1f8b767905))
+* **prover-service:** unblock selected proofs and expired unassigned picks ([2b9ee27](https://github.com/syscoin/zksync-os-server/commit/2b9ee2744e955d74c8a66c18d4f5dc6cb26fbba4))
+* **prover-service:** validate the refreshed maintenance planning head ([43bc100](https://github.com/syscoin/zksync-os-server/commit/43bc100a9f2aa5ee55f8651b9b9ce9a7499e5352))
+* **recovery:** verify archive replay before serving it ([a79cb5b](https://github.com/syscoin/zksync-os-server/commit/a79cb5b0d7eb890dc5f2a6cbbb2feec3e64cea75))
+* **recovery:** verify imported archive replay before serving it ([f23c801](https://github.com/syscoin/zksync-os-server/commit/f23c801c220a212d99468f6a04b4cc16ae110c33))
+* **recovery:** verify older backups before external-node catch-up ([437cf61](https://github.com/syscoin/zksync-os-server/commit/437cf61d778be36a405b2ca29ea58d44e647ed94))
+* **release:** pin native two-batch Gateway recovery ([d4269cc](https://github.com/syscoin/zksync-os-server/commit/d4269cc626297552c34bdf14bc83d44f42675c7c))
+* **release:** pin native two-batch Gateway recovery ([dc6840a](https://github.com/syscoin/zksync-os-server/commit/dc6840a1192e699efb7bc9d845a94efcce7256fe))
+* **release:** preserve exact merge SHA lookup ([d28ee40](https://github.com/syscoin/zksync-os-server/commit/d28ee40b444e0de6d805fc889e129ee4d1f6702e))
+* **release:** preserve exact merge SHA lookup ([ea2a30a](https://github.com/syscoin/zksync-os-server/commit/ea2a30ab9ea8d9b5e6e3c13625ea5743dca4237b))
+* restrict Pali bootstrap and update the reviewed URL dependency ([250c132](https://github.com/syscoin/zksync-os-server/commit/250c1327d0ebf04da80c718760f914d75109a1b3))
+* **rpc:** coalesce concurrent Gateway DA availability checks ([49961ff](https://github.com/syscoin/zksync-os-server/commit/49961ff9e5ece68e2e59e01467d25eb9d30bad69))
+* **security:** address zkSYS launch audit findings ([ba89687](https://github.com/syscoin/zksync-os-server/commit/ba89687f34a21c3f8d57919c5d899bffa5de42cc))
+* **security:** harden zkSYS launch and settlement paths ([b33413c](https://github.com/syscoin/zksync-os-server/commit/b33413c96c42b85da3e254e5047e2a1c170668a0))
+* **test:** drain the replay executor before reopening its database ([a5cb179](https://github.com/syscoin/zksync-os-server/commit/a5cb1791be03039027a488e47eeb0011852d23ff))
+* **test:** verify imported component archives before normal startup ([af77b4e](https://github.com/syscoin/zksync-os-server/commit/af77b4e96889e8f7d034afd1489f5c0c0554bc20))
+* **test:** verify the encrypted archive before restarting its node ([fe01aad](https://github.com/syscoin/zksync-os-server/commit/fe01aad91b8270862b194f7f626389725aec7af8))
+* **test:** wait for the verified fixture anchor on normal RPC ([d0807db](https://github.com/syscoin/zksync-os-server/commit/d0807db8295ed0a53297d7298ab13a0adcc80c34))
+
 ## [0.24.5](https://github.com/syscoin/zksync-os-server/compare/v0.24.4...v0.24.5) (2026-11-22)
 
 
