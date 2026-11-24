@@ -1429,7 +1429,7 @@ class CoordinatorTests(unittest.TestCase):
             history = io.private_json(self.controller.directory(identifier) / "wrapper-work-0.json")
             self.assertTrue(history[first["work_hash"]]["checked"])
 
-    def test_restart_materializes_selected_archived_result_before_competing_valid_proof(self):
+    def test_restart_submits_selected_archived_proof_with_uncertain_competing_result(self):
         identifier, _ = self.frozen()
         selected = self.controller.step(True)
         self.returned(selected, bare=True)
@@ -1459,10 +1459,21 @@ class CoordinatorTests(unittest.TestCase):
         inbox_result.unlink()
         with patch.dict(self.f, snark=alternate):
             self.returned(competing, bare=True)
-        self.assertEqual(self.controller_reload().step(False)["next_action"], "would_submit_verified_native_snark")
-        self.assertFalse(proof_path.exists())
-        self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
-        self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        statements, alternate_bytes, _ = c.proof_check.inputs(
+            self.f["settings"], self.f["evidence"], self.f["fri_payload"], alternate)
+        alternate_calldata = c.proof_check.verifier_calldata(statements, alternate_bytes)
+        original = self.rpc.call
+        def call(method, params):
+            if method == "eth_call" and params[0]["data"] == alternate_calldata:
+                raise r.RpcError(3, "0x")
+            return original(method, params)
+        with patch.object(self.rpc, "call", side_effect=call) as rpc_call:
+            self.assertEqual(self.controller_reload().step(False)["next_action"], "would_submit_verified_native_snark")
+            self.assertFalse(proof_path.exists())
+            self.native.responses.append((204, {"x-syscoin-prover-disposition": "accepted"}, b""))
+            self.assertEqual(self.controller_reload().step(True)["next_action"], "await_node_publication")
+        self.assertFalse(any(method == "eth_call" and params[0]["data"] == alternate_calldata
+                             for (method, params), _ in rpc_call.call_args_list))
         self.assertEqual(io.private_json(proof_path), self.f["snark"])
         self.assertEqual(json.loads(self.native.calls[-1][2])["proof"], self.f["snark"]["proof"])
         self.assertTrue(io.private_json(directory / "wrapper-work-0.json")[selected["work_hash"]]["checked"])

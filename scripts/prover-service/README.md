@@ -635,14 +635,22 @@ SNARK package and settlement delivery.
 Retry uncertain submissions with the same proof and signature. Changed bytes are
 rejected. An ambiguous submission cannot be expired or reassigned; if retained
 proofs have already been pruned, the adapter conservatively remains unresolved and
-requires operator investigation. `recover-pick` resumes a fully retained pick after
-a crash. If the pick response was lost before it could be retained, the journal
-stops automatic picking. `abandon-unexported-pick` can explicitly release only a
-pending reservation whose private job directory is still empty, with no retained
-response, assignment, offer, authority, or submission. It durably records the
-abandonment, preserves readiness and cursor, and creates no opportunity. Any
-unknown native lease simply expires; its absent capability cannot be exported or
-used for a submission. The next pick is fresh work, never replay of that request.
+requires operator investigation. After a restart, `recover-pick` uses the
+retained native response and fetches evidence for the pending batch. When the
+response was lost and the job directory is empty, `abandon-unexported-pick`
+can release the pending reservation immediately.
+
+If another prover completes the batch after the native lease expires, the
+evidence endpoint can return 404. Once the operator's signed readiness expires,
+use `abandon-unexported-pick` for a retained response whose assignment was
+never recorded. The command checks the private files left by pick recovery and
+requires zero submission attempts. Any retained authority must contain the exact
+unsigned pick bytes or the prefix left by an interrupted initial write, including
+an empty file. It preserves the files, assignment cursor and quota,
+and records the abandonment in the audit journal. Submit fresh signed readiness
+to request another batch. For an earlier period, use `--fixed-epoch` with that
+period's journal.
+
 A definite rejection or an
 expired signed offer can be retried only when the ordinary node returns a fresh
 lease; the manifest preserves the previous assignment, increasing attempt number,

@@ -740,13 +740,17 @@ class Coordinator:
                 if work_hash not in op["works"]:
                     yield work_hash, meta, (path, history)
 
-    def verify_wrapper_result(self, work_hash, meta, path, evidence, payload):
+    def verify_wrapper_result(self, work_hash, meta, path, evidence, payload, selected):
         try:
             result = io.validate_result(self.settings, work_hash, io.private_json(path), meta["operator"])
             job.validate_payload(result["proof"], "SNARK", self.settings["vk_hash"], proof=True)
             proof_check.inputs(self.settings, evidence, payload, result["proof"])
         except (s.Error, job.Error, OSError, ValueError, TypeError, KeyError):
             return None, {"ignored": True, "error": "invalid_authenticated_result"}
+        # An endorsement for different proof bytes cannot authorize the selected
+        # native submission. Its verifier call could delay an already verified proof.
+        if selected is not None and selected != result["proof"]:
+            return None, {"ignored": True}
         try:
             proof_check.verify_snark(self.keeper, self.rpc, evidence, payload, result["proof"], int(self.clock()))
         except s.Error as error:
@@ -795,10 +799,7 @@ class Coordinator:
                 continue
             if not path.exists():
                 continue
-            result, disposition = self.verify_wrapper_result(work_hash, meta, path, evidence, payload)
-            # The native submission freezes one exact proof; later valid proofs cannot replace it.
-            if result is not None and selected is not None and selected != result["proof"]:
-                disposition = {"ignored": True}
+            result, disposition = self.verify_wrapper_result(work_hash, meta, path, evidence, payload, selected)
             if not disposition:
                 if not execute:
                     return "would_retain_verified_wrapper_result"

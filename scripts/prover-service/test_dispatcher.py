@@ -347,6 +347,98 @@ class DispatcherTests(unittest.TestCase):
         with self.assertRaisesRegex(s.Error, "retained_pick"):
             self.dispatcher.abandon_unexported_pick()
 
+    def interrupt_before_assignment_save(self):
+        self.ready(expires=570)
+        save = self.dispatcher.save
+        def interrupt():
+            if self.dispatcher.state["pending_pick"] is None:
+                raise InterruptedError("before recording the assignment")
+            save()
+        with patch.object(self.dispatcher, "save", side_effect=interrupt), self.assertRaises(InterruptedError):
+            self.pick(token=h(130))
+        self.reload(now=569)
+        return self.dispatcher.state["pending_pick"]
+
+    def test_expired_unassigned_pick_with_pruned_evidence_preserves_artifacts_and_allows_fresh_pick(self):
+        previous = self.interrupt_before_assignment_save()
+        directory = self.dispatcher.directory(previous)
+        artifacts = {path.name: path.read_bytes() for path in directory.iterdir()}
+        self.assertEqual(set(artifacts), {"picked-wire.json", "payload.json", "evidence.json", "authority.json"})
+        cursor = self.dispatcher.state["cursor"]
+        account = copy.deepcopy(self.dispatcher.state["accounts"][self.account])
+        self.network.responses.append((404, {}, b""))
+        with self.assertRaisesRegex(s.Error, "pending_evidence_unavailable"):
+            self.dispatcher.recover_pick()
+        with self.assertRaisesRegex(s.Error, "retained_pick"):
+            self.dispatcher.abandon_unexported_pick()
+        self.reload(now=570).abandon_unexported_pick()
+        self.reload(now=571)
+        self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()}, artifacts)
+        self.assertEqual(self.dispatcher.state["cursor"], cursor)
+        self.assertEqual(self.dispatcher.state["accounts"][self.account], account)
+        self.assertEqual(self.dispatcher.state["operations"][previous]["status"], "unexported_pick_abandoned")
+        event = self.dispatcher.state["audit"]["events"][-1]
+        self.assertEqual((event["kind"], event["payload"]), ("pick_abandoned", {"operation": previous}))
+        self.assertEqual(self.dispatcher.pick(), "no_authenticated_demand")
+        self.ready(expires=590)
+        following = self.pick(number=2, token=h(131))
+        self.assertNotEqual(following, previous)
+        self.assertEqual(self.dispatcher.state["operations"][following]["assignment"]["batch_number"], 2)
+        self.assertEqual(self.dispatcher.state["accounts"][self.account]["offered"], 0)
+        self.assertEqual(sum("FRI/pick?" in call[0] for call in self.network.calls), 2)
+
+    def test_explicit_abandon_preserves_uncertain_or_exported_pick(self):
+        operation = self.interrupt_before_assignment_save()
+        self.reload(now=571)
+        directory = self.dispatcher.directory(operation)
+        op = self.dispatcher.state["operations"][operation]
+        for alteration in ({"submit_attempts": 1}, {"offer_signature": "0x01"}, {"status": "submission_pending"},
+                           {"assignment": {"batch_number": 1}}):
+            with self.subTest(alteration=alteration), patch.dict(op, alteration), self.assertRaisesRegex(s.Error, "retained_pick"):
+                self.dispatcher.abandon_unexported_pick()
+        for name in ("manifest.json", "signed-proof.json", "submission.json", "duty.json", "unexpected"):
+            path = directory / name
+            d.job.write_new(path, b"retained bytes")
+            with self.subTest(name=name), self.assertRaisesRegex(s.Error, "retained_pick"):
+                self.dispatcher.abandon_unexported_pick()
+            path.unlink()
+        path = directory / "authority.json"
+        authority = s.read_json(path, private=True)
+        for alteration in ({"status": "submission_pending"}, {"submission_sha256": h(31)}, {"lease_token": h(132)}):
+            d.atomic_json(path, {**authority, **alteration})
+            with self.subTest(alteration=alteration), self.assertRaisesRegex(s.Error, "retained_pick"):
+                self.dispatcher.abandon_unexported_pick()
+        self.assertEqual(self.reload(now=572).state["pending_pick"], operation)
+
+    def test_interrupted_initial_authority_write_can_be_abandoned_only_for_its_exact_prefix(self):
+        write = d.job.write_new
+        for window in ("empty", "partial", "changed"):
+            with self.subTest(window=window):
+                expires = self.dispatcher.now + 5
+                self.ready(expires=expires)
+                def interrupt(path, data):
+                    if path.name != "authority.json":
+                        return write(path, data)
+                    prefix = b"" if window == "empty" else data[:-2]
+                    if window == "changed":
+                        prefix += b"!"
+                    write(path, prefix)
+                    raise InterruptedError("during the initial authority write")
+                with patch.object(d.job, "write_new", side_effect=interrupt), self.assertRaises(InterruptedError):
+                    self.pick(token=h(130))
+                self.reload(now=expires)
+                operation = self.dispatcher.state["pending_pick"]
+                directory = self.dispatcher.directory(operation)
+                artifacts = {path.name: path.read_bytes() for path in directory.iterdir()}
+                if window == "changed":
+                    with self.assertRaisesRegex(s.Error, "retained_pick"):
+                        self.dispatcher.abandon_unexported_pick()
+                    self.assertEqual(self.reload(now=expires).state["pending_pick"], operation)
+                else:
+                    self.dispatcher.abandon_unexported_pick()
+                    self.assertIsNone(self.reload(now=expires).state["pending_pick"])
+                self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()}, artifacts)
+
     def test_crash_after_empty_directory_creation_can_resume_without_duplicate_lease(self):
         self.ready()
         directory = self.root / "job-000000"
